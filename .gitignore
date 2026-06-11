@@ -1,0 +1,6 @@
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+.env*.local
+supabase-config.js

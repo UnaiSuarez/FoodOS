@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Claude_Preview__preview_start",
+      "PowerShell(Get-ChildItem E:\\\\espaciSeguroClaude\\\\FoodOS -Recurse -Depth 3 | Where-Object { -not $_.PSIsContainer } | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 200)",
+      "PowerShell(pip install pillow -q 2>&1)"
+    ]
+  }
+}

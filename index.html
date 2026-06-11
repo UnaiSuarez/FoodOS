@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FoodOS - Inventario, nutricion y finanzas</title>
+    <meta
+      name="description"
+      content="FoodOS unifica inventario de alimentos, recetas, carrito, nutricion, feed social y finanzas personales en una sola app."
+    />
+    <meta name="theme-color" content="#070a05" />
+    <meta property="og:title" content="FoodOS — Tu nevera, tus macros y tu dinero, conectados" />
+    <meta property="og:description" content="App unificada de inventario, recetas, carrito, nutricion y finanzas personales. Stack 100% gratuito." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="assets/foodos-hero.png" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070a05'/%3E%3Ctext x='32' y='46' font-family='Georgia,serif' font-size='42' fill='%234ade80' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Serif+Display:ital@0;1&family=Outfit:wght@300..900&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="preload" href="assets/foodos-hero.png" as="image" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="FoodOS inicio"><span>Food</span>OS</a>
+      <nav class="nav" aria-label="Secciones principales">
+        <a href="#modulos">Modulos</a>
+        <a href="#como-funciona">Flujo</a>
+        <a href="#stack">Stack</a>
+        <a href="#descarga">Descargar</a>
+        <a href="#login">Entrar</a>
+      </nav>
+      <a class="header-cta" href="fooOSappweb/index.html">Abrir la app demo</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <img class="hero-image" src="assets/foodos-hero.png" alt="Mockup visual de FoodOS con dashboard de inventario, macros y presupuesto" />
+        <div class="hero-shade" aria-hidden="true"></div>
+        <div class="hero-content">
+          <p class="eyebrow hero-anim">Inventario · Nutricion · Finanzas</p>
+          <h1 id="hero-title" class="hero-anim"><span>Food</span>OS</h1>
+          <p class="hero-copy hero-anim">
+            La app que conecta lo que tienes en casa, lo que necesitas comer y lo que puedes gastar.
+          </p>
+          <div class="hero-actions hero-anim">
+            <a class="btn primary" href="fooOSappweb/index.html">Probar la app demo</a>
+            <a class="btn ghost" href="#modulos">Ver el producto</a>
+          </div>
+          <dl class="hero-metrics hero-anim" aria-label="Resumen de FoodOS">
+            <div>
+              <dt>0 EUR</dt>
+              <dd>coste operativo MVP</dd>
+            </div>
+            <div>
+              <dt>6+1</dt>
+              <dd>modulos conectados</dd>
+            </div>
+            <div>
+              <dt>7-9</dt>
+              <dd>semanas MVP solo</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="ticker" aria-label="Capacidades principales">
+        <div class="ticker-track">
+          <div class="ticker-group">
+            <span>Inventario inteligente</span>
+            <span>Recetas por macros</span>
+            <span>Carrito por tienda</span>
+            <span>Presupuesto alimentario</span>
+            <span>PSD2 con Nordigen</span>
+            <span>Gemini 1.5 Flash</span>
+            <span>Mascotas Lottie</span>
+            <span>Open Food Facts</span>
+          </div>
+          <div class="ticker-group" aria-hidden="true">
+            <span>Inventario inteligente</span>
+            <span>Recetas por macros</span>
+            <span>Carrito por tienda</span>
+            <span>Presupuesto alimentario</span>
+            <span>PSD2 con Nordigen</span>
+            <span>Gemini 1.5 Flash</span>
+            <span>Mascotas Lottie</span>
+            <span>Open Food Facts</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="intro section">
+        <div class="section-heading">
+          <p class="eyebrow">Problema central</p>
+          <h2>Tu nevera, tus macros y tu dinero por fin hablan entre si.</h2>
+        </div>
+        <div class="intro-grid">
+          <article>
+            <span class="dot green"></span>
+            <h3>Menos desperdicio</h3>
+            <p>Detecta caducidades por ubicacion: nevera, congelador, despensa o almacenes personalizados.</p>
+          </article>
+          <article>
+            <span class="dot amber"></span>
+            <h3>Mejores decisiones</h3>
+            <p>Recomienda comidas que usan lo que caduca, cubren macros y respetan presupuesto semanal.</p>
+          </article>
+          <article>
+            <span class="dot blue"></span>
+            <h3>Finanzas reales</h3>
+            <p>El gasto de alimentacion se cruza con tickets, CSV, banco PSD2 y compras completadas.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="modulos" class="section modules" aria-labelledby="modules-title">
+        <div class="section-heading">
+          <p class="eyebrow">Producto</p>
+          <h2 id="modules-title">Siete areas, una sola logica.</h2>
+        </div>
+        <div class="module-grid">
+          <article class="module-card featured">
+            <div class="module-top">
+              <span class="module-index">01</span>
+              <span class="status good">Core</span>
+            </div>
+            <h3>Inventario y almacenes</h3>
+            <p>Entrada manual, escaneo de codigo de barras y foto con IA. Caducidades calculadas por ubicacion.</p>
+            <ul>
+              <li>Nevera, congelador y despensa por defecto</li>
+              <li>Open Food Facts para datos nutricionales</li>
+              <li>Alertas por caducidad y stock bajo</li>
+            </ul>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">02</span><span class="status">Macros</span></div>
+            <h3>Recetas</h3>
+            <p>Semaforo de ingredientes, escalado por personas o calorias y coste por racion.</p>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">03</span><span class="status">Compra</span></div>
+            <h3>Carrito</h3>
+            <p>Listas por tienda, fusion de ingredientes repetidos y gasto automatico al completar compra.</p>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">04</span><span class="status">Social</span></div>
+            <h3>Feed de recetas</h3>
+            <p>Videos cortos, guardado, filtros y subida directa a Cloudinary con thumbnails automaticos.</p>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">05</span><span class="status">PSD2</span></div>
+            <h3>Finanzas</h3>
+            <p>Ingresos, categorias, importacion de tickets y presupuesto con modo ahorro maximo.</p>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">06</span><span class="status">TDEE</span></div>
+            <h3>Nutricion</h3>
+            <p>Mifflin-St Jeor, objetivos corporales, ciclado calorico y optimizador proteina/euro.</p>
+          </article>
+          <article class="module-card">
+            <div class="module-top"><span class="module-index">07</span><span class="status ai">IA</span></div>
+            <h3>Busqueda por ingredientes</h3>
+            <p>Cuatro modos: exacta, parcial, por categoria y generacion IA bajo demanda.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section demo" aria-labelledby="demo-title">
+        <div class="section-heading">
+          <p class="eyebrow">Integracion en accion</p>
+          <h2 id="demo-title">Una recomendacion que entiende el contexto completo.</h2>
+        </div>
+        <div class="dashboard">
+          <div class="phone">
+            <div class="phone-top">
+              <span>Hoy</span>
+              <strong>1.805 kcal</strong>
+            </div>
+            <div class="macro-ring" aria-label="Progreso de macros">
+              <span>82%</span>
+            </div>
+            <div class="mini-bars">
+              <div><span>Proteina</span><b style="width: 78%"></b></div>
+              <div><span>Carbos</span><b style="width: 63%"></b></div>
+              <div><span>Grasas</span><b style="width: 41%"></b></div>
+            </div>
+          </div>
+          <div class="recommendation">
+            <p class="eyebrow">Cena sugerida</p>
+            <h3>Pechuga con arroz integral</h3>
+            <p>
+              Usa la pechuga que caduca manana, cubre 50 g de proteina pendiente y cuesta 2,80 EUR.
+            </p>
+            <div class="chips">
+              <span class="chip green">Inventario OK</span>
+              <span class="chip amber">Caduca pronto</span>
+              <span class="chip blue">Dentro de presupuesto</span>
+            </div>
+          </div>
+          <div class="budget-panel">
+            <span>Presupuesto semanal</span>
+            <strong>28 EUR</strong>
+            <div class="budget-line"><i></i></div>
+            <small>Despues de esta cena: 25,20 EUR</small>
+          </div>
+        </div>
+      </section>
+
+      <section id="como-funciona" class="section flow" aria-labelledby="flow-title">
+        <div class="section-heading">
+          <p class="eyebrow">Flujo diario</p>
+          <h2 id="flow-title">De escanear a decidir sin cambiar de app.</h2>
+        </div>
+        <ol class="steps">
+          <li>
+            <span>1</span>
+            <h3>Anade alimentos</h3>
+            <p>Manual, barcode o foto IA. Se guardan macros, cantidad y caducidad estimada.</p>
+          </li>
+          <li>
+            <span>2</span>
+            <h3>Define objetivos</h3>
+            <p>La app calcula TMB, TDEE, macros y dias de gym o descanso.</p>
+          </li>
+          <li>
+            <span>3</span>
+            <h3>Genera opciones</h3>
+            <p>Busca recetas por ingredientes o pide una receta IA si hace falta.</p>
+          </li>
+          <li>
+            <span>4</span>
+            <h3>Cierra compra y gasto</h3>
+            <p>El carrito actualiza inventario y finanzas sin duplicar trabajo.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="stack" class="section stack" aria-labelledby="stack-title">
+        <div class="section-heading">
+          <p class="eyebrow">Stack gratuito</p>
+          <h2 id="stack-title">MVP pensado para validar sin coste mensual.</h2>
+        </div>
+        <div class="stack-grid">
+          <article><span>Web</span><strong>Next.js 14 + Vercel</strong><p>SSR, SSG, PWA y API routes serverless.</p></article>
+          <article><span>Movil</span><strong>Expo SDK 51</strong><p>iOS y Android con camara, barcode y push.</p></article>
+          <article><span>Datos</span><strong>Supabase PostgreSQL</strong><p>Auth, RLS, realtime, storage y Edge Functions.</p></article>
+          <article><span>IA</span><strong>Gemini 1.5 Flash</strong><p>Principal gratis. BYOK para OpenAI, Claude u Ollama.</p></article>
+          <article><span>Media</span><strong>Cloudinary</strong><p>Video feed, thumbnails y streaming adaptativo.</p></article>
+          <article><span>Banco</span><strong>Nordigen PSD2</strong><p>Conexion bancaria europea para saldos y transacciones.</p></article>
+        </div>
+      </section>
+
+      <section class="section mascots" aria-labelledby="mascots-title">
+        <div class="section-heading">
+          <p class="eyebrow">Personalidad</p>
+          <h2 id="mascots-title">15 companeros seleccionables, no un asistente generico.</h2>
+        </div>
+        <div class="mascot-grid" aria-label="Mascotas FoodOS">
+          <button class="mascot active" data-name="Zana" data-tagline="Energetica y motivadora"><span>Z</span><b>Zana</b></button>
+          <button class="mascot" data-name="Basil" data-tagline="Sereno y experto"><span>B</span><b>Basil</b></button>
+          <button class="mascot" data-name="Chip" data-tagline="Neutro y eficiente"><span>C</span><b>Chip</b></button>
+          <button class="mascot" data-name="Okto" data-tagline="Organizado y multitarea"><span>O</span><b>Okto</b></button>
+          <button class="mascot" data-name="Volt" data-tagline="Ahorro maximo"><span>V</span><b>Volt</b></button>
+        </div>
+        <p class="mascot-caption" id="mascot-caption">Zana - Energetica y motivadora</p>
+      </section>
+
+      <section id="descarga" class="section download" aria-labelledby="download-title">
+        <div>
+          <p class="eyebrow">Rutas previstas</p>
+          <h2 id="download-title">Web, PWA, movil y escritorio.</h2>
+          <p>
+            La version web demo ya funciona. Los enlaces de stores, PWA y Windows se
+            activaran cuando existan las builds (ver pendientes manuales).
+          </p>
+          <div class="download-options">
+            <a href="fooOSappweb/index.html" class="ready">Abrir app web demo</a>
+            <a href="#manual">iOS / Android <small>pendiente de stores</small></a>
+            <a href="#manual">Instalar PWA <small>pendiente de build</small></a>
+            <a href="#manual">Windows <small>pendiente de build</small></a>
+          </div>
+        </div>
+        <div class="qr-panel" aria-label="Codigo QR de descarga (demo)">
+          <canvas id="qrCanvas" width="220" height="220"></canvas>
+          <p>QR conceptual — apuntara a las stores cuando la app este publicada.</p>
+        </div>
+      </section>
+
+      <section id="login" class="section login" aria-labelledby="login-title">
+        <div class="login-card">
+          <div>
+            <p class="eyebrow">Iniciar sesion</p>
+            <h2 id="login-title">Tu cuenta, en cuanto haya backend.</h2>
+            <p>
+              El login usara Supabase Auth con Google OAuth y enlace magico por email.
+              Esta pantalla ya esta maquetada: solo falta conectar el proyecto de Supabase.
+            </p>
+          </div>
+          <form class="login-form" id="loginForm" aria-describedby="login-note">
+            <button class="btn ghost google" type="button" id="googleButton">
+              <span aria-hidden="true">G</span> Continuar con Google
+            </button>
+            <div class="login-divider"><span>o con tu email</span></div>
+            <label>
+              Email
+              <input type="email" name="email" required placeholder="tu@email.com" autocomplete="email" />
+            </label>
+            <button class="btn primary" type="submit">Enviar enlace magico</button>
+            <p class="login-note" id="login-note">Demo sin backend: no se envia nada todavia.</p>
+          </form>
+        </div>
+      </section>
+
+      <section id="manual" class="section manual" aria-labelledby="manual-title">
+        <div class="section-heading">
+          <p class="eyebrow">Lo que queda manual</p>
+          <h2 id="manual-title">Acciones que no puedo completar sin tus cuentas o decisiones.</h2>
+        </div>
+        <div class="manual-list">
+          <article>
+            <h3>Cuentas y claves</h3>
+            <p>Crear/configurar Supabase, Vercel, Cloudinary, Firebase FCM, Google AI Studio/Gemini y Nordigen/GoCardless.</p>
+          </article>
+          <article>
+            <h3>Publicacion movil</h3>
+            <p>Google Play requiere pago unico de 25 USD. Apple Developer requiere 99 USD al ano.</p>
+          </article>
+          <article>
+            <h3>Assets finales</h3>
+            <p>Generar mascotas definitivas en PNG/Lottie, video de hero para scrubbing y capturas reales de la app cuando exista.</p>
+          </article>
+          <article>
+            <h3>Decisiones de producto</h3>
+            <p>Confirmar si la landing sera solo presentacion, waitlist, login real o puerta de descarga desde el dia uno.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <a class="brand" href="#top"><span>Food</span>OS</a>
+      <nav class="footer-links" aria-label="Enlaces de pie">
+        <a href="fooOSappweb/index.html">App demo</a>
+        <a href="#modulos">Modulos</a>
+        <a href="#stack">Stack</a>
+        <a href="#manual">Pendientes</a>
+      </nav>
+      <p>Landing conceptual creada desde la documentacion tecnica v3.0.</p>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
