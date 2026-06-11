@@ -1,0 +1,8 @@
+{
+  "name": "@foodos/types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tipos TypeScript compartidos entre web, movil y escritorio.",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

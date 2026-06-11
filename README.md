@@ -1,92 +1,100 @@
-# FoodOS — prototipo web
+# FoodOS
 
-Prototipo creado a partir de `FoodOS_Documentacion_Tecnica_v8.pdf` (98 paginas).
-Incluye la **landing publica** y la **app web funcional** (sin backend todavia,
-pero con la integracion de Supabase ya preparada).
+App unificada de **inventario de alimentos, nutrición y finanzas personales**.
+Monorepo basado en la documentación técnica v3.0 (98 págs., en `docs/`).
 
-## Estructura
+## Estructura del monorepo
 
-| Carpeta / archivo | Que es |
-| --- | --- |
-| `index.html` + `styles.css` + `script.js` | Landing publica (seccion 16 del PDF) |
-| `fooOSappweb/` | App web funcional con localStorage + capa de datos Supabase-ready |
-| `fooOSappweb/supabase/schema.sql` | Esquema PostgreSQL completo con RLS, listo para ejecutar |
-| `fooOSappweb/docs/data-model.md` | Modelo de datos y mapeo mock → tablas |
-| `FoodOSclaude/` | Version alternativa anterior (referencia, no se mantiene) |
-
-## Abrir en local
-
-Desde esta carpeta:
-
-```powershell
-python -m http.server 4177
+```text
+FoodOScodex/
+├── apps/
+│   ├── web/          ← Next.js 14 (landing + dashboard) — ACTIVA
+│   │   ├── public/   ← imágenes optimizadas (webp) y 15 avatares recortados
+│   │   └── src/
+│   │       ├── app/         ← rutas: / (landing) y /dashboard (app)
+│   │       ├── components/  ← landing/ y dashboard/ (vistas React)
+│   │       └── lib/         ← estado, data-layer, Supabase, recetas, mascotas
+│   ├── mobile/       ← reservada: Expo SDK 51 (ver su README)
+│   └── desktop/      ← reservada: Tauri (ver su README)
+├── packages/
+│   └── types/        ← tipos TypeScript compartidos (@foodos/types)
+├── supabase/
+│   └── schema.sql    ← esquema completo: 24 tablas + RLS + triggers
+├── docs/             ← PDF técnico, modelo de datos, lámina de avatares
+├── package.json      ← npm workspaces (raíz)
+└── turbo.json        ← preparado para Turborepo cuando haya varias apps
 ```
 
-- Landing: `http://localhost:4177/`
-- App web: `http://localhost:4177/fooOSappweb/` (tambien enlazada desde la landing)
+## Arrancar en local
 
-Tambien funciona abriendo los `index.html` directamente, aunque con servidor
-los enlaces relativos y las fuentes van mejor.
+```powershell
+npm install
+npm run dev
+```
+
+- Landing: `http://localhost:3000/`
+- App: `http://localhost:3000/dashboard`
+
+`npm run build` genera el build de producción (ambas rutas son estáticas).
 
 ## Estado actual
 
-- **Landing**: hero animado con parallax, ticker infinito, modulos, demo de
-  recomendacion, flujo, stack, mascotas, descarga con QR conceptual y pantalla
-  de login maquetada (Google + enlace magico) lista para conectar a Supabase Auth.
-- **App**: dashboard, inventario, recetas (con recetas IA locales persistentes),
-  feed, carrito, finanzas (presupuesto semanal real de 7 dias), nutricion,
-  asistente, 15 mascotas, exportar/importar datos en JSON y boton de cuenta.
-- **Persistencia**: localStorage, encapsulada en `fooOSappweb/data-layer.js`.
-  El adaptador de Supabase ya esta escrito (auth, pull y push de estado);
-  solo falta crear el proyecto y poner las claves.
+- **Landing** (`/`): 100% orientada a producto. Hero con parallax, ticker,
+  7 módulos en bento, demo de recomendación contextual, cómo funciona,
+  los **15 compañeros con sus avatares reales**, descarga con QR y registro.
+- **Dashboard** (`/dashboard`): inventario, recetas (+ generador IA local),
+  feed, carrito, finanzas con gráfico, nutrición y asistente, todo en React
+  con estado persistente. Exportar/importar JSON y botón Cuenta.
+- **Datos**: localStorage hoy. El adaptador de Supabase
+  ([apps/web/src/lib/data-layer.ts](apps/web/src/lib/data-layer.ts)) ya
+  implementa auth (Google + magic link), pull del estado desde las tablas y
+  push automático con debounce. Solo faltan las claves.
 
-## Siguientes pasos (en orden)
+## Conectar la base de datos (≈30 min)
 
-### 1. Crear la base de datos (≈30 min)
-
-1. Crear cuenta y proyecto free en [supabase.com](https://supabase.com).
-2. SQL Editor → pegar y ejecutar `fooOSappweb/supabase/schema.sql`
-   (crea las 24 tablas, indices, triggers y politicas RLS).
-3. Authentication → Providers: activar **Email** (magic link) y **Google**
-   (necesita OAuth client en Google Cloud Console).
-4. Copiar `fooOSappweb/supabase-config.example.js` como
-   `fooOSappweb/supabase-config.js` y rellenar `url` + `anonKey`
+1. Crea un proyecto free en [supabase.com](https://supabase.com).
+2. SQL Editor → ejecuta `supabase/schema.sql` completo.
+3. Authentication → Providers: activa **Email** (magic link) y **Google**
+   (requiere OAuth client en Google Cloud Console).
+4. Copia `apps/web/.env.local.example` como `apps/web/.env.local` y rellena
+   `NEXT_PUBLIC_SUPABASE_URL` y `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    (Project Settings → API).
-5. En `fooOSappweb/index.html`, descomentar las dos lineas marcadas como
-   *"Integracion Supabase"*.
-6. Probar: boton **Cuenta** en la app → login → los datos se sincronizan
-   (pull al iniciar sesion, push automatico con debounce al hacer cambios).
+5. Reinicia `npm run dev`. El botón **Cuenta** del dashboard ya permite
+   iniciar sesión; al entrar se hidrata el estado desde la base de datos y
+   cada cambio se sincroniza automáticamente.
 
-### 2. Endurecer la sincronizacion
+## Siguientes pasos
 
-- El push actual es *naive* (upsert de todo + borrado de lo ausente),
-  suficiente para un usuario/dispositivo. Para multiusuario, pasar a
-  mutaciones por accion (insert/update/delete individuales).
-- Sembrar las recetas demo en la tabla `recipes` (hoy viven hardcodeadas en
-  `script.js`) y publicar el feed real (`feed_posts` ya se lee, falta el push).
-- Conectar Realtime de Supabase para los almacenes compartidos.
+### Corto plazo
+- [ ] Crear el proyecto de Supabase y conectar (pasos de arriba).
+- [ ] Sembrar las recetas demo en la tabla `recipes` (hoy viven en
+      `apps/web/src/lib/recipes.ts`) y activar el push del feed.
+- [ ] Deploy en Vercel: importar el repo, root directory `apps/web`,
+      añadir las dos variables de entorno.
 
-### 3. APIs externas (cada una independiente)
+### Medio plazo
+- [ ] Sustituir el sync naive (upsert + delete) por mutaciones por acción
+      para soportar multiusuario y almacenes compartidos (Realtime).
+- [ ] APIs externas: Open Food Facts (barcode, sin clave), Gemini 1.5 Flash
+      vía API route (nunca la key en el cliente), Nordigen (banco PSD2),
+      Cloudinary (vídeo del feed).
+- [ ] Onboarding de perfil físico + cálculo TMB/TDEE (PDF §9).
+- [ ] Animaciones GSAP ScrollTrigger y video scrubbing del hero (PDF §16-17)
+      cuando exista el vídeo.
 
-- **Open Food Facts** (sin clave): sustituir el boton "barcode demo" por
-  `https://world.openfoodfacts.org/api/v2/product/{barcode}.json`.
-- **Gemini 1.5 Flash** (Google AI Studio, gratis 1.500 req/dia): generacion
-  real de recetas, foto → alimento, OCR de tickets. Las llamadas deben ir por
-  un backend (API route), nunca con la key en el cliente.
-- **Nordigen/GoCardless** (PSD2, free 50 usuarios): conexion bancaria.
-- **Cloudinary** (free 25 GB): videos del feed.
+### Largo plazo
+- [ ] `apps/mobile`: Expo SDK 51 (README dentro con los comandos).
+- [ ] `apps/desktop`: Tauri envolviendo el deploy web (README dentro).
+- [ ] Extraer lógica común a `packages/core` cuando móvil la necesite.
+- [ ] Sprites Lottie de las mascotas (9 estados por personaje, PDF §23).
 
-### 4. Produccion (segun PDF, secciones 2, 14 y 16)
+### Pendiente manual (cuentas y pagos)
+- Claves: Supabase, Vercel, Google AI Studio, Cloudinary, Nordigen, Firebase FCM.
+- Stores: Google Play (25 USD una vez) · Apple Developer (99 USD/año).
+- Asset: vídeo del hero para el efecto scrubbing.
 
-- Migrar a monorepo Turborepo: `apps/web` (Next.js 14) + `apps/mobile` (Expo SDK 51).
-- La landing pasa a ser la ruta `/` con SSG; la app, `/dashboard` tras login.
-- Animaciones con GSAP ScrollTrigger (video scrubbing del hero) + Anime.js.
-- Deploy en Vercel (hobby) y push notifications con Expo + FCM.
+## Historial
 
-### 5. Pendiente manual (no automatizable)
-
-- Cuentas y claves: Supabase, Vercel, Cloudinary, Firebase FCM, Google AI
-  Studio y Nordigen.
-- Stores: Google Play (25 USD una vez) y Apple Developer (99 USD/año).
-- Assets finales: video del hero para el scrubbing, PNG/Lottie de las 15
-  mascotas (prompts ancla en la seccion 23 del PDF) y QR reales de descarga.
+El prototipo anterior en HTML/CSS/JS vanilla (landing + `fooOSappweb`) quedó
+guardado en el historial de git, commit *"Estado previo a la migración a
+monorepo Next.js"*.

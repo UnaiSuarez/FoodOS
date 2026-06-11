@@ -1,0 +1,19 @@
+{
+  "name": "foodos",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FoodOS — app unificada de inventario, nutricion y finanzas. Monorepo: web (Next.js), movil (Expo, futuro) y escritorio (Tauri, futuro).",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @foodos/web",
+    "build": "npm run build --workspace @foodos/web",
+    "start": "npm run start --workspace @foodos/web",
+    "lint": "npm run lint --workspace @foodos/web"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
