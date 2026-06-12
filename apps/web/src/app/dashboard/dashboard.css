@@ -1104,6 +1104,296 @@ select:focus {
   margin: 14px 0 0;
 }
 
+/* ---------- Pantalla de inicio (bento) ---------- */
+
+.bento-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr;
+  grid-template-areas:
+    "macros expiry budget"
+    "macros expiry mascot"
+    "actions suggest mascot";
+  gap: 12px;
+}
+
+.bento-grid.no-suggest {
+  grid-template-areas:
+    "macros expiry budget"
+    "macros expiry mascot"
+    "actions actions mascot";
+}
+
+.bento-macros { grid-area: macros; }
+.bento-expiry { grid-area: expiry; }
+.bento-budget { grid-area: budget; }
+.bento-actions { grid-area: actions; }
+.bento-mascot { grid-area: mascot; }
+.bento-suggest { grid-area: suggest; }
+
+.bento-grid .panel h3 {
+  margin-bottom: 0;
+  font-size: 18px;
+}
+
+/* Macros */
+
+.bento-macros {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background:
+    linear-gradient(145deg, rgba(74, 222, 128, 0.08), transparent 55%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-macros-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.bento-macros-head h2 {
+  margin-bottom: 0;
+  font-family: var(--mono);
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 500;
+}
+
+.bento-macros-head h2 small {
+  color: var(--muted);
+  font-size: 0.5em;
+}
+
+.bento-day-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.bento-macros-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.bento-macros-body .macro-ring {
+  width: min(190px, 40vw);
+}
+
+.bento-macros-body .macro-ring span {
+  font-size: 34px;
+}
+
+.bars label.accent em {
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.5);
+}
+
+.bars-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bars-note strong {
+  color: var(--green);
+}
+
+/* Caducidades */
+
+.expiry-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.expiry-list li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.expiry-list strong {
+  display: block;
+  font-size: 14px;
+}
+
+.expiry-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.expiry-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.expiry-dot.red { background: var(--red); }
+.expiry-dot.amber { background: var(--amber); }
+
+.bento-empty {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* Presupuesto */
+
+.bento-budget .budget-big {
+  display: block;
+  margin-top: 12px;
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: clamp(26px, 3vw, 36px);
+}
+
+.budget-sub {
+  display: block;
+  margin: 2px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.budget-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(240, 244, 238, 0.08);
+}
+
+.budget-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 240ms ease;
+}
+
+.budget-track.warn i {
+  background: var(--amber);
+}
+
+/* Accesos rapidos */
+
+.bento-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-content: center;
+}
+
+.quick-action {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: rgba(7, 10, 5, 0.36);
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.quick-action:hover {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.quick-action span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.quick-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #071005;
+  background: var(--amber);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Mascota */
+
+.bento-mascot {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.bento-mascot-avatar {
+  width: 120px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: #0a0d08;
+}
+
+.bento-mascot strong {
+  font-family: var(--serif);
+  font-size: 22px;
+}
+
+.bento-mascot p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* Sugerencia con motivo */
+
+.bento-suggest {
+  border-color: rgba(74, 222, 128, 0.25);
+  background:
+    linear-gradient(135deg, rgba(74, 222, 128, 0.09), transparent 60%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-suggest h3 {
+  margin: 4px 0 8px;
+  font-family: var(--serif);
+  font-size: 24px;
+}
+
+.suggest-why {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.suggest-why strong {
+  color: var(--text);
+}
+
+.bento-suggest .card-actions {
+  margin-top: 12px;
+  justify-content: flex-start;
+}
+
 /* ---------- Perfil fisico y ciclado ---------- */
 
 .profile-banner {
@@ -1460,6 +1750,24 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
+  .bento-grid,
+  .bento-grid.no-suggest {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "macros macros"
+      "expiry budget"
+      "suggest mascot"
+      "actions actions";
+  }
+
+  .bento-grid.no-suggest {
+    grid-template-areas:
+      "macros macros"
+      "expiry budget"
+      "mascot mascot"
+      "actions actions";
+  }
+
   .sidebar {
     position: static;
     height: auto;
@@ -1488,13 +1796,42 @@ select:focus {
     padding: 18px 12px 28px;
   }
 
+  .bento-grid,
+  .bento-grid.no-suggest {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "macros"
+      "expiry"
+      "budget"
+      "suggest"
+      "actions"
+      "mascot";
+  }
+
+  .bento-grid.no-suggest {
+    grid-template-areas:
+      "macros"
+      "expiry"
+      "budget"
+      "actions"
+      "mascot";
+  }
+
+  .bento-macros-body {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .bento-macros-body .bars {
+    width: 100%;
+  }
+
   .topbar,
   .panel-head {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .app-nav,
   .summary-grid,
   .dashboard-grid,
   .work-grid,
@@ -1504,6 +1841,31 @@ select:focus {
   .form-grid,
   .nutrition-totals {
     grid-template-columns: 1fr;
+  }
+
+  /* Navegacion compacta en movil: cuadricula de iconos */
+  .sidebar {
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .app-nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .nav-item {
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+    min-height: 60px;
+    padding: 6px 2px;
+    font-size: 10.5px;
+    text-align: center;
+  }
+
+  .mascot-panel {
+    display: none;
   }
 
   .assistant-card {

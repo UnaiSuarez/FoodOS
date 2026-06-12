@@ -1,9 +1,13 @@
 "use client";
 
+import Image from "next/image";
 import {
   actions,
-  bestRecipe,
+  allRecipes,
   getBudgetLeft,
+  getFoodSpend,
+  getMascot,
+  getPendingMacros,
   getRecipeMatch,
   useFoodOS,
 } from "@/lib/state";
@@ -20,25 +24,55 @@ export function HomeView({
 }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
 
-  const expiring = state.inventory.filter((item) => daysUntil(item.expires) <= 3);
+  const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
-  const proteinLeft = Math.max(0, state.nutrition.protein - state.consumed.protein);
-  const pendingCart = state.cart.filter((item) => !item.checked);
-  const recipe = bestRecipe(state);
-  const match = getRecipeMatch(state, recipe);
+  const foodSpend = getFoodSpend(state);
+  const budgetPct = clampPct(foodSpend, state.weeklyBudget);
   const kcalPct = clampPct(state.consumed.kcal, state.nutrition.kcal);
+  const pendingCart = state.cart.filter((item) => !item.checked);
+  const mascot = getMascot(state.mascotId);
 
-  const alerts = [
-    ...expiring.map(
-      (item) => `${item.name} caduca ${daysUntil(item.expires) < 0 ? "ya" : `en ${daysUntil(item.expires)} días`}.`
-    ),
-    ...(budgetLeft <= state.weeklyBudget * 0.2 ? ["Presupuesto de comida por debajo del 20%."] : []),
-    ...(proteinLeft > 40 ? [`Te quedan ${Math.round(proteinLeft)} g de proteína para hoy.`] : []),
-  ];
+  const expiring = state.inventory
+    .filter((item) => daysUntil(item.expires) <= 3)
+    .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires))
+    .slice(0, 4);
+
+  // Sugerencia SOLO con motivo real: algo caduca + faltan macros + entra en presupuesto.
+  const suggestion = (() => {
+    if (!expiring.length || pending.protein < 15) return null;
+    const expiringNames = expiring.map((item) => item.name.toLowerCase());
+    const candidate = allRecipes(state)
+      .filter((recipe) => recipe.cost <= Math.max(budgetLeft, 1.5))
+      .map((recipe) => ({
+        recipe,
+        usedItem: expiring.find((item) =>
+          recipe.ingredients.some(
+            (ing) =>
+              item.name.toLowerCase().includes(ing.name.split(" ")[0]) ||
+              ing.name.includes(item.name.toLowerCase().split(" ")[0])
+          )
+        ),
+        match: getRecipeMatch(state, recipe).pct,
+      }))
+      .filter((entry) => entry.usedItem)
+      .sort((a, b) => b.match - a.match || b.recipe.protein - a.recipe.protein)[0];
+    return candidate ?? null;
+  })();
+
+  // Mensaje contextual de la mascota segun el estado real.
+  const mascotInsight = (() => {
+    const urgent = expiring.find((item) => daysUntil(item.expires) <= 1);
+    if (urgent) return `${urgent.name} caduca ${daysUntil(urgent.expires) < 0 ? "ya" : "mañana"}. ¿Lo usamos hoy?`;
+    if (pending.protein > 40) return `Te faltan ${Math.round(pending.protein)} g de proteína para cerrar el día.`;
+    if (budgetLeft <= state.weeklyBudget * 0.2 && state.weeklyBudget > 0)
+      return `Queda poco presupuesto de comida: ${eur(budgetLeft)}. Mira las recetas económicas.`;
+    if (kcalPct >= 95) return "Día completado. Macros cerrados, ¡bien hecho!";
+    return "Todo en orden. Sigue así.";
+  })();
 
   return (
     <section className="view">
-      {!state.profile ? (
+      {!state.profile && (
         <button className="profile-banner" onClick={() => goTo("nutrition")}>
           <span>
             <strong>Configura tu perfil físico</strong> — FoodOS calculará tus calorías y macros
@@ -46,119 +80,195 @@ export function HomeView({
           </span>
           <span className="banner-arrow">→</span>
         </button>
-      ) : (
-        <div className="meta-row" style={{ marginBottom: 12 }}>
-          <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
-            Hoy: {isGymDay(state.profile) ? "día de gym 💪" : "día de descanso"}
-          </span>
-          <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
-          <span className="badge">{state.nutrition.kcal} kcal objetivo</span>
-        </div>
       )}
-      <div className="summary-grid">
-        <article className="metric-card">
-          <span>Caducan pronto</span>
-          <strong>{expiring.length}</strong>
-          <small>productos en 3 días</small>
-        </article>
-        <article className="metric-card">
-          <span>Proteína pendiente</span>
-          <strong>{Math.round(proteinLeft)}g</strong>
-          <small>objetivo diario</small>
-        </article>
-        <article className="metric-card">
-          <span>Presupuesto comida</span>
-          <strong>{eur(budgetLeft)}</strong>
-          <small>restante esta semana</small>
-        </article>
-        <article className="metric-card">
-          <span>Carrito</span>
-          <strong>{pendingCart.length}</strong>
-          <small>items pendientes</small>
-        </article>
-      </div>
 
-      <div className="dashboard-grid">
-        <article className="panel hero-panel">
-          <div>
-            <p className="eyebrow">Recomendación FoodOS</p>
-            {state.inventory.length === 0 ? (
-              <>
-                <h2>Añade alimentos para generar una sugerencia.</h2>
-                <p>La app cruzará inventario, macros y presupuesto.</p>
-              </>
-            ) : (
-              <>
-                <h2>
-                  <button className="link-title" onClick={() => openRecipe(recipe.id)}>
-                    {recipe.title}
-                  </button>
-                </h2>
-                <p>
-                  {match.pct}% disponible · {recipe.protein} g proteína · coste estimado {eur(recipe.cost)} ·
-                  presupuesto restante {eur(budgetLeft)}
-                </p>
-              </>
+      <div className={`bento-grid ${suggestion ? "" : "no-suggest"}`}>
+        {/* Macros del dia — la tarjeta principal */}
+        <article className="panel bento-macros">
+          <div className="bento-macros-head">
+            <div>
+              <p className="eyebrow">Hoy</p>
+              <h2>
+                {Math.round(state.consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
+              </h2>
+            </div>
+            {state.profile && (
+              <div className="bento-day-badges">
+                <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
+                  {isGymDay(state.profile) ? "💪 Día de gym" : "Día de descanso"}
+                </span>
+                <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
+              </div>
             )}
           </div>
-          <button
-            className="primary-button"
-            onClick={() => {
-              mutate((draft) => actions.cookRecipe(draft, recipe));
-              setMascotMessage("Receta cocinada. Objetivos actualizados.");
-              showToast("Receta registrada en nutrición");
-            }}
-          >
-            Cocinar sugerencia
+          <div className="bento-macros-body">
+            <div
+              className="macro-ring"
+              role="img"
+              aria-label={`${kcalPct}% de las calorías del día`}
+              style={{
+                background: `radial-gradient(circle, #11170d 0 55%, transparent 56%), conic-gradient(var(--green) 0 ${kcalPct * 3.6}deg, rgba(240, 244, 238, 0.1) ${kcalPct * 3.6}deg)`,
+              }}
+            >
+              <span>{kcalPct}%</span>
+            </div>
+            <div className="bars">
+              <MacroBar label="Proteína" value={state.consumed.protein} max={state.nutrition.protein} accent />
+              <MacroBar label="Carbos" value={state.consumed.carbs} max={state.nutrition.carbs} />
+              <MacroBar label="Grasas" value={state.consumed.fat} max={state.nutrition.fat} />
+              {pending.protein > 0 ? (
+                <p className="bars-note">
+                  Te quedan <strong>{Math.round(pending.protein)} g de proteína</strong> y{" "}
+                  {Math.round(pending.kcal)} kcal.
+                </p>
+              ) : (
+                <p className="bars-note">Proteína del día cubierta ✓</p>
+              )}
+            </div>
+          </div>
+        </article>
+
+        {/* Caducidades */}
+        <article className="panel bento-expiry">
+          <div className="panel-head">
+            <h3>🥕 Caduca pronto</h3>
+            <button className="text-button" onClick={() => goTo("inventory")}>
+              Inventario
+            </button>
+          </div>
+          {expiring.length ? (
+            <ul className="expiry-list">
+              {expiring.map((item) => {
+                const days = daysUntil(item.expires);
+                return (
+                  <li key={item.id}>
+                    <span className={`expiry-dot ${days <= 1 ? "red" : "amber"}`} />
+                    <div>
+                      <strong>{item.name}</strong>
+                      <small>{days < 0 ? "caducado" : days === 0 ? "hoy" : days === 1 ? "mañana" : `en ${days} días`}</small>
+                    </div>
+                    <button
+                      className="small-action good"
+                      onClick={() => {
+                        mutate((draft) => {
+                          const entry = draft.inventory.find((candidate) => candidate.id === item.id);
+                          if (!entry) return;
+                          const grams = entry.unit === "kg" ? entry.qty * 1000 : entry.qty;
+                          draft.consumed.kcal += (entry.kcal * grams) / 100;
+                          draft.consumed.protein += (entry.protein * grams) / 100;
+                          draft.consumed.carbs += Math.max(8, entry.kcal / 10);
+                          draft.consumed.fat += Math.max(2, entry.kcal / 40);
+                          draft.inventory = draft.inventory.filter((candidate) => candidate.id !== item.id);
+                        });
+                        showToast(`${item.name} consumido`);
+                      }}
+                    >
+                      Usar
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="bento-empty">Nada en riesgo. Tu nevera está bajo control ✓</p>
+          )}
+        </article>
+
+        {/* Presupuesto semanal */}
+        <article className="panel bento-budget">
+          <div className="panel-head">
+            <h3>€ Presupuesto semanal</h3>
+            <button className="text-button" onClick={() => goTo("finance")}>
+              Finanzas
+            </button>
+          </div>
+          <strong className="budget-big">{eur(budgetLeft)}</strong>
+          <small className="budget-sub">
+            disponibles de {eur(state.weeklyBudget)} · gastados {eur(foodSpend)}
+          </small>
+          <div className={`budget-track ${budgetPct >= 80 ? "warn" : ""}`}>
+            <i style={{ width: `${budgetPct}%` }} />
+          </div>
+        </article>
+
+        {/* Accesos rapidos */}
+        <article className="panel bento-actions">
+          <button className="quick-action" onClick={() => goTo("inventory")}>
+            <span>＋</span> Añadir alimento
+          </button>
+          <button className="quick-action" onClick={() => goTo("nutrition")}>
+            <span>🍽</span> Registrar comida
+          </button>
+          <button className="quick-action" onClick={() => goTo("cart")}>
+            <span>🛒</span> Carrito
+            {pendingCart.length > 0 && <b className="quick-badge">{pendingCart.length}</b>}
+          </button>
+          <button className="quick-action" onClick={() => goTo("recipes")}>
+            <span>✦</span> Buscar receta
           </button>
         </article>
 
-        <article className="panel macro-panel">
-          <div
-            className="macro-ring"
-            style={{
-              background: `radial-gradient(circle, #11170d 0 55%, transparent 56%), conic-gradient(var(--green) 0 ${kcalPct * 3.6}deg, rgba(240, 244, 238, 0.1) ${kcalPct * 3.6}deg)`,
-            }}
-          >
-            <span>{kcalPct}%</span>
+        {/* Mascota con insight contextual */}
+        <article className="panel bento-mascot">
+          <div className="bento-mascot-avatar">
+            <Image src={mascot.image} alt={mascot.name} width={120} height={134} />
           </div>
-          <div className="bars">
-            <MacroBar label="Proteína" value={state.consumed.protein} max={state.nutrition.protein} />
-            <MacroBar label="Carbos" value={state.consumed.carbs} max={state.nutrition.carbs} />
-            <MacroBar label="Grasas" value={state.consumed.fat} max={state.nutrition.fat} />
+          <div>
+            <strong>{mascot.name}</strong>
+            <p>{mascotInsight}</p>
           </div>
         </article>
 
-        <article className="panel">
-          <div className="panel-head">
-            <h3>Alertas</h3>
-            <button className="text-button" onClick={() => goTo("inventory")}>
-              Ver inventario
-            </button>
-          </div>
-          <div className="list">
-            {alerts.length ? (
-              alerts.map((alert) => (
-                <div key={alert} className="card">
-                  <div>
-                    <h3>{alert}</h3>
-                    <small>FoodOS monitor</small>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="empty">Sin alertas críticas ahora mismo.</div>
-            )}
-          </div>
-        </article>
+        {/* Sugerencia inteligente — solo con motivo real */}
+        {suggestion && (
+          <article className="panel bento-suggest">
+            <p className="eyebrow">Sugerencia con motivo</p>
+            <h3>{suggestion.recipe.title}</h3>
+            <p className="suggest-why">
+              Usa <strong>{suggestion.usedItem!.name.toLowerCase()}</strong> que caduca{" "}
+              {daysUntil(suggestion.usedItem!.expires) <= 0
+                ? "hoy"
+                : daysUntil(suggestion.usedItem!.expires) === 1
+                  ? "mañana"
+                  : `en ${daysUntil(suggestion.usedItem!.expires)} días`}
+              , aporta <strong>{suggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
+              {eur(suggestion.recipe.cost)} — dentro de tu presupuesto.
+            </p>
+            <div className="card-actions">
+              <button className="small-action" onClick={() => openRecipe(suggestion.recipe.id)}>
+                Ver receta
+              </button>
+              <button
+                className="small-action good"
+                onClick={() => {
+                  mutate((draft) => actions.cookRecipe(draft, suggestion.recipe));
+                  setMascotMessage("Receta cocinada. Objetivos actualizados.");
+                  showToast("Receta registrada en nutrición");
+                }}
+              >
+                Cocinar
+              </button>
+            </div>
+          </article>
+        )}
       </div>
     </section>
   );
 }
 
-function MacroBar({ label, value, max }: { label: string; value: number; max: number }) {
+function MacroBar({
+  label,
+  value,
+  max,
+  accent = false,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  accent?: boolean;
+}) {
   return (
-    <label>
+    <label className={accent ? "accent" : ""}>
       {label} <b>{`${Math.round(value)}/${Math.round(max)}g`}</b>
       <i>
         <em style={{ width: `${clampPct(value, max)}%` }} />
