@@ -1,10 +1,13 @@
 "use client";
 
 import Image from "next/image";
+import { useState } from "react";
+import type { InventoryItem } from "@foodos/types";
 import {
   actions,
   allRecipes,
   getBudgetLeft,
+  getConsumedToday,
   getFoodSpend,
   getMascot,
   getPendingMacros,
@@ -13,6 +16,7 @@ import {
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
 import { clampPct, daysUntil, eur } from "@/lib/utils";
+import { ConsumeModal } from "../ConsumeModal";
 import type { ViewId } from "../DashboardShell";
 
 export function HomeView({
@@ -23,12 +27,14 @@ export function HomeView({
   openRecipe: (id: string) => void;
 }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
 
+  const consumed = getConsumedToday(state);
   const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
   const foodSpend = getFoodSpend(state);
   const budgetPct = clampPct(foodSpend, state.weeklyBudget);
-  const kcalPct = clampPct(state.consumed.kcal, state.nutrition.kcal);
+  const kcalPct = clampPct(consumed.kcal, state.nutrition.kcal);
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
 
@@ -89,7 +95,7 @@ export function HomeView({
             <div>
               <p className="eyebrow">Hoy</p>
               <h2>
-                {Math.round(state.consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
+                {Math.round(consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
               </h2>
             </div>
             {state.profile && (
@@ -113,9 +119,9 @@ export function HomeView({
               <span>{kcalPct}%</span>
             </div>
             <div className="bars">
-              <MacroBar label="Proteína" value={state.consumed.protein} max={state.nutrition.protein} accent />
-              <MacroBar label="Carbos" value={state.consumed.carbs} max={state.nutrition.carbs} />
-              <MacroBar label="Grasas" value={state.consumed.fat} max={state.nutrition.fat} />
+              <MacroBar label="Proteína" value={consumed.protein} max={state.nutrition.protein} accent />
+              <MacroBar label="Carbos" value={consumed.carbs} max={state.nutrition.carbs} />
+              <MacroBar label="Grasas" value={consumed.fat} max={state.nutrition.fat} />
               {pending.protein > 0 ? (
                 <p className="bars-note">
                   Te quedan <strong>{Math.round(pending.protein)} g de proteína</strong> y{" "}
@@ -147,22 +153,7 @@ export function HomeView({
                       <strong>{item.name}</strong>
                       <small>{days < 0 ? "caducado" : days === 0 ? "hoy" : days === 1 ? "mañana" : `en ${days} días`}</small>
                     </div>
-                    <button
-                      className="small-action good"
-                      onClick={() => {
-                        mutate((draft) => {
-                          const entry = draft.inventory.find((candidate) => candidate.id === item.id);
-                          if (!entry) return;
-                          const grams = entry.unit === "kg" ? entry.qty * 1000 : entry.qty;
-                          draft.consumed.kcal += (entry.kcal * grams) / 100;
-                          draft.consumed.protein += (entry.protein * grams) / 100;
-                          draft.consumed.carbs += Math.max(8, entry.kcal / 10);
-                          draft.consumed.fat += Math.max(2, entry.kcal / 40);
-                          draft.inventory = draft.inventory.filter((candidate) => candidate.id !== item.id);
-                        });
-                        showToast(`${item.name} consumido`);
-                      }}
-                    >
+                    <button className="small-action good" onClick={() => setConsumeItem(item)}>
                       Usar
                     </button>
                   </li>
@@ -252,6 +243,8 @@ export function HomeView({
           </article>
         )}
       </div>
+
+      {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
     </section>
   );
 }

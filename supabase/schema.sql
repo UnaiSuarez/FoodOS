@@ -583,3 +583,16 @@ for delete using (user_id = auth.uid());
 create policy "ai_recipe_cache_select_auth" on public.ai_recipe_cache for select using (auth.uid() is not null);
 create policy "ai_events_select_own" on public.ai_events for select using (user_id = auth.uid());
 
+
+-- ---------- Water log (registro de agua diario) ----------
+
+create table if not exists public.water_log (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  log_date date not null default current_date,
+  ml integer not null default 0 check (ml >= 0),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, log_date)
+);
+
+alter table public.water_log enable row level security;
+create policy "water_log_own" on public.water_log for all using (user_id = auth.uid()) with check (user_id = auth.uid());

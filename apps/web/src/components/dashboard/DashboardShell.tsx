@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { FoodOSProvider, useFoodOS, getMascot } from "@/lib/state";
 import { HomeView } from "./views/HomeView";
+import { DiaryView } from "./views/DiaryView";
 import { InventoryView } from "./views/InventoryView";
 import { RecipesView } from "./views/RecipesView";
 import { FeedView } from "./views/FeedView";
@@ -17,6 +18,7 @@ import { AccountModal } from "./AccountModal";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
+  { id: "diary", icon: "≣", label: "Registro", title: "Registro diario" },
   { id: "inventory", icon: "□", label: "Inventario", title: "Inventario" },
   { id: "recipes", icon: "◌", label: "Recetas", title: "Recetas" },
   { id: "feed", icon: "▶", label: "Feed", title: "Feed social" },
@@ -151,6 +153,7 @@ function DashboardInner() {
         {hydrated ? (
           <>
             {view === "dashboard" && <HomeView goTo={setView} openRecipe={setOpenRecipeId} />}
+            {view === "diary" && <DiaryView />}
             {view === "inventory" && <InventoryView />}
             {view === "recipes" && <RecipesView openRecipe={setOpenRecipeId} />}
             {view === "feed" && <FeedView openRecipe={setOpenRecipeId} />}

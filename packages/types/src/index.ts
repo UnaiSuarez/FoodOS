@@ -104,10 +104,20 @@ export interface MacroTotals {
   fat: number;
 }
 
-export interface ConsumedMeal extends MacroTotals {
+export type FoodLogSource = "recipe" | "inventory" | "manual";
+
+/** Entrada del diario de comidas (espejo de la tabla food_log). */
+export interface FoodLogEntry extends MacroTotals {
   id: string;
-  icon: string;
+  /** Fecha ISO yyyy-mm-dd */
+  date: string;
+  /** Hora HH:mm */
+  time: string;
   name: string;
+  /** Cantidad consumida (g/ml/ud), si aplica. */
+  qty: number | null;
+  unit: string | null;
+  source: FoodLogSource;
 }
 
 // ---------- Perfil fisico y objetivos (PDF §9) ----------
@@ -160,8 +170,10 @@ export interface FoodOSState {
   expenses: Movement[];
   incomeSources: IncomeSource[];
   feedPosts: FeedPost[];
-  consumed: MacroTotals;
-  consumedMeals: ConsumedMeal[];
+  /** Diario de comidas con fecha — la fuente de verdad de lo consumido. */
+  foodLog: FoodLogEntry[];
+  /** Agua bebida por dia: { "2026-06-12": 1750 } en ml. */
+  waterLog: Record<string, number>;
   customRecipes: Recipe[];
   savedRecipeIds: string[];
   /** null hasta completar el onboarding de nutricion. */

@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
-import { actions, bestRecipe, useFoodOS } from "@/lib/state";
+import { actions, bestRecipe, getConsumedToday, getTodayLog, useFoodOS } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
   GOAL_DESCRIPTIONS,
@@ -59,79 +59,87 @@ export function NutritionView() {
             </button>
           </div>
 
-          <div className="nutrition-totals">
-            <div>
-              <span>kcal</span>
-              <strong>{Math.round(state.consumed.kcal)}</strong>
-              <small>de {state.nutrition.kcal}</small>
-            </div>
-            <div>
-              <span>Proteína</span>
-              <strong>{Math.round(state.consumed.protein)}g</strong>
-              <small>de {state.nutrition.protein}g</small>
-            </div>
-            <div>
-              <span>Carbos</span>
-              <strong>{Math.round(state.consumed.carbs)}g</strong>
-              <small>de {state.nutrition.carbs}g</small>
-            </div>
-            <div>
-              <span>Grasas</span>
-              <strong>{Math.round(state.consumed.fat)}g</strong>
-              <small>de {state.nutrition.fat}g</small>
-            </div>
-          </div>
-
-          <div className="meal-list">
-            {state.consumedMeals.length ? (
-              state.consumedMeals.map((meal) => (
-                <article key={meal.id} className="meal-item">
-                  <span className="meal-icon">{meal.icon || "🍽"}</span>
-                  <div>
-                    <h3>{meal.name}</h3>
-                    <p>
-                      {meal.kcal} kcal · {meal.protein}g prot · {meal.carbs}g carb · {meal.fat}g grasa
-                    </p>
-                  </div>
-                  <button
-                    className="small-action bad"
-                    onClick={() =>
-                      mutate((draft) => {
-                        const target = draft.consumedMeals.find((candidate) => candidate.id === meal.id);
-                        if (target) {
-                          draft.consumed.kcal = Math.max(0, draft.consumed.kcal - target.kcal);
-                          draft.consumed.protein = Math.max(0, draft.consumed.protein - target.protein);
-                          draft.consumed.carbs = Math.max(0, draft.consumed.carbs - target.carbs);
-                          draft.consumed.fat = Math.max(0, draft.consumed.fat - target.fat);
-                        }
-                        draft.consumedMeals = draft.consumedMeals.filter((candidate) => candidate.id !== meal.id);
-                      })
-                    }
-                  >
-                    Borrar
-                  </button>
-                </article>
-              ))
-            ) : (
-              <div className="empty">Todavía no has registrado comidas hoy.</div>
-            )}
-          </div>
-
-          <button
-            className="secondary-button"
-            onClick={() => {
-              mutate((draft) => {
-                draft.consumed = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-                draft.consumedMeals = [];
-              });
-              showToast("Día nutricional reiniciado");
-            }}
-          >
-            Reiniciar día
-          </button>
+          <NutritionToday />
         </article>
       </div>
     </section>
+  );
+}
+
+// ---------- Consumido hoy (deriva del diario, vista Registro) ----------
+
+function NutritionToday() {
+  const { state, mutate, showToast } = useFoodOS();
+  const consumed = getConsumedToday(state);
+  const todayLog = getTodayLog(state);
+
+  return (
+    <>
+      <div className="nutrition-totals">
+        <div>
+          <span>kcal</span>
+          <strong>{Math.round(consumed.kcal)}</strong>
+          <small>de {state.nutrition.kcal}</small>
+        </div>
+        <div>
+          <span>Proteína</span>
+          <strong>{Math.round(consumed.protein)}g</strong>
+          <small>de {state.nutrition.protein}g</small>
+        </div>
+        <div>
+          <span>Carbos</span>
+          <strong>{Math.round(consumed.carbs)}g</strong>
+          <small>de {state.nutrition.carbs}g</small>
+        </div>
+        <div>
+          <span>Grasas</span>
+          <strong>{Math.round(consumed.fat)}g</strong>
+          <small>de {state.nutrition.fat}g</small>
+        </div>
+      </div>
+
+      <div className="meal-list">
+        {todayLog.length ? (
+          todayLog.map((entry) => (
+            <article key={entry.id} className="meal-item">
+              <span className="meal-icon">{entry.source === "inventory" ? "🥕" : "🍽"}</span>
+              <div>
+                <h3>{entry.name}</h3>
+                <p>
+                  {entry.time} · {entry.qty != null ? `${entry.qty} ${entry.unit} · ` : ""}
+                  {Math.round(entry.kcal)} kcal · {entry.protein}g prot · {entry.carbs}g carb · {entry.fat}g grasa
+                </p>
+              </div>
+              <button
+                className="small-action bad"
+                onClick={() =>
+                  mutate((draft) => {
+                    draft.foodLog = draft.foodLog.filter((candidate) => candidate.id !== entry.id);
+                  })
+                }
+              >
+                Borrar
+              </button>
+            </article>
+          ))
+        ) : (
+          <div className="empty">Todavía no has registrado comidas hoy.</div>
+        )}
+      </div>
+
+      <button
+        className="secondary-button"
+        onClick={() => {
+          mutate((draft) => {
+            const today = new Date().toISOString().slice(0, 10);
+            draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
+          });
+          showToast("Día nutricional reiniciado");
+        }}
+      >
+        Reiniciar día
+      </button>
+    </>
   );
 }
 

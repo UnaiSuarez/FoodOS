@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { FoodOSState, GoalMode, MacroTotals, Recipe } from "@foodos/types";
+import type { FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, Recipe } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
@@ -24,8 +24,8 @@ export const defaultState: FoodOSState = {
   expenses: [],
   incomeSources: [],
   feedPosts: [],
-  consumed: { kcal: 0, protein: 0, carbs: 0, fat: 0 },
-  consumedMeals: [],
+  foodLog: [],
+  waterLog: {},
   customRecipes: [],
   savedRecipeIds: [],
   profile: null,
@@ -52,6 +52,29 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   const legacyMode = LEGACY_MODES[next.nutrition.mode as unknown as string];
   if (legacyMode) next.nutrition.mode = legacyMode;
   next.incomeSources ||= [];
+  next.foodLog ||= [];
+  next.waterLog ||= {};
+  // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
+  const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
+  if (legacy.consumedMeals?.length) {
+    legacy.consumedMeals.forEach((meal) => {
+      next.foodLog.push({
+        id: meal.id || uid(),
+        date: todayPlus(0),
+        time: "12:00",
+        name: meal.name,
+        qty: null,
+        unit: null,
+        kcal: meal.kcal,
+        protein: meal.protein,
+        carbs: meal.carbs,
+        fat: meal.fat,
+        source: "recipe",
+      });
+    });
+  }
+  delete legacy.consumedMeals;
+  delete legacy.consumed;
   next.customRecipes = (next.customRecipes || []).map((recipe) => ({
     ...recipe,
     ingredients: (recipe.ingredients || []).map((ing) =>
@@ -191,6 +214,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), type: "expense", amount: 620, category: "Vivienda", description: "Alquiler demo", date: todayMinus(12) },
     ];
     demo.feedPosts = buildDemoPosts();
+    // Historial demo del diario: ayer y anteayer con comidas y agua.
+    demo.foodLog = [
+      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe" },
+      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe" },
+      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory" },
+      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe" },
+      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe" },
+    ];
+    demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
     saveLocalState(demo);
     remote.schedulePush(demo);
     setState(demo);
@@ -284,13 +316,95 @@ export function bestRecipe(state: FoodOSState): Recipe {
   )[0];
 }
 
+// ---------- Diario de comidas y agua ----------
+
+function nowTime(): string {
+  return new Date().toTimeString().slice(0, 5);
+}
+
+/** Entradas del diario de hoy, ordenadas por hora. */
+export function getTodayLog(state: FoodOSState): FoodLogEntry[] {
+  const today = todayPlus(0);
+  return state.foodLog
+    .filter((entry) => entry.date === today)
+    .sort((a, b) => a.time.localeCompare(b.time));
+}
+
+/** Totales consumidos hoy (derivados del diario — se reinician solos cada dia). */
+export function getConsumedToday(state: FoodOSState): MacroTotals {
+  return getTodayLog(state).reduce(
+    (totals, entry) => ({
+      kcal: totals.kcal + entry.kcal,
+      protein: totals.protein + entry.protein,
+      carbs: totals.carbs + entry.carbs,
+      fat: totals.fat + entry.fat,
+    }),
+    { kcal: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+}
+
+export function getWaterToday(state: FoodOSState): number {
+  return state.waterLog[todayPlus(0)] ?? 0;
+}
+
+/** Diario agrupado por dia (mas reciente primero), con totales. */
+export function getLogByDay(state: FoodOSState): Array<{
+  date: string;
+  entries: FoodLogEntry[];
+  totals: MacroTotals;
+  water: number;
+}> {
+  const byDate = new Map<string, FoodLogEntry[]>();
+  state.foodLog.forEach((entry) => {
+    const list = byDate.get(entry.date) ?? [];
+    list.push(entry);
+    byDate.set(entry.date, list);
+  });
+  Object.keys(state.waterLog).forEach((date) => {
+    if (!byDate.has(date) && state.waterLog[date] > 0) byDate.set(date, []);
+  });
+  return [...byDate.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([date, entries]) => ({
+      date,
+      entries: entries.sort((a, b) => a.time.localeCompare(b.time)),
+      totals: entries.reduce(
+        (totals, entry) => ({
+          kcal: totals.kcal + entry.kcal,
+          protein: totals.protein + entry.protein,
+          carbs: totals.carbs + entry.carbs,
+          fat: totals.fat + entry.fat,
+        }),
+        { kcal: 0, protein: 0, carbs: 0, fat: 0 }
+      ),
+      water: state.waterLog[date] ?? 0,
+    }));
+}
+
 /** Macros que quedan por consumir hoy. */
 export function getPendingMacros(state: FoodOSState): MacroTotals {
+  const consumed = getConsumedToday(state);
   return {
-    kcal: Math.max(0, state.nutrition.kcal - state.consumed.kcal),
-    protein: Math.max(0, state.nutrition.protein - state.consumed.protein),
-    carbs: Math.max(0, state.nutrition.carbs - state.consumed.carbs),
-    fat: Math.max(0, state.nutrition.fat - state.consumed.fat),
+    kcal: Math.max(0, state.nutrition.kcal - consumed.kcal),
+    protein: Math.max(0, state.nutrition.protein - consumed.protein),
+    carbs: Math.max(0, state.nutrition.carbs - consumed.carbs),
+    fat: Math.max(0, state.nutrition.fat - consumed.fat),
+  };
+}
+
+/** Macros de una cantidad concreta de un alimento del inventario.
+    Carbos y grasas se estiman (el inventario solo guarda kcal y proteina por 100). */
+export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals {
+  const grams = item.unit === "kg" ? qty * 1000 : item.unit === "ud" ? qty * 60 : qty;
+  const kcal = (item.kcal * grams) / 100;
+  const protein = (item.protein * grams) / 100;
+  const fat = Math.max(0, (kcal * 0.25) / 9);
+  const carbs = Math.max(0, (kcal - protein * 4 - fat * 9) / 4);
+  return {
+    kcal: Math.round(kcal),
+    protein: Math.round(protein * 10) / 10,
+    carbs: Math.round(carbs * 10) / 10,
+    fat: Math.round(fat * 10) / 10,
   };
 }
 
@@ -412,23 +526,47 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
 export const actions = {
   /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
   cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1) {
-    const kcal = Math.round(recipe.kcal * ratio);
-    const protein = Math.round(recipe.protein * ratio * 10) / 10;
-    const carbs = Math.round(recipe.carbs * ratio * 10) / 10;
-    const fat = Math.round(recipe.fat * ratio * 10) / 10;
-    draft.consumed.kcal += kcal;
-    draft.consumed.protein += protein;
-    draft.consumed.carbs += carbs;
-    draft.consumed.fat += fat;
-    draft.consumedMeals.push({
+    draft.foodLog.push({
       id: uid(),
-      icon: "🍽",
+      date: todayPlus(0),
+      time: nowTime(),
       name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
-      kcal,
-      protein,
-      carbs,
-      fat,
+      qty: null,
+      unit: null,
+      kcal: Math.round(recipe.kcal * ratio),
+      protein: Math.round(recipe.protein * ratio * 10) / 10,
+      carbs: Math.round(recipe.carbs * ratio * 10) / 10,
+      fat: Math.round(recipe.fat * ratio * 10) / 10,
+      source: "recipe",
     });
+  },
+
+  /** Consume una cantidad PARCIAL de un alimento: registra en el diario y
+      descuenta del inventario (si queda 0, lo elimina). */
+  consumeInventoryItem(draft: FoodOSState, itemId: string, qty: number) {
+    const item = draft.inventory.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    const consumed = Math.min(qty, item.qty);
+    const macros = macrosForQuantity(item, consumed);
+    draft.foodLog.push({
+      id: uid(),
+      date: todayPlus(0),
+      time: nowTime(),
+      name: item.name,
+      qty: consumed,
+      unit: item.unit,
+      ...macros,
+      source: "inventory",
+    });
+    item.qty = Math.round((item.qty - consumed) * 100) / 100;
+    if (item.qty <= 0) {
+      draft.inventory = draft.inventory.filter((candidate) => candidate.id !== itemId);
+    }
+  },
+
+  addWater(draft: FoodOSState, ml: number) {
+    const today = todayPlus(0);
+    draft.waterLog[today] = Math.max(0, (draft.waterLog[today] ?? 0) + ml);
   },
 
   addRecipeToCart(draft: FoodOSState, recipe: Recipe) {

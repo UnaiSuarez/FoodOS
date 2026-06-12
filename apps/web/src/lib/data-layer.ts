@@ -181,9 +181,10 @@ class RemoteAdapter {
         .limit(1),
       client
         .from("food_log")
-        .select("id, item_name, kcal, protein_g, carbs_g, fat_g")
+        .select("id, log_date, created_at, item_name, quantity_g, kcal, protein_g, carbs_g, fat_g, source")
         .eq("user_id", userId)
-        .eq("log_date", today()),
+        .order("log_date", { ascending: false })
+        .limit(500),
       client
         .from("feed_posts")
         .select("id, title, body, recipe_id, likes_count, user_id, feed_comments(body, user_id)")
@@ -267,24 +268,24 @@ class RemoteAdapter {
       };
     }
 
-    state.consumedMeals = (logRes.data ?? []).map((row) => ({
+    state.foodLog = (logRes.data ?? []).map((row) => ({
       id: row.id,
-      icon: "🍽",
+      date: row.log_date,
+      time: row.created_at ? new Date(row.created_at).toTimeString().slice(0, 5) : "12:00",
       name: row.item_name,
+      qty: row.quantity_g != null ? Number(row.quantity_g) : null,
+      unit: row.quantity_g != null ? "g" : null,
       kcal: Number(row.kcal) || 0,
       protein: Number(row.protein_g) || 0,
       carbs: Number(row.carbs_g) || 0,
       fat: Number(row.fat_g) || 0,
+      source: (["recipe", "inventory", "manual"].includes(row.source) ? row.source : "manual") as
+        | "recipe"
+        | "inventory"
+        | "manual",
     }));
-    state.consumed = state.consumedMeals.reduce(
-      (totals, meal) => ({
-        kcal: totals.kcal + meal.kcal,
-        protein: totals.protein + meal.protein,
-        carbs: totals.carbs + meal.carbs,
-        fat: totals.fat + meal.fat,
-      }),
-      { kcal: 0, protein: 0, carbs: 0, fat: 0 }
-    );
+    // TODO water_log: ejecutar supabase/schema.sql actualizado (tabla water_log)
+    // y añadir aqui el pull/push del agua.
 
     state.feedPosts = (feedRes.data ?? []).map((row) => ({
       id: row.id,
@@ -433,23 +434,23 @@ class RemoteAdapter {
       { user_id: userId }
     );
 
-    // food_log de hoy: se reescribe entero (los logs historicos no se tocan).
-    await client.from("food_log").delete().eq("user_id", userId).eq("log_date", today());
-    if (state.consumedMeals.length) {
-      await client.from("food_log").insert(
-        state.consumedMeals.map((meal) => ({
-          id: ensureUuid(meal.id),
-          user_id: userId,
-          log_date: today(),
-          item_name: meal.name,
-          kcal: meal.kcal,
-          protein_g: meal.protein,
-          carbs_g: meal.carbs,
-          fat_g: meal.fat,
-          source: "recipe",
-        }))
-      );
-    }
+    await this.syncTable(
+      "food_log",
+      state.foodLog,
+      (entry) => ({
+        id: ensureUuid(entry.id),
+        user_id: userId,
+        log_date: entry.date,
+        item_name: entry.name,
+        quantity_g: entry.unit === "g" || entry.unit === "ml" ? entry.qty : null,
+        kcal: entry.kcal,
+        protein_g: entry.protein,
+        carbs_g: entry.carbs,
+        fat_g: entry.fat,
+        source: entry.source,
+      }),
+      { user_id: userId }
+    );
 
     // TODO feed: publicar posts propios requiere sembrar antes la tabla
     // `recipes` con las recetas demo. Ver README.

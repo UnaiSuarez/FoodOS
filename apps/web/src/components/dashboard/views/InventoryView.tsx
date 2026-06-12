@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { StorageName } from "@foodos/types";
+import type { InventoryItem, StorageName } from "@foodos/types";
 import { expiryBadge, useFoodOS } from "@/lib/state";
 import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
+import { ConsumeModal } from "../ConsumeModal";
 
 const STORAGES: Array<StorageName | "Todos"> = ["Todos", "Nevera", "Congelador", "Despensa"];
 const QTY_OPTIONS = [50, 100, 150, 200, 250, 300, 500, 1000];
@@ -11,6 +12,7 @@ const QTY_OPTIONS = [50, 100, 150, 200, 250, 300, 500, 1000];
 export function InventoryView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [search, setSearch] = useState(state.inventorySearch);
+  const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
 
   function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -174,23 +176,7 @@ export function InventoryView() {
                       </div>
                     </div>
                     <div className="card-actions">
-                      <button
-                        className="small-action good"
-                        onClick={() => {
-                          mutate((draft) => {
-                            const entry = draft.inventory.find((candidate) => candidate.id === item.id);
-                            if (!entry) return;
-                            const grams = entry.unit === "kg" ? entry.qty * 1000 : entry.qty;
-                            draft.consumed.kcal += (entry.kcal * grams) / 100;
-                            draft.consumed.protein += (entry.protein * grams) / 100;
-                            draft.consumed.carbs += Math.max(8, entry.kcal / 10);
-                            draft.consumed.fat += Math.max(2, entry.kcal / 40);
-                            draft.inventory = draft.inventory.filter((candidate) => candidate.id !== item.id);
-                          });
-                          setMascotMessage("Consumo registrado. Macros actualizados.");
-                          showToast(`${item.name} consumido`);
-                        }}
-                      >
+                      <button className="small-action good" onClick={() => setConsumeItem(item)}>
                         Consumir
                       </button>
                       <button
@@ -227,6 +213,8 @@ export function InventoryView() {
           </div>
         </article>
       </div>
+
+      {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
     </section>
   );
 }
