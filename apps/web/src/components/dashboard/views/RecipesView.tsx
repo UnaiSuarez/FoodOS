@@ -2,14 +2,17 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import { actions, allRecipes, getRecipeMatch, useFoodOS } from "@/lib/state";
+import type { Recipe } from "@foodos/types";
+import { actions, allRecipes, buildAiRecipeDraft, getRecipeMatch, useFoodOS } from "@/lib/state";
 import { eur } from "@/lib/utils";
+import { AiRecipeModal } from "../AiRecipeModal";
 
 type Mode = "exact" | "partial" | "budget" | "ai";
 
 export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [mode, setMode] = useState<Mode>("exact");
+  const [aiDraft, setAiDraft] = useState<Recipe | null>(null);
 
   const recipes = allRecipes(state);
   const allTags = ["todos", ...new Set(recipes.flatMap((recipe) => recipe.tags))];
@@ -41,9 +44,13 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
             <button
               className="primary-button"
               onClick={() => {
-                mutate((draft) => actions.generateAiRecipe(draft));
-                setMascotMessage("Receta generada localmente. En producción usaría Gemini.");
-                showToast("Receta IA local generada");
+                const draft = buildAiRecipeDraft(state);
+                if (!draft) {
+                  showToast("Añade alimentos al inventario para generar una receta");
+                  return;
+                }
+                setAiDraft(draft);
+                setMascotMessage("Receta generada con tu inventario y tus macros de hoy.");
               }}
             >
               Generar receta IA
@@ -118,6 +125,8 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
           })}
         </div>
       </div>
+
+      {aiDraft && <AiRecipeModal draft={aiDraft} onClose={() => setAiDraft(null)} />}
     </section>
   );
 }

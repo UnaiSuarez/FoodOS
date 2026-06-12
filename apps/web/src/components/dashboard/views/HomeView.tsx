@@ -7,6 +7,7 @@ import {
   getRecipeMatch,
   useFoodOS,
 } from "@/lib/state";
+import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
 import { clampPct, daysUntil, eur } from "@/lib/utils";
 import type { ViewId } from "../DashboardShell";
 
@@ -37,6 +38,23 @@ export function HomeView({
 
   return (
     <section className="view">
+      {!state.profile ? (
+        <button className="profile-banner" onClick={() => goTo("nutrition")}>
+          <span>
+            <strong>Configura tu perfil físico</strong> — FoodOS calculará tus calorías y macros
+            diarios automáticamente (2 minutos).
+          </span>
+          <span className="banner-arrow">→</span>
+        </button>
+      ) : (
+        <div className="meta-row" style={{ marginBottom: 12 }}>
+          <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
+            Hoy: {isGymDay(state.profile) ? "día de gym 💪" : "día de descanso"}
+          </span>
+          <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
+          <span className="badge">{state.nutrition.kcal} kcal objetivo</span>
+        </div>
+      )}
       <div className="summary-grid">
         <article className="metric-card">
           <span>Caducan pronto</span>

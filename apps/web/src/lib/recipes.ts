@@ -1,12 +1,17 @@
 import type { Recipe } from "@foodos/types";
 
-// Recetas demo. Cuando exista la tabla `recipes` en Supabase estas pasan a
-// ser seed de base de datos (ver README, paso "Endurecer la sincronizacion").
+// Recetas demo con cantidades por racion (escalables, PDF §5.3).
+// Cuando exista la tabla `recipes` en Supabase estas pasan a ser seed
+// de base de datos (ver README, paso "Endurecer la sincronizacion").
 export const DEMO_RECIPES: Recipe[] = [
   {
     id: "chicken-rice",
     title: "Bowl proteico de pollo",
-    ingredients: ["pechuga", "arroz", "tomate"],
+    ingredients: [
+      { name: "pechuga de pollo", quantity: 180, unit: "g" },
+      { name: "arroz integral", quantity: 80, unit: "g" },
+      { name: "tomate cherry", quantity: 100, unit: "g" },
+    ],
     kcal: 610,
     protein: 54,
     carbs: 72,
@@ -26,7 +31,11 @@ export const DEMO_RECIPES: Recipe[] = [
   {
     id: "egg-toast",
     title: "Tostada de huevo y yogur",
-    ingredients: ["huevo", "pan", "yogur"],
+    ingredients: [
+      { name: "huevo", quantity: 2, unit: "ud" },
+      { name: "pan integral", quantity: 80, unit: "g" },
+      { name: "yogur griego", quantity: 125, unit: "g" },
+    ],
     kcal: 480,
     protein: 32,
     carbs: 48,
@@ -46,7 +55,11 @@ export const DEMO_RECIPES: Recipe[] = [
   {
     id: "tuna-pasta",
     title: "Pasta rápida con atún",
-    ingredients: ["atun", "pasta", "tomate"],
+    ingredients: [
+      { name: "atun en lata", quantity: 80, unit: "g" },
+      { name: "pasta", quantity: 100, unit: "g" },
+      { name: "tomate triturado", quantity: 120, unit: "g" },
+    ],
     kcal: 690,
     protein: 42,
     carbs: 96,
@@ -54,7 +67,7 @@ export const DEMO_RECIPES: Recipe[] = [
     cost: 2.9,
     image: "/images/recipe-tuna-pasta.webp",
     time: 20,
-    servings: 2,
+    servings: 1,
     difficulty: "muy fácil",
     tags: ["económica", "rápida", "despensa"],
     steps: [
@@ -66,7 +79,11 @@ export const DEMO_RECIPES: Recipe[] = [
   {
     id: "lentils",
     title: "Lentejas de despensa",
-    ingredients: ["lentejas", "arroz", "zanahoria"],
+    ingredients: [
+      { name: "lentejas", quantity: 90, unit: "g" },
+      { name: "arroz", quantity: 40, unit: "g" },
+      { name: "zanahoria", quantity: 80, unit: "g" },
+    ],
     kcal: 540,
     protein: 28,
     carbs: 92,
@@ -74,7 +91,7 @@ export const DEMO_RECIPES: Recipe[] = [
     cost: 1.8,
     image: "/images/recipe-lentils.webp",
     time: 35,
-    servings: 2,
+    servings: 1,
     difficulty: "fácil",
     tags: ["económica", "vegana", "alta fibra"],
     steps: [

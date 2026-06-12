@@ -41,14 +41,36 @@ export interface Movement {
   date: string;
 }
 
+export type IncomeFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
+
+/** Fuente de ingreso recurrente (PDF §8.1). */
+export interface IncomeSource {
+  id: string;
+  name: string;
+  amount: number;
+  frequency: IncomeFrequency;
+  /** Dia del mes en que se cobra (1-31), opcional. */
+  dayOfMonth: number | null;
+  active: boolean;
+}
+
+/** Ingrediente de receta con cantidad, para poder escalar (PDF §5.3). */
+export interface RecipeIngredient {
+  name: string;
+  quantity: number;
+  unit: string;
+}
+
 export interface Recipe {
   id: string;
   title: string;
-  ingredients: string[];
+  ingredients: RecipeIngredient[];
+  /** Macros POR RACION */
   kcal: number;
   protein: number;
   carbs: number;
   fat: number;
+  /** Coste por racion en EUR */
   cost: number;
   image: string;
   time: number;
@@ -56,6 +78,8 @@ export interface Recipe {
   difficulty: string;
   tags: string[];
   steps: string[];
+  /** true si la genero la IA (PDF §15.7) */
+  aiGenerated?: boolean;
 }
 
 export interface FeedComment {
@@ -86,14 +110,39 @@ export interface ConsumedMeal extends MacroTotals {
   name: string;
 }
 
-export type NutritionMode =
-  | "Recomposicion"
-  | "Perdida de grasa"
-  | "Ganancia muscular"
-  | "Mantenimiento";
+// ---------- Perfil fisico y objetivos (PDF §9) ----------
 
+export type Sex = "male" | "female";
+
+export type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "very_active";
+
+export type GoalMode = "fat_loss" | "muscle_gain" | "recomp" | "maintain";
+
+/** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
+export interface PhysicalProfile {
+  age: number;
+  sex: Sex;
+  heightCm: number;
+  weightKg: number;
+  /** % de grasa corporal, opcional — afina la proteina usando masa magra. */
+  bodyFatPct: number | null;
+  activityLevel: ActivityLevel;
+  goal: GoalMode;
+  /** Dias de gym: 0=Domingo, 1=Lunes ... 6=Sabado (ciclado calorico §9.4). */
+  gymDays: number[];
+  allergies: string[];
+  excludedFoods: string[];
+}
+
+/** Objetivo diario de macros. Si hay perfil, se calcula automaticamente. */
 export interface NutritionGoal extends MacroTotals {
-  mode: NutritionMode;
+  mode: GoalMode;
+}
+
+export type DayType = "gym" | "rest";
+
+export interface DailyTargets extends MacroTotals {
+  dayType: DayType;
 }
 
 export interface Mascot {
@@ -109,11 +158,14 @@ export interface FoodOSState {
   inventory: InventoryItem[];
   cart: CartItem[];
   expenses: Movement[];
+  incomeSources: IncomeSource[];
   feedPosts: FeedPost[];
   consumed: MacroTotals;
   consumedMeals: ConsumedMeal[];
   customRecipes: Recipe[];
   savedRecipeIds: string[];
+  /** null hasta completar el onboarding de nutricion. */
+  profile: PhysicalProfile | null;
   nutrition: NutritionGoal;
   weeklyBudget: number;
   activeStorage: StorageName | "Todos";

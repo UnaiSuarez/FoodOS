@@ -1,4 +1,11 @@
-import type { FoodOSState, NutritionMode, StorageName } from "@foodos/types";
+import type {
+  ActivityLevel,
+  FoodOSState,
+  GoalMode,
+  IncomeFrequency,
+  Sex,
+  StorageName,
+} from "@foodos/types";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabase } from "./supabase";
 import { ensureUuid } from "./utils";
@@ -19,15 +26,7 @@ const STORAGE_TYPE_BY_NAME: Record<StorageName, string> = {
   Despensa: "pantry",
 };
 
-const GOAL_MODE_TO_DB: Record<NutritionMode, string> = {
-  Recomposicion: "recomp",
-  "Perdida de grasa": "fat_loss",
-  "Ganancia muscular": "muscle_gain",
-  Mantenimiento: "maintain",
-};
-const GOAL_MODE_FROM_DB = Object.fromEntries(
-  Object.entries(GOAL_MODE_TO_DB).map(([label, db]) => [db, label])
-) as Record<string, NutritionMode>;
+const GOAL_MODES: GoalMode[] = ["fat_loss", "muscle_gain", "recomp", "maintain"];
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -156,7 +155,13 @@ class RemoteAdapter {
     const state = structuredClone(defaults);
 
     const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes] = await Promise.all([
-      client.from("user_profiles").select("mascot_id, weekly_food_budget").eq("user_id", userId).maybeSingle(),
+      client
+        .from("user_profiles")
+        .select(
+          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods"
+        )
+        .eq("user_id", userId)
+        .maybeSingle(),
       client
         .from("inventory_items")
         .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, almacen_id")
@@ -167,7 +172,7 @@ class RemoteAdapter {
         .eq("user_id", userId)
         .eq("list_id", this.shoppingListId),
       client.from("gastos").select("id, amount, description, category, txn_date").eq("user_id", userId),
-      client.from("ingresos_fuentes").select("id, name, amount").eq("user_id", userId).eq("active", true),
+      client.from("ingresos_fuentes").select("id, name, amount, frequency, day_of_month, active").eq("user_id", userId),
       client
         .from("nutrition_goals")
         .select("kcal_target, protein_target_g, carbs_target_g, fat_target_g, mode")
@@ -191,8 +196,24 @@ class RemoteAdapter {
     );
 
     if (profileRes.data) {
-      state.mascotId = profileRes.data.mascot_id ?? state.mascotId;
-      state.weeklyBudget = Number(profileRes.data.weekly_food_budget) || state.weeklyBudget;
+      const p = profileRes.data;
+      state.mascotId = p.mascot_id ?? state.mascotId;
+      state.weeklyBudget = Number(p.weekly_food_budget) || state.weeklyBudget;
+      // El perfil fisico solo existe si se completo el onboarding.
+      if (p.age && p.sex && p.height_cm && p.weight_kg && p.activity_level && p.goal) {
+        state.profile = {
+          age: Number(p.age),
+          sex: p.sex as Sex,
+          heightCm: Number(p.height_cm),
+          weightKg: Number(p.weight_kg),
+          bodyFatPct: p.body_fat_pct != null ? Number(p.body_fat_pct) : null,
+          activityLevel: p.activity_level as ActivityLevel,
+          goal: GOAL_MODES.includes(p.goal as GoalMode) ? (p.goal as GoalMode) : "maintain",
+          gymDays: p.gym_days ?? [],
+          allergies: p.allergies ?? [],
+          excludedFoods: p.excluded_foods ?? [],
+        };
+      }
     }
 
     state.inventory = (inventoryRes.data ?? []).map((row) => ({
@@ -217,24 +238,23 @@ class RemoteAdapter {
       checked: row.checked,
     }));
 
-    state.expenses = [
-      ...(ingresosRes.data ?? []).map((row) => ({
-        id: row.id,
-        type: "income" as const,
-        amount: Number(row.amount),
-        category: "Ahorro",
-        description: row.name,
-        date: today(),
-      })),
-      ...(gastosRes.data ?? []).map((row) => ({
-        id: row.id,
-        type: "expense" as const,
-        amount: Number(row.amount),
-        category: row.category,
-        description: row.description ?? "",
-        date: row.txn_date,
-      })),
-    ];
+    state.expenses = (gastosRes.data ?? []).map((row) => ({
+      id: row.id,
+      type: "expense" as const,
+      amount: Number(row.amount),
+      category: row.category,
+      description: row.description ?? "",
+      date: row.txn_date,
+    }));
+
+    state.incomeSources = (ingresosRes.data ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      amount: Number(row.amount),
+      frequency: (row.frequency ?? "monthly") as IncomeFrequency,
+      dayOfMonth: row.day_of_month != null ? Number(row.day_of_month) : null,
+      active: Boolean(row.active),
+    }));
 
     const goal = goalRes.data?.[0];
     if (goal) {
@@ -243,7 +263,7 @@ class RemoteAdapter {
         protein: Number(goal.protein_target_g),
         carbs: Number(goal.carbs_target_g),
         fat: Number(goal.fat_target_g),
-        mode: GOAL_MODE_FROM_DB[goal.mode] ?? "Recomposicion",
+        mode: GOAL_MODES.includes(goal.mode as GoalMode) ? (goal.mode as GoalMode) : "recomp",
       };
     }
 
@@ -315,7 +335,25 @@ class RemoteAdapter {
 
     await client
       .from("user_profiles")
-      .update({ mascot_id: state.mascotId, weekly_food_budget: state.weeklyBudget })
+      .update({
+        mascot_id: state.mascotId,
+        weekly_food_budget: state.weeklyBudget,
+        ...(state.profile
+          ? {
+              age: state.profile.age,
+              sex: state.profile.sex,
+              height_cm: state.profile.heightCm,
+              weight_kg: state.profile.weightKg,
+              body_fat_pct: state.profile.bodyFatPct,
+              activity_level: state.profile.activityLevel,
+              goal: state.profile.goal,
+              gym_days: state.profile.gymDays,
+              allergies: state.profile.allergies,
+              excluded_foods: state.profile.excludedFoods,
+              onboarding_completed: true,
+            }
+          : {}),
+      })
       .eq("user_id", userId);
 
     await client.from("nutrition_goals").upsert(
@@ -326,7 +364,7 @@ class RemoteAdapter {
         protein_target_g: state.nutrition.protein,
         carbs_target_g: state.nutrition.carbs,
         fat_target_g: state.nutrition.fat,
-        mode: GOAL_MODE_TO_DB[state.nutrition.mode] ?? "recomp",
+        mode: state.nutrition.mode,
       },
       { onConflict: "user_id,goal_date" }
     );
@@ -382,13 +420,15 @@ class RemoteAdapter {
 
     await this.syncTable(
       "ingresos_fuentes",
-      state.expenses.filter((entry) => entry.type === "income"),
-      (entry) => ({
-        id: ensureUuid(entry.id),
+      state.incomeSources,
+      (source) => ({
+        id: ensureUuid(source.id),
         user_id: userId,
-        name: entry.description || entry.category || "Ingreso",
-        amount: entry.amount,
-        frequency: "monthly",
+        name: source.name,
+        amount: source.amount,
+        frequency: source.frequency,
+        day_of_month: source.dayOfMonth,
+        active: source.active,
       }),
       { user_id: userId }
     );

@@ -10,23 +10,26 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { FoodOSState, Recipe } from "@foodos/types";
+import type { FoodOSState, GoalMode, MacroTotals, Recipe } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
+import { calcDailyTargets, isGymDay } from "./nutrition";
 import { daysUntil, eur, todayMinus, todayPlus, uid } from "./utils";
 
 export const defaultState: FoodOSState = {
   inventory: [],
   cart: [],
   expenses: [],
+  incomeSources: [],
   feedPosts: [],
   consumed: { kcal: 0, protein: 0, carbs: 0, fat: 0 },
   consumedMeals: [],
   customRecipes: [],
   savedRecipeIds: [],
-  nutrition: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "Recomposicion" },
+  profile: null,
+  nutrition: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp" },
   weeklyBudget: 70,
   activeStorage: "Todos",
   inventorySearch: "",
@@ -34,6 +37,39 @@ export const defaultState: FoodOSState = {
   mascotId: "zana",
   recipeTag: "todos",
 };
+
+// Migra estados guardados con formatos antiguos (modos en español,
+// ingredientes como strings) y aplica el ciclado del dia si hay perfil.
+const LEGACY_MODES: Record<string, GoalMode> = {
+  Recomposicion: "recomp",
+  "Perdida de grasa": "fat_loss",
+  "Ganancia muscular": "muscle_gain",
+  Mantenimiento: "maintain",
+};
+
+export function normalizeState(state: FoodOSState): FoodOSState {
+  const next = structuredClone(state);
+  const legacyMode = LEGACY_MODES[next.nutrition.mode as unknown as string];
+  if (legacyMode) next.nutrition.mode = legacyMode;
+  next.incomeSources ||= [];
+  next.customRecipes = (next.customRecipes || []).map((recipe) => ({
+    ...recipe,
+    ingredients: (recipe.ingredients || []).map((ing) =>
+      typeof ing === "string" ? { name: ing, quantity: 100, unit: "g" } : ing
+    ),
+  }));
+  if (next.profile) {
+    const targets = calcDailyTargets(next.profile, isGymDay(next.profile));
+    next.nutrition = {
+      kcal: targets.kcal,
+      protein: targets.protein,
+      carbs: targets.carbs,
+      fat: targets.fat,
+      mode: next.profile.goal,
+    };
+  }
+  return next;
+}
 
 interface FoodOSContextValue {
   state: FoodOSState;
@@ -62,7 +98,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
 
   // Hidratacion: primero localStorage, despues Supabase si hay sesion.
   useEffect(() => {
-    setState(loadLocalState(defaultState));
+    setState(normalizeState(loadLocalState(defaultState)));
     setHydrated(true);
 
     if (!hasSupabaseConfig()) return;
@@ -71,7 +107,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     const hydrateRemote = async () => {
       try {
         await remote.ensureBaseRows();
-        const remoteState = await remote.pullState(defaultState);
+        const remoteState = normalizeState(await remote.pullState(defaultState));
         if (cancelled) return;
         setState(remoteState);
         saveLocalState(remoteState);
@@ -110,6 +146,17 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     setState((current) => {
       const draft = structuredClone(current);
       fn(draft);
+      // Si hay perfil, los objetivos del dia siempre derivan de el.
+      if (draft.profile) {
+        const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile));
+        draft.nutrition = {
+          kcal: targets.kcal,
+          protein: targets.protein,
+          carbs: targets.carbs,
+          fat: targets.fat,
+          mode: draft.profile.goal,
+        };
+      }
       saveLocalState(draft);
       remote.schedulePush(draft);
       return draft;
@@ -129,21 +176,25 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), name: "Arroz integral", qty: 500, unit: "g", storage: "Despensa", expires: todayPlus(60), price: 1.7, kcal: 360, protein: 8 },
       { id: uid(), name: "Tomate cherry", qty: 180, unit: "g", storage: "Nevera", expires: todayPlus(3), price: 1.4, kcal: 18, protein: 1 },
       { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
+      { id: uid(), name: "Huevos", qty: 6, unit: "ud", storage: "Nevera", expires: todayPlus(12), price: 1.8, kcal: 155, protein: 13 },
     ];
-    demo.cart = [{ id: uid(), name: "Huevos", qty: 6, unit: "ud", price: 2.2, store: "Mercadona", checked: false }];
+    demo.cart = [{ id: uid(), name: "Avena", qty: 1, unit: "ud", price: 1.4, store: "Mercadona", checked: false }];
+    demo.incomeSources = [
+      { id: uid(), name: "Nómina", amount: 1450, frequency: "monthly", dayOfMonth: 28, active: true },
+    ];
     demo.expenses = [
-      { id: uid(), type: "income", amount: 1200, category: "Ahorro", description: "Nómina demo", date: todayPlus(0) },
       { id: uid(), type: "expense", amount: 38.4, category: "Comida", description: "Mercadona demo", date: todayMinus(1) },
       { id: uid(), type: "expense", amount: 22.5, category: "Comida", description: "Frutería demo", date: todayMinus(5) },
       { id: uid(), type: "expense", amount: 24.2, category: "Salud", description: "Suplementos demo", date: todayMinus(10) },
       { id: uid(), type: "expense", amount: 47.9, category: "Comida", description: "Lidl demo", date: todayMinus(16) },
       { id: uid(), type: "expense", amount: 19.6, category: "Ocio", description: "Cena fuera demo", date: todayMinus(23) },
+      { id: uid(), type: "expense", amount: 620, category: "Vivienda", description: "Alquiler demo", date: todayMinus(12) },
     ];
     demo.feedPosts = buildDemoPosts();
     saveLocalState(demo);
     remote.schedulePush(demo);
     setState(demo);
-    setMascotMessage("Datos demo cargados. Prueba a cocinar o completar el carrito.");
+    setMascotMessage("Datos demo cargados. Configura tu perfil en Nutrición.");
     showToast("Datos demo cargados");
   }, [showToast]);
 
@@ -209,15 +260,21 @@ export function findRecipe(state: FoodOSState, recipeId: string): Recipe | undef
 
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
   const names = state.inventory.map((item) => item.name.toLowerCase());
-  const matches = recipe.ingredients.filter((ingredient) => names.some((name) => name.includes(ingredient)));
-  return { matches, pct: Math.round((matches.length / recipe.ingredients.length) * 100) };
+  const matches = recipe.ingredients.filter((ingredient) =>
+    names.some((name) => name.includes(ingredient.name.split(" ")[0]) || ingredient.name.includes(name.split(" ")[0]))
+  );
+  return { matches, pct: Math.round((matches.length / Math.max(1, recipe.ingredients.length)) * 100) };
 }
 
 export function getIngredientStatus(state: FoodOSState, recipe: Recipe) {
   const names = state.inventory.map((item) => item.name.toLowerCase());
   return recipe.ingredients.map((ingredient) => ({
-    name: ingredient,
-    has: names.some((name) => name.includes(ingredient) || ingredient.includes(name.split(" ")[0])),
+    name: ingredient.name,
+    quantity: ingredient.quantity,
+    unit: ingredient.unit,
+    has: names.some(
+      (name) => name.includes(ingredient.name.split(" ")[0]) || ingredient.name.includes(name.split(" ")[0])
+    ),
   }));
 }
 
@@ -225,6 +282,16 @@ export function bestRecipe(state: FoodOSState): Recipe {
   return [...allRecipes(state)].sort(
     (a, b) => getRecipeMatch(state, b).pct - getRecipeMatch(state, a).pct || b.protein - a.protein
   )[0];
+}
+
+/** Macros que quedan por consumir hoy. */
+export function getPendingMacros(state: FoodOSState): MacroTotals {
+  return {
+    kcal: Math.max(0, state.nutrition.kcal - state.consumed.kcal),
+    protein: Math.max(0, state.nutrition.protein - state.consumed.protein),
+    carbs: Math.max(0, state.nutrition.carbs - state.consumed.carbs),
+    fat: Math.max(0, state.nutrition.fat - state.consumed.fat),
+  };
 }
 
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
@@ -250,38 +317,133 @@ export function expiryBadge(expires: string): { label: string; cls: string } {
   return { label: "OK", cls: "green" };
 }
 
+// ---------- Generador local de recetas IA (simula Gemini, PDF §15) ----------
+// Usa el contexto real del usuario: inventario (priorizando lo que caduca),
+// macros pendientes del dia y presupuesto. En produccion esto es una API
+// route que llama a Gemini con el prompt del PDF §15.6.
+
+export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
+  const pending = getPendingMacros(state);
+  const usable = state.inventory
+    .filter((item) => item.qty > 0)
+    .filter((item) => {
+      const excluded = state.profile?.excludedFoods ?? [];
+      const allergies = state.profile?.allergies ?? [];
+      const name = item.name.toLowerCase();
+      return ![...excluded, ...allergies].some((bad) => bad && name.includes(bad.toLowerCase()));
+    })
+    .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires) || b.protein - a.protein);
+
+  if (!usable.length) return null;
+
+  // Fuente proteica = mayor proteina/100g; acompañantes = lo que antes caduque.
+  const proteinSource = [...usable].sort((a, b) => b.protein - a.protein)[0];
+  const sides = usable.filter((item) => item.id !== proteinSource.id).slice(0, 2);
+
+  const targetProtein = pending.protein > 0 ? Math.min(pending.protein, 60) : 35;
+  const targetKcal = pending.kcal > 0 ? Math.min(pending.kcal, 950) : 550;
+
+  // Gramos de la fuente proteica para cubrir la proteina objetivo (max 300 g).
+  const proteinGrams =
+    proteinSource.protein > 0
+      ? Math.min(300, Math.round((targetProtein / proteinSource.protein) * 100))
+      : 150;
+
+  const ingredients = [
+    { name: proteinSource.name.toLowerCase(), quantity: proteinGrams, unit: "g" },
+    ...sides.map((item) => ({
+      name: item.name.toLowerCase(),
+      quantity: item.unit === "ud" ? 1 : Math.min(150, item.qty),
+      unit: item.unit === "ud" ? "ud" : "g",
+    })),
+  ];
+
+  // Macros estimados desde los datos reales del inventario.
+  const macrosOf = (item: typeof proteinSource, grams: number) => ({
+    kcal: (item.kcal * grams) / 100,
+    protein: (item.protein * grams) / 100,
+  });
+  let kcal = macrosOf(proteinSource, proteinGrams).kcal;
+  let protein = macrosOf(proteinSource, proteinGrams).protein;
+  sides.forEach((item) => {
+    const grams = item.unit === "ud" ? 60 : Math.min(150, item.qty);
+    kcal += (item.kcal * grams) / 100;
+    protein += (item.protein * grams) / 100;
+  });
+  kcal = Math.round(Math.min(kcal, targetKcal * 1.2));
+  protein = Math.round(protein);
+  const fat = Math.round((kcal * 0.25) / 9);
+  const carbs = Math.round(Math.max(0, kcal - protein * 4 - fat * 9) / 4);
+
+  const cost = Math.round(
+    Math.min(
+      getBudgetLeft(state) || 3,
+      [proteinSource, ...sides].reduce((sum, item) => sum + Math.min(item.price, 2.5), 0)
+    ) * 100
+  ) / 100;
+
+  return {
+    id: uid(),
+    title: `${proteinSource.name} con ${sides.map((s) => s.name.toLowerCase()).join(" y ") || "guarnición"}`,
+    ingredients,
+    kcal,
+    protein,
+    carbs,
+    fat,
+    cost: Math.max(0.8, cost),
+    image: "/images/recipe-chicken-bowl.webp",
+    time: 20,
+    servings: 1,
+    difficulty: "IA",
+    tags: ["IA", "aprovechamiento", ...(pending.protein > 30 ? ["alta proteína"] : [])],
+    steps: [
+      `Cocina ${proteinGrams} g de ${proteinSource.name.toLowerCase()} a la plancha con especias.`,
+      sides.length
+        ? `Prepara ${sides.map((s) => s.name.toLowerCase()).join(" y ")} como acompañamiento.`
+        : "Añade la guarnición que prefieras de tu despensa.",
+      "Emplata y ajusta la ración a tus macros pendientes.",
+    ],
+    aiGenerated: true,
+  };
+}
+
 // ---------- Acciones de dominio (operan sobre el draft de mutate) ----------
 
 export const actions = {
-  cookRecipe(draft: FoodOSState, recipe: Recipe) {
-    draft.consumed.kcal += recipe.kcal;
-    draft.consumed.protein += recipe.protein;
-    draft.consumed.carbs += recipe.carbs;
-    draft.consumed.fat += recipe.fat;
+  /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
+  cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1) {
+    const kcal = Math.round(recipe.kcal * ratio);
+    const protein = Math.round(recipe.protein * ratio * 10) / 10;
+    const carbs = Math.round(recipe.carbs * ratio * 10) / 10;
+    const fat = Math.round(recipe.fat * ratio * 10) / 10;
+    draft.consumed.kcal += kcal;
+    draft.consumed.protein += protein;
+    draft.consumed.carbs += carbs;
+    draft.consumed.fat += fat;
     draft.consumedMeals.push({
       id: uid(),
       icon: "🍽",
-      name: recipe.title,
-      kcal: recipe.kcal,
-      protein: recipe.protein,
-      carbs: recipe.carbs,
-      fat: recipe.fat,
+      name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
+      kcal,
+      protein,
+      carbs,
+      fat,
     });
   },
 
   addRecipeToCart(draft: FoodOSState, recipe: Recipe) {
     recipe.ingredients.forEach((ingredient) => {
       const existing = draft.cart.find(
-        (item) => item.name.toLowerCase() === ingredient.toLowerCase() && !item.checked
+        (item) => item.name.toLowerCase() === ingredient.name.toLowerCase() && !item.checked
       );
       if (existing) {
-        existing.qty += 1;
+        existing.qty += ingredient.quantity;
       } else {
         draft.cart.push({
           id: uid(),
-          name: ingredient,
-          qty: 1,
-          unit: "ud",
+          name: ingredient.name,
+          qty: ingredient.quantity,
+          unit: ingredient.unit,
           price: Math.max(0.6, recipe.cost / recipe.ingredients.length),
           store: "Mercadona",
           checked: false,
@@ -337,42 +499,17 @@ export const actions = {
     draft.cart = draft.cart.filter((item) => !item.checked);
     return checked.length;
   },
-
-  generateAiRecipe(draft: FoodOSState) {
-    const top = draft.inventory.slice(0, 3);
-    const names = top.map((item) => item.name).join(", ") || "ingredientes disponibles";
-    draft.customRecipes.unshift({
-      id: uid(),
-      title: `Receta rápida con ${names}`,
-      ingredients: top.map((item) => item.name.toLowerCase().split(" ")[0]).filter(Boolean),
-      kcal: 520,
-      protein: 38,
-      carbs: 55,
-      fat: 16,
-      cost: 2.6,
-      image: "/images/recipe-chicken-bowl.webp",
-      time: 18,
-      servings: 1,
-      difficulty: "IA local",
-      tags: ["IA", "rápida", "aprovechamiento"],
-      steps: [
-        "Revisa los ingredientes detectados en tu inventario.",
-        "Saltea la base proteica con verduras.",
-        "Ajusta la porción y guarda la receta si te encaja.",
-      ],
-    });
-  },
 };
 
 export function assistantMessage(state: FoodOSState, kind: "ticket" | "bank" | "week" | "optimize"): string {
-  const proteinLeft = Math.max(0, state.nutrition.protein - state.consumed.protein);
+  const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
   const cheapest = [...allRecipes(state)].sort((a, b) => a.cost / a.protein - b.cost / b.protein)[0];
   const messages = {
     ticket:
       "Ticket demo leído: 18,40 € en Comida. He separado supermercado, fruta y proteína. En producción esto vendría de OCR + Gemini.",
     bank: "Banco demo sincronizado: detecté 3 cargos de supermercado esta semana y actualicé el presupuesto disponible.",
-    week: `Plan semanal demo: prioriza ${cheapest.title}, pasta con atún y bowl de pollo. Objetivo: cubrir ${Math.round(proteinLeft)} g de proteína pendiente sin pasar de ${eur(budgetLeft)}.`,
+    week: `Plan semanal demo: prioriza ${cheapest.title}, pasta con atún y bowl de pollo. Objetivo: cubrir ${Math.round(pending.protein)} g de proteína pendiente sin pasar de ${eur(budgetLeft)}.`,
     optimize: `Mejor proteína/€ ahora: ${cheapest.title}. Aporta ${cheapest.protein} g por ${eur(cheapest.cost)}.`,
   };
   return messages[kind];

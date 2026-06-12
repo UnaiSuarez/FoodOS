@@ -1,14 +1,38 @@
 "use client";
 
 import { useEffect, useRef, type FormEvent } from "react";
+import type { IncomeFrequency } from "@foodos/types";
 import { getFoodSpend, useFoodOS } from "@/lib/state";
+import { monthlyAmountOf, projectSavings } from "@/lib/nutrition";
 import { eur, todayPlus, uid } from "@/lib/utils";
+
+const FREQUENCY_LABELS: Record<IncomeFrequency, string> = {
+  weekly: "Semanal",
+  biweekly: "Quincenal",
+  monthly: "Mensual",
+  yearly: "Anual",
+};
 
 export function FinanceView() {
   const { state, mutate, showToast } = useFoodOS();
 
-  const income = state.expenses.filter((entry) => entry.type === "income").reduce((sum, entry) => sum + Number(entry.amount), 0);
-  const expense = state.expenses.filter((entry) => entry.type === "expense").reduce((sum, entry) => sum + Number(entry.amount), 0);
+  const expenseTotal = state.expenses
+    .filter((entry) => entry.type === "expense")
+    .reduce((sum, entry) => sum + Number(entry.amount), 0);
+
+  // Gastos de los ultimos 30 dias: base del balance y la proyeccion.
+  const monthAgo = new Date();
+  monthAgo.setDate(monthAgo.getDate() - 30);
+  const monthlyExpenses = state.expenses
+    .filter((entry) => entry.type === "expense" && new Date(entry.date) >= monthAgo)
+    .reduce((sum, entry) => sum + Number(entry.amount), 0);
+
+  const monthlyIncome = state.incomeSources
+    .filter((source) => source.active)
+    .reduce((sum, source) => sum + monthlyAmountOf(source.frequency, source.amount), 0);
+
+  const monthlySavings = Math.max(0, monthlyIncome - monthlyExpenses);
+  const projection = projectSavings(monthlySavings, monthlyExpenses);
 
   const byCategory: Record<string, number> = {};
   state.expenses
@@ -26,72 +50,214 @@ export function FinanceView() {
     mutate((draft) => {
       draft.expenses.push({
         id: uid(),
-        type: data.get("type") === "income" ? "income" : "expense",
+        type: "expense",
         amount: Number(data.get("amount")),
         category: String(data.get("category")),
         description: String(data.get("description")).trim(),
         date: todayPlus(0),
       });
     });
-    showToast("Movimiento guardado");
+    showToast("Gasto guardado");
+    form.reset();
+  }
+
+  function addIncomeSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const dayRaw = String(data.get("dayOfMonth")).trim();
+    mutate((draft) => {
+      draft.incomeSources.push({
+        id: uid(),
+        name: String(data.get("name")).trim(),
+        amount: Number(data.get("amount")),
+        frequency: String(data.get("frequency")) as IncomeFrequency,
+        dayOfMonth: dayRaw ? Number(dayRaw) : null,
+        active: true,
+      });
+    });
+    showToast("Fuente de ingreso añadida");
     form.reset();
   }
 
   return (
     <section className="view">
       <div className="work-grid">
-        <form className="panel form-panel" onSubmit={addMovement}>
-          <h2>Registrar movimiento</h2>
-          <div className="form-grid compact">
-            <label>
-              Tipo
-              <select name="type" defaultValue="expense">
-                <option value="expense">Gasto</option>
-                <option value="income">Ingreso</option>
-              </select>
-            </label>
-            <label>
-              Importe € <input name="amount" type="number" min="0" step="0.01" defaultValue="12" required />
-            </label>
-            <label>
-              Categoría
-              <select name="category" defaultValue="Comida">
-                <option>Comida</option>
-                <option>Vivienda</option>
-                <option>Transporte</option>
-                <option>Ocio</option>
-                <option>Salud</option>
-                <option>Ahorro</option>
-              </select>
-            </label>
-            <label>
-              Descripción <input name="description" placeholder="Compra semanal" />
-            </label>
-          </div>
-          <button className="primary-button" type="submit">
-            Guardar movimiento
-          </button>
-        </form>
+        <div className="stack-panels">
+          <form className="panel" onSubmit={addMovement}>
+            <h2>Registrar gasto</h2>
+            <div className="form-grid compact">
+              <label>
+                Importe € <input name="amount" type="number" min="0" step="0.01" defaultValue="12" required />
+              </label>
+              <label>
+                Categoría
+                <select name="category" defaultValue="Comida">
+                  <option>Comida</option>
+                  <option>Vivienda</option>
+                  <option>Suministros</option>
+                  <option>Transporte</option>
+                  <option>Suscripciones</option>
+                  <option>Ocio</option>
+                  <option>Salud</option>
+                  <option>Ropa</option>
+                  <option>Formación</option>
+                  <option>Otros</option>
+                </select>
+              </label>
+              <label>
+                Descripción <input name="description" placeholder="Compra semanal" />
+              </label>
+            </div>
+            <button className="primary-button" type="submit">
+              Guardar gasto
+            </button>
+          </form>
+
+          <form className="panel" onSubmit={addIncomeSource}>
+            <h2>Fuentes de ingreso</h2>
+            <div className="form-grid compact">
+              <label>
+                Nombre <input name="name" required placeholder="Nómina" />
+              </label>
+              <label>
+                Importe € <input name="amount" type="number" min="0" step="0.01" required placeholder="1450" />
+              </label>
+              <label>
+                Frecuencia
+                <select name="frequency" defaultValue="monthly">
+                  {(Object.keys(FREQUENCY_LABELS) as IncomeFrequency[]).map((frequency) => (
+                    <option key={frequency} value={frequency}>
+                      {FREQUENCY_LABELS[frequency]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Día de cobro <small>(opcional)</small>
+                <input name="dayOfMonth" type="number" min="1" max="31" placeholder="28" />
+              </label>
+            </div>
+            <button className="secondary-button" type="submit">
+              Añadir fuente
+            </button>
+
+            <div className="card-list income-list">
+              {state.incomeSources.length ? (
+                state.incomeSources.map((source) => (
+                  <article key={source.id} className={`card ${source.active ? "" : "inactive"}`}>
+                    <div>
+                      <h3>{source.name}</h3>
+                      <small>
+                        {eur(source.amount)} · {FREQUENCY_LABELS[source.frequency]}
+                        {source.dayOfMonth ? ` · día ${source.dayOfMonth}` : ""} ·{" "}
+                        {eur(monthlyAmountOf(source.frequency, source.amount))}/mes
+                      </small>
+                    </div>
+                    <div className="card-actions">
+                      <button
+                        className={`small-action ${source.active ? "good" : ""}`}
+                        onClick={() =>
+                          mutate((draft) => {
+                            const target = draft.incomeSources.find((candidate) => candidate.id === source.id);
+                            if (target) target.active = !target.active;
+                          })
+                        }
+                      >
+                        {source.active ? "Activa" : "Pausada"}
+                      </button>
+                      <button
+                        className="small-action bad"
+                        onClick={() =>
+                          mutate((draft) => {
+                            draft.incomeSources = draft.incomeSources.filter(
+                              (candidate) => candidate.id !== source.id
+                            );
+                          })
+                        }
+                      >
+                        Borrar
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <div className="empty">Añade tu nómina u otras fuentes para calcular tu ahorro.</div>
+              )}
+            </div>
+          </form>
+        </div>
 
         <article className="panel">
           <div className="panel-head">
-            <h2>Finanzas</h2>
-            <strong className="money">{eur(income - expense)}</strong>
+            <h2>Finanzas del mes</h2>
+            <strong className={`money ${monthlyIncome - monthlyExpenses < 0 ? "negative" : ""}`}>
+              {eur(monthlyIncome - monthlyExpenses)}
+            </strong>
           </div>
 
           <div className="finance-stats">
             <div>
-              <span>Ingresos</span>
-              <strong>{eur(income)}</strong>
+              <span>Ingresos/mes</span>
+              <strong>{eur(monthlyIncome)}</strong>
             </div>
             <div>
-              <span>Gastos</span>
-              <strong>{eur(expense)}</strong>
+              <span>Gastos (30 días)</span>
+              <strong>{eur(monthlyExpenses)}</strong>
             </div>
             <div>
               <span>Comida (7 días)</span>
               <strong>{eur(getFoodSpend(state))}</strong>
             </div>
+          </div>
+
+          {/* Proyeccion de ahorro con interes compuesto (PDF §8.6) */}
+          <div className="projection-card">
+            <div className="panel-head">
+              <h3>Si ahorras {eur(monthlySavings)}/mes…</h3>
+            </div>
+            {monthlySavings > 0 ? (
+              <>
+                <div className="projection-grid">
+                  <div>
+                    <span>En 6 meses</span>
+                    <strong>{eur(projection.months6)}</strong>
+                  </div>
+                  <div>
+                    <span>En 1 año</span>
+                    <strong>{eur(projection.year1)}</strong>
+                  </div>
+                  <div>
+                    <span>5 años (cuenta)</span>
+                    <strong>{eur(projection.years5Bank)}</strong>
+                  </div>
+                  <div>
+                    <span>5 años (fondo 7%)</span>
+                    <strong className="highlight">{eur(projection.years5Fund)}</strong>
+                  </div>
+                  <div>
+                    <span>10 años (fondo 7%)</span>
+                    <strong className="highlight">{eur(projection.years10Fund)}</strong>
+                  </div>
+                  <div>
+                    <span>Fondo de emergencia (3 meses)</span>
+                    <strong>
+                      {projection.emergencyFundMonths ? `en ${projection.emergencyFundMonths} meses` : "—"}
+                    </strong>
+                  </div>
+                </div>
+                <p className="projection-disclaimer">
+                  El 7% es la rentabilidad histórica media de fondos indexados. Rentabilidades pasadas
+                  no garantizan rentabilidades futuras.
+                </p>
+              </>
+            ) : (
+              <p className="projection-disclaimer">
+                {monthlyIncome === 0
+                  ? "Añade una fuente de ingreso para ver tu proyección de ahorro."
+                  : "Este mes gastas más de lo que ingresas. Revisa el desglose por categoría y prueba el optimizador proteína/€ del asistente."}
+              </p>
+            )}
           </div>
 
           <div className="chart-card">
@@ -136,14 +302,11 @@ export function FinanceView() {
                   <div>
                     <h3>{entry.description || entry.category}</h3>
                     <small>
-                      {entry.category} · {entry.type === "income" ? "Ingreso" : "Gasto"} · {entry.date}
+                      {entry.category} · {entry.date}
                     </small>
                   </div>
                   <div className="card-actions">
-                    <span className="money">
-                      {entry.type === "income" ? "+" : "-"}
-                      {eur(entry.amount)}
-                    </span>
+                    <span className="money">-{eur(entry.amount)}</span>
                     <button
                       className="small-action bad"
                       onClick={() =>

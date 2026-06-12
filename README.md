@@ -42,9 +42,20 @@ npm run dev
 - **Landing** (`/`): 100% orientada a producto. Hero con parallax, ticker,
   7 módulos en bento, demo de recomendación contextual, cómo funciona,
   los **15 compañeros con sus avatares reales**, descarga con QR y registro.
-- **Dashboard** (`/dashboard`): inventario, recetas (+ generador IA local),
-  feed, carrito, finanzas con gráfico, nutrición y asistente, todo en React
-  con estado persistente. Exportar/importar JSON y botón Cuenta.
+- **Dashboard** (`/dashboard`): inventario, recetas, feed, carrito, finanzas,
+  nutrición y asistente, todo en React con estado persistente. Exportar/importar
+  JSON y botón Cuenta.
+- **Nutrición personalizada** (PDF §9): onboarding de perfil físico (edad, sexo,
+  altura, peso, % graso, actividad, objetivo, días de gym, alergias/exclusiones),
+  TMB/TDEE con Mifflin-St Jeor, 4 modos de objetivo y **ciclado calórico**
+  automático gym/descanso. Los macros del día se calculan solos.
+- **Recetas que se adaptan** (PDF §5.3, §9.7): escalado por raciones o por kcal
+  objetivo y botón "ajustar a mis macros pendientes" (reparte las kcal entre las
+  comidas que quedan según la hora). Las recetas IA se generan con el inventario
+  real (priorizando lo que caduca), macros pendientes y presupuesto, y son
+  **editables antes de guardar** (flag `aiGenerated`).
+- **Ahorro** (PDF §8): fuentes de ingreso recurrentes, balance mensual y
+  proyección con interés compuesto (6m/1a/5a/10a, fondo de emergencia).
 - **Datos**: localStorage hoy. El adaptador de Supabase
   ([apps/web/src/lib/data-layer.ts](apps/web/src/lib/data-layer.ts)) ya
   implementa auth (Google + magic link), pull del estado desde las tablas y
@@ -78,7 +89,10 @@ npm run dev
 - [ ] APIs externas: Open Food Facts (barcode, sin clave), Gemini 1.5 Flash
       vía API route (nunca la key en el cliente), Nordigen (banco PSD2),
       Cloudinary (vídeo del feed).
-- [ ] Onboarding de perfil físico + cálculo TMB/TDEE (PDF §9).
+- [ ] Conectar Gemini al generador de recetas (hoy es una simulación local con
+      los datos reales del usuario; el prompt de producción está en el PDF §15.6).
+- [ ] Registro de comidas por franja horaria (desayuno/comida/cena/snack) y
+      sugerencia de cena para cerrar macros (PDF §9, §11.4).
 - [ ] Animaciones GSAP ScrollTrigger y video scrubbing del hero (PDF §16-17)
       cuando exista el vídeo.
 
