@@ -132,6 +132,13 @@ export type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "ver
 
 export type GoalMode = "fat_loss" | "muscle_gain" | "recomp" | "maintain";
 
+/** Entrada del historial de peso corporal. */
+export interface WeightEntry {
+  /** Fecha ISO yyyy-mm-dd */
+  date: string;
+  kg: number;
+}
+
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
   age: number;
@@ -146,6 +153,8 @@ export interface PhysicalProfile {
   gymDays: number[];
   allergies: string[];
   excludedFoods: string[];
+  /** Peso objetivo en kg, para la grafica de progreso. */
+  targetWeightKg?: number;
 }
 
 /** Objetivo diario de macros. Si hay perfil, se calcula automaticamente. */
@@ -178,6 +187,8 @@ export interface FoodOSState {
   foodLog: FoodLogEntry[];
   /** Agua bebida por dia: { "2026-06-12": 1750 } en ml. */
   waterLog: Record<string, number>;
+  /** Historial de peso corporal (PDF §9.1). */
+  weightLog: WeightEntry[];
   customRecipes: Recipe[];
   savedRecipeIds: string[];
   /** null hasta completar el onboarding de nutricion. */

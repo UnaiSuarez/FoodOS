@@ -75,10 +75,19 @@ export function HomeView({
       ? { kind: "expiry" as const, recipe: expirySug.recipe, usedItem: expirySug.usedItem! }
       : null;
 
-  // Mensaje contextual de la mascota segun el estado real.
+  // Mensaje contextual de la mascota — incluye notificación de cierre de día (Feature 5).
   const mascotInsight = (() => {
+    const hour = new Date().getHours();
     const urgent = expiring.find((item) => daysUntil(item.expires) <= 1);
     if (urgent) return `${urgent.name} caduca ${daysUntil(urgent.expires) < 0 ? "ya" : "mañana"}. ¿Lo usamos hoy?`;
+    if (hour >= 20 && pending.kcal > 300) {
+      const closer = allRecipes(state)
+        .filter((r) => r.cost <= Math.max(budgetLeft, 1))
+        .sort((a, b) => Math.abs(a.kcal - pending.kcal) - Math.abs(b.kcal - pending.kcal))[0];
+      return closer
+        ? `Son las ${hour}h y faltan ${Math.round(pending.kcal)} kcal. ${closer.title} encaja bien para cerrar el día.`
+        : `Son las ${hour}h y todavía faltan ${Math.round(pending.kcal)} kcal. ¡Cierra el día!`;
+    }
     if (pending.protein > 40) return `Te faltan ${Math.round(pending.protein)} g de proteína para cerrar el día.`;
     if (budgetLeft <= state.weeklyBudget * 0.2 && state.weeklyBudget > 0)
       return `Queda poco presupuesto de comida: ${eur(budgetLeft)}. Mira las recetas económicas.`;

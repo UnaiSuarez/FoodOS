@@ -5,6 +5,7 @@ import type { InventoryItem, StorageName } from "@foodos/types";
 import { expiryBadge, useFoodOS } from "@/lib/state";
 import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
+import { BarcodeScannerModal, type ProductData } from "../BarcodeScannerModal";
 
 const STORAGES: Array<StorageName | "Todos"> = ["Todos", "Nevera", "Congelador", "Despensa"];
 const QTY_OPTIONS = [50, 100, 150, 200, 250, 300, 500, 1000];
@@ -13,6 +14,17 @@ export function InventoryView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [search, setSearch] = useState(state.inventorySearch);
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [prefill, setPrefill] = useState<ProductData | null>(null);
+  const [formKey, setFormKey] = useState(0);
+
+  function handleScanFill(data: ProductData) {
+    setPrefill(data);
+    setFormKey((k) => k + 1);
+    setScannerOpen(false);
+    showToast(`Producto encontrado: ${data.name}`);
+    setMascotMessage(`${data.name} listo para añadir al inventario.`);
+  }
 
   function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -31,6 +43,7 @@ export function InventoryView() {
         protein: Number(data.get("protein")),
       });
     });
+    setPrefill(null);
     setMascotMessage("Alimento guardado. Estoy vigilando caducidades.");
     showToast("Alimento añadido al inventario");
     form.reset();
@@ -50,45 +63,25 @@ export function InventoryView() {
   return (
     <section className="view">
       <div className="work-grid">
-        <form className="panel form-panel" onSubmit={addItem}>
+        <form key={formKey} className="panel form-panel" onSubmit={addItem}>
           <h2>Añadir alimento</h2>
           <div className="quick-actions">
             <button
               className="secondary-button"
               type="button"
-              onClick={() => {
-                mutate((draft) => {
-                  draft.inventory.push({
-                    id: uid(), name: "Atún al natural", qty: 3, unit: "ud", storage: "Despensa",
-                    expires: todayPlus(120), price: 2.4, kcal: 110, protein: 24,
-                  });
-                });
-                setMascotMessage("Barcode demo leído: atún al natural.");
-                showToast("Producto barcode añadido");
-              }}
+              onClick={() => setScannerOpen(true)}
             >
-              Escanear barcode demo
-            </button>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => {
-                mutate((draft) => {
-                  draft.inventory.push({
-                    id: uid(), name: "Zanahoria fresca", qty: 300, unit: "g", storage: "Nevera",
-                    expires: todayPlus(5), price: 0.8, kcal: 41, protein: 1,
-                  });
-                });
-                setMascotMessage("Foto IA demo analizada: zanahoria fresca (confianza 0,91).");
-                showToast("Foto IA convertida en alimento");
-              }}
-            >
-              Analizar foto IA demo
+              📷 Escanear código de barras
             </button>
           </div>
+          {prefill && (
+            <p className="form-hint scan-prefill-hint">
+              ✓ Datos de Open Food Facts: <strong>{prefill.name}</strong> — edita si es necesario.
+            </p>
+          )}
           <div className="form-grid">
             <label>
-              Nombre <input name="name" required placeholder="Pechuga de pollo" />
+              Nombre <input name="name" required placeholder="Pechuga de pollo" defaultValue={prefill?.name ?? ""} />
             </label>
             <label>
               Cantidad
@@ -124,10 +117,10 @@ export function InventoryView() {
               Precio € <input name="price" type="number" step="0.01" min="0" defaultValue="2.8" />
             </label>
             <label>
-              kcal/100g <input name="kcal" type="number" min="0" defaultValue="120" />
+              kcal/100g <input name="kcal" type="number" min="0" defaultValue={prefill?.kcal ?? 120} />
             </label>
             <label>
-              Proteína/100g <input name="protein" type="number" min="0" defaultValue="23" />
+              Proteína/100g <input name="protein" type="number" min="0" defaultValue={prefill?.protein ?? 23} />
             </label>
           </div>
           <button className="primary-button" type="submit">
@@ -215,6 +208,7 @@ export function InventoryView() {
       </div>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
+      {scannerOpen && <BarcodeScannerModal onFill={handleScanFill} onClose={() => setScannerOpen(false)} />}
     </section>
   );
 }

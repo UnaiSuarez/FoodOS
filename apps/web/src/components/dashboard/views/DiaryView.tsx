@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { MealType } from "@foodos/types";
 import { actions, getLogByDay, getWaterToday, useFoodOS } from "@/lib/state";
 import { todayPlus } from "@/lib/utils";
@@ -31,6 +32,7 @@ export function DiaryView() {
   const days = getLogByDay(state);
   const today = todayPlus(0);
   const hasToday = days.some((day) => day.date === today);
+  const [editingMealTypeId, setEditingMealTypeId] = useState<string | null>(null);
 
   return (
     <section className="view">
@@ -114,10 +116,34 @@ export function DiaryView() {
                   <div className="diary-meal">
                     <div className="diary-meal-head">
                       <strong>{entry.name}</strong>
-                      {entry.mealType && (
-                        <span className={`meal-chip ${MEAL_CHIPS[entry.mealType]?.cls ?? ""}`}>
-                          {MEAL_CHIPS[entry.mealType]?.label ?? entry.mealType}
+                      {editingMealTypeId === entry.id ? (
+                        <span className="meal-type-picker">
+                          {(Object.keys(MEAL_CHIPS) as MealType[]).map((type) => (
+                            <button
+                              key={type}
+                              className={`meal-chip ${MEAL_CHIPS[type].cls} ${entry.mealType === type ? "active" : ""}`}
+                              onClick={() => {
+                                mutate((draft) => {
+                                  const e = draft.foodLog.find((x) => x.id === entry.id);
+                                  if (e) e.mealType = type;
+                                });
+                                setEditingMealTypeId(null);
+                              }}
+                            >
+                              {MEAL_CHIPS[type].label}
+                            </button>
+                          ))}
                         </span>
+                      ) : (
+                        entry.mealType && (
+                          <button
+                            className={`meal-chip ${MEAL_CHIPS[entry.mealType]?.cls ?? ""}`}
+                            title="Cambiar tipo de comida"
+                            onClick={() => setEditingMealTypeId(entry.id)}
+                          >
+                            {MEAL_CHIPS[entry.mealType]?.label ?? entry.mealType}
+                          </button>
+                        )
                       )}
                     </div>
                     <small>

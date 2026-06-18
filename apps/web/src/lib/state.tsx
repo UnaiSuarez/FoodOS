@@ -10,12 +10,12 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe } from "@foodos/types";
+import type { DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
-import { calcDailyTargets, isGymDay } from "./nutrition";
+import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
 import { daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
 
 export const defaultState: FoodOSState = {
@@ -26,6 +26,7 @@ export const defaultState: FoodOSState = {
   feedPosts: [],
   foodLog: [],
   waterLog: {},
+  weightLog: [],
   customRecipes: [],
   savedRecipeIds: [],
   profile: null,
@@ -54,6 +55,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.incomeSources ||= [];
   next.foodLog ||= [];
   next.waterLog ||= {};
+  next.weightLog ||= [];
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
   if (legacy.consumedMeals?.length) {
@@ -229,6 +231,11 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe", mealType: "dinner" },
     ];
     demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
+    // Historial de peso demo: últimas 2 semanas con tendencia descendente ligera.
+    demo.weightLog = Array.from({ length: 14 }, (_, i) => ({
+      date: todayMinus(13 - i),
+      kg: Math.round((78.4 - i * 0.12 + (Math.random() - 0.5) * 0.3) * 10) / 10,
+    }));
     saveLocalState(demo);
     remote.schedulePush(demo);
     setState(demo);
@@ -469,6 +476,73 @@ export function getDinnerSuggestion(state: FoodOSState): {
   };
 }
 
+/** Última entrada del historial de peso, o null si no hay registros. */
+export function getLatestWeight(state: FoodOSState): WeightEntry | null {
+  if (!state.weightLog.length) return null;
+  return [...state.weightLog].sort((a, b) => b.date.localeCompare(a.date))[0];
+}
+
+// ---------- Plan semanal automático (PDF §9.5) ----------
+
+export interface WeeklyDayPlan {
+  date: string;
+  dayName: string;
+  isGym: boolean;
+  targets: DailyTargets;
+  breakfast: Recipe | null;
+  lunch: Recipe | null;
+  dinner: Recipe | null;
+}
+
+/**
+ * Genera un plan de 7 días: para cada día asigna 3 recetas (desayuno/comida/cena)
+ * ajustadas al ciclado gym/descanso, respetando alergias y variando cada día.
+ */
+export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
+  if (!state.profile) return [];
+
+  const DAY_NAMES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+  const excluded = [
+    ...(state.profile.allergies ?? []),
+    ...(state.profile.excludedFoods ?? []),
+  ].map((s) => s.toLowerCase());
+
+  const eligible = allRecipes(state).filter(
+    (r) =>
+      !excluded.some(
+        (ex) =>
+          r.title.toLowerCase().includes(ex) ||
+          r.ingredients.some((ing) => ing.name.toLowerCase().includes(ex))
+      )
+  );
+
+  if (!eligible.length) return [];
+
+  const pick = (targetKcal: number, dayIndex: number, already: string[]): Recipe | null => {
+    const pool = eligible.filter((r) => !already.includes(r.id));
+    if (!pool.length) return eligible[dayIndex % eligible.length] ?? null;
+    const sorted = [...pool].sort((a, b) => Math.abs(a.kcal - targetKcal) - Math.abs(b.kcal - targetKcal));
+    return sorted[dayIndex % sorted.length] ?? sorted[0];
+  };
+
+  return Array.from({ length: 7 }, (_, i) => {
+    const date = todayPlus(i);
+    const dayOfWeek = new Date(date + "T12:00:00").getDay();
+    const isGym = state.profile!.gymDays.includes(dayOfWeek);
+    const targets = calcDailyTargets(state.profile!, isGym);
+
+    const breakfast = pick(targets.kcal * 0.25, i, []);
+    const lunch = pick(targets.kcal * 0.35, i + 1, breakfast ? [breakfast.id] : []);
+    const dinner = pick(
+      targets.kcal * 0.40,
+      i + 2,
+      [breakfast?.id, lunch?.id].filter(Boolean) as string[]
+    );
+
+    return { date, dayName: DAY_NAMES[dayOfWeek], isGym, targets, breakfast, lunch, dinner };
+  });
+}
+
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
 export function getFoodSpend(state: FoodOSState): number {
   const weekAgo = new Date();
@@ -632,6 +706,17 @@ export const actions = {
   addWater(draft: FoodOSState, ml: number) {
     const today = todayPlus(0);
     draft.waterLog[today] = Math.max(0, (draft.waterLog[today] ?? 0) + ml);
+  },
+
+  /** Registra el peso corporal de hoy (reemplaza si ya hay una entrada para hoy). */
+  logWeight(draft: FoodOSState, kg: number) {
+    const today = todayPlus(0);
+    const idx = draft.weightLog.findIndex((e) => e.date === today);
+    if (idx >= 0) {
+      draft.weightLog[idx].kg = kg;
+    } else {
+      draft.weightLog.push({ date: today, kg });
+    }
   },
 
   addRecipeToCart(draft: FoodOSState, recipe: Recipe) {
