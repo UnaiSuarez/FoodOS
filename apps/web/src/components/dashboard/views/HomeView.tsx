@@ -8,6 +8,7 @@ import {
   allRecipes,
   getBudgetLeft,
   getConsumedToday,
+  getDinnerSuggestion,
   getFoodSpend,
   getMascot,
   getPendingMacros,
@@ -43,10 +44,12 @@ export function HomeView({
     .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires))
     .slice(0, 4);
 
-  // Sugerencia SOLO con motivo real: algo caduca + faltan macros + entra en presupuesto.
-  const suggestion = (() => {
+  // Sugerencia de cena para cerrar macros (activa 18:30-23:00 si quedan macros).
+  const dinnerSug = getDinnerSuggestion(state);
+
+  // Sugerencia por caducidad (motivo: algo caduca + faltan macros + entra en presupuesto).
+  const expirySug = (() => {
     if (!expiring.length || pending.protein < 15) return null;
-    const expiringNames = expiring.map((item) => item.name.toLowerCase());
     const candidate = allRecipes(state)
       .filter((recipe) => recipe.cost <= Math.max(budgetLeft, 1.5))
       .map((recipe) => ({
@@ -64,6 +67,13 @@ export function HomeView({
       .sort((a, b) => b.match - a.match || b.recipe.protein - a.recipe.protein)[0];
     return candidate ?? null;
   })();
+
+  // La sugerencia activa: cena tiene prioridad a su hora; si no, caducidad.
+  const activeSuggestion = dinnerSug
+    ? { kind: "dinner" as const, ...dinnerSug }
+    : expirySug
+      ? { kind: "expiry" as const, recipe: expirySug.recipe, usedItem: expirySug.usedItem! }
+      : null;
 
   // Mensaje contextual de la mascota segun el estado real.
   const mascotInsight = (() => {
@@ -88,7 +98,7 @@ export function HomeView({
         </button>
       )}
 
-      <div className={`bento-grid ${suggestion ? "" : "no-suggest"}`}>
+      <div className={`bento-grid ${activeSuggestion ? "" : "no-suggest"}`}>
         {/* Macros del dia — la tarjeta principal */}
         <article className="panel bento-macros">
           <div className="bento-macros-head">
@@ -210,30 +220,55 @@ export function HomeView({
           </div>
         </article>
 
-        {/* Sugerencia inteligente — solo con motivo real */}
-        {suggestion && (
-          <article className="panel bento-suggest">
-            <p className="eyebrow">Sugerencia con motivo</p>
-            <h3>{suggestion.recipe.title}</h3>
-            <p className="suggest-why">
-              Usa <strong>{suggestion.usedItem!.name.toLowerCase()}</strong> que caduca{" "}
-              {daysUntil(suggestion.usedItem!.expires) <= 0
-                ? "hoy"
-                : daysUntil(suggestion.usedItem!.expires) === 1
-                  ? "mañana"
-                  : `en ${daysUntil(suggestion.usedItem!.expires)} días`}
-              , aporta <strong>{suggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
-              {eur(suggestion.recipe.cost)} — dentro de tu presupuesto.
-            </p>
+        {/* Sugerencia inteligente — cena para cerrar macros o receta con caducidad */}
+        {activeSuggestion && (
+          <article className={`panel bento-suggest ${activeSuggestion.kind === "dinner" ? "dinner" : ""}`}>
+            {activeSuggestion.kind === "dinner" ? (
+              <>
+                <p className="eyebrow">🌙 Cena para cerrar macros</p>
+                <h3>{activeSuggestion.recipe.title}</h3>
+                <p className="suggest-why">
+                  Te quedan <strong>{activeSuggestion.pendingKcal} kcal</strong> y{" "}
+                  <strong>{activeSuggestion.pendingProtein} g de proteína</strong> — esta receta encaja bien para cenar.
+                  {activeSuggestion.usedExpiringItem && (
+                    <> Además usa <strong>{activeSuggestion.usedExpiringItem.name.toLowerCase()}</strong>, que caduca{" "}
+                    {daysUntil(activeSuggestion.usedExpiringItem.expires) <= 0
+                      ? "hoy"
+                      : daysUntil(activeSuggestion.usedExpiringItem.expires) === 1
+                        ? "mañana"
+                        : `en ${daysUntil(activeSuggestion.usedExpiringItem.expires)} días`}.</>
+                  )}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">Sugerencia con motivo</p>
+                <h3>{activeSuggestion.recipe.title}</h3>
+                <p className="suggest-why">
+                  Usa <strong>{activeSuggestion.usedItem.name.toLowerCase()}</strong> que caduca{" "}
+                  {daysUntil(activeSuggestion.usedItem.expires) <= 0
+                    ? "hoy"
+                    : daysUntil(activeSuggestion.usedItem.expires) === 1
+                      ? "mañana"
+                      : `en ${daysUntil(activeSuggestion.usedItem.expires)} días`}
+                  , aporta <strong>{activeSuggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
+                  {eur(activeSuggestion.recipe.cost)} — dentro de tu presupuesto.
+                </p>
+              </>
+            )}
             <div className="card-actions">
-              <button className="small-action" onClick={() => openRecipe(suggestion.recipe.id)}>
+              <button className="small-action" onClick={() => openRecipe(activeSuggestion.recipe.id)}>
                 Ver receta
               </button>
               <button
                 className="small-action good"
                 onClick={() => {
-                  mutate((draft) => actions.cookRecipe(draft, suggestion.recipe));
-                  setMascotMessage("Receta cocinada. Objetivos actualizados.");
+                  mutate((draft) => actions.cookRecipe(draft, activeSuggestion.recipe));
+                  setMascotMessage(
+                    activeSuggestion.kind === "dinner"
+                      ? "Cena registrada. ¡Macros del día cerrados!"
+                      : "Receta cocinada. Objetivos actualizados."
+                  );
                   showToast("Receta registrada en nutrición");
                 }}
               >

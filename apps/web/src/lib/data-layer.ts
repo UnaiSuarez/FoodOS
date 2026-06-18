@@ -3,12 +3,13 @@ import type {
   FoodOSState,
   GoalMode,
   IncomeFrequency,
+  MealType,
   Sex,
   StorageName,
 } from "@foodos/types";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabase } from "./supabase";
-import { ensureUuid } from "./utils";
+import { ensureUuid, mealTypeFromTime } from "./utils";
 
 // Capa de persistencia de FoodOS.
 // - Local: localStorage, siempre activa.
@@ -268,22 +269,28 @@ class RemoteAdapter {
       };
     }
 
-    state.foodLog = (logRes.data ?? []).map((row) => ({
-      id: row.id,
-      date: row.log_date,
-      time: row.created_at ? new Date(row.created_at).toTimeString().slice(0, 5) : "12:00",
-      name: row.item_name,
-      qty: row.quantity_g != null ? Number(row.quantity_g) : null,
-      unit: row.quantity_g != null ? "g" : null,
-      kcal: Number(row.kcal) || 0,
-      protein: Number(row.protein_g) || 0,
-      carbs: Number(row.carbs_g) || 0,
-      fat: Number(row.fat_g) || 0,
-      source: (["recipe", "inventory", "manual"].includes(row.source) ? row.source : "manual") as
-        | "recipe"
-        | "inventory"
-        | "manual",
-    }));
+    state.foodLog = (logRes.data ?? []).map((row) => {
+      const time = row.created_at ? new Date(row.created_at).toTimeString().slice(0, 5) : "12:00";
+      // meal_type columna pendiente de añadir al schema; mientras, se infiere de la hora.
+      const mealType: MealType = mealTypeFromTime(time);
+      return {
+        id: row.id,
+        date: row.log_date,
+        time,
+        name: row.item_name,
+        qty: row.quantity_g != null ? Number(row.quantity_g) : null,
+        unit: row.quantity_g != null ? "g" : null,
+        kcal: Number(row.kcal) || 0,
+        protein: Number(row.protein_g) || 0,
+        carbs: Number(row.carbs_g) || 0,
+        fat: Number(row.fat_g) || 0,
+        source: (["recipe", "inventory", "manual"].includes(row.source) ? row.source : "manual") as
+          | "recipe"
+          | "inventory"
+          | "manual",
+        mealType,
+      };
+    });
     // TODO water_log: ejecutar supabase/schema.sql actualizado (tabla water_log)
     // y añadir aqui el pull/push del agua.
 

@@ -1,3 +1,14 @@
+import type { MealType } from "@foodos/types";
+
+/** Infiere el tipo de comida a partir de la hora HH:mm (PDF §9.5). */
+export function mealTypeFromTime(time: string): MealType {
+  const hour = parseInt(time.slice(0, 2), 10);
+  if (hour >= 5 && hour < 11) return "breakfast";
+  if (hour >= 11 && hour < 16) return "lunch";
+  if (hour >= 19 || hour < 5) return "dinner";
+  return "snack"; // 16-19 = merienda/snack
+}
+
 export function uid(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()

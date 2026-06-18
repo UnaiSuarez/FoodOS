@@ -10,13 +10,13 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, Recipe } from "@foodos/types";
+import type { FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay } from "./nutrition";
-import { daysUntil, eur, todayMinus, todayPlus, uid } from "./utils";
+import { daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
 
 export const defaultState: FoodOSState = {
   inventory: [],
@@ -70,11 +70,17 @@ export function normalizeState(state: FoodOSState): FoodOSState {
         carbs: meal.carbs,
         fat: meal.fat,
         source: "recipe",
+        mealType: "lunch",
       });
     });
   }
   delete legacy.consumedMeals;
   delete legacy.consumed;
+  // Migra entradas del diario sin mealType (datos guardados antes de esta version).
+  next.foodLog = next.foodLog.map((entry) => ({
+    ...entry,
+    mealType: (entry as FoodLogEntry & { mealType?: MealType }).mealType ?? mealTypeFromTime(entry.time),
+  }));
   next.customRecipes = (next.customRecipes || []).map((recipe) => ({
     ...recipe,
     ingredients: (recipe.ingredients || []).map((ing) =>
@@ -216,11 +222,11 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     demo.feedPosts = buildDemoPosts();
     // Historial demo del diario: ayer y anteayer con comidas y agua.
     demo.foodLog = [
-      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe" },
-      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe" },
-      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory" },
-      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe" },
-      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe" },
+      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe", mealType: "breakfast" },
+      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe", mealType: "lunch" },
+      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory", mealType: "dinner" },
+      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe", mealType: "lunch" },
+      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe", mealType: "dinner" },
     ];
     demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
     saveLocalState(demo);
@@ -408,6 +414,61 @@ export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals
   };
 }
 
+/**
+ * Sugerencia de cena para cerrar macros (PDF §9.5 + §15):
+ * solo se activa entre las 18:30 y las 23:00 cuando quedan macros relevantes.
+ * Prioriza recetas que usen alimentos a punto de caducar.
+ */
+export function getDinnerSuggestion(state: FoodOSState): {
+  recipe: Recipe;
+  pendingKcal: number;
+  pendingProtein: number;
+  usedExpiringItem: InventoryItem | undefined;
+} | null {
+  const now = new Date();
+  const timeDecimal = now.getHours() + now.getMinutes() / 60;
+  if (timeDecimal < 18.5 || timeDecimal >= 23) return null;
+
+  const pending = getPendingMacros(state);
+  if (pending.kcal < 100 && pending.protein < 10) return null;
+
+  const expiringItems = state.inventory
+    .filter((item) => item.qty > 0 && daysUntil(item.expires) <= 3)
+    .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires));
+
+  const budgetLeft = getBudgetLeft(state);
+
+  const best = allRecipes(state)
+    .filter((r) => r.cost <= Math.max(budgetLeft, 1.5))
+    .map((r) => {
+      const usedExpiringItem = expiringItems.find((item) =>
+        r.ingredients.some(
+          (ing) =>
+            item.name.toLowerCase().includes(ing.name.split(" ")[0]) ||
+            ing.name.includes(item.name.toLowerCase().split(" ")[0])
+        )
+      );
+      const matchPct = getRecipeMatch(state, r).pct;
+      // Penalidad: cuanto más se aleja del kcal pendiente, peor puntuacion.
+      const kcalDiff = Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1);
+      return { r, usedExpiringItem, matchPct, kcalDiff };
+    })
+    .filter((e) => e.matchPct >= 20 || e.usedExpiringItem)
+    .sort((a, b) => {
+      if (a.usedExpiringItem && !b.usedExpiringItem) return -1;
+      if (!a.usedExpiringItem && b.usedExpiringItem) return 1;
+      return a.kcalDiff - b.kcalDiff;
+    })[0];
+
+  if (!best) return null;
+  return {
+    recipe: best.r,
+    pendingKcal: Math.round(pending.kcal),
+    pendingProtein: Math.round(pending.protein),
+    usedExpiringItem: best.usedExpiringItem,
+  };
+}
+
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
 export function getFoodSpend(state: FoodOSState): number {
   const weekAgo = new Date();
@@ -526,10 +587,11 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
 export const actions = {
   /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
   cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1) {
+    const t = nowTime();
     draft.foodLog.push({
       id: uid(),
       date: todayPlus(0),
-      time: nowTime(),
+      time: t,
       name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
       qty: null,
       unit: null,
@@ -538,6 +600,7 @@ export const actions = {
       carbs: Math.round(recipe.carbs * ratio * 10) / 10,
       fat: Math.round(recipe.fat * ratio * 10) / 10,
       source: "recipe",
+      mealType: mealTypeFromTime(t),
     });
   },
 
@@ -548,15 +611,17 @@ export const actions = {
     if (!item) return;
     const consumed = Math.min(qty, item.qty);
     const macros = macrosForQuantity(item, consumed);
+    const t = nowTime();
     draft.foodLog.push({
       id: uid(),
       date: todayPlus(0),
-      time: nowTime(),
+      time: t,
       name: item.name,
       qty: consumed,
       unit: item.unit,
       ...macros,
       source: "inventory",
+      mealType: mealTypeFromTime(t),
     });
     item.qty = Math.round((item.qty - consumed) * 100) / 100;
     if (item.qty <= 0) {
@@ -654,3 +719,4 @@ export function assistantMessage(state: FoodOSState, kind: "ticket" | "bank" | "
 }
 
 export { getMascot };
+export { mealTypeFromTime };

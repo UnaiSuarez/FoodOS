@@ -1394,6 +1394,17 @@ select:focus {
   justify-content: flex-start;
 }
 
+.bento-suggest.dinner {
+  border-color: rgba(99, 102, 241, 0.3);
+  background:
+    linear-gradient(135deg, rgba(99, 102, 241, 0.1), transparent 60%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-suggest.dinner .eyebrow {
+  color: #818cf8;
+}
+
 /* ---------- Registro diario (comidas + agua) ---------- */
 
 .water-panel {
@@ -1504,14 +1515,57 @@ select:focus {
   font-size: 14px;
 }
 
+.diary-meal-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .diary-meal strong {
-  display: block;
   font-size: 14px;
 }
 
 .diary-meal small {
   color: var(--muted);
   font-size: 12px;
+  display: block;
+  margin-top: 1px;
+}
+
+/* Chips de tipo de comida */
+
+.meal-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: rgba(240, 244, 238, 0.07);
+  color: var(--muted);
+}
+
+.meal-chip.breakfast {
+  background: rgba(251, 146, 60, 0.14);
+  color: var(--amber);
+}
+
+.meal-chip.lunch {
+  background: rgba(74, 222, 128, 0.14);
+  color: var(--green);
+}
+
+.meal-chip.dinner {
+  background: rgba(99, 102, 241, 0.16);
+  color: #818cf8;
+}
+
+.meal-chip.snack {
+  background: rgba(240, 244, 238, 0.08);
+  color: var(--muted);
 }
 
 /* ---------- Consumo parcial ---------- */

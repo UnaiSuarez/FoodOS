@@ -1,10 +1,18 @@
 "use client";
 
+import type { MealType } from "@foodos/types";
 import { actions, getLogByDay, getWaterToday, useFoodOS } from "@/lib/state";
 import { todayPlus } from "@/lib/utils";
 
 const WATER_GOAL_ML = 2500;
 const SOURCE_ICONS: Record<string, string> = { recipe: "🍽", inventory: "🥕", manual: "✎" };
+
+const MEAL_CHIPS: Record<MealType, { label: string; cls: string }> = {
+  breakfast: { label: "🌅 Desayuno", cls: "breakfast" },
+  lunch:     { label: "☀️ Comida",   cls: "lunch" },
+  snack:     { label: "🌤 Snack",    cls: "snack" },
+  dinner:    { label: "🌙 Cena",     cls: "dinner" },
+};
 
 function formatDay(date: string): string {
   if (date === todayPlus(0)) return "Hoy";
@@ -104,7 +112,14 @@ export function DiaryView() {
                   <span className="diary-time">{entry.time}</span>
                   <span className="diary-icon">{SOURCE_ICONS[entry.source] ?? "🍽"}</span>
                   <div className="diary-meal">
-                    <strong>{entry.name}</strong>
+                    <div className="diary-meal-head">
+                      <strong>{entry.name}</strong>
+                      {entry.mealType && (
+                        <span className={`meal-chip ${MEAL_CHIPS[entry.mealType]?.cls ?? ""}`}>
+                          {MEAL_CHIPS[entry.mealType]?.label ?? entry.mealType}
+                        </span>
+                      )}
+                    </div>
                     <small>
                       {entry.qty != null ? `${entry.qty} ${entry.unit} · ` : ""}
                       {Math.round(entry.kcal)} kcal · {entry.protein}g P · {entry.carbs}g C · {entry.fat}g G

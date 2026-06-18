@@ -106,6 +106,8 @@ export interface MacroTotals {
 
 export type FoodLogSource = "recipe" | "inventory" | "manual";
 
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+
 /** Entrada del diario de comidas (espejo de la tabla food_log). */
 export interface FoodLogEntry extends MacroTotals {
   id: string;
@@ -118,6 +120,8 @@ export interface FoodLogEntry extends MacroTotals {
   qty: number | null;
   unit: string | null;
   source: FoodLogSource;
+  /** Tipo de comida: se infiere de la hora al registrar (PDF §9.5). */
+  mealType: MealType;
 }
 
 // ---------- Perfil fisico y objetivos (PDF §9) ----------
