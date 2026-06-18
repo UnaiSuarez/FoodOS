@@ -15,6 +15,8 @@ import { NutritionView } from "./views/NutritionView";
 import { AssistantView } from "./views/AssistantView";
 import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
+import { AIConfigModal } from "./AIConfigModal";
+import { loadAIConfig } from "@/lib/ai-config";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
@@ -44,6 +46,8 @@ function DashboardInner() {
   const [view, setView] = useState<ViewId>("dashboard");
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
+  const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -117,6 +121,14 @@ function DashboardInner() {
             <h1>{currentTitle}</h1>
           </div>
           <div className="top-actions">
+            <button
+              className={`secondary-button ai-btn ${aiConfigured ? "configured" : ""}`}
+              onClick={() => setAiConfigOpen(true)}
+              title={aiConfigured ? "IA personal configurada" : "Conectar IA personal (gratis para ti)"}
+            >
+              ✦ IA
+              {aiConfigured && <span className="ai-dot" aria-hidden="true" />}
+            </button>
             <button className="secondary-button" onClick={() => setAccountOpen(true)} title="Cuenta FoodOS">
               Cuenta
             </button>
@@ -169,6 +181,14 @@ function DashboardInner() {
 
       {openRecipeId && <RecipeDetailModal recipeId={openRecipeId} onClose={() => setOpenRecipeId(null)} />}
       {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} />}
+      {aiConfigOpen && (
+        <AIConfigModal
+          onClose={() => {
+            setAiConfigOpen(false);
+            setAiConfigured(loadAIConfig() !== null);
+          }}
+        />
+      )}
 
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
         {toast}
