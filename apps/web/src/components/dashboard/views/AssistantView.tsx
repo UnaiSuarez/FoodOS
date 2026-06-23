@@ -1,75 +1,168 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MASCOTS } from "@/lib/mascots";
-import { assistantMessage, getMascot, useFoodOS } from "@/lib/state";
-import { todayPlus, uid } from "@/lib/utils";
+import { getMascot, getPendingMacros, getBudgetLeft, useFoodOS } from "@/lib/state";
+import { loadAIConfig } from "@/lib/ai-config";
+import { callAIChat } from "@/lib/ai-provider";
+import { eur } from "@/lib/utils";
 
-type InsightKind = "ticket" | "bank" | "week" | "optimize";
+type ChatMessage = { role: "user" | "assistant"; text: string };
+
+const QUICK_QUESTIONS = [
+  "¿Qué puedo cenar con lo que tengo?",
+  "¿Cuánta proteína me falta hoy?",
+  "¿Cuál es la receta más barata con proteína?",
+  "¿Cómo voy de presupuesto esta semana?",
+];
+
+function localReply(
+  pending: { kcal: number; protein: number },
+  budgetLeft: number,
+  msg: string
+): string {
+  const lower = msg.toLowerCase();
+  if (lower.includes("proteína") || lower.includes("protein"))
+    return `Te quedan ${Math.round(pending.protein)}g de proteína y ${Math.round(pending.kcal)} kcal para hoy. Mira el optimizador proteína/€ en la vista de Nutrición para las fuentes más baratas.`;
+  if (lower.includes("presupuesto") || lower.includes("dinero") || lower.includes("gastar"))
+    return `Te quedan ${eur(budgetLeft)} de presupuesto semanal de comida. En Finanzas puedes ver el desglose por semana.`;
+  if (lower.includes("cenar") || lower.includes("comer") || lower.includes("receta"))
+    return `Con ${Math.round(pending.kcal)} kcal y ${Math.round(pending.protein)}g de proteína pendientes, busca en Recetas filtrando por "disponibles" — ahí verás qué puedes hacer con tu despensa actual.`;
+  if (lower.includes("caduc") || lower.includes("inventario"))
+    return "Revisa la vista Panel — ahí aparecen los alimentos que caducan pronto y sugerencias de recetas para usarlos.";
+  return `Hola! Tengo acceso a tus datos de inventario, nutrición y presupuesto. Para respuestas más precisas conecta tu IA personal (botón ✦ IA en el menú superior). ¿En qué te ayudo?`;
+}
 
 export function AssistantView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
-  const [insight, setInsight] = useState("Pulsa una acción para generar un insight local.");
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const active = getMascot(state.mascotId);
+  const aiConfig = loadAIConfig();
+  const pending = getPendingMacros(state);
+  const budgetLeft = getBudgetLeft(state);
 
-  function runInsight(kind: InsightKind) {
-    setInsight(assistantMessage(state, kind));
-    if (kind === "ticket") {
-      mutate((draft) => {
-        draft.expenses.push({
-          id: uid(), type: "expense", amount: 18.4, category: "Comida",
-          description: "Ticket demo OCR", date: todayPlus(0),
-        });
-      });
+  async function send(text: string) {
+    if (!text.trim() || loading) return;
+    setMessages((prev) => [...prev, { role: "user", text: text.trim() }]);
+    setInput("");
+    setLoading(true);
+    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
+
+    try {
+      const reply = aiConfig
+        ? await callAIChat(aiConfig, state, text.trim())
+        : localReply(pending, budgetLeft, text.trim());
+      setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Error desconocido";
+      setMessages((prev) => [...prev, { role: "assistant", text: `⚠ ${msg}` }]);
+    } finally {
+      setLoading(false);
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
     }
-    if (kind === "bank") {
-      mutate((draft) => {
-        draft.bankSynced = true;
-        draft.expenses.push({
-          id: uid(), type: "expense", amount: 9.75, category: "Comida",
-          description: "Banco demo: supermercado", date: todayPlus(0),
-        });
-      });
-    }
-    setMascotMessage("Insight generado.");
-    showToast("Insight generado");
   }
 
   return (
     <section className="view">
       <div className="assistant-grid">
-        <article className="panel assistant-card">
-          <Image src={active.image} alt={`${active.name}, tu compañero`} width={400} height={440} />
-          <div>
-            <p className="eyebrow">Copiloto silencioso</p>
-            <h2>{active.name} cruza tus datos.</h2>
-            <p>
-              Estas acciones simulan funciones que en producción usarán Gemini, Open Food Facts,
-              Nordigen y Supabase.
+        {/* Panel de chat */}
+        <article className="panel chat-panel">
+          <div className="chat-header">
+            <Image src={active.image} alt={active.name} width={48} height={53} />
+            <div>
+              <strong>{active.name}</strong>
+              <span className={`badge ${aiConfig ? "green" : ""}`}>
+                {aiConfig ? "IA conectada" : "Modo local"}
+              </span>
+            </div>
+          </div>
+
+          <div className="chat-messages">
+            {messages.length === 0 && (
+              <div className="chat-empty">
+                <p>
+                  Hola, soy {active.name}. Cruzo tus datos de inventario, nutrición y
+                  presupuesto en tiempo real. ¿En qué te ayudo?
+                </p>
+                <div className="quick-chips">
+                  {QUICK_QUESTIONS.map((q) => (
+                    <button key={q} className="quick-chip" onClick={() => void send(q)}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <div key={i} className={`chat-bubble ${msg.role}`}>
+                {msg.role === "assistant" && (
+                  <Image
+                    src={active.image}
+                    alt={active.name}
+                    width={28}
+                    height={31}
+                    className="bubble-avatar"
+                  />
+                )}
+                <p>{msg.text}</p>
+              </div>
+            ))}
+
+            {loading && (
+              <div className="chat-bubble assistant">
+                <Image
+                  src={active.image}
+                  alt={active.name}
+                  width={28}
+                  height={31}
+                  className="bubble-avatar"
+                />
+                <p className="chat-thinking">
+                  <span /><span /><span />
+                </p>
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {!aiConfig && (
+            <p className="chat-no-ai">
+              Respuestas locales activas. Conecta tu IA personal con el botón{" "}
+              <strong>✦ IA</strong> arriba para respuestas inteligentes.
             </p>
-          </div>
+          )}
+
+          <form
+            className="chat-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void send(input);
+            }}
+          >
+            <input
+              className="chat-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Escríbeme algo…"
+              disabled={loading}
+              autoComplete="off"
+            />
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={loading || !input.trim()}
+            >
+              →
+            </button>
+          </form>
         </article>
 
-        <article className="panel">
-          <h2>Acciones inteligentes</h2>
-          <div className="action-grid">
-            <button className="secondary-button" onClick={() => runInsight("ticket")}>
-              Leer ticket demo
-            </button>
-            <button className="secondary-button" onClick={() => runInsight("bank")}>
-              Sincronizar banco demo
-            </button>
-            <button className="secondary-button" onClick={() => runInsight("week")}>
-              Crear plan semanal
-            </button>
-            <button className="secondary-button" onClick={() => runInsight("optimize")}>
-              Optimizar proteína/€
-            </button>
-          </div>
-          <div className="insight-box">{insight}</div>
-        </article>
-
+        {/* Selector de mascota */}
         <article className="panel mascot-settings">
           <div className="panel-head">
             <div>

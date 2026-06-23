@@ -5,11 +5,14 @@ import type { ActivityLevel, GoalMode, PhysicalProfile, Sex, WeightEntry } from 
 import {
   actions,
   bestRecipe,
+  countLowProteinDays,
   findRecipe,
   generateWeeklyPlan,
   getConsumedToday,
   getLatestWeight,
+  getProteinRanking,
   getTodayLog,
+  getWeeklyMacroHistory,
   useFoodOS,
   type WeeklyDayPlan,
 } from "@/lib/state";
@@ -72,6 +75,10 @@ export function NutritionView() {
           <NutritionToday />
         </article>
       </div>
+
+      {state.profile && <MacroWeekChart />}
+
+      {state.profile && <ProteinOptimizerPanel />}
 
       {state.profile && <WeightPanel />}
 
@@ -501,6 +508,125 @@ function WeeklyPlanPanel() {
               <button className="small-action good" onClick={() => cookDay(day)}>
                 Registrar todo
               </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// ---------- Gráfica semanal de macros (analytics) ----------
+
+function MacroWeekChart() {
+  const { state } = useFoodOS();
+  const history = getWeeklyMacroHistory(state, 7);
+  const targetKcal = state.nutrition.kcal || 2000;
+  const targetProtein = state.nutrition.protein || 150;
+
+  const W = 560, H = 100, PAD = 20;
+  const gap = (W - PAD * 2) / 7;
+  const BAR_W = Math.max(20, gap * 0.55);
+  const DAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Últimos 7 días</p>
+          <h2>Evolución de macros</h2>
+        </div>
+        <div className="meta-row">
+          <span className="badge green" style={{ fontSize: 11 }}>■ Proteína</span>
+          <span className="badge blue" style={{ fontSize: 11 }}>■ Kcal</span>
+        </div>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H + 28}`}
+        className="macro-week-chart"
+        role="img"
+        aria-label="Evolución semanal de macros"
+      >
+        {/* Línea objetivo 100% */}
+        <line x1={PAD} y1={1} x2={W - PAD} y2={1} stroke="rgba(74,222,128,0.25)" strokeWidth="1" strokeDasharray="4 3" />
+        {history.map((day, i) => {
+          const kcalPct = Math.min(1, day.kcal / targetKcal);
+          const protPct = Math.min(1, day.protein / targetProtein);
+          const x = PAD + i * gap + (gap - BAR_W) / 2;
+          const barKcalH = kcalPct * H;
+          const barProtH = protPct * H;
+          const dateObj = new Date(`${day.date}T12:00:00`);
+          const dow = dateObj.getDay();
+          const label = DAY_LABELS[dow === 0 ? 6 : dow - 1];
+          return (
+            <g key={day.date}>
+              <rect x={x} y={H - barKcalH} width={BAR_W} height={barKcalH} fill="rgba(59,130,246,0.28)" rx="3" />
+              <rect x={x + BAR_W * 0.2} y={H - barProtH} width={BAR_W * 0.6} height={barProtH} fill="var(--green)" rx="2" />
+              <text x={x + BAR_W / 2} y={H + 18} textAnchor="middle" fill="rgba(150,163,144,0.85)" fontSize="11">{label}</text>
+              {day.protein > 0 && (
+                <text
+                  x={x + BAR_W / 2}
+                  y={Math.max(11, H - barProtH - 4)}
+                  textAnchor="middle"
+                  fill="var(--green)"
+                  fontSize="9"
+                  fontWeight="600"
+                >
+                  {Math.round(protPct * 100)}%
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <p className="chart-legend">
+        Las barras verdes muestran % de proteína alcanzado. Las azules, % de calorías.
+      </p>
+    </article>
+  );
+}
+
+// ---------- Optimizador proteína/€ (§9.8) ----------
+
+function ProteinOptimizerPanel() {
+  const { state } = useFoodOS();
+  const ranking = getProteinRanking(state);
+  const lowDays = countLowProteinDays(state);
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">§9.8 Eficiencia</p>
+          <h2>Optimizador proteína/€</h2>
+        </div>
+        {lowDays >= 2 && (
+          <span className="badge red">⚠ Baja proteína {lowDays}/3 días</span>
+        )}
+      </div>
+
+      {lowDays >= 2 && (
+        <p className="optimizer-alert">
+          Has estado por debajo del 80% de tu objetivo de proteína {lowDays} de los últimos 3
+          días. Estas recetas son las más eficientes:
+        </p>
+      )}
+
+      {ranking.length === 0 ? (
+        <p className="empty">
+          Añade recetas con coste y macros para ver el ranking de eficiencia proteica.
+        </p>
+      ) : (
+        <div className="optimizer-list">
+          {ranking.map((item, i) => (
+            <div key={item.id} className="optimizer-row">
+              <span className="optimizer-rank">{i + 1}</span>
+              <span className="optimizer-name">{item.title}</span>
+              <span className="optimizer-macro">{item.protein}g prot</span>
+              <span className="optimizer-cost">€{item.cost.toFixed(2)}/ración</span>
+              <span className={`badge ${i === 0 ? "green" : i <= 2 ? "amber" : ""}`}>
+                {item.proteinPerEuro}g/€
+              </span>
             </div>
           ))}
         </div>

@@ -199,6 +199,112 @@ export async function generateAIRecipe(config: AIConfig, state: FoodOSState): Pr
   return parseRecipe(text);
 }
 
+function buildAssistantSystemPrompt(state: FoodOSState): string {
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const todayLog = state.foodLog.filter((e) => e.date === todayDate);
+  const consumed = todayLog.reduce(
+    (acc, e) => ({ kcal: acc.kcal + e.kcal, protein: acc.protein + e.protein }),
+    { kcal: 0, protein: 0 }
+  );
+  const pending = {
+    kcal: Math.round(Math.max(0, state.nutrition.kcal - consumed.kcal)),
+    protein: Math.round(Math.max(0, state.nutrition.protein - consumed.protein)),
+  };
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  const budgetLeft = Math.max(
+    0,
+    state.weeklyBudget -
+      state.expenses
+        .filter((e) => e.type === "expense" && e.category === "Comida" && e.date >= weekAgo)
+        .reduce((s, e) => s + e.amount, 0)
+  );
+  const expiringSoon = state.inventory
+    .filter((item) => daysUntil(item.expires) <= 3 && item.qty > 0)
+    .map((item) => item.name)
+    .slice(0, 5)
+    .join(", ");
+  const inventoryTop = state.inventory
+    .filter((item) => item.qty > 0)
+    .slice(0, 8)
+    .map((i) => `${i.name} (${i.qty}${i.unit})`)
+    .join(", ");
+  const goal = state.profile?.goal ?? "no configurado";
+
+  return `Eres el asistente nutricional y financiero de FoodOS. Responde en español de forma concisa y útil (máximo 3 párrafos cortos). Cruzas datos reales del usuario.
+
+Contexto actual:
+- Macros pendientes hoy: ${pending.kcal} kcal, ${pending.protein}g proteína
+- Presupuesto semanal disponible: €${budgetLeft.toFixed(2)}
+- Objetivo corporal: ${goal}
+- Inventario (muestra): ${inventoryTop || "vacío"}
+- Caducan en ≤3 días: ${expiringSoon || "ninguno"}
+- Alergias: ${state.profile?.allergies.join(", ") || "ninguna"}
+
+Responde directamente a la pregunta usando estos datos cuando sea relevante. Si no hay datos suficientes, dilo con naturalidad.`;
+}
+
+export async function callAIChat(
+  config: AIConfig,
+  state: FoodOSState,
+  userMessage: string
+): Promise<string> {
+  const system = buildAssistantSystemPrompt(state);
+
+  switch (config.provider) {
+    case "gemini":
+      return callGemini(config, `${system}\n\nUsuario: ${userMessage}`);
+
+    case "openai": {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: userMessage },
+          ],
+          max_tokens: 512,
+          temperature: 0.7,
+        }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `OpenAI error ${res.status}`);
+      }
+      const data = (await res.json()) as { choices: Array<{ message: { content: string } }> };
+      return data.choices[0].message.content;
+    }
+
+    case "anthropic": {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": config.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-allow-browser": "true",
+        } as Record<string, string>,
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: 512,
+          system,
+          messages: [{ role: "user", content: userMessage }],
+        }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `Anthropic error ${res.status}`);
+      }
+      const data = (await res.json()) as { content: Array<{ text: string }> };
+      return data.content[0].text;
+    }
+
+    case "ollama":
+      return callOllama(config, `${system}\n\nUsuario: ${userMessage}`);
+  }
+}
+
 export async function testAIConnection(config: AIConfig): Promise<void> {
   const ping = 'Responde SOLO con este JSON: {"ok":true}';
   switch (config.provider) {

@@ -651,6 +651,56 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
     }));
 }
 
+/** Ranking de recetas por gramos de proteína por euro (optimizador §9.8). */
+export function getProteinRanking(
+  state: FoodOSState
+): Array<{ id: string; title: string; protein: number; cost: number; proteinPerEuro: number }> {
+  return allRecipes(state)
+    .filter((r) => r.protein > 0 && r.cost > 0)
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      protein: r.protein,
+      cost: r.cost,
+      proteinPerEuro: Math.round((r.protein / r.cost) * 10) / 10,
+    }))
+    .sort((a, b) => b.proteinPerEuro - a.proteinPerEuro)
+    .slice(0, 6);
+}
+
+/** Número de días en los últimos 3 en que la proteína consumida fue < 80% del objetivo. */
+export function countLowProteinDays(state: FoodOSState): number {
+  const target = state.nutrition.protein;
+  if (!target) return 0;
+  let count = 0;
+  for (let i = 1; i <= 3; i++) {
+    const date = todayPlus(-i);
+    const dayTotal = state.foodLog
+      .filter((e) => e.date === date)
+      .reduce((sum, e) => sum + e.protein, 0);
+    if (dayTotal < target * 0.8) count++;
+  }
+  return count;
+}
+
+/** Totales de macros por día en los últimos N días (para gráficas). */
+export function getWeeklyMacroHistory(
+  state: FoodOSState,
+  days = 7
+): Array<{ date: string; kcal: number; protein: number; carbs: number; fat: number }> {
+  return Array.from({ length: days }, (_, i) => {
+    const date = todayPlus(-(days - 1 - i));
+    const entries = state.foodLog.filter((e) => e.date === date);
+    return {
+      date,
+      kcal: Math.round(entries.reduce((s, e) => s + e.kcal, 0)),
+      protein: Math.round(entries.reduce((s, e) => s + e.protein, 0)),
+      carbs: Math.round(entries.reduce((s, e) => s + e.carbs, 0)),
+      fat: Math.round(entries.reduce((s, e) => s + e.fat, 0)),
+    };
+  });
+}
+
 export function expiryBadge(expires: string): { label: string; cls: string } {
   const days = daysUntil(expires);
   if (days < 0) return { label: "Caducado", cls: "red" };

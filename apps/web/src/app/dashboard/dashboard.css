@@ -2900,3 +2900,216 @@ select:focus {
 .settings-footer {
   padding: 8px 0 16px;
 }
+
+/* ── Chat del asistente ─────────────────────────────────────────── */
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(240, 244, 238, 0.07);
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 320px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.quick-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.quick-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  background: rgba(74, 222, 128, 0.06);
+  color: var(--green);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.quick-chip:hover {
+  background: rgba(74, 222, 128, 0.14);
+}
+
+.chat-bubble {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 88%;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.chat-bubble p {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.chat-bubble.assistant p {
+  background: rgba(240, 244, 238, 0.06);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+
+.chat-bubble.user p {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--text);
+  border-bottom-right-radius: 4px;
+}
+
+.bubble-avatar {
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.chat-thinking {
+  display: flex !important;
+  align-items: center;
+  gap: 5px;
+  min-width: 52px;
+  padding: 12px 14px !important;
+}
+
+.chat-thinking span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: thinking-dot 1.2s ease-in-out infinite;
+}
+
+.chat-thinking span:nth-child(2) { animation-delay: 0.2s; }
+.chat-thinking span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes thinking-dot {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-4px); }
+}
+
+.chat-no-ai {
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid rgba(240, 244, 238, 0.06);
+  background: rgba(240, 244, 238, 0.02);
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(240, 244, 238, 0.07);
+}
+
+.chat-input {
+  flex: 1;
+  background: rgba(240, 244, 238, 0.06);
+  border: 1px solid rgba(240, 244, 238, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.chat-input:focus {
+  outline: none;
+  border-color: var(--green);
+}
+
+/* ── Gráfica semanal de macros ──────────────────────────────────── */
+.macro-week-chart {
+  width: 100%;
+  height: auto;
+  margin: 8px 0 4px;
+}
+
+.chart-legend {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── Optimizador proteína/€ ─────────────────────────────────────── */
+.optimizer-alert {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 10px 14px;
+  background: rgba(248, 113, 113, 0.07);
+  border-left: 3px solid #f87171;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.optimizer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.optimizer-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 64px 96px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(240, 244, 238, 0.04);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.optimizer-rank {
+  font-weight: 700;
+  color: var(--green);
+  text-align: center;
+}
+
+.optimizer-name {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optimizer-macro,
+.optimizer-cost {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
