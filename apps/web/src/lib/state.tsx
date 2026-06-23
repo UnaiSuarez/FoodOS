@@ -558,6 +558,88 @@ export function getBudgetLeft(state: FoodOSState): number {
   return Math.max(0, Number(state.weeklyBudget) - getFoodSpend(state));
 }
 
+// Umbrales de "stock bajo" por unidad.
+const LOW_STOCK: Record<string, number> = { g: 200, ml: 300, L: 0.5, kg: 0.3, ud: 2 };
+
+/** Items del inventario casi vacíos que no están pendientes ya en el carrito. */
+export function getLowStockSuggestions(state: FoodOSState): import("@foodos/types").CartItem[] {
+  const inCart = new Set(
+    state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
+  );
+  return state.inventory
+    .filter((item) => {
+      const threshold = LOW_STOCK[item.unit] ?? 100;
+      return item.qty <= threshold && !inCart.has(item.name.toLowerCase());
+    })
+    .slice(0, 14)
+    .map((item) => ({
+      id: uid(),
+      name: item.name,
+      qty: item.unit === "ud" ? 3 : item.unit === "L" ? 1 : item.unit === "kg" ? 1 : 500,
+      unit: item.unit,
+      price: item.price,
+      store: "Mercadona",
+      checked: false,
+      source: "lowstock" as const,
+    }));
+}
+
+/** Ingredientes del plan semanal que no están cubiertos por el inventario actual. */
+export function getPlanShoppingList(state: FoodOSState): import("@foodos/types").CartItem[] {
+  if (!state.profile) return [];
+  const plan = generateWeeklyPlan(state);
+  if (!plan.length) return [];
+
+  const inCart = new Set(
+    state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
+  );
+  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+
+  for (const day of plan) {
+    for (const recipe of [day.breakfast, day.lunch, day.dinner]) {
+      if (!recipe) continue;
+      for (const ing of recipe.ingredients) {
+        const key = ing.name.toLowerCase();
+        if (inCart.has(key)) continue;
+
+        const inStock = state.inventory
+          .filter((inv) => {
+            const n = inv.name.toLowerCase();
+            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
+          })
+          .reduce((sum, inv) => sum + inv.qty, 0);
+
+        const shortfall = Math.max(0, ing.quantity - inStock);
+        if (shortfall <= 0) continue;
+
+        const existing = needed.get(key);
+        if (existing) {
+          existing.qty += shortfall;
+        } else {
+          needed.set(key, {
+            qty: shortfall,
+            unit: ing.unit,
+            price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(needed.entries())
+    .slice(0, 20)
+    .map(([name, data]) => ({
+      id: uid(),
+      name,
+      qty: Math.round(data.qty),
+      unit: data.unit,
+      price: Math.round(data.price * 100) / 100,
+      store: "Mercadona",
+      checked: false,
+      source: "plan" as const,
+    }));
+}
+
 export function expiryBadge(expires: string): { label: string; cls: string } {
   const days = daysUntil(expires);
   if (days < 0) return { label: "Caducado", cls: "red" };

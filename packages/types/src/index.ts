@@ -27,6 +27,8 @@ export interface CartItem {
   price: number;
   store: string;
   checked: boolean;
+  /** Origen del item para mostrar badge contextual */
+  source?: "manual" | "plan" | "lowstock";
 }
 
 export type MovementType = "expense" | "income";
