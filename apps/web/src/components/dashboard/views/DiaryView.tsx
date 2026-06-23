@@ -5,7 +5,8 @@ import type { MealType } from "@foodos/types";
 import { actions, getLogByDay, getWaterToday, useFoodOS } from "@/lib/state";
 import { todayPlus } from "@/lib/utils";
 
-const WATER_GOAL_ML = 2500;
+// Valor por defecto; se reemplaza con state.settings.waterGoalMl en el componente.
+const WATER_GOAL_DEFAULT = 2500;
 const SOURCE_ICONS: Record<string, string> = { recipe: "🍽", inventory: "🥕", manual: "✎" };
 
 const MEAL_CHIPS: Record<MealType, { label: string; cls: string }> = {
@@ -27,6 +28,7 @@ function formatDay(date: string): string {
 
 export function DiaryView() {
   const { state, mutate, showToast } = useFoodOS();
+  const WATER_GOAL_ML = state.settings?.waterGoalMl ?? WATER_GOAL_DEFAULT;
   const waterToday = getWaterToday(state);
   const waterPct = Math.min(100, Math.round((waterToday / WATER_GOAL_ML) * 100));
   const days = getLogByDay(state);

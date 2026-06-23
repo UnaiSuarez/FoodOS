@@ -39,8 +39,11 @@ export function HomeView({
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
 
+  const expiryWarnDays = state.settings?.expiryWarnDays ?? 3;
+  const budgetWarnPct  = state.settings?.budgetWarnPct ?? 80;
+
   const expiring = state.inventory
-    .filter((item) => daysUntil(item.expires) <= 3)
+    .filter((item) => daysUntil(item.expires) <= expiryWarnDays)
     .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires))
     .slice(0, 4);
 
@@ -89,7 +92,7 @@ export function HomeView({
         : `Son las ${hour}h y todavía faltan ${Math.round(pending.kcal)} kcal. ¡Cierra el día!`;
     }
     if (pending.protein > 40) return `Te faltan ${Math.round(pending.protein)} g de proteína para cerrar el día.`;
-    if (budgetLeft <= state.weeklyBudget * 0.2 && state.weeklyBudget > 0)
+    if (budgetLeft <= state.weeklyBudget * (1 - budgetWarnPct / 100) && state.weeklyBudget > 0)
       return `Queda poco presupuesto de comida: ${eur(budgetLeft)}. Mira las recetas económicas.`;
     if (kcalPct >= 95) return "Día completado. Macros cerrados, ¡bien hecho!";
     return "Todo en orden. Sigue así.";
@@ -196,7 +199,7 @@ export function HomeView({
           <small className="budget-sub">
             disponibles de {eur(state.weeklyBudget)} · gastados {eur(foodSpend)}
           </small>
-          <div className={`budget-track ${budgetPct >= 80 ? "warn" : ""}`}>
+          <div className={`budget-track ${budgetPct >= budgetWarnPct ? "warn" : ""}`}>
             <i style={{ width: `${budgetPct}%` }} />
           </div>
         </article>

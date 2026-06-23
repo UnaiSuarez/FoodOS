@@ -9,6 +9,7 @@ import {
   getPlanShoppingList,
   useFoodOS,
 } from "@/lib/state";
+import { todayPlus } from "@/lib/utils";
 import { eur, uid } from "@/lib/utils";
 
 type SuggestTab = "lowstock" | "plan";
@@ -23,10 +24,18 @@ export function CartView() {
 
   const [suggestOpen, setSuggestOpen] = useState(true);
   const [activeTab, setActiveTab]     = useState<SuggestTab>("lowstock");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
-  const checkedCount = state.cart.filter((i) => i.checked).length;
-  const estimated    = state.cart.reduce((sum, i) => sum + Number(i.price || 0), 0);
-  const budgetLeft   = getBudgetLeft(state);
+  const checkedCount  = state.cart.filter((i) => i.checked).length;
+  const estimated     = state.cart.reduce((sum, i) => sum + Number(i.price || 0), 0);
+  const budgetLeft    = getBudgetLeft(state);
+  const defaultStore  = state.settings?.defaultStore ?? "Mercadona";
+  const budgetWarnPct = state.settings?.budgetWarnPct ?? 80;
+
+  const purchaseHistory = state.expenses
+    .filter((e) => e.type === "expense" && e.category === "Comida")
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 10);
 
   const lowStock = getLowStockSuggestions(state);
   const planList = getPlanShoppingList(state);
@@ -77,7 +86,7 @@ export function CartView() {
         price: Number(data.get("price")),
         store: String(data.get("store")),
         checked: false,
-        source: "manual",
+        source: "manual" as const,
       });
     });
     showToast("Item añadido al carrito");
@@ -185,7 +194,7 @@ export function CartView() {
             </label>
             <label>
               Tienda
-              <select name="store" defaultValue="Mercadona">
+              <select name="store" defaultValue={defaultStore}>
                 <option>Mercadona</option>
                 <option>Lidl</option>
                 <option>Frutería</option>
@@ -256,7 +265,7 @@ export function CartView() {
             </div>
             <div>
               <span>Presupuesto</span>
-              <strong className={estimated > budgetLeft ? "over-budget" : ""}>
+              <strong className={estimated > budgetLeft * (budgetWarnPct / 100) ? "over-budget" : ""}>
                 {eur(budgetLeft)} disp.
               </strong>
             </div>
@@ -321,6 +330,37 @@ export function CartView() {
           </div>
         </article>
       </div>
+
+      {/* Historial de compras */}
+      <article className="panel purchase-history">
+        <button className="smart-suggest-toggle" onClick={() => setHistoryOpen((v) => !v)}>
+          <span>🧾 Historial de compras</span>
+          <span className="suggest-counts">
+            <span className="badge">{purchaseHistory.length} compras</span>
+          </span>
+          <span className="suggest-chevron">{historyOpen ? "▲" : "▼"}</span>
+        </button>
+
+        {historyOpen && (
+          purchaseHistory.length === 0 ? (
+            <p className="suggest-empty">Aún no has completado ninguna compra.</p>
+          ) : (
+            <div className="history-list">
+              {purchaseHistory.map((expense) => (
+                <div key={expense.id} className="history-row">
+                  <span className="history-date">{expense.date === todayPlus(0) ? "Hoy" : expense.date}</span>
+                  <span className="history-desc">{expense.description}</span>
+                  <span className="history-amount">{eur(expense.amount)}</span>
+                </div>
+              ))}
+              <div className="history-total">
+                Total gastado en comida:{" "}
+                <strong>{eur(purchaseHistory.reduce((s, e) => s + e.amount, 0))}</strong>
+              </div>
+            </div>
+          )
+        )}
+      </article>
     </section>
   );
 }

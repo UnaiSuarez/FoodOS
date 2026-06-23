@@ -178,6 +178,24 @@ export interface Mascot {
   image: string;
 }
 
+/** Ajustes configurables por el usuario (umbrales, metas, preferencias). */
+export interface AppSettings {
+  /** Días antes de caducidad para marcar item como urgente (default 3). */
+  expiryWarnDays: number;
+  /** Meta diaria de agua en ml (default 2500). */
+  waterGoalMl: number;
+  /** Hora a partir de la cual se activa la sugerencia de cena (default 18). */
+  dinnerSuggestionHour: number;
+  /** % de presupuesto semanal usado a partir del cual avisar (default 80). */
+  budgetWarnPct: number;
+  /** Tienda por defecto al añadir items al carrito (default "Mercadona"). */
+  defaultStore: string;
+  /** Umbrales de "stock bajo" por unidad para sugerencias de carrito. */
+  lowStockThresholds: { g: number; ml: number; L: number; kg: number; ud: number };
+  /** Categorías de gasto adicionales (además de las predefinidas). */
+  extraExpenseCategories: string[];
+}
+
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
 export interface FoodOSState {
   inventory: InventoryItem[];
@@ -202,4 +220,5 @@ export interface FoodOSState {
   bankSynced: boolean;
   mascotId: string;
   recipeTag: string;
+  settings: AppSettings;
 }

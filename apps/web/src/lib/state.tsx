@@ -10,13 +10,23 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
 import { daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  expiryWarnDays: 3,
+  waterGoalMl: 2500,
+  dinnerSuggestionHour: 18,
+  budgetWarnPct: 80,
+  defaultStore: "Mercadona",
+  lowStockThresholds: { g: 200, ml: 300, L: 0.5, kg: 0.3, ud: 2 },
+  extraExpenseCategories: [],
+};
 
 export const defaultState: FoodOSState = {
   inventory: [],
@@ -37,6 +47,7 @@ export const defaultState: FoodOSState = {
   bankSynced: false,
   mascotId: "zana",
   recipeTag: "todos",
+  settings: DEFAULT_SETTINGS,
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -56,6 +67,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.foodLog ||= [];
   next.waterLog ||= {};
   next.weightLog ||= [];
+  next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
   if (legacy.consumedMeals?.length) {
@@ -434,7 +446,8 @@ export function getDinnerSuggestion(state: FoodOSState): {
 } | null {
   const now = new Date();
   const timeDecimal = now.getHours() + now.getMinutes() / 60;
-  if (timeDecimal < 18.5 || timeDecimal >= 23) return null;
+  const dinnerFrom = (state.settings?.dinnerSuggestionHour ?? 18) + 0.5;
+  if (timeDecimal < dinnerFrom || timeDecimal >= 23) return null;
 
   const pending = getPendingMacros(state);
   if (pending.kcal < 100 && pending.protein < 10) return null;
@@ -558,17 +571,15 @@ export function getBudgetLeft(state: FoodOSState): number {
   return Math.max(0, Number(state.weeklyBudget) - getFoodSpend(state));
 }
 
-// Umbrales de "stock bajo" por unidad.
-const LOW_STOCK: Record<string, number> = { g: 200, ml: 300, L: 0.5, kg: 0.3, ud: 2 };
-
 /** Items del inventario casi vacíos que no están pendientes ya en el carrito. */
 export function getLowStockSuggestions(state: FoodOSState): import("@foodos/types").CartItem[] {
+  const thresholds = state.settings?.lowStockThresholds ?? DEFAULT_SETTINGS.lowStockThresholds;
   const inCart = new Set(
     state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
   );
   return state.inventory
     .filter((item) => {
-      const threshold = LOW_STOCK[item.unit] ?? 100;
+      const threshold = (thresholds as Record<string, number>)[item.unit] ?? 100;
       return item.qty <= threshold && !inCart.has(item.name.toLowerCase());
     })
     .slice(0, 14)
