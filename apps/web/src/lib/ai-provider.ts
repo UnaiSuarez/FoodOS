@@ -199,6 +199,8 @@ export async function generateAIRecipe(config: AIConfig, state: FoodOSState): Pr
   return parseRecipe(text);
 }
 
+export type ChatTurn = { role: "user" | "assistant"; content: string };
+
 function buildAssistantSystemPrompt(state: FoodOSState): string {
   const todayDate = new Date().toISOString().slice(0, 10);
   const todayLog = state.foodLog.filter((e) => e.date === todayDate);
@@ -225,48 +227,89 @@ function buildAssistantSystemPrompt(state: FoodOSState): string {
     .join(", ");
   const inventoryTop = state.inventory
     .filter((item) => item.qty > 0)
-    .slice(0, 8)
+    .slice(0, 10)
     .map((i) => `${i.name} (${i.qty}${i.unit})`)
     .join(", ");
   const goal = state.profile?.goal ?? "no configurado";
 
-  return `Eres el asistente nutricional y financiero de FoodOS. Responde en español de forma concisa y útil (máximo 3 párrafos cortos). Cruzas datos reales del usuario.
+  return `Eres el asistente nutricional y financiero de FoodOS. Respondes en español, de forma concisa y útil.
 
-Contexto actual:
+DATOS DEL USUARIO (tiempo real):
 - Macros pendientes hoy: ${pending.kcal} kcal, ${pending.protein}g proteína
 - Presupuesto semanal disponible: €${budgetLeft.toFixed(2)}
-- Objetivo corporal: ${goal}
-- Inventario (muestra): ${inventoryTop || "vacío"}
-- Caducan en ≤3 días: ${expiringSoon || "ninguno"}
-- Alergias: ${state.profile?.allergies.join(", ") || "ninguna"}
+- Objetivo: ${goal}
+- Inventario: ${inventoryTop || "vacío"}
+- Caducan pronto (≤3 días): ${expiringSoon || "ninguno"}
+- Alergias/exclusiones: ${state.profile?.allergies?.join(", ") || "ninguna"}
 
-Responde directamente a la pregunta usando estos datos cuando sea relevante. Si no hay datos suficientes, dilo con naturalidad.`;
+REGLAS DE ACCIÓN — MUY IMPORTANTE:
+- Si el usuario pide añadir/guardar/registrar un alimento → escribe primero tu respuesta y termina con la etiqueta [INV].
+- Si el usuario pide una receta (crear, proponer, dame, hazme) → escribe primero tu respuesta y termina con la etiqueta [RECIPE].
+- Si no pide ninguna de esas acciones → responde sin etiquetas.
+- NUNCA uses ambas etiquetas a la vez. Elige solo una.
+
+FORMATO DE LAS ETIQUETAS (JSON exacto, sin saltos de línea dentro del JSON):
+
+Añadir al inventario:
+[INV]{"name":"Pechuga de pollo","qty":500,"unit":"g","storage":"Nevera","expires_days":5,"price":4.50,"kcal":165,"protein":31}[/INV]
+Valores válidos → unit: g | ml | kg | L | ud   storage: Nevera | Congelador | Despensa
+
+Proponer receta:
+[RECIPE]{"title":"Nombre","ingredients":[{"name":"X","quantity":150,"unit":"g"}],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"],"steps":["Paso 1.","Paso 2."]}[/RECIPE]`;
 }
 
 export async function callAIChat(
   config: AIConfig,
   state: FoodOSState,
-  userMessage: string
+  userMessage: string,
+  history: ChatTurn[] = []
 ): Promise<string> {
   const system = buildAssistantSystemPrompt(state);
+  // Keep last 10 turns to avoid token bloat
+  const recent = history.slice(-10);
 
   switch (config.provider) {
-    case "gemini":
-      return callGemini(config, `${system}\n\nUsuario: ${userMessage}`);
+    case "gemini": {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      // Gemini needs alternating user/model turns; embed system in first user message
+      type GeminiPart = { text: string };
+      type GeminiContent = { role: "user" | "model"; parts: GeminiPart[] };
+      const contents: GeminiContent[] = [];
+
+      if (recent.length === 0) {
+        contents.push({ role: "user", parts: [{ text: `${system}\n\n${userMessage}` }] });
+      } else {
+        recent.forEach((m, i) => {
+          const geminiRole = m.role === "assistant" ? "model" : "user";
+          const text = i === 0 ? `${system}\n\n${m.content}` : m.content;
+          contents.push({ role: geminiRole, parts: [{ text }] });
+        });
+        contents.push({ role: "user", parts: [{ text: userMessage }] });
+      }
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents, generationConfig: { temperature: 0.7, maxOutputTokens: 1024 } }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `Gemini error ${res.status}`);
+      }
+      const data = await res.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      return data.candidates[0].content.parts[0].text;
+    }
 
     case "openai": {
+      const messages = [
+        { role: "system", content: system },
+        ...recent.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: userMessage },
+      ];
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({
-          model: config.model,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: userMessage },
-          ],
-          max_tokens: 512,
-          temperature: 0.7,
-        }),
+        body: JSON.stringify({ model: config.model, messages, max_tokens: 1024, temperature: 0.7 }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
@@ -277,6 +320,10 @@ export async function callAIChat(
     }
 
     case "anthropic": {
+      const messages = [
+        ...recent.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+        { role: "user" as const, content: userMessage },
+      ];
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -285,12 +332,7 @@ export async function callAIChat(
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-allow-browser": "true",
         } as Record<string, string>,
-        body: JSON.stringify({
-          model: config.model,
-          max_tokens: 512,
-          system,
-          messages: [{ role: "user", content: userMessage }],
-        }),
+        body: JSON.stringify({ model: config.model, max_tokens: 1024, system, messages }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
@@ -300,8 +342,23 @@ export async function callAIChat(
       return data.content[0].text;
     }
 
-    case "ollama":
-      return callOllama(config, `${system}\n\nUsuario: ${userMessage}`);
+    case "ollama": {
+      const baseUrl = (config.ollamaBaseUrl ?? "http://localhost:11434").replace(/\/$/, "");
+      const modelName = config.model === "custom" ? "llama3.2" : config.model;
+      const messages = [
+        { role: "system", content: system },
+        ...recent.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user", content: userMessage },
+      ];
+      const res = await fetch(`${baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelName, messages, stream: false, options: { temperature: 0.7 } }),
+      });
+      if (!res.ok) throw new Error(`Ollama: error ${res.status}. ¿Está corriendo en ${baseUrl}?`);
+      const data = await res.json() as { message: { content: string } };
+      return data.message.content;
+    }
   }
 }
 

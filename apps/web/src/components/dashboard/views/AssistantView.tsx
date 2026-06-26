@@ -6,7 +6,7 @@ import type { Recipe } from "@foodos/types";
 import { MASCOTS } from "@/lib/mascots";
 import { actions, getMascot, getBudgetLeft, getPendingMacros, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
-import { callAIChat } from "@/lib/ai-provider";
+import { callAIChat, type ChatTurn } from "@/lib/ai-provider";
 import { eur, todayPlus, uid } from "@/lib/utils";
 
 // ── Tipos ─────────────────────────────────────────────────────────
@@ -24,11 +24,24 @@ type ChatMessage = {
 
 const CHAT_KEY = "foodos-chat-history";
 
+function stripLegacyTags(text: string): string {
+  // Remove complete tags first, then incomplete ones (tag appears but no closing found)
+  return text
+    .replace(/\[INV\][\s\S]*?\[\/INV\]/g, "")
+    .replace(/\[RECIPE\][\s\S]*?\[\/RECIPE\]/g, "")
+    .replace(/\[INV\][\s\S]*/g, "")
+    .replace(/\[RECIPE\][\s\S]*/g, "")
+    .trim();
+}
+
 function loadHistory(): ChatMessage[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(CHAT_KEY);
-    return raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+    if (!raw) return [];
+    const msgs = JSON.parse(raw) as ChatMessage[];
+    // Strip any raw action tags left in older messages
+    return msgs.map((m) => ({ ...m, text: stripLegacyTags(m.text) }));
   } catch {
     return [];
   }
@@ -124,7 +137,8 @@ function localReply(
 
 export function AssistantView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
-  const [messages, setMessages] = useState<ChatMessage[]>(() => loadHistory());
+  // Inicializar vacío para evitar hidratación SSR; cargar de localStorage en useEffect
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -132,6 +146,12 @@ export function AssistantView() {
   const aiConfig = loadAIConfig();
   const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
+
+  // Cargar historial solo en el cliente, tras el montaje
+  useEffect(() => {
+    const saved = loadHistory();
+    if (saved.length > 0) setMessages(saved);
+  }, []);
 
   useEffect(() => {
     saveHistory(messages);
@@ -147,6 +167,11 @@ export function AssistantView() {
 
   async function send(text: string) {
     if (!text.trim() || loading) return;
+    // Capturar historial ANTES de añadir el nuevo mensaje del usuario
+    const historySnapshot: ChatTurn[] = messages.map((m) => ({
+      role: m.role,
+      content: m.text,
+    }));
     addMsg({ role: "user", text: text.trim() });
     setInput("");
     setLoading(true);
@@ -155,7 +180,7 @@ export function AssistantView() {
       let rawReply: string;
       if (aiConfig) {
         try {
-          rawReply = await callAIChat(aiConfig, state, text.trim());
+          rawReply = await callAIChat(aiConfig, state, text.trim(), historySnapshot);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : "";
           const isOverload =
