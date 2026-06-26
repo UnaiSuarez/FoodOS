@@ -14,8 +14,10 @@ export interface AIConfig {
 const STORAGE_KEY = "foodos-ai-config";
 
 const GEMINI_MIGRATIONS: Record<string, string> = {
-  "gemini-1.5-flash": "gemini-2.0-flash",
-  "gemini-1.5-pro":   "gemini-2.5-pro",
+  "gemini-1.5-flash": "gemini-2.5-flash",
+  "gemini-1.5-pro":   "gemini-2.5-flash",
+  "gemini-2.0-flash": "gemini-2.5-flash",
+  "gemini-2.5-pro":   "gemini-2.5-flash",
 };
 
 export function loadAIConfig(): AIConfig | null {
@@ -72,9 +74,9 @@ export const PROVIDER_KEY_LINK_LABEL: Record<AIProvider, string> = {
 
 export const PROVIDER_MODELS: Record<AIProvider, { id: string; label: string }[]> = {
   gemini: [
-    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (gratis, recomendado)" },
-    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (más inteligente)" },
-    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (máxima calidad)" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (gratis, recomendado)" },
+    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (requiere billing)" },
+    { id: "gemini-2.5-pro",   label: "Gemini 2.5 Pro (requiere billing)" },
   ],
   openai: [
     { id: "gpt-4o-mini", label: "GPT-4o Mini (económico)" },
