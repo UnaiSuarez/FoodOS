@@ -1,19 +1,105 @@
 "use client";
 
 import Image from "next/image";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { Recipe } from "@foodos/types";
 import { MASCOTS } from "@/lib/mascots";
-import { getMascot, getPendingMacros, getBudgetLeft, useFoodOS } from "@/lib/state";
+import { actions, getMascot, getBudgetLeft, getPendingMacros, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { callAIChat } from "@/lib/ai-provider";
-import { eur } from "@/lib/utils";
+import { eur, todayPlus, uid } from "@/lib/utils";
 
-type ChatMessage = { role: "user" | "assistant"; text: string };
+// ── Tipos ─────────────────────────────────────────────────────────
+
+type InvAdded = { name: string; qty: number; unit: string };
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+  invAdded?: InvAdded;
+  recipe?: Recipe;
+};
+
+// ── Persistencia ──────────────────────────────────────────────────
+
+const CHAT_KEY = "foodos-chat-history";
+
+function loadHistory(): ChatMessage[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(CHAT_KEY);
+    return raw ? (JSON.parse(raw) as ChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(msgs: ChatMessage[]) {
+  try {
+    localStorage.setItem(CHAT_KEY, JSON.stringify(msgs.slice(-50)));
+  } catch {}
+}
+
+// ── Parser de acciones ────────────────────────────────────────────
+
+type Parsed = {
+  text: string;
+  invRaw?: Record<string, unknown>;
+  recipeRaw?: Record<string, unknown>;
+};
+
+function parseActions(raw: string): Parsed {
+  let text = raw;
+  let invRaw: Record<string, unknown> | undefined;
+  let recipeRaw: Record<string, unknown> | undefined;
+
+  const invMatch = text.match(/\[INV\]([\s\S]*?)\[\/INV\]/);
+  if (invMatch) {
+    try { invRaw = JSON.parse(invMatch[1].trim()) as Record<string, unknown>; } catch {}
+    text = text.replace(invMatch[0], "").trim();
+  }
+
+  const recipeMatch = text.match(/\[RECIPE\]([\s\S]*?)\[\/RECIPE\]/);
+  if (recipeMatch) {
+    try { recipeRaw = JSON.parse(recipeMatch[1].trim()) as Record<string, unknown>; } catch {}
+    text = text.replace(recipeMatch[0], "").trim();
+  }
+
+  return { text, invRaw, recipeRaw };
+}
+
+function buildRecipeFromRaw(raw: Record<string, unknown>): Recipe {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ings = Array.isArray(raw.ingredients) ? (raw.ingredients as any[]).map((i) => ({
+    name: String(i.name ?? ""),
+    quantity: Number(i.quantity ?? 0),
+    unit: String(i.unit ?? "g"),
+  })) : [];
+  return {
+    id: uid(),
+    title: String(raw.title ?? "Receta"),
+    ingredients: ings,
+    kcal: Number(raw.kcal) || 0,
+    protein: Number(raw.protein) || 0,
+    carbs: Number(raw.carbs) || 0,
+    fat: Number(raw.fat) || 0,
+    cost: Number(raw.cost) || 0,
+    time: Number(raw.time) || 20,
+    servings: Number(raw.servings) || 1,
+    difficulty: String(raw.difficulty ?? "media"),
+    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
+    steps: Array.isArray(raw.steps) ? raw.steps.map(String) : [],
+    image: "",
+    aiGenerated: true,
+  };
+}
+
+// ── Respuestas locales ────────────────────────────────────────────
 
 const QUICK_QUESTIONS = [
   "¿Qué puedo cenar con lo que tengo?",
   "¿Cuánta proteína me falta hoy?",
-  "¿Cuál es la receta más barata con proteína?",
+  "Dame una receta rápida y barata",
   "¿Cómo voy de presupuesto esta semana?",
 ];
 
@@ -24,19 +110,21 @@ function localReply(
 ): string {
   const lower = msg.toLowerCase();
   if (lower.includes("proteína") || lower.includes("protein"))
-    return `Te quedan ${Math.round(pending.protein)}g de proteína y ${Math.round(pending.kcal)} kcal para hoy. Mira el optimizador proteína/€ en la vista de Nutrición para las fuentes más baratas.`;
+    return `Te quedan ${Math.round(pending.protein)}g de proteína y ${Math.round(pending.kcal)} kcal para hoy. Mira el optimizador proteína/€ en Nutrición para las fuentes más baratas.`;
   if (lower.includes("presupuesto") || lower.includes("dinero") || lower.includes("gastar"))
-    return `Te quedan ${eur(budgetLeft)} de presupuesto semanal de comida. En Finanzas puedes ver el desglose por semana.`;
+    return `Te quedan ${eur(budgetLeft)} de presupuesto semanal. En Finanzas puedes ver el desglose por categoría.`;
   if (lower.includes("cenar") || lower.includes("comer") || lower.includes("receta"))
-    return `Con ${Math.round(pending.kcal)} kcal y ${Math.round(pending.protein)}g de proteína pendientes, busca en Recetas filtrando por "disponibles" — ahí verás qué puedes hacer con tu despensa actual.`;
+    return `Con ${Math.round(pending.kcal)} kcal y ${Math.round(pending.protein)}g de proteína pendientes, filtra por "disponibles" en Recetas para ver qué puedes hacer con tu despensa.`;
   if (lower.includes("caduc") || lower.includes("inventario"))
-    return "Revisa la vista Panel — ahí aparecen los alimentos que caducan pronto y sugerencias de recetas para usarlos.";
-  return `Hola! Tengo acceso a tus datos de inventario, nutrición y presupuesto. Para respuestas más precisas conecta tu IA personal (botón ✦ IA en el menú superior). ¿En qué te ayudo?`;
+    return "En el Panel aparecen los alimentos que caducan pronto con sugerencias de recetas para usarlos.";
+  return "Conecta tu IA personal (botón ✦ IA) para respuestas inteligentes sobre tu inventario, macros y presupuesto.";
 }
+
+// ── Componente principal ──────────────────────────────────────────
 
 export function AssistantView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadHistory());
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -45,39 +133,85 @@ export function AssistantView() {
   const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
 
+  useEffect(() => {
+    saveHistory(messages);
+  }, [messages]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  function addMsg(msg: ChatMessage) {
+    setMessages((prev) => [...prev, msg]);
+  }
+
   async function send(text: string) {
     if (!text.trim() || loading) return;
-    setMessages((prev) => [...prev, { role: "user", text: text.trim() }]);
+    addMsg({ role: "user", text: text.trim() });
     setInput("");
     setLoading(true);
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
 
     try {
-      let reply: string;
+      let rawReply: string;
       if (aiConfig) {
         try {
-          reply = await callAIChat(aiConfig, state, text.trim());
+          rawReply = await callAIChat(aiConfig, state, text.trim());
         } catch (err) {
-          const msg = err instanceof Error ? err.message : "";
-          const isOverload = msg.includes("high demand") || msg.includes("temporarily") || msg.includes("overloaded") || msg.includes("503") || msg.includes("429");
-          if (isOverload) {
-            reply = localReply(pending, budgetLeft, text.trim()) +
-              "\n\n*(La IA está saturada ahora mismo — respuesta local. Inténtalo de nuevo en unos segundos.)*";
-          } else {
-            reply = `⚠ ${msg}`;
-          }
+          const errMsg = err instanceof Error ? err.message : "";
+          const isOverload =
+            errMsg.includes("high demand") ||
+            errMsg.includes("temporarily") ||
+            errMsg.includes("overloaded") ||
+            errMsg.includes("503") ||
+            errMsg.includes("429");
+          rawReply = isOverload
+            ? localReply(pending, budgetLeft, text.trim()) +
+              "\n\n*(IA saturada — respuesta local. Reintenta en unos segundos.)*"
+            : `⚠ ${errMsg}`;
         }
       } else {
-        reply = localReply(pending, budgetLeft, text.trim());
+        rawReply = localReply(pending, budgetLeft, text.trim());
       }
-      setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Error desconocido";
-      setMessages((prev) => [...prev, { role: "assistant", text: `⚠ ${msg}` }]);
+
+      const { text: cleanText, invRaw, recipeRaw } = parseActions(rawReply);
+      const msg: ChatMessage = { role: "assistant", text: cleanText };
+
+      if (invRaw) {
+        const name = String(invRaw.name ?? "Alimento");
+        const qty = Number(invRaw.qty ?? 100);
+        const unit = String(invRaw.unit ?? "g");
+        const expiresDays = Number(invRaw.expires_days ?? 7);
+        mutate((draft) => {
+          draft.inventory.push({
+            id: uid(),
+            name,
+            qty,
+            unit,
+            storage: (String(invRaw.storage ?? "Despensa")) as import("@foodos/types").StorageName,
+            expires: todayPlus(expiresDays),
+            price: Number(invRaw.price ?? 0),
+            kcal: Number(invRaw.kcal ?? 0),
+            protein: Number(invRaw.protein ?? 0),
+          });
+        });
+        msg.invAdded = { name, qty, unit };
+        showToast(`${name} añadido al inventario`);
+      }
+
+      if (recipeRaw) {
+        msg.recipe = buildRecipeFromRaw(recipeRaw);
+      }
+
+      addMsg(msg);
     } finally {
       setLoading(false);
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
     }
+  }
+
+  function clearChat() {
+    setMessages([]);
+    localStorage.removeItem(CHAT_KEY);
+    showToast("Conversación borrada");
   }
 
   return (
@@ -93,14 +227,20 @@ export function AssistantView() {
                 {aiConfig ? "IA conectada" : "Modo local"}
               </span>
             </div>
+            {messages.length > 0 && (
+              <button className="text-button chat-clear" onClick={clearChat} title="Borrar conversación">
+                Limpiar
+              </button>
+            )}
           </div>
 
           <div className="chat-messages">
             {messages.length === 0 && (
               <div className="chat-empty">
                 <p>
-                  Hola, soy {active.name}. Cruzo tus datos de inventario, nutrición y
-                  presupuesto en tiempo real. ¿En qué te ayudo?
+                  Hola, soy {active.name}. Cruzo tus datos en tiempo real — inventario, macros y
+                  presupuesto. Puedo añadir cosas al inventario o crear recetas directamente desde
+                  aquí. ¿En qué te ayudo?
                 </p>
                 <div className="quick-chips">
                   {QUICK_QUESTIONS.map((q) => (
@@ -123,7 +263,37 @@ export function AssistantView() {
                     className="bubble-avatar"
                   />
                 )}
-                <p>{msg.text}</p>
+                <div className="bubble-content">
+                  <p>{msg.text}</p>
+
+                  {/* Chip de inventario añadido */}
+                  {msg.invAdded && (
+                    <div className="chat-action-chip green">
+                      ✓ {msg.invAdded.name} ({msg.invAdded.qty} {msg.invAdded.unit}) añadido al inventario
+                    </div>
+                  )}
+
+                  {/* Tarjeta de receta inline */}
+                  {msg.recipe && (
+                    <ChatRecipeCard
+                      recipe={msg.recipe}
+                      onSave={() => {
+                        mutate((draft) => { draft.customRecipes.push(msg.recipe!); });
+                        showToast("Receta guardada");
+                        setMascotMessage("Receta de la IA guardada en tu colección.");
+                      }}
+                      onCart={() => {
+                        mutate((draft) => actions.addRecipeToCart(draft, msg.recipe!));
+                        showToast("Ingredientes añadidos al carrito");
+                      }}
+                      onCook={() => {
+                        mutate((draft) => actions.cookRecipe(draft, msg.recipe!));
+                        showToast("Receta registrada en nutrición");
+                        setMascotMessage("¡Receta cocinada! Macros actualizados.");
+                      }}
+                    />
+                  )}
+                </div>
               </div>
             ))}
 
@@ -136,9 +306,11 @@ export function AssistantView() {
                   height={31}
                   className="bubble-avatar"
                 />
-                <p className="chat-thinking">
-                  <span /><span /><span />
-                </p>
+                <div className="bubble-content">
+                  <p className="chat-thinking">
+                    <span /><span /><span />
+                  </p>
+                </div>
               </div>
             )}
             <div ref={bottomRef} />
@@ -146,8 +318,8 @@ export function AssistantView() {
 
           {!aiConfig && (
             <p className="chat-no-ai">
-              Respuestas locales activas. Conecta tu IA personal con el botón{" "}
-              <strong>✦ IA</strong> arriba para respuestas inteligentes.
+              Respuestas locales. Conecta tu IA con el botón <strong>✦ IA</strong> para añadir al
+              inventario, crear recetas y más.
             </p>
           )}
 
@@ -162,15 +334,11 @@ export function AssistantView() {
               className="chat-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Escríbeme algo…"
+              placeholder="Escríbeme algo… ej: añade 500g de pollo a la nevera"
               disabled={loading}
               autoComplete="off"
             />
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={loading || !input.trim()}
-            >
+            <button className="primary-button" type="submit" disabled={loading || !input.trim()}>
               →
             </button>
           </form>
@@ -209,5 +377,73 @@ export function AssistantView() {
         </article>
       </div>
     </section>
+  );
+}
+
+// ── Tarjeta de receta inline ──────────────────────────────────────
+
+function ChatRecipeCard({
+  recipe,
+  onSave,
+  onCart,
+  onCook,
+}: {
+  recipe: Recipe;
+  onSave: () => void;
+  onCart: () => void;
+  onCook: () => void;
+}) {
+  const [saved, setSaved] = useState(false);
+  const [cooked, setCooked] = useState(false);
+
+  return (
+    <div className="chat-recipe-card">
+      <h4>{recipe.title}</h4>
+      <div className="meta-row">
+        <span className="badge green">{recipe.protein}g prot</span>
+        <span className="badge">{recipe.kcal} kcal</span>
+        <span className="badge blue">{eur(recipe.cost)}/ración</span>
+        <span className="badge">{recipe.time} min</span>
+      </div>
+
+      <ul className="chat-ingredients">
+        {recipe.ingredients.map((ing) => (
+          <li key={ing.name}>
+            {ing.name} — {ing.quantity} {ing.unit}
+          </li>
+        ))}
+      </ul>
+
+      {recipe.steps.length > 0 && (
+        <ol className="chat-steps">
+          {recipe.steps.slice(0, 3).map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+          {recipe.steps.length > 3 && (
+            <li className="steps-more">… {recipe.steps.length - 3} pasos más</li>
+          )}
+        </ol>
+      )}
+
+      <div className="card-actions">
+        <button
+          className={`small-action ${saved ? "good" : ""}`}
+          onClick={() => { onSave(); setSaved(true); }}
+          disabled={saved}
+        >
+          {saved ? "Guardada ✓" : "Guardar receta"}
+        </button>
+        <button className="small-action" onClick={onCart}>
+          Añadir al carrito
+        </button>
+        <button
+          className={`small-action ${cooked ? "good" : "good"}`}
+          onClick={() => { onCook(); setCooked(true); }}
+          disabled={cooked}
+        >
+          {cooked ? "Cocinada ✓" : "Cocinar ahora"}
+        </button>
+      </div>
+    </div>
   );
 }
