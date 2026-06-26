@@ -3113,3 +3113,89 @@ select:focus {
   font-size: 12px;
   text-align: right;
 }
+
+/* ── Feed mejorado ──────────────────────────────────────────────── */
+.feed-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.feed-tab {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 244, 238, 0.12);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.feed-tab.active {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.feed-card-author {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.feed-caption {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 10px;
+}
+
+.feed-recipe-preview {
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* ── Modo ahorro máximo ─────────────────────────────────────────── */
+.savings-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.savings-banner.auto {
+  background: rgba(251, 191, 36, 0.07);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.savings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(74, 222, 128, 0.25);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.savings-toggle:hover {
+  border-color: var(--green);
+  color: var(--green);
+}

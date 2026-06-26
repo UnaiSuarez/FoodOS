@@ -3,8 +3,8 @@
 import Image from "next/image";
 import { useState } from "react";
 import type { Recipe } from "@foodos/types";
-import { actions, allRecipes, buildAiRecipeDraft, getRecipeMatch, useFoodOS } from "@/lib/state";
-import { eur } from "@/lib/utils";
+import { actions, allRecipes, buildAiRecipeDraft, getBudgetLeft, getRecipeMatch, useFoodOS } from "@/lib/state";
+import { eur, uid } from "@/lib/utils";
 import { AiRecipeModal } from "../AiRecipeModal";
 
 type Mode = "exact" | "partial" | "budget" | "ai";
@@ -22,6 +22,11 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   const [onlyAvail, setOnlyAvail]     = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
+  const budgetLeft = getBudgetLeft(state);
+  const budgetTight = budgetLeft < 5 && state.weeklyBudget > 0;
+  const [savingsMode, setSavingsMode] = useState(false);
+  const effectiveSavings = budgetTight || savingsMode;
+
   const recipes = allRecipes(state);
   const allTags = ["todos", ...new Set(recipes.flatMap((r) => r.tags))];
 
@@ -38,6 +43,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   }
 
   // Filtros numéricos
+  if (effectiveSavings) filtered = filtered.filter((r) => r.cost <= 1.5);
   if (maxCost > 0)     filtered = filtered.filter((r) => r.cost <= maxCost);
   if (minProtein > 0)  filtered = filtered.filter((r) => r.protein >= minProtein);
   if (maxTime > 0)     filtered = filtered.filter((r) => r.time <= maxTime);
@@ -89,6 +95,25 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
             </button>
           </div>
         </div>
+
+        {/* Banner modo ahorro máximo */}
+        {(budgetTight || savingsMode) && (
+          <div className={`savings-banner ${budgetTight ? "auto" : ""}`}>
+            <span>
+              {budgetTight
+                ? `⚠ Presupuesto casi agotado (${eur(budgetLeft)} disponibles). Modo ahorro máximo activo — solo recetas ≤ €1,50/ración.`
+                : "💚 Modo ahorro máximo activo — solo recetas ≤ €1,50/ración."}
+            </span>
+            <button className="text-button" onClick={() => setSavingsMode(false)}>
+              Desactivar
+            </button>
+          </div>
+        )}
+        {!budgetTight && !savingsMode && (
+          <button className="savings-toggle" onClick={() => setSavingsMode(true)}>
+            💚 Activar modo ahorro máximo (≤ €1,50/ración)
+          </button>
+        )}
 
         {/* Barra de búsqueda + filtros */}
         <div className="recipe-search-bar">
@@ -225,6 +250,26 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                       }}
                     >
                       Cocinar
+                    </button>
+                    <button
+                      className="small-action"
+                      title="Compartir en feed"
+                      onClick={() => {
+                        mutate((draft) => {
+                          draft.feedPosts.push({
+                            id: uid(),
+                            recipeId: recipe.id,
+                            author: "tu",
+                            title: recipe.title,
+                            caption: `${recipe.protein}g de proteína · ${recipe.time} min · ¡la he cocinado!`,
+                            likes: 0,
+                            comments: [],
+                          });
+                        });
+                        showToast("Compartida en el feed");
+                      }}
+                    >
+                      Compartir
                     </button>
                   </div>
                 </article>

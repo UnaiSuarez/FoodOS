@@ -1,144 +1,259 @@
 "use client";
 
 import Image from "next/image";
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { DEMO_RECIPES } from "@/lib/recipes";
 import { actions, allRecipes, buildDemoPosts, findRecipe, useFoodOS } from "@/lib/state";
 import { uid } from "@/lib/utils";
 
+type FeedTab = "all" | "mine";
+
 export function FeedView({ openRecipe }: { openRecipe: (id: string) => void }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const [tab, setTab]           = useState<FeedTab>("all");
+  const [likedIds, setLikedIds] = useState<Set<string>>(new Set());
   const [comments, setComments] = useState<Record<string, string>>({});
+  const [caption, setCaption]   = useState("");
+  const [selRecipe, setSelRecipe] = useState("");
 
-  function publish(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    const recipeId = String(data.get("recipeId"));
+  const recipes = allRecipes(state);
+
+  function publish() {
+    const recipeId = selRecipe || recipes[0]?.id;
+    if (!recipeId) { showToast("No hay recetas disponibles"); return; }
     const recipe = findRecipe(state, recipeId) ?? DEMO_RECIPES[0];
     mutate((draft) => {
       draft.feedPosts.push({
         id: uid(),
         recipeId,
         author: "tu",
-        title: String(data.get("title")).trim() || recipe.title,
-        caption: String(data.get("caption")).trim() || "Receta guardada desde mi FoodOS.",
+        title: recipe.title,
+        caption: caption.trim() || `${recipe.protein}g de proteína · ${recipe.time} min · ¡cocinada!`,
         likes: 0,
         comments: [],
       });
     });
-    setMascotMessage("Publicación creada en el feed.");
+    setMascotMessage("Publicado en el feed.");
     showToast("Publicado en feed");
-    form.reset();
+    setCaption("");
   }
+
+  function toggleLike(postId: string) {
+    mutate((draft) => {
+      const post = draft.feedPosts.find((p) => p.id === postId);
+      if (!post) return;
+      if (likedIds.has(postId)) {
+        post.likes = Math.max(0, post.likes - 1);
+        setLikedIds((prev) => { const next = new Set(prev); next.delete(postId); return next; });
+      } else {
+        post.likes += 1;
+        setLikedIds((prev) => new Set(prev).add(postId));
+      }
+    });
+  }
+
+  const visiblePosts = [...state.feedPosts]
+    .reverse()
+    .filter((p) => tab === "all" || p.author === "tu");
+
+  const myCount = state.feedPosts.filter((p) => p.author === "tu").length;
 
   return (
     <section className="view">
       <div className="work-grid">
-        <form className="panel form-panel" onSubmit={publish}>
-          <h2>Publicar receta</h2>
-          <div className="form-grid compact">
+        {/* Panel izquierdo: publicar + botones */}
+        <div className="stack-panels">
+          <article className="panel form-panel">
+            <h2>Compartir receta</h2>
             <label>
-              Título <input name="title" required placeholder="Mi cena alta en proteína" />
-            </label>
-            <label>
-              Receta base
-              <select name="recipeId">
-                {allRecipes(state).map((recipe) => (
-                  <option key={recipe.id} value={recipe.id}>
-                    {recipe.title}
-                  </option>
+              Receta
+              <select
+                value={selRecipe}
+                onChange={(e) => setSelRecipe(e.target.value)}
+              >
+                {recipes.map((r) => (
+                  <option key={r.id} value={r.id}>{r.title}</option>
                 ))}
               </select>
             </label>
-            <label>
-              Texto <input name="caption" placeholder="Rápida, barata y usando lo que caducaba." />
+            <label style={{ marginTop: 10 }}>
+              Comentario <small>(opcional)</small>
+              <input
+                placeholder="Rápida y con lo que caducaba 🔥"
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+              />
             </label>
-          </div>
-          <button className="primary-button" type="submit">
-            Publicar en feed
-          </button>
-        </form>
+            {selRecipe && (() => {
+              const r = findRecipe(state, selRecipe) ?? recipes[0];
+              if (!r) return null;
+              return (
+                <div className="feed-recipe-preview">
+                  {r.image && (
+                    <Image src={r.image} alt={r.title} width={280} height={120} style={{ borderRadius: 8, objectFit: "cover", width: "100%", height: 100 }} />
+                  )}
+                  <div className="meta-row" style={{ marginTop: 6 }}>
+                    <span className="badge green">{r.protein}g prot</span>
+                    <span className="badge">{r.kcal} kcal</span>
+                    <span className="badge blue">€{r.cost.toFixed(2)}</span>
+                    <span className="badge">{r.time} min</span>
+                  </div>
+                </div>
+              );
+            })()}
+            <button className="primary-button" style={{ marginTop: 12 }} onClick={publish} disabled={recipes.length === 0}>
+              Publicar en feed
+            </button>
+          </article>
 
+          <article className="panel" style={{ padding: "14px 18px" }}>
+            <p className="eyebrow" style={{ marginBottom: 8 }}>Datos demo</p>
+            <button
+              className="secondary-button"
+              style={{ width: "100%" }}
+              onClick={() => {
+                mutate((draft) => void (draft.feedPosts = buildDemoPosts()));
+                setMascotMessage("Feed demo generado.");
+                showToast("Posts demo cargados");
+              }}
+            >
+              Cargar posts demo
+            </button>
+          </article>
+        </div>
+
+        {/* Panel derecho: feed */}
         <article className="panel">
           <div className="panel-head">
             <div>
               <p className="eyebrow">Comunidad</p>
               <h2>Recetas públicas</h2>
             </div>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                mutate((draft) => void (draft.feedPosts = buildDemoPosts()));
-                setMascotMessage("Feed demo generado.");
-                showToast("Posts demo creados");
-              }}
-            >
-              Crear posts demo
-            </button>
+            <div className="feed-tabs">
+              <button
+                className={`feed-tab ${tab === "all" ? "active" : ""}`}
+                onClick={() => setTab("all")}
+              >
+                Todo <b className="tab-count">{state.feedPosts.length}</b>
+              </button>
+              <button
+                className={`feed-tab ${tab === "mine" ? "active" : ""}`}
+                onClick={() => setTab("mine")}
+              >
+                Mis posts {myCount > 0 && <b className="tab-count">{myCount}</b>}
+              </button>
+            </div>
           </div>
+
           <div className="feed-list">
-            {state.feedPosts.length ? (
-              [...state.feedPosts].reverse().map((post) => {
+            {visiblePosts.length === 0 ? (
+              <div className="empty">
+                {tab === "mine"
+                  ? "Aún no has publicado nada. Elige una receta y pulsa Publicar."
+                  : "Carga los posts demo o publica tu primera receta."}
+              </div>
+            ) : (
+              visiblePosts.map((post) => {
                 const recipe = findRecipe(state, post.recipeId) ?? DEMO_RECIPES[0];
-                const saved = state.savedRecipeIds.includes(recipe.id);
+                const saved  = state.savedRecipeIds.includes(recipe.id);
+                const liked  = likedIds.has(post.id);
+                const isOwn  = post.author === "tu";
+
                 return (
                   <article key={post.id} className="feed-card">
-                    <button className="feed-image" onClick={() => openRecipe(recipe.id)} aria-label={`Ver ${recipe.title}`}>
-                      <Image src={recipe.image} alt={post.title} width={520} height={330} />
-                    </button>
+                    {recipe.image && (
+                      <button
+                        className="feed-image"
+                        onClick={() => openRecipe(recipe.id)}
+                        aria-label={`Ver ${recipe.title}`}
+                      >
+                        <Image src={recipe.image} alt={post.title} width={520} height={260} />
+                      </button>
+                    )}
                     <div className="feed-card-body">
-                      <span className="badge green">@{post.author}</span>
+                      <div className="feed-card-author">
+                        <span className={`badge ${isOwn ? "green" : ""}`}>
+                          @{post.author}
+                        </span>
+                        {isOwn && (
+                          <button
+                            className="small-action bad"
+                            aria-label="Borrar publicación"
+                            onClick={() => {
+                              mutate((draft) => {
+                                draft.feedPosts = draft.feedPosts.filter((p) => p.id !== post.id);
+                              });
+                              showToast("Publicación eliminada");
+                            }}
+                          >
+                            Borrar
+                          </button>
+                        )}
+                      </div>
+
                       <h3>{post.title}</h3>
-                      <p>{post.caption}</p>
+                      <p className="feed-caption">{post.caption}</p>
+
                       <div className="feed-stats">
                         <span className="badge">{recipe.kcal} kcal</span>
                         <span className="badge">{recipe.protein}g prot</span>
-                        <span className="badge blue">{post.likes} likes</span>
-                        <span className="badge">{post.comments.length} comentarios</span>
+                        <span className="badge blue">€{recipe.cost.toFixed(2)}</span>
+                        <span className="badge">{recipe.time} min</span>
                       </div>
-                      <div className="feed-comments">
-                        {post.comments.map((comment, index) => (
-                          <p key={index}>
-                            <strong>{comment.author}</strong> {comment.text}
-                          </p>
-                        ))}
-                        <div className="inline-form">
-                          <input
-                            placeholder="Escribe un comentario"
-                            value={comments[post.id] ?? ""}
-                            onChange={(event) =>
-                              setComments((current) => ({ ...current, [post.id]: event.target.value }))
-                            }
-                          />
-                          <button
-                            className="small-action"
-                            onClick={() => {
+
+                      {/* Comentarios */}
+                      {post.comments.length > 0 && (
+                        <div className="feed-comments">
+                          {post.comments.map((c, i) => (
+                            <p key={i}>
+                              <strong>{c.author}</strong> {c.text}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      <div className="inline-form">
+                        <input
+                          placeholder="Escribe un comentario…"
+                          value={comments[post.id] ?? ""}
+                          onChange={(e) =>
+                            setComments((prev) => ({ ...prev, [post.id]: e.target.value }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
                               const text = (comments[post.id] ?? "").trim();
                               if (!text) return;
                               mutate((draft) => {
-                                const target = draft.feedPosts.find((entry) => entry.id === post.id);
+                                const target = draft.feedPosts.find((p) => p.id === post.id);
                                 if (target) target.comments.push({ author: "Tú", text });
                               });
-                              setComments((current) => ({ ...current, [post.id]: "" }));
-                              showToast("Comentario añadido");
-                            }}
-                          >
-                            Enviar
-                          </button>
-                        </div>
-                      </div>
-                      <div className="card-actions">
+                              setComments((prev) => ({ ...prev, [post.id]: "" }));
+                            }
+                          }}
+                        />
                         <button
                           className="small-action"
-                          onClick={() =>
+                          onClick={() => {
+                            const text = (comments[post.id] ?? "").trim();
+                            if (!text) return;
                             mutate((draft) => {
-                              const target = draft.feedPosts.find((entry) => entry.id === post.id);
-                              if (target) target.likes += 1;
-                            })
-                          }
+                              const target = draft.feedPosts.find((p) => p.id === post.id);
+                              if (target) target.comments.push({ author: "Tú", text });
+                            });
+                            setComments((prev) => ({ ...prev, [post.id]: "" }));
+                            showToast("Comentario añadido");
+                          }}
                         >
-                          Like
+                          →
+                        </button>
+                      </div>
+
+                      <div className="card-actions">
+                        <button
+                          className={`small-action ${liked ? "good" : ""}`}
+                          onClick={() => toggleLike(post.id)}
+                          aria-label={liked ? "Quitar like" : "Dar like"}
+                        >
+                          {liked ? "❤ " : "🤍 "}{post.likes}
                         </button>
                         <button
                           className={`small-action ${saved ? "good" : ""}`}
@@ -150,27 +265,35 @@ export function FeedView({ openRecipe }: { openRecipe: (id: string) => void }) {
                                 draft.savedRecipeIds.push(recipe.id);
                               }
                             });
-                            showToast(saved ? "Receta quitada de guardadas" : "Receta guardada");
+                            showToast(saved ? "Quitada de guardadas" : "Receta guardada");
                           }}
                         >
-                          {saved ? "Guardada ✓" : "Guardar receta"}
+                          {saved ? "Guardada ✓" : "Guardar"}
+                        </button>
+                        <button
+                          className="small-action"
+                          onClick={() => {
+                            mutate((draft) => actions.addRecipeToCart(draft, recipe));
+                            showToast("Ingredientes al carrito");
+                          }}
+                        >
+                          Al carrito
                         </button>
                         <button
                           className="small-action good"
                           onClick={() => {
-                            mutate((draft) => actions.addRecipeToCart(draft, recipe));
-                            showToast("Ingredientes añadidos al carrito");
+                            mutate((draft) => actions.cookRecipe(draft, recipe));
+                            setMascotMessage("Receta cocinada. ¡Macros actualizados!");
+                            showToast("Receta registrada en nutrición");
                           }}
                         >
-                          Al carrito
+                          Cocinar
                         </button>
                       </div>
                     </div>
                   </article>
                 );
               })
-            ) : (
-              <div className="empty">Aún no hay publicaciones. Crea posts demo o publica una receta.</div>
             )}
           </div>
         </article>
