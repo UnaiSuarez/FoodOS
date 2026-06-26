@@ -53,9 +53,23 @@ export function AssistantView() {
     setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 40);
 
     try {
-      const reply = aiConfig
-        ? await callAIChat(aiConfig, state, text.trim())
-        : localReply(pending, budgetLeft, text.trim());
+      let reply: string;
+      if (aiConfig) {
+        try {
+          reply = await callAIChat(aiConfig, state, text.trim());
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "";
+          const isOverload = msg.includes("high demand") || msg.includes("temporarily") || msg.includes("overloaded") || msg.includes("503") || msg.includes("429");
+          if (isOverload) {
+            reply = localReply(pending, budgetLeft, text.trim()) +
+              "\n\n*(La IA está saturada ahora mismo — respuesta local. Inténtalo de nuevo en unos segundos.)*";
+          } else {
+            reply = `⚠ ${msg}`;
+          }
+        }
+      } else {
+        reply = localReply(pending, budgetLeft, text.trim());
+      }
       setMessages((prev) => [...prev, { role: "assistant", text: reply }]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Error desconocido";
