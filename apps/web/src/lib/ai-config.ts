@@ -13,11 +13,22 @@ export interface AIConfig {
 
 const STORAGE_KEY = "foodos-ai-config";
 
+const GEMINI_MIGRATIONS: Record<string, string> = {
+  "gemini-1.5-flash": "gemini-2.0-flash",
+  "gemini-1.5-pro":   "gemini-2.5-pro",
+};
+
 export function loadAIConfig(): AIConfig | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as AIConfig) : null;
+    if (!raw) return null;
+    const config = JSON.parse(raw) as AIConfig;
+    if (config.provider === "gemini" && GEMINI_MIGRATIONS[config.model]) {
+      config.model = GEMINI_MIGRATIONS[config.model];
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    }
+    return config;
   } catch {
     return null;
   }
@@ -61,9 +72,9 @@ export const PROVIDER_KEY_LINK_LABEL: Record<AIProvider, string> = {
 
 export const PROVIDER_MODELS: Record<AIProvider, { id: string; label: string }[]> = {
   gemini: [
-    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (rápido, recomendado)" },
-    { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash (nivel gratuito)" },
-    { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro (más preciso)" },
+    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (gratis, recomendado)" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (más inteligente)" },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro (máxima calidad)" },
   ],
   openai: [
     { id: "gpt-4o-mini", label: "GPT-4o Mini (económico)" },
