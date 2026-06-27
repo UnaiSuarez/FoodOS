@@ -10,13 +10,24 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, Recipe } from "@foodos/types";
+import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
-import { calcDailyTargets, isGymDay } from "./nutrition";
-import { daysUntil, eur, todayMinus, todayPlus, uid } from "./utils";
+import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
+import { findExactFood } from "./food-db";
+import { daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  expiryWarnDays: 3,
+  waterGoalMl: 2500,
+  dinnerSuggestionHour: 18,
+  budgetWarnPct: 80,
+  defaultStore: "Mercadona",
+  lowStockThresholds: { g: 200, ml: 300, L: 0.5, kg: 0.3, ud: 2 },
+  extraExpenseCategories: [],
+};
 
 export const defaultState: FoodOSState = {
   inventory: [],
@@ -26,6 +37,7 @@ export const defaultState: FoodOSState = {
   feedPosts: [],
   foodLog: [],
   waterLog: {},
+  weightLog: [],
   customRecipes: [],
   savedRecipeIds: [],
   profile: null,
@@ -36,6 +48,8 @@ export const defaultState: FoodOSState = {
   bankSynced: false,
   mascotId: "zana",
   recipeTag: "todos",
+  settings: DEFAULT_SETTINGS,
+  dismissedSuggestions: [],
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -54,6 +68,8 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.incomeSources ||= [];
   next.foodLog ||= [];
   next.waterLog ||= {};
+  next.weightLog ||= [];
+  next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
   if (legacy.consumedMeals?.length) {
@@ -70,11 +86,17 @@ export function normalizeState(state: FoodOSState): FoodOSState {
         carbs: meal.carbs,
         fat: meal.fat,
         source: "recipe",
+        mealType: "lunch",
       });
     });
   }
   delete legacy.consumedMeals;
   delete legacy.consumed;
+  // Migra entradas del diario sin mealType (datos guardados antes de esta version).
+  next.foodLog = next.foodLog.map((entry) => ({
+    ...entry,
+    mealType: (entry as FoodLogEntry & { mealType?: MealType }).mealType ?? mealTypeFromTime(entry.time),
+  }));
   next.customRecipes = (next.customRecipes || []).map((recipe) => ({
     ...recipe,
     ingredients: (recipe.ingredients || []).map((ing) =>
@@ -195,7 +217,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const seedDemo = useCallback(() => {
     const demo = structuredClone(defaultState);
     demo.inventory = [
-      { id: uid(), name: "Pechuga de pollo", qty: 260, unit: "g", storage: "Nevera", expires: todayPlus(1), price: 2.8, kcal: 120, protein: 23 },
+      { id: uid(), name: "Pechuga de pollo", qty: 260, unit: "g", storage: "Nevera", expires: todayPlus(1), price: 2.8, kcal: 165, protein: 31 },
       { id: uid(), name: "Arroz integral", qty: 500, unit: "g", storage: "Despensa", expires: todayPlus(60), price: 1.7, kcal: 360, protein: 8 },
       { id: uid(), name: "Tomate cherry", qty: 180, unit: "g", storage: "Nevera", expires: todayPlus(3), price: 1.4, kcal: 18, protein: 1 },
       { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
@@ -216,13 +238,18 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     demo.feedPosts = buildDemoPosts();
     // Historial demo del diario: ayer y anteayer con comidas y agua.
     demo.foodLog = [
-      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe" },
-      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe" },
-      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory" },
-      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe" },
-      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe" },
+      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe", mealType: "breakfast" },
+      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe", mealType: "lunch" },
+      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory", mealType: "dinner" },
+      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe", mealType: "lunch" },
+      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe", mealType: "dinner" },
     ];
     demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
+    // Historial de peso demo: últimas 2 semanas con tendencia descendente ligera.
+    demo.weightLog = Array.from({ length: 14 }, (_, i) => ({
+      date: todayMinus(13 - i),
+      kg: Math.round((78.4 - i * 0.12 + (Math.random() - 0.5) * 0.3) * 10) / 10,
+    }));
     saveLocalState(demo);
     remote.schedulePush(demo);
     setState(demo);
@@ -367,7 +394,7 @@ export function getLogByDay(state: FoodOSState): Array<{
     .sort((a, b) => b[0].localeCompare(a[0]))
     .map(([date, entries]) => ({
       date,
-      entries: entries.sort((a, b) => a.time.localeCompare(b.time)),
+      entries: entries.sort((a, b) => b.time.localeCompare(a.time)),
       totals: entries.reduce(
         (totals, entry) => ({
           kcal: totals.kcal + entry.kcal,
@@ -395,17 +422,144 @@ export function getPendingMacros(state: FoodOSState): MacroTotals {
 /** Macros de una cantidad concreta de un alimento del inventario.
     Carbos y grasas se estiman (el inventario solo guarda kcal y proteina por 100). */
 export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals {
-  const grams = item.unit === "kg" ? qty * 1000 : item.unit === "ud" ? qty * 60 : qty;
+  const grams = item.unit === "kg" || item.unit === "L" ? qty * 1000 : item.unit === "ud" ? qty * 60 : qty;
   const kcal = (item.kcal * grams) / 100;
   const protein = (item.protein * grams) / 100;
-  const fat = Math.max(0, (kcal * 0.25) / 9);
-  const carbs = Math.max(0, (kcal - protein * 4 - fat * 9) / 4);
+  const fat = item.fat != null
+    ? (item.fat * grams) / 100
+    : Math.max(0, (kcal * 0.25) / 9);
+  const carbs = item.carbs != null
+    ? (item.carbs * grams) / 100
+    : Math.max(0, (kcal - protein * 4 - fat * 9) / 4);
   return {
     kcal: Math.round(kcal),
     protein: Math.round(protein * 10) / 10,
     carbs: Math.round(carbs * 10) / 10,
     fat: Math.round(fat * 10) / 10,
   };
+}
+
+/**
+ * Sugerencia de cena para cerrar macros (PDF §9.5 + §15):
+ * solo se activa entre las 18:30 y las 23:00 cuando quedan macros relevantes.
+ * Prioriza recetas que usen alimentos a punto de caducar.
+ */
+export function getDinnerSuggestion(state: FoodOSState): {
+  recipe: Recipe;
+  pendingKcal: number;
+  pendingProtein: number;
+  usedExpiringItem: InventoryItem | undefined;
+} | null {
+  const now = new Date();
+  const timeDecimal = now.getHours() + now.getMinutes() / 60;
+  const dinnerFrom = (state.settings?.dinnerSuggestionHour ?? 18) + 0.5;
+  if (timeDecimal < dinnerFrom || timeDecimal >= 23) return null;
+
+  const pending = getPendingMacros(state);
+  if (pending.kcal < 100 && pending.protein < 10) return null;
+
+  const expiringItems = state.inventory
+    .filter((item) => item.qty > 0 && daysUntil(item.expires) <= 3)
+    .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires));
+
+  const budgetLeft = getBudgetLeft(state);
+
+  const best = allRecipes(state)
+    .filter((r) => r.cost <= Math.max(budgetLeft, 1.5))
+    .map((r) => {
+      const usedExpiringItem = expiringItems.find((item) =>
+        r.ingredients.some(
+          (ing) =>
+            item.name.toLowerCase().includes(ing.name.split(" ")[0]) ||
+            ing.name.includes(item.name.toLowerCase().split(" ")[0])
+        )
+      );
+      const matchPct = getRecipeMatch(state, r).pct;
+      // Penalidad: cuanto más se aleja del kcal pendiente, peor puntuacion.
+      const kcalDiff = Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1);
+      return { r, usedExpiringItem, matchPct, kcalDiff };
+    })
+    .filter((e) => e.matchPct >= 20 || e.usedExpiringItem)
+    .sort((a, b) => {
+      if (a.usedExpiringItem && !b.usedExpiringItem) return -1;
+      if (!a.usedExpiringItem && b.usedExpiringItem) return 1;
+      return a.kcalDiff - b.kcalDiff;
+    })[0];
+
+  if (!best) return null;
+  return {
+    recipe: best.r,
+    pendingKcal: Math.round(pending.kcal),
+    pendingProtein: Math.round(pending.protein),
+    usedExpiringItem: best.usedExpiringItem,
+  };
+}
+
+/** Última entrada del historial de peso, o null si no hay registros. */
+export function getLatestWeight(state: FoodOSState): WeightEntry | null {
+  if (!state.weightLog.length) return null;
+  return [...state.weightLog].sort((a, b) => b.date.localeCompare(a.date))[0];
+}
+
+// ---------- Plan semanal automático (PDF §9.5) ----------
+
+export interface WeeklyDayPlan {
+  date: string;
+  dayName: string;
+  isGym: boolean;
+  targets: DailyTargets;
+  breakfast: Recipe | null;
+  lunch: Recipe | null;
+  dinner: Recipe | null;
+}
+
+/**
+ * Genera un plan de 7 días: para cada día asigna 3 recetas (desayuno/comida/cena)
+ * ajustadas al ciclado gym/descanso, respetando alergias y variando cada día.
+ */
+export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
+  if (!state.profile) return [];
+
+  const DAY_NAMES = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+  const excluded = [
+    ...(state.profile.allergies ?? []),
+    ...(state.profile.excludedFoods ?? []),
+  ].map((s) => s.toLowerCase());
+
+  const eligible = allRecipes(state).filter(
+    (r) =>
+      !excluded.some(
+        (ex) =>
+          r.title.toLowerCase().includes(ex) ||
+          r.ingredients.some((ing) => ing.name.toLowerCase().includes(ex))
+      )
+  );
+
+  if (!eligible.length) return [];
+
+  const pick = (targetKcal: number, dayIndex: number, already: string[]): Recipe | null => {
+    const pool = eligible.filter((r) => !already.includes(r.id));
+    if (!pool.length) return eligible[dayIndex % eligible.length] ?? null;
+    const sorted = [...pool].sort((a, b) => Math.abs(a.kcal - targetKcal) - Math.abs(b.kcal - targetKcal));
+    return sorted[dayIndex % sorted.length] ?? sorted[0];
+  };
+
+  return Array.from({ length: 7 }, (_, i) => {
+    const date = todayPlus(i);
+    const dayOfWeek = new Date(date + "T12:00:00").getDay();
+    const isGym = state.profile!.gymDays.includes(dayOfWeek);
+    const targets = calcDailyTargets(state.profile!, isGym);
+
+    const breakfast = pick(targets.kcal * 0.25, i, []);
+    const lunch = pick(targets.kcal * 0.35, i + 1, breakfast ? [breakfast.id] : []);
+    const dinner = pick(
+      targets.kcal * 0.40,
+      i + 2,
+      [breakfast?.id, lunch?.id].filter(Boolean) as string[]
+    );
+
+    return { date, dayName: DAY_NAMES[dayOfWeek], isGym, targets, breakfast, lunch, dinner };
+  });
 }
 
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
@@ -423,12 +577,161 @@ export function getBudgetLeft(state: FoodOSState): number {
   return Math.max(0, Number(state.weeklyBudget) - getFoodSpend(state));
 }
 
+/** Items del inventario casi vacíos que no están pendientes ya en el carrito. */
+export function getLowStockSuggestions(state: FoodOSState): import("@foodos/types").CartItem[] {
+  const thresholds = state.settings?.lowStockThresholds ?? DEFAULT_SETTINGS.lowStockThresholds;
+  // Excluir tanto los pendientes como los ya marcados: si el item está en carrito
+  // (comprado o no), ya se gestionó y no debe re-aparecer como sugerencia.
+  const inCart = new Set(
+    state.cart.map((i) => i.name.toLowerCase())
+  );
+
+  // Sumar todos los lotes del mismo alimento antes de comparar con el umbral
+  const totals = new Map<string, InventoryItem & { totalQty: number }>();
+  for (const item of state.inventory) {
+    const key = item.name.toLowerCase();
+    const existing = totals.get(key);
+    if (existing) {
+      existing.totalQty += item.qty;
+    } else {
+      totals.set(key, { ...item, totalQty: item.qty });
+    }
+  }
+
+  const dismissed = new Set((state.dismissedSuggestions ?? []).map((n) => n.toLowerCase()));
+
+  return [...totals.values()]
+    .filter((item) => {
+      const threshold = (thresholds as Record<string, number>)[item.unit] ?? 100;
+      return item.totalQty <= threshold && !inCart.has(item.name.toLowerCase()) && !dismissed.has(item.name.toLowerCase());
+    })
+    .slice(0, 14)
+    .map((item) => ({
+      id: uid(),
+      name: item.name,
+      qty: item.unit === "ud" ? 3 : item.unit === "L" ? 1 : item.unit === "kg" ? 1 : 500,
+      unit: item.unit,
+      price: item.price,
+      store: "Mercadona",
+      checked: false,
+      source: "lowstock" as const,
+    }));
+}
+
+/** Ingredientes del plan semanal que no están cubiertos por el inventario actual. */
+export function getPlanShoppingList(state: FoodOSState): import("@foodos/types").CartItem[] {
+  if (!state.profile) return [];
+  const plan = generateWeeklyPlan(state);
+  if (!plan.length) return [];
+
+  const inCart = new Set(
+    state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
+  );
+  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+
+  for (const day of plan) {
+    for (const recipe of [day.breakfast, day.lunch, day.dinner]) {
+      if (!recipe) continue;
+      for (const ing of recipe.ingredients) {
+        const key = ing.name.toLowerCase();
+        if (inCart.has(key)) continue;
+
+        const inStock = state.inventory
+          .filter((inv) => {
+            const n = inv.name.toLowerCase();
+            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
+          })
+          .reduce((sum, inv) => sum + inv.qty, 0);
+
+        const shortfall = Math.max(0, ing.quantity - inStock);
+        if (shortfall <= 0) continue;
+
+        const existing = needed.get(key);
+        if (existing) {
+          existing.qty += shortfall;
+        } else {
+          needed.set(key, {
+            qty: shortfall,
+            unit: ing.unit,
+            price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(needed.entries())
+    .slice(0, 20)
+    .map(([name, data]) => ({
+      id: uid(),
+      name,
+      qty: Math.round(data.qty),
+      unit: data.unit,
+      price: Math.round(data.price * 100) / 100,
+      store: "Mercadona",
+      checked: false,
+      source: "plan" as const,
+    }));
+}
+
+/** Ranking de recetas por gramos de proteína por euro (optimizador §9.8). */
+export function getProteinRanking(
+  state: FoodOSState
+): Array<{ id: string; title: string; protein: number; cost: number; proteinPerEuro: number }> {
+  return allRecipes(state)
+    .filter((r) => r.protein > 0 && r.cost > 0)
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      protein: r.protein,
+      cost: r.cost,
+      proteinPerEuro: Math.round((r.protein / r.cost) * 10) / 10,
+    }))
+    .sort((a, b) => b.proteinPerEuro - a.proteinPerEuro)
+    .slice(0, 6);
+}
+
+/** Número de días en los últimos 3 en que la proteína consumida fue < 80% del objetivo. */
+export function countLowProteinDays(state: FoodOSState): number {
+  const target = state.nutrition.protein;
+  if (!target) return 0;
+  let count = 0;
+  for (let i = 1; i <= 3; i++) {
+    const date = todayPlus(-i);
+    const dayTotal = state.foodLog
+      .filter((e) => e.date === date)
+      .reduce((sum, e) => sum + e.protein, 0);
+    if (dayTotal < target * 0.8) count++;
+  }
+  return count;
+}
+
+/** Totales de macros por día en los últimos N días (para gráficas). */
+export function getWeeklyMacroHistory(
+  state: FoodOSState,
+  days = 7
+): Array<{ date: string; kcal: number; protein: number; carbs: number; fat: number }> {
+  return Array.from({ length: days }, (_, i) => {
+    const date = todayPlus(-(days - 1 - i));
+    const entries = state.foodLog.filter((e) => e.date === date);
+    return {
+      date,
+      kcal: Math.round(entries.reduce((s, e) => s + e.kcal, 0)),
+      protein: Math.round(entries.reduce((s, e) => s + e.protein, 0)),
+      carbs: Math.round(entries.reduce((s, e) => s + e.carbs, 0)),
+      fat: Math.round(entries.reduce((s, e) => s + e.fat, 0)),
+    };
+  });
+}
+
 export function expiryBadge(expires: string): { label: string; cls: string } {
   const days = daysUntil(expires);
-  if (days < 0) return { label: "Caducado", cls: "red" };
-  if (days <= 1) return { label: "Urgente", cls: "red" };
-  if (days <= 3) return { label: `${days} días`, cls: "amber" };
-  return { label: "OK", cls: "green" };
+  if (days < 0)  return { label: "Caducado",      cls: "red pulse" };
+  if (days === 0) return { label: "Caduca hoy",   cls: "red" };
+  if (days === 1) return { label: "Mañana",       cls: "red" };
+  if (days <= 3)  return { label: `${days} días`, cls: "amber" };
+  if (days <= 7)  return { label: `${days} días`, cls: "amber-soft" };
+  return { label: `${days} días`, cls: "green" };
 }
 
 // ---------- Generador local de recetas IA (simula Gemini, PDF §15) ----------
@@ -524,12 +827,22 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
 // ---------- Acciones de dominio (operan sobre el draft de mutate) ----------
 
 export const actions = {
+  /** Descarta una sugerencia de stock bajo; desaparece hasta que se re-añade al inventario. */
+  dismissSuggestion(draft: FoodOSState, name: string) {
+    draft.dismissedSuggestions ??= [];
+    const lower = name.toLowerCase();
+    if (!draft.dismissedSuggestions.some((n) => n.toLowerCase() === lower)) {
+      draft.dismissedSuggestions.push(name);
+    }
+  },
+
   /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
-  cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1) {
+  cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1, opts?: { deductIngredients?: boolean; mealType?: MealType; qtyOverrides?: Record<string, number> }) {
+    const t = nowTime();
     draft.foodLog.push({
       id: uid(),
       date: todayPlus(0),
-      time: nowTime(),
+      time: t,
       name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
       qty: null,
       unit: null,
@@ -538,25 +851,49 @@ export const actions = {
       carbs: Math.round(recipe.carbs * ratio * 10) / 10,
       fat: Math.round(recipe.fat * ratio * 10) / 10,
       source: "recipe",
+      mealType: opts?.mealType ?? mealTypeFromTime(t),
     });
+
+    if (opts?.deductIngredients) {
+      for (const ing of recipe.ingredients) {
+        const needed = opts?.qtyOverrides?.[ing.name] ?? ing.quantity * ratio;
+        const matches = draft.inventory
+          .filter((item) => {
+            const n = item.name.toLowerCase();
+            const i = ing.name.toLowerCase();
+            return n.includes(i.split(" ")[0]) || i.includes(n.split(" ")[0]);
+          })
+          .sort((a, b) => a.expires.localeCompare(b.expires)); // FIFO: lotes más próximos a caducar primero
+        let remaining = needed;
+        for (const match of matches) {
+          if (remaining <= 0) break;
+          const take = Math.min(match.qty, remaining);
+          match.qty = Math.round((match.qty - take) * 100) / 100;
+          remaining -= take;
+        }
+      }
+      draft.inventory = draft.inventory.filter((item) => item.qty > 0);
+    }
   },
 
   /** Consume una cantidad PARCIAL de un alimento: registra en el diario y
       descuenta del inventario (si queda 0, lo elimina). */
-  consumeInventoryItem(draft: FoodOSState, itemId: string, qty: number) {
+  consumeInventoryItem(draft: FoodOSState, itemId: string, qty: number, overrideMealType?: MealType) {
     const item = draft.inventory.find((candidate) => candidate.id === itemId);
     if (!item) return;
     const consumed = Math.min(qty, item.qty);
     const macros = macrosForQuantity(item, consumed);
+    const t = nowTime();
     draft.foodLog.push({
       id: uid(),
       date: todayPlus(0),
-      time: nowTime(),
+      time: t,
       name: item.name,
       qty: consumed,
       unit: item.unit,
       ...macros,
       source: "inventory",
+      mealType: overrideMealType ?? mealTypeFromTime(t),
     });
     item.qty = Math.round((item.qty - consumed) * 100) / 100;
     if (item.qty <= 0) {
@@ -567,6 +904,17 @@ export const actions = {
   addWater(draft: FoodOSState, ml: number) {
     const today = todayPlus(0);
     draft.waterLog[today] = Math.max(0, (draft.waterLog[today] ?? 0) + ml);
+  },
+
+  /** Registra el peso corporal de hoy (reemplaza si ya hay una entrada para hoy). */
+  logWeight(draft: FoodOSState, kg: number) {
+    const today = todayPlus(0);
+    const idx = draft.weightLog.findIndex((e) => e.date === today);
+    if (idx >= 0) {
+      draft.weightLog[idx].kg = kg;
+    } else {
+      draft.weightLog.push({ date: today, kg });
+    }
   },
 
   addRecipeToCart(draft: FoodOSState, recipe: Recipe) {
@@ -603,16 +951,20 @@ export const actions = {
       date: todayPlus(0),
     });
     checked.forEach((item) => {
+      const foodData = findExactFood(item.name);
+      const existing = draft.inventory.find((i) => i.name.toLowerCase() === item.name.toLowerCase());
       draft.inventory.push({
         id: uid(),
         name: item.name,
         qty: item.qty,
-        unit: item.unit,
-        storage: "Despensa",
-        expires: todayPlus(14),
+        unit: item.unit || existing?.unit || foodData?.unit || "g",
+        storage: existing?.storage ?? foodData?.storage ?? "Despensa",
+        expires: todayPlus(existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
         price: item.price,
-        kcal: 100,
-        protein: 5,
+        kcal: existing?.kcal ?? foodData?.kcal ?? 100,
+        protein: existing?.protein ?? foodData?.protein ?? 5,
+        carbs: existing?.carbs ?? foodData?.carbs,
+        fat: existing?.fat ?? foodData?.fat,
       });
     });
     draft.cart = draft.cart.filter((item) => !item.checked);
@@ -622,16 +974,20 @@ export const actions = {
   moveCheckedToInventory(draft: FoodOSState): number {
     const checked = draft.cart.filter((item) => item.checked);
     checked.forEach((item) => {
+      const foodData = findExactFood(item.name);
+      const existing = draft.inventory.find((i) => i.name.toLowerCase() === item.name.toLowerCase());
       draft.inventory.push({
         id: uid(),
         name: item.name,
         qty: item.qty,
-        unit: item.unit,
-        storage: "Despensa",
-        expires: todayPlus(14),
+        unit: item.unit || existing?.unit || foodData?.unit || "g",
+        storage: existing?.storage ?? foodData?.storage ?? "Despensa",
+        expires: todayPlus(existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
         price: item.price,
-        kcal: 100,
-        protein: 5,
+        kcal: existing?.kcal ?? foodData?.kcal ?? 100,
+        protein: existing?.protein ?? foodData?.protein ?? 5,
+        carbs: existing?.carbs ?? foodData?.carbs,
+        fat: existing?.fat ?? foodData?.fat,
       });
     });
     draft.cart = draft.cart.filter((item) => !item.checked);
@@ -654,3 +1010,4 @@ export function assistantMessage(state: FoodOSState, kind: "ticket" | "bank" | "
 }
 
 export { getMascot };
+export { mealTypeFromTime };

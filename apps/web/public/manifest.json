@@ -1,0 +1,28 @@
+{
+  "name": "FoodOS",
+  "short_name": "FoodOS",
+  "description": "Tu nevera, tus macros y tu dinero, conectados",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#070a05",
+  "theme_color": "#4ade80",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Panel diario",
+      "url": "/dashboard",
+      "description": "Ver macros, caducidades y presupuesto del día"
+    }
+  ],
+  "categories": ["food", "health", "finance", "productivity"]
+}

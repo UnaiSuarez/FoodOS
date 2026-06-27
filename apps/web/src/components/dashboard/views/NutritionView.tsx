@@ -1,8 +1,21 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
-import { actions, bestRecipe, getConsumedToday, getTodayLog, useFoodOS } from "@/lib/state";
+import type { ActivityLevel, GoalMode, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
+import {
+  actions,
+  bestRecipe,
+  countLowProteinDays,
+  findRecipe,
+  generateWeeklyPlan,
+  getConsumedToday,
+  getLatestWeight,
+  getProteinRanking,
+  getTodayLog,
+  getWeeklyMacroHistory,
+  useFoodOS,
+  type WeeklyDayPlan,
+} from "@/lib/state";
 import {
   ACTIVITY_LABELS,
   GOAL_DESCRIPTIONS,
@@ -12,6 +25,7 @@ import {
   isGymDay,
   weeklyCycle,
 } from "@/lib/nutrition";
+import { todayPlus } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 1, label: "L" },
@@ -46,22 +60,50 @@ export function NutritionView() {
 
         <article className="panel">
           <div className="panel-head">
-            <h2>Consumido hoy</h2>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                const recipe = bestRecipe(state);
-                mutate((draft) => actions.cookRecipe(draft, recipe));
-                showToast("Receta registrada en nutrición");
-              }}
-            >
-              Registrar receta
-            </button>
+            <h2>Resumen de hoy</h2>
           </div>
-
-          <NutritionToday />
+          <div className="nutrition-totals">
+            {(() => {
+              const consumed = getConsumedToday(state);
+              return (
+                <>
+                  <div>
+                    <span>kcal</span>
+                    <strong>{Math.round(consumed.kcal)}</strong>
+                    <small>de {state.nutrition.kcal}</small>
+                  </div>
+                  <div>
+                    <span>Proteína</span>
+                    <strong>{Math.round(consumed.protein)}g</strong>
+                    <small>de {state.nutrition.protein}g</small>
+                  </div>
+                  <div>
+                    <span>Carbos</span>
+                    <strong>{Math.round(consumed.carbs)}g</strong>
+                    <small>de {state.nutrition.carbs}g</small>
+                  </div>
+                  <div>
+                    <span>Grasas</span>
+                    <strong>{Math.round(consumed.fat)}g</strong>
+                    <small>de {state.nutrition.fat}g</small>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+          <p className="empty" style={{ marginTop: 8 }}>
+            El detalle de comidas está en la sección <strong>Registro</strong>.
+          </p>
         </article>
       </div>
+
+      {state.profile && <MacroWeekChart />}
+
+      {state.profile && <ProteinOptimizerPanel />}
+
+      {state.profile && <WeightPanel />}
+
+      {state.profile && <WeeklyPlanPanel />}
     </section>
   );
 }
@@ -160,6 +202,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         .map((entry) => entry.trim())
         .filter(Boolean);
     const bodyFatRaw = String(data.get("bodyFat")).trim();
+    const targetWeightRaw = String(data.get("targetWeight")).trim();
     const next: PhysicalProfile = {
       age: Number(data.get("age")),
       sex: String(data.get("sex")) as Sex,
@@ -171,6 +214,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       gymDays,
       allergies: parseList(String(data.get("allergies"))),
       excludedFoods: parseList(String(data.get("excluded"))),
+      targetWeightKg: targetWeightRaw ? Number(targetWeightRaw) : undefined,
     };
     mutate((draft) => {
       draft.profile = next;
@@ -209,6 +253,10 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         <label>
           % graso <small>(opcional)</small>
           <input name="bodyFat" type="number" min="3" max="60" step="0.1" defaultValue={profile?.bodyFatPct ?? ""} placeholder="—" />
+        </label>
+        <label>
+          Peso objetivo kg <small>(opcional)</small>
+          <input name="targetWeight" type="number" min="30" max="250" step="0.1" defaultValue={profile?.targetWeightKg ?? ""} placeholder="—" />
         </label>
         <label>
           Nivel de actividad
@@ -275,6 +323,336 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         {profile ? "Guardar cambios" : "Calcular mis objetivos"}
       </button>
     </form>
+  );
+}
+
+// ---------- Historial de peso (Feature 1) ----------
+
+function WeightPanel() {
+  const { state, mutate, showToast } = useFoodOS();
+  const latest = getLatestWeight(state);
+  const target = state.profile?.targetWeightKg;
+  const [inputKg, setInputKg] = useState(String(latest?.kg ?? state.profile?.weightKg ?? ""));
+
+  const sorted = [...state.weightLog].sort((a, b) => a.date.localeCompare(b.date)).slice(-30);
+
+  return (
+    <article className="panel weight-panel-section">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Evolución</p>
+          <h2>Peso corporal</h2>
+        </div>
+        <div className="weight-log-form">
+          <input
+            type="number"
+            min="30"
+            max="250"
+            step="0.1"
+            value={inputKg}
+            onChange={(e) => setInputKg(e.target.value)}
+            placeholder="kg de hoy"
+            className="weight-input"
+          />
+          <button
+            className="secondary-button"
+            onClick={() => {
+              const kg = parseFloat(inputKg);
+              if (!kg || kg < 30 || kg > 300) return;
+              mutate((draft) => actions.logWeight(draft, kg));
+              showToast(`Peso registrado: ${kg} kg`);
+            }}
+          >
+            Guardar hoy
+          </button>
+        </div>
+      </div>
+
+      {sorted.length >= 2 ? (
+        <WeightChart entries={sorted} target={target} />
+      ) : (
+        <p className="empty">Registra tu peso al menos 2 días para ver la gráfica.</p>
+      )}
+
+      {latest && (
+        <div className="meta-row" style={{ marginTop: 10 }}>
+          <span className="badge green">
+            Último: {latest.kg} kg ({latest.date === todayPlus(0) ? "hoy" : latest.date})
+          </span>
+          {target && (
+            <span className="badge amber">
+              Objetivo: {target} kg (
+              {latest.kg > target
+                ? `faltan ${Math.round((latest.kg - target) * 10) / 10} kg`
+                : latest.kg < target
+                  ? `+${Math.round((target - latest.kg) * 10) / 10} kg por ganar`
+                  : "¡objetivo alcanzado! ✓"}
+              )
+            </span>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: number }) {
+  const weights = entries.map((e) => e.kg);
+  const all = target ? [...weights, target] : weights;
+  const minKg = Math.min(...all) - 0.8;
+  const maxKg = Math.max(...all) + 0.8;
+  const range = maxKg - minKg || 1;
+  const W = 500, H = 90;
+
+  const xOf = (i: number) => (i / Math.max(entries.length - 1, 1)) * W;
+  const yOf = (kg: number) => H - ((kg - minKg) / range) * H;
+
+  const linePath = entries
+    .map((e, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(1)},${yOf(e.kg).toFixed(1)}`)
+    .join(" ");
+
+  const last = entries[entries.length - 1];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="weight-chart" role="img" aria-label="Evolución del peso">
+      {/* Área bajo la línea */}
+      <path
+        d={`${linePath} L${xOf(entries.length - 1).toFixed(1)},${H} L0,${H} Z`}
+        fill="rgba(74,222,128,0.07)"
+      />
+      {/* Línea de objetivo */}
+      {target && (
+        <line
+          x1="0" y1={yOf(target)} x2={W} y2={yOf(target)}
+          stroke="var(--amber)" strokeWidth="1.2" strokeDasharray="5 3"
+        />
+      )}
+      {/* Línea de peso */}
+      <path d={linePath} fill="none" stroke="var(--green)" strokeWidth="2" strokeLinejoin="round" />
+      {/* Punto final */}
+      <circle cx={xOf(entries.length - 1)} cy={yOf(last.kg)} r="4" fill="var(--green)" />
+      <text
+        x={Math.min(xOf(entries.length - 1), W - 30)}
+        y={yOf(last.kg) - 7}
+        textAnchor="middle"
+        fill="var(--green)"
+        fontSize="11"
+        fontWeight="600"
+      >
+        {last.kg} kg
+      </text>
+      {/* Etiqueta objetivo */}
+      {target && (
+        <text x={W - 2} y={yOf(target) - 4} textAnchor="end" fill="var(--amber)" fontSize="9">
+          objetivo {target} kg
+        </text>
+      )}
+    </svg>
+  );
+}
+
+// ---------- Plan semanal automático (Feature 4) ----------
+
+function WeeklyPlanPanel() {
+  const { state, mutate, showToast } = useFoodOS();
+  const [plan, setPlan] = useState<WeeklyDayPlan[] | null>(null);
+
+  function generate() {
+    setPlan(generateWeeklyPlan(state));
+    showToast("Plan semanal generado");
+  }
+
+  function cookDay(day: WeeklyDayPlan) {
+    const meals = [day.breakfast, day.lunch, day.dinner].filter(Boolean) as import("@foodos/types").Recipe[];
+    mutate((draft) => {
+      meals.forEach((recipe) => {
+        draft.foodLog.push({
+          id: crypto.randomUUID(),
+          date: todayPlus(0),
+          time: new Date().toTimeString().slice(0, 5),
+          name: recipe.title,
+          qty: null,
+          unit: null,
+          kcal: recipe.kcal,
+          protein: recipe.protein,
+          carbs: recipe.carbs,
+          fat: recipe.fat,
+          source: "recipe",
+          mealType: "lunch",
+        });
+      });
+    });
+    showToast(`${meals.length} recetas de ${day.dayName} registradas`);
+  }
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Automatización</p>
+          <h2>Plan semanal</h2>
+        </div>
+        <button className="secondary-button" onClick={generate}>
+          {plan ? "Regenerar" : "Generar plan"}
+        </button>
+      </div>
+
+      {!plan && (
+        <p className="empty">
+          FoodOS generará 7 días de comidas ajustadas a tu ciclado gym/descanso, presupuesto y
+          alimentos disponibles.
+        </p>
+      )}
+
+      {plan && (
+        <div className="weekly-plan-grid">
+          {plan.map((day) => (
+            <div key={day.date} className={`plan-day ${day.isGym ? "gym" : ""}`}>
+              <div className="plan-day-head">
+                <strong>{day.dayName}</strong>
+                <span className={`badge ${day.isGym ? "green" : "blue"}`}>
+                  {day.isGym ? "💪" : "😴"} {day.targets.kcal} kcal
+                </span>
+              </div>
+              <ul className="plan-meals">
+                {[
+                  { label: "🌅", recipe: day.breakfast },
+                  { label: "☀️", recipe: day.lunch },
+                  { label: "🌙", recipe: day.dinner },
+                ].map(({ label, recipe }) => (
+                  <li key={label}>
+                    <span>{label}</span>
+                    <span>{recipe ? recipe.title : <em>—</em>}</span>
+                  </li>
+                ))}
+              </ul>
+              <button className="small-action good" onClick={() => cookDay(day)}>
+                Registrar todo
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+// ---------- Gráfica semanal de macros (analytics) ----------
+
+function MacroWeekChart() {
+  const { state } = useFoodOS();
+  const history = getWeeklyMacroHistory(state, 7);
+  const targetKcal = state.nutrition.kcal || 2000;
+  const targetProtein = state.nutrition.protein || 150;
+
+  const W = 560, H = 100, PAD = 20;
+  const gap = (W - PAD * 2) / 7;
+  const BAR_W = Math.max(20, gap * 0.55);
+  const DAY_LABELS = ["L", "M", "X", "J", "V", "S", "D"];
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Últimos 7 días</p>
+          <h2>Evolución de macros</h2>
+        </div>
+        <div className="meta-row">
+          <span className="badge green" style={{ fontSize: 11 }}>■ Proteína</span>
+          <span className="badge blue" style={{ fontSize: 11 }}>■ Kcal</span>
+        </div>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H + 28}`}
+        className="macro-week-chart"
+        role="img"
+        aria-label="Evolución semanal de macros"
+      >
+        {/* Línea objetivo 100% */}
+        <line x1={PAD} y1={1} x2={W - PAD} y2={1} stroke="rgba(74,222,128,0.25)" strokeWidth="1" strokeDasharray="4 3" />
+        {history.map((day, i) => {
+          const kcalPct = Math.min(1, day.kcal / targetKcal);
+          const protPct = Math.min(1, day.protein / targetProtein);
+          const x = PAD + i * gap + (gap - BAR_W) / 2;
+          const barKcalH = kcalPct * H;
+          const barProtH = protPct * H;
+          const dateObj = new Date(`${day.date}T12:00:00`);
+          const dow = dateObj.getDay();
+          const label = DAY_LABELS[dow === 0 ? 6 : dow - 1];
+          return (
+            <g key={day.date}>
+              <rect x={x} y={H - barKcalH} width={BAR_W} height={barKcalH} fill="rgba(59,130,246,0.28)" rx="3" />
+              <rect x={x + BAR_W * 0.2} y={H - barProtH} width={BAR_W * 0.6} height={barProtH} fill="var(--green)" rx="2" />
+              <text x={x + BAR_W / 2} y={H + 18} textAnchor="middle" fill="rgba(150,163,144,0.85)" fontSize="11">{label}</text>
+              {day.protein > 0 && (
+                <text
+                  x={x + BAR_W / 2}
+                  y={Math.max(11, H - barProtH - 4)}
+                  textAnchor="middle"
+                  fill="var(--green)"
+                  fontSize="9"
+                  fontWeight="600"
+                >
+                  {Math.round(protPct * 100)}%
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <p className="chart-legend">
+        Las barras verdes muestran % de proteína alcanzado. Las azules, % de calorías.
+      </p>
+    </article>
+  );
+}
+
+// ---------- Optimizador proteína/€ (§9.8) ----------
+
+function ProteinOptimizerPanel() {
+  const { state } = useFoodOS();
+  const ranking = getProteinRanking(state);
+  const lowDays = countLowProteinDays(state);
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">§9.8 Eficiencia</p>
+          <h2>Optimizador proteína/€</h2>
+        </div>
+        {lowDays >= 2 && (
+          <span className="badge red">⚠ Baja proteína {lowDays}/3 días</span>
+        )}
+      </div>
+
+      {lowDays >= 2 && (
+        <p className="optimizer-alert">
+          Has estado por debajo del 80% de tu objetivo de proteína {lowDays} de los últimos 3
+          días. Estas recetas son las más eficientes:
+        </p>
+      )}
+
+      {ranking.length === 0 ? (
+        <p className="empty">
+          Añade recetas con coste y macros para ver el ranking de eficiencia proteica.
+        </p>
+      ) : (
+        <div className="optimizer-list">
+          {ranking.map((item, i) => (
+            <div key={item.id} className="optimizer-row">
+              <span className="optimizer-rank">{i + 1}</span>
+              <span className="optimizer-name">{item.title}</span>
+              <span className="optimizer-macro">{item.protein}g prot</span>
+              <span className="optimizer-cost">€{item.cost.toFixed(2)}/ración</span>
+              <span className={`badge ${i === 0 ? "green" : i <= 2 ? "amber" : ""}`}>
+                {item.proteinPerEuro}g/€
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </article>
   );
 }
 

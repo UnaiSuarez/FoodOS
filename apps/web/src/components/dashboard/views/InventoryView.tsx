@@ -1,40 +1,284 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
 import { expiryBadge, useFoodOS } from "@/lib/state";
 import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
+import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
+import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
+import { loadAIConfig } from "@/lib/ai-config";
+import { searchOFFSuggestions, type ExternalFoodSuggestion } from "@/lib/food-lookup";
 import { ConsumeModal } from "../ConsumeModal";
+import { BarcodeScannerModal, type ProductData } from "../BarcodeScannerModal";
+import { BulkImportModal } from "../BulkImportModal";
+import { EditInventoryModal } from "../EditInventoryModal";
+import { InventoryDetailModal } from "../InventoryDetailModal";
 
 const STORAGES: Array<StorageName | "Todos"> = ["Todos", "Nevera", "Congelador", "Despensa"];
-const QTY_OPTIONS = [50, 100, 150, 200, 250, 300, 500, 1000];
+
+type FormState = {
+  name: string;
+  qty: number;
+  unit: string;
+  storage: StorageName;
+  expires: string;
+  price: number;
+  kcal: number;
+  protein: number;
+};
+
+const DEFAULT_FORM: FormState = {
+  name: "",
+  qty: 250,
+  unit: "g",
+  storage: "Nevera",
+  expires: todayPlus(4),
+  price: 2.8,
+  kcal: 120,
+  protein: 23,
+};
 
 export function InventoryView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [search, setSearch] = useState(state.inventorySearch);
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
+  const [editItem, setEditItem] = useState<InventoryItem | null>(null);
+  const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+  const [suggestions, setSuggestions] = useState<FoodEntry[]>([]);
+  const [offSuggestions, setOffSuggestions] = useState<ExternalFoodSuggestion[]>([]);
+  const [offLoading, setOffLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [filling, setFilling] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
+  const [bulkItems, setBulkItems] = useState<import("@/lib/ai-inventory").ScannedItem[] | null>(null);
+  // Nutrientes extra de escaneo/OFF (carbs, fat, salt, fiber, sugars) — se guardan con el item
+  const [itemExtras, setItemExtras] = useState<Pick<InventoryItem, "carbs" | "fat" | "salt" | "fiber" | "sugars">>({});
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  // Para la regla de 3: cantidad de referencia cuando se cambia la qty
+  const prevQtyRef = useRef<number>(DEFAULT_FORM.qty);
+  const offTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => () => clearTimeout(offTimerRef.current), []);
+
+  function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function handleNameChange(value: string) {
+    setField("name", value);
+    setItemExtras({});
+    const hits = searchFoodDB(value, 5);
+    setSuggestions(hits);
+    setOffSuggestions([]);
+
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      setShowSuggestions(true);
+    } else {
+      setShowSuggestions(false);
+      setOffLoading(false);
+      return;
+    }
+
+    // Búsqueda async en OFF con debounce 600 ms
+    clearTimeout(offTimerRef.current);
+    if (trimmed.length >= 2) {
+      setOffLoading(true);
+      offTimerRef.current = setTimeout(() => {
+        void searchOFFSuggestions(trimmed, 5).then((results) => {
+          setOffSuggestions(results);
+          setOffLoading(false);
+        });
+      }, 600);
+    } else {
+      setOffLoading(false);
+    }
+  }
+
+  function applySuggestion(entry: FoodEntry) {
+    prevQtyRef.current = entry.defaultQty;
+    setForm((prev) => ({
+      ...prev,
+      name: entry.name,
+      unit: entry.unit,
+      qty: entry.defaultQty,
+      storage: entry.storage,
+      expires: todayPlus(entry.expiryDays),
+      kcal: entry.kcal,
+      protein: entry.protein,
+    }));
+    setItemExtras({ carbs: entry.carbs, fat: entry.fat });
+    setSuggestions([]);
+    setOffSuggestions([]);
+    setShowSuggestions(false);
+    setOffLoading(false);
+  }
+
+  function applyOFFSuggestion(s: ExternalFoodSuggestion) {
+    prevQtyRef.current = 100;
+    setForm((prev) => ({
+      ...prev,
+      name: s.name,
+      unit: "g",
+      qty: 100,
+      kcal: s.kcal,
+      protein: s.protein,
+    }));
+    setItemExtras({ carbs: s.carbs, fat: s.fat, salt: s.salt, fiber: s.fiber, sugars: s.sugars });
+    setSuggestions([]);
+    setOffSuggestions([]);
+    setShowSuggestions(false);
+    setOffLoading(false);
+  }
+
+  function handleQtyChange(newQty: number) {
+    const prev = prevQtyRef.current;
+    setForm((f) => ({
+      ...f,
+      qty: newQty,
+      price: (prev > 0 && newQty > 0 && f.price > 0)
+        ? Math.round(f.price / prev * newQty * 100) / 100
+        : f.price,
+    }));
+    prevQtyRef.current = newQty;
+  }
+
+  async function handleFill() {
+    if (!form.name.trim()) { showToast("Escribe un nombre primero"); return; }
+    setFilling(true);
+    try {
+      const config = loadAIConfig();
+      const data = await fillFoodData(config, form.name.trim());
+      if (data) {
+        setForm((prev) => ({
+          ...prev,
+          kcal: data.kcal,
+          protein: data.protein,
+          unit: data.unit,
+          // Mantener la cantidad que el usuario haya introducido
+          storage: data.storage,
+          expires: todayPlus(data.expiryDays),
+        }));
+        showToast("Datos completados");
+      } else {
+        showToast("No se encontraron datos. Configura la IA para más resultados.");
+      }
+    } catch (e) {
+      showToast(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setFilling(false);
+    }
+  }
+
+  async function handleTicketFile(file: File) {
+    const config = loadAIConfig();
+    if (!config) {
+      showToast("Configura la IA en Ajustes para escanear tickets");
+      return;
+    }
+    setScanLoading(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+      const items = await scanTicketImage(config, base64, file.type || "image/jpeg");
+      setBulkItems(items);
+      if (items.length === 0) showToast("No se detectaron alimentos en la imagen");
+    } catch (e) {
+      showToast(`Error al escanear: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setScanLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handleScanFill(data: ProductData) {
+    setForm((prev) => ({
+      ...prev,
+      name: data.name,
+      kcal: data.kcal ?? prev.kcal,
+      protein: data.protein ?? prev.protein,
+    }));
+    setItemExtras({
+      carbs: data.carbs,
+      fat: data.fat,
+      salt: data.salt,
+      fiber: data.fiber,
+      sugars: data.sugars,
+    });
+    setScannerOpen(false);
+    showToast(`Producto encontrado: ${data.name}`);
+    setMascotMessage(`${data.name} listo para añadir al inventario.`);
+  }
+
+  async function handleFoodPhoto(file: File) {
+    const config = loadAIConfig();
+    if (!config) { showToast("Configura la IA en Ajustes para usar esta función"); return; }
+    setScanLoading(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+      const result = await identifyFoodFromPhoto(config, base64, file.type || "image/jpeg");
+      if (result) {
+        prevQtyRef.current = result.defaultQty;
+        setForm((prev) => ({
+          ...prev,
+          name: result.name || prev.name,
+          kcal: result.kcal,
+          protein: result.protein,
+          unit: result.unit,
+          qty: result.defaultQty,
+          storage: result.storage,
+          expires: todayPlus(result.expiryDays),
+        }));
+        setItemExtras({});
+        showToast(`Identificado: ${result.name}`);
+        setMascotMessage(`${result.name} detectado. Revisa los datos y guarda.`);
+      } else {
+        showToast("No se pudo identificar el alimento. Completa los datos manualmente.");
+      }
+    } catch (e) {
+      showToast(`Error: ${e instanceof Error ? e.message : "desconocido"}`);
+    } finally {
+      setScanLoading(false);
+      if (photoInputRef.current) photoInputRef.current.value = "";
+    }
+  }
 
   function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
     mutate((draft) => {
       draft.inventory.push({
         id: uid(),
-        name: String(data.get("name")).trim(),
-        qty: Number(data.get("qty")),
-        unit: String(data.get("unit")),
-        storage: String(data.get("storage")) as StorageName,
-        expires: String(data.get("expires")),
-        price: Number(data.get("price")),
-        kcal: Number(data.get("kcal")),
-        protein: Number(data.get("protein")),
+        name: form.name.trim(),
+        qty: form.qty,
+        unit: form.unit,
+        storage: form.storage,
+        expires: form.expires,
+        price: form.price,
+        kcal: form.kcal,
+        protein: form.protein,
+        ...itemExtras,
       });
     });
+    setForm({ ...DEFAULT_FORM, expires: todayPlus(4) });
+    setItemExtras({});
     setMascotMessage("Alimento guardado. Estoy vigilando caducidades.");
     showToast("Alimento añadido al inventario");
-    form.reset();
   }
+
+  const totalKcal = useMemo(
+    () => form.unit === "g" || form.unit === "ml" ? Math.round(form.kcal * form.qty / 100) : null,
+    [form.kcal, form.qty, form.unit]
+  );
 
   const query = search.toLowerCase().trim();
   let items = state.activeStorage === "Todos"
@@ -45,94 +289,239 @@ export function InventoryView() {
       (item) => item.name.toLowerCase().includes(query) || item.storage.toLowerCase().includes(query)
     );
   }
-  items = [...items].sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires));
+
+  // Agrupa por nombre, ordena cada grupo por caducidad (FIFO), ordena grupos por su lote más próximo
+  {
+    const groups = new Map<string, InventoryItem[]>();
+    for (const item of items) {
+      const key = item.name.toLowerCase();
+      const g = groups.get(key) ?? [];
+      g.push(item);
+      groups.set(key, g);
+    }
+    items = [...groups.values()]
+      .map((g) => [...g].sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires)))
+      .sort((a, b) => daysUntil(a[0].expires) - daysUntil(b[0].expires))
+      .flat();
+  }
+
+  const hasAI = typeof window !== "undefined" && !!loadAIConfig();
 
   return (
     <section className="view">
       <div className="work-grid">
         <form className="panel form-panel" onSubmit={addItem}>
           <h2>Añadir alimento</h2>
+
           <div className="quick-actions">
             <button
               className="secondary-button"
               type="button"
-              onClick={() => {
-                mutate((draft) => {
-                  draft.inventory.push({
-                    id: uid(), name: "Atún al natural", qty: 3, unit: "ud", storage: "Despensa",
-                    expires: todayPlus(120), price: 2.4, kcal: 110, protein: 24,
-                  });
-                });
-                setMascotMessage("Barcode demo leído: atún al natural.");
-                showToast("Producto barcode añadido");
-              }}
+              onClick={() => setScannerOpen(true)}
             >
-              Escanear barcode demo
+              📷 Código de barras
             </button>
             <button
               className="secondary-button"
               type="button"
-              onClick={() => {
-                mutate((draft) => {
-                  draft.inventory.push({
-                    id: uid(), name: "Zanahoria fresca", qty: 300, unit: "g", storage: "Nevera",
-                    expires: todayPlus(5), price: 0.8, kcal: 41, protein: 1,
-                  });
-                });
-                setMascotMessage("Foto IA demo analizada: zanahoria fresca (confianza 0,91).");
-                showToast("Foto IA convertida en alimento");
-              }}
+              disabled={scanLoading}
+              title={hasAI ? "Foto del alimento o su etiqueta — la IA lo identifica" : "Configura la IA para usar esta función"}
+              onClick={() => photoInputRef.current?.click()}
             >
-              Analizar foto IA demo
+              {scanLoading ? "Identificando…" : "🍎 Foto alimento"}
             </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={scanLoading}
+              title={hasAI ? "Escanea un ticket o foto de alimentos" : "Configura la IA para usar esta función"}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {scanLoading ? "Analizando…" : "🧾 Ticket"}
+            </button>
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleFoodPhoto(file);
+              }}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleTicketFile(file);
+              }}
+            />
           </div>
+
           <div className="form-grid">
-            <label>
-              Nombre <input name="name" required placeholder="Pechuga de pollo" />
+            <label className="name-label">
+              Nombre
+              <div className="autocomplete-wrapper">
+                <input
+                  name="name"
+                  required
+                  placeholder="Pechuga de pollo"
+                  value={form.name}
+                  onChange={(e) => handleNameChange(e.target.value)}
+                  onFocus={() => { if (form.name.trim()) setShowSuggestions(true); }}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                  autoComplete="off"
+                />
+                {showSuggestions && (suggestions.length > 0 || offLoading || offSuggestions.length > 0) && (
+                  <ul className="autocomplete-dropdown">
+                    {suggestions.map((entry) => (
+                      <li
+                        key={entry.name}
+                        onMouseDown={() => applySuggestion(entry)}
+                        className="autocomplete-item"
+                      >
+                        <span className="ac-name">{entry.name}</span>
+                        <span className="ac-meta">{entry.kcal} kcal · {entry.protein}g prot</span>
+                      </li>
+                    ))}
+                    {offLoading && (
+                      <li className="autocomplete-item ac-loading">
+                        <span className="ac-name ac-muted">Buscando en Open Food Facts…</span>
+                      </li>
+                    )}
+                    {!offLoading && offSuggestions.length > 0 && (
+                      <>
+                        {suggestions.length > 0 && <li className="ac-divider">Open Food Facts</li>}
+                        {offSuggestions.map((s) => (
+                          <li
+                            key={s.name}
+                            onMouseDown={() => applyOFFSuggestion(s)}
+                            className="autocomplete-item"
+                          >
+                            <span className="ac-name">{s.name}</span>
+                            <span className="ac-meta">{s.kcal} kcal · {s.protein}g prot</span>
+                            <span className="ac-badge-off">OFF</span>
+                          </li>
+                        ))}
+                      </>
+                    )}
+                  </ul>
+                )}
+              </div>
             </label>
+
             <label>
               Cantidad
-              <select name="qty" required defaultValue={250}>
-                {QTY_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
+              <input
+                name="qty"
+                type="number"
+                min="0"
+                step="0.1"
+                required
+                value={form.qty}
+                onChange={(e) => handleQtyChange(Number(e.target.value))}
+              />
             </label>
+
             <label>
               Unidad
-              <select name="unit" defaultValue="g">
+              <select
+                name="unit"
+                value={form.unit}
+                onChange={(e) => setField("unit", e.target.value)}
+              >
                 <option>g</option>
                 <option>ml</option>
                 <option>ud</option>
                 <option>kg</option>
+                <option>L</option>
               </select>
             </label>
+
             <label>
               Almacén
-              <select name="storage" defaultValue="Nevera">
+              <select
+                name="storage"
+                value={form.storage}
+                onChange={(e) => setField("storage", e.target.value as StorageName)}
+              >
                 <option>Nevera</option>
                 <option>Congelador</option>
                 <option>Despensa</option>
               </select>
             </label>
+
             <label>
-              Caduca <input name="expires" type="date" required defaultValue={todayPlus(4)} />
+              Caduca
+              <input
+                name="expires"
+                type="date"
+                required
+                value={form.expires}
+                onChange={(e) => setField("expires", e.target.value)}
+              />
             </label>
+
             <label>
-              Precio € <input name="price" type="number" step="0.01" min="0" defaultValue="2.8" />
+              Precio €
+              <input
+                name="price"
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.price}
+                onChange={(e) => setField("price", Number(e.target.value))}
+              />
             </label>
+
             <label>
-              kcal/100g <input name="kcal" type="number" min="0" defaultValue="120" />
+              kcal/100g
+              <input
+                name="kcal"
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.kcal}
+                onChange={(e) => setField("kcal", Number(e.target.value))}
+              />
             </label>
+
             <label>
-              Proteína/100g <input name="protein" type="number" min="0" defaultValue="23" />
+              Proteína/100g
+              <input
+                name="protein"
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.protein}
+                onChange={(e) => setField("protein", Number(e.target.value))}
+              />
             </label>
           </div>
-          <button className="primary-button" type="submit">
-            Guardar alimento
-          </button>
+
+          {totalKcal !== null && (
+            <p className="form-total-hint">
+              Total lote: <strong>{totalKcal} kcal</strong> · <strong>{Math.round(form.protein * form.qty / 100)}g prot</strong> · <strong>{eur(form.price)}</strong>
+            </p>
+          )}
+
+          <div className="form-actions-row">
+            <button
+              className="secondary-button fill-btn"
+              type="button"
+              disabled={filling || !form.name.trim()}
+              onClick={handleFill}
+              title="Completa kcal/proteína desde la base de datos local o IA"
+            >
+              {filling ? "Buscando…" : "✦ Completar datos"}
+            </button>
+            <button className="primary-button" type="submit">
+              Guardar alimento
+            </button>
+          </div>
         </form>
 
         <article className="panel">
@@ -160,24 +549,37 @@ export function InventoryView() {
           </div>
           <div className="card-list">
             {items.length ? (
-              items.map((item) => {
+              items.map((item, idx) => {
                 const badge = expiryBadge(item.expires);
+                const isGrouped = idx > 0 && items[idx - 1].name.toLowerCase() === item.name.toLowerCase();
                 return (
-                  <article key={item.id} className="card">
-                    <div>
+                  <article key={item.id} className={`card ${isGrouped ? "card-grouped" : ""}`}>
+                    <div
+                      className="card-info"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setDetailItem(item)}
+                      onKeyDown={(e) => e.key === "Enter" && setDetailItem(item)}
+                      aria-label={`Ver detalles de ${item.name}`}
+                    >
                       <h3>{item.name}</h3>
                       <small>
-                        {item.qty}
-                        {item.unit} · {item.storage} · {item.kcal} kcal/100g · {item.protein} g proteína
+                        {item.qty}{item.unit} · {item.storage} · {item.kcal} kcal/100g · {item.protein}g prot
                       </small>
                       <div className="meta-row">
                         <span className={`badge ${badge.cls}`}>{badge.label}</span>
                         <span className="badge blue">{eur(item.price)}</span>
+                        {(item.carbs != null || item.fat != null) && (
+                          <span className="badge green-soft" title="Datos nutricionales completos">+info</span>
+                        )}
                       </div>
                     </div>
                     <div className="card-actions">
                       <button className="small-action good" onClick={() => setConsumeItem(item)}>
                         Consumir
+                      </button>
+                      <button className="small-action" onClick={() => setEditItem(item)}>
+                        Editar
                       </button>
                       <button
                         className="small-action"
@@ -197,7 +599,7 @@ export function InventoryView() {
                         className="small-action bad"
                         onClick={() =>
                           mutate((draft) => {
-                            draft.inventory = draft.inventory.filter((candidate) => candidate.id !== item.id);
+                            draft.inventory = draft.inventory.filter((c) => c.id !== item.id);
                           })
                         }
                       >
@@ -215,6 +617,19 @@ export function InventoryView() {
       </div>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
+      {editItem && <EditInventoryModal item={editItem} onClose={() => setEditItem(null)} />}
+      {detailItem && (
+        <InventoryDetailModal
+          item={detailItem}
+          onClose={() => setDetailItem(null)}
+          onEdit={() => { setEditItem(detailItem); setDetailItem(null); }}
+          onConsume={() => { setConsumeItem(detailItem); setDetailItem(null); }}
+        />
+      )}
+      {scannerOpen && <BarcodeScannerModal onFill={handleScanFill} onClose={() => setScannerOpen(false)} />}
+      {bulkItems !== null && (
+        <BulkImportModal items={bulkItems} onClose={() => setBulkItems(null)} />
+      )}
     </section>
   );
 }

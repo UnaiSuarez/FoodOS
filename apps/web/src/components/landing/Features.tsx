@@ -5,45 +5,45 @@ const MODULES = [
     index: "01",
     badge: { label: "Inventario", cls: "green" },
     title: "Tu nevera, bajo control",
-    copy: "Añade alimentos a mano, escaneando el código de barras o con una foto. FoodOS calcula la caducidad según dónde lo guardes y te avisa antes de que se estropee.",
+    copy: "Añade alimentos a mano, escaneando el código de barras o importando una foto de tu compra. FoodOS calcula la caducidad según dónde lo guardes y te avisa antes de que se estropee.",
     featured: true,
-    bullets: ["Nevera, congelador y despensa", "Datos nutricionales automáticos", "Alertas de caducidad y stock"],
+    bullets: ["Nevera, congelador y despensa", "Datos nutricionales automáticos (Open Food Facts)", "Alertas de caducidad y stock bajo", "Importación masiva por foto"],
   },
   {
     index: "02",
-    badge: { label: "Recetas", cls: "" },
-    title: "Cocina con lo que tienes",
-    copy: "Cada receta te dice qué ingredientes tienes y cuáles te faltan, con coste por ración.",
+    badge: { label: "Recetas IA", cls: "" },
+    title: "Cocina con lo que tienes — o pide que la IA decida",
+    copy: "La IA genera recetas usando tu despensa, tus macros y tu presupuesto. Las macros se calculan ingrediente a ingrediente antes de guardar.",
   },
   {
     index: "03",
-    badge: { label: "Compra", cls: "" },
-    title: "Lista de compra que piensa",
-    copy: "Junta ingredientes de varias recetas, organiza por tienda y registra el gasto al completar la compra.",
+    badge: { label: "Carrito", cls: "" },
+    title: "Lista de compra que se hace sola",
+    copy: "El carrito detecta qué tienes bajo en stock y qué necesitas para el plan semanal. Al completar la compra, tu despensa y tus finanzas se actualizan solas.",
   },
   {
     index: "04",
-    badge: { label: "Social", cls: "" },
-    title: "Inspírate en la comunidad",
-    copy: "Descubre recetas de otros usuarios, guárdalas y añade sus ingredientes a tu carrito en un toque.",
+    badge: { label: "Diario", cls: "" },
+    title: "Registra cada comida, cada día",
+    copy: "Anota desayuno, comida, cena y snacks. Lleva el control del agua que bebes. Toca cualquier entrada para ver su desglose nutricional completo con barra tricolor.",
   },
   {
     index: "05",
     badge: { label: "Finanzas", cls: "blue" },
-    title: "Tu dinero, conectado",
-    copy: "Presupuesto semanal de comida, gastos por categoría y conexión opcional con tu banco.",
+    title: "Tu dinero, en orden",
+    copy: "Presupuesto semanal de comida, ingresos, gastos por categoría y proyección de ahorro. Cada compra del carrito se registra automáticamente.",
   },
   {
     index: "06",
     badge: { label: "Nutrición", cls: "" },
-    title: "Objetivos que se cumplen",
-    copy: "Define tu objetivo corporal y FoodOS reparte tus calorías y macros día a día.",
+    title: "Objetivos y peso, en una sola vista",
+    copy: "Calcula tu TMB y TDEE, elige entre 4 modos de objetivo y haz seguimiento de tu peso con una gráfica. El optimizador proteína/€ aprovecha lo que tienes en casa.",
   },
   {
     index: "07",
     badge: { label: "IA", cls: "purple" },
-    title: "Recetas a medida",
-    copy: "¿No te encaja nada? La IA genera una receta con lo que hay en tu cocina, tus macros y tu presupuesto.",
+    title: "Tu coach personal de cocina",
+    copy: "Chat contextual que conoce tu despensa, tus macros y tu presupuesto. Genera recetas, crea listas de compra y te guía. Compatible con Gemini, OpenAI, Anthropic y Ollama.",
   },
 ];
 
@@ -51,9 +51,9 @@ export function Problem() {
   return (
     <section className="section intro" aria-labelledby="intro-title">
       <div className="section-heading single">
-        <p className="eyebrow">El problema</p>
+        <p className="eyebrow">Por qué FoodOS</p>
         <h2 id="intro-title">
-          Tu nevera, tus macros y tu dinero <em>por fin hablan entre sí.</em>
+          Tu nevera, tu diario y tu dinero <em>por fin hablan entre sí.</em>
         </h2>
       </div>
       <div className="intro-grid">
@@ -61,21 +61,21 @@ export function Problem() {
           <article>
             <span className="dot green" />
             <h3>Menos desperdicio</h3>
-            <p>Sabes qué tienes y qué caduca. FoodOS te propone usarlo antes de tirarlo.</p>
+            <p>Sabes exactamente qué tienes y qué caduca. FoodOS te propone recetas para usarlo antes de tirarlo.</p>
           </article>
         </Reveal>
         <Reveal delay={80}>
           <article>
             <span className="dot amber" />
-            <h3>Mejores decisiones</h3>
-            <p>Cenas que usan lo que caduca, cubren tus macros y respetan tu presupuesto. Todo a la vez.</p>
+            <h3>Macros y peso controlados</h3>
+            <p>Registra cada comida, haz seguimiento del peso y deja que la IA ajuste las sugerencias a tu objetivo real.</p>
           </article>
         </Reveal>
         <Reveal delay={160}>
           <article>
             <span className="dot blue" />
             <h3>Cuentas claras</h3>
-            <p>Cada compra se registra sola. Siempre sabes cuánto llevas gastado en comida esta semana.</p>
+            <p>Cada compra se registra sola. Siempre sabes cuánto llevas gastado, cuánto ahorras y cuánto te queda.</p>
           </article>
         </Reveal>
       </div>
@@ -89,7 +89,7 @@ export function Features() {
       <div className="section-heading">
         <p className="eyebrow">Todo en una app</p>
         <h2 id="modules-title">
-          Siete módulos, <em>una sola lógica.</em>
+          Siete módulos, <em>una sola IA.</em>
         </h2>
       </div>
       <div className="module-grid">

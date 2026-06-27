@@ -13,8 +13,11 @@ import { CartView } from "./views/CartView";
 import { FinanceView } from "./views/FinanceView";
 import { NutritionView } from "./views/NutritionView";
 import { AssistantView } from "./views/AssistantView";
+import { SettingsView } from "./views/SettingsView";
 import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
+import { AIConfigModal } from "./AIConfigModal";
+import { loadAIConfig } from "@/lib/ai-config";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
@@ -26,6 +29,7 @@ const VIEWS = [
   { id: "finance", icon: "€", label: "Finanzas", title: "Finanzas" },
   { id: "nutrition", icon: "%", label: "Nutrición", title: "Nutrición" },
   { id: "assistant", icon: "✦", label: "Asistente", title: "Asistente FoodOS" },
+  { id: "settings",  icon: "⚙", label: "Ajustes",   title: "Ajustes de la app" },
 ] as const;
 
 export type ViewId = (typeof VIEWS)[number]["id"];
@@ -44,6 +48,8 @@ function DashboardInner() {
   const [view, setView] = useState<ViewId>("dashboard");
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [aiConfigOpen, setAiConfigOpen] = useState(false);
+  const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -117,6 +123,14 @@ function DashboardInner() {
             <h1>{currentTitle}</h1>
           </div>
           <div className="top-actions">
+            <button
+              className={`secondary-button ai-btn ${aiConfigured ? "configured" : ""}`}
+              onClick={() => setAiConfigOpen(true)}
+              title={aiConfigured ? "IA personal configurada" : "Conectar IA personal (gratis para ti)"}
+            >
+              ✦ IA
+              {aiConfigured && <span className="ai-dot" aria-hidden="true" />}
+            </button>
             <button className="secondary-button" onClick={() => setAccountOpen(true)} title="Cuenta FoodOS">
               Cuenta
             </button>
@@ -161,6 +175,7 @@ function DashboardInner() {
             {view === "finance" && <FinanceView />}
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
+            {view === "settings"  && <SettingsView />}
           </>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>
@@ -169,6 +184,14 @@ function DashboardInner() {
 
       {openRecipeId && <RecipeDetailModal recipeId={openRecipeId} onClose={() => setOpenRecipeId(null)} />}
       {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} />}
+      {aiConfigOpen && (
+        <AIConfigModal
+          onClose={() => {
+            setAiConfigOpen(false);
+            setAiConfigured(loadAIConfig() !== null);
+          }}
+        />
+      )}
 
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
         {toast}

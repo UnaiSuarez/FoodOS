@@ -117,12 +117,13 @@ export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onC
         </div>
         {pending.kcal > 0 && (
           <p className="scale-note">
-            Hoy te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
-            <strong>{Math.round(pending.protein)} g de proteína</strong>
-            {remainingMeals > 1 ? ` (~${suggestedKcal} kcal para esta comida)` : " — esta comida puede cerrar el día"}
-            . Esta porción cubre el{" "}
-            {Math.min(999, Math.round((scaled.macros.protein / Math.max(1, pending.protein)) * 100))}% de tu
-            proteína pendiente.
+            Te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
+            <strong>{Math.round(pending.protein)} g prot</strong> hoy.{" "}
+            {remainingMeals > 1
+              ? <>Objetivo por comida: ~<strong>{suggestedKcal} kcal</strong> ({remainingMeals} comidas pendientes). Esta porción aporta <strong>{scaled.macros.kcal} kcal</strong>{scaled.macros.kcal < suggestedKcal ? ` — ${suggestedKcal - scaled.macros.kcal} kcal por debajo del objetivo` : ` — ¡encaja bien!`}.</>
+              : <>Esta comida puede cerrar el día (<strong>{scaled.macros.kcal} kcal</strong> de {Math.round(pending.kcal)} pendientes).</>
+            }{" "}
+            Cubre el {Math.min(999, Math.round((scaled.macros.protein / Math.max(1, pending.protein)) * 100))}% de tu proteína.
           </p>
         )}
       </div>

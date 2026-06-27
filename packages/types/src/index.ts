@@ -15,8 +15,18 @@ export interface InventoryItem {
   price: number;
   /** kcal por 100 g */
   kcal: number;
-  /** Proteina por 100 g */
+  /** Proteína por 100 g */
   protein: number;
+  /** Hidratos de carbono por 100 g (de OFF / USDA) */
+  carbs?: number;
+  /** Grasas totales por 100 g (de OFF / USDA) */
+  fat?: number;
+  /** Sal por 100 g en g (de OFF) */
+  salt?: number;
+  /** Fibra por 100 g en g (de OFF / USDA) */
+  fiber?: number;
+  /** Azúcares por 100 g en g (de OFF) */
+  sugars?: number;
 }
 
 export interface CartItem {
@@ -27,6 +37,8 @@ export interface CartItem {
   price: number;
   store: string;
   checked: boolean;
+  /** Origen del item para mostrar badge contextual */
+  source?: "manual" | "plan" | "lowstock";
 }
 
 export type MovementType = "expense" | "income";
@@ -59,6 +71,11 @@ export interface RecipeIngredient {
   name: string;
   quantity: number;
   unit: string;
+  /** Macros por 100 g — opcionales, se rellenan en la UI al crear/editar receta */
+  kcalPer100?: number;
+  proteinPer100?: number;
+  carbsPer100?: number;
+  fatPer100?: number;
 }
 
 export interface Recipe {
@@ -106,6 +123,8 @@ export interface MacroTotals {
 
 export type FoodLogSource = "recipe" | "inventory" | "manual";
 
+export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+
 /** Entrada del diario de comidas (espejo de la tabla food_log). */
 export interface FoodLogEntry extends MacroTotals {
   id: string;
@@ -118,6 +137,8 @@ export interface FoodLogEntry extends MacroTotals {
   qty: number | null;
   unit: string | null;
   source: FoodLogSource;
+  /** Tipo de comida: se infiere de la hora al registrar (PDF §9.5). */
+  mealType: MealType;
 }
 
 // ---------- Perfil fisico y objetivos (PDF §9) ----------
@@ -127,6 +148,13 @@ export type Sex = "male" | "female";
 export type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "very_active";
 
 export type GoalMode = "fat_loss" | "muscle_gain" | "recomp" | "maintain";
+
+/** Entrada del historial de peso corporal. */
+export interface WeightEntry {
+  /** Fecha ISO yyyy-mm-dd */
+  date: string;
+  kg: number;
+}
 
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
@@ -142,6 +170,8 @@ export interface PhysicalProfile {
   gymDays: number[];
   allergies: string[];
   excludedFoods: string[];
+  /** Peso objetivo en kg, para la grafica de progreso. */
+  targetWeightKg?: number;
 }
 
 /** Objetivo diario de macros. Si hay perfil, se calcula automaticamente. */
@@ -161,6 +191,26 @@ export interface Mascot {
   color: string;
   tagline: string;
   image: string;
+  /** Texto de personalidad inyectado en el system prompt del asistente IA */
+  personality?: string;
+}
+
+/** Ajustes configurables por el usuario (umbrales, metas, preferencias). */
+export interface AppSettings {
+  /** Días antes de caducidad para marcar item como urgente (default 3). */
+  expiryWarnDays: number;
+  /** Meta diaria de agua en ml (default 2500). */
+  waterGoalMl: number;
+  /** Hora a partir de la cual se activa la sugerencia de cena (default 18). */
+  dinnerSuggestionHour: number;
+  /** % de presupuesto semanal usado a partir del cual avisar (default 80). */
+  budgetWarnPct: number;
+  /** Tienda por defecto al añadir items al carrito (default "Mercadona"). */
+  defaultStore: string;
+  /** Umbrales de "stock bajo" por unidad para sugerencias de carrito. */
+  lowStockThresholds: { g: number; ml: number; L: number; kg: number; ud: number };
+  /** Categorías de gasto adicionales (además de las predefinidas). */
+  extraExpenseCategories: string[];
 }
 
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
@@ -174,6 +224,8 @@ export interface FoodOSState {
   foodLog: FoodLogEntry[];
   /** Agua bebida por dia: { "2026-06-12": 1750 } en ml. */
   waterLog: Record<string, number>;
+  /** Historial de peso corporal (PDF §9.1). */
+  weightLog: WeightEntry[];
   customRecipes: Recipe[];
   savedRecipeIds: string[];
   /** null hasta completar el onboarding de nutricion. */
@@ -185,4 +237,7 @@ export interface FoodOSState {
   bankSynced: boolean;
   mascotId: string;
   recipeTag: string;
+  settings: AppSettings;
+  /** Nombres de sugerencias de stock bajo descartadas manualmente por el usuario. */
+  dismissedSuggestions?: string[];
 }

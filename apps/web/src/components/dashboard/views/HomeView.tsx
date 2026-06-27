@@ -8,6 +8,7 @@ import {
   allRecipes,
   getBudgetLeft,
   getConsumedToday,
+  getDinnerSuggestion,
   getFoodSpend,
   getMascot,
   getPendingMacros,
@@ -17,6 +18,7 @@ import {
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
 import { clampPct, daysUntil, eur } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
+import { CookModal } from "../CookModal";
 import type { ViewId } from "../DashboardShell";
 
 export function HomeView({
@@ -28,6 +30,8 @@ export function HomeView({
 }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
+  const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
+  const [whatToEatOpen, setWhatToEatOpen] = useState(false);
 
   const consumed = getConsumedToday(state);
   const pending = getPendingMacros(state);
@@ -38,15 +42,20 @@ export function HomeView({
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
 
+  const expiryWarnDays = state.settings?.expiryWarnDays ?? 3;
+  const budgetWarnPct  = state.settings?.budgetWarnPct ?? 80;
+
   const expiring = state.inventory
-    .filter((item) => daysUntil(item.expires) <= 3)
+    .filter((item) => daysUntil(item.expires) <= expiryWarnDays)
     .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires))
     .slice(0, 4);
 
-  // Sugerencia SOLO con motivo real: algo caduca + faltan macros + entra en presupuesto.
-  const suggestion = (() => {
+  // Sugerencia de cena para cerrar macros (activa 18:30-23:00 si quedan macros).
+  const dinnerSug = getDinnerSuggestion(state);
+
+  // Sugerencia por caducidad (motivo: algo caduca + faltan macros + entra en presupuesto).
+  const expirySug = (() => {
     if (!expiring.length || pending.protein < 15) return null;
-    const expiringNames = expiring.map((item) => item.name.toLowerCase());
     const candidate = allRecipes(state)
       .filter((recipe) => recipe.cost <= Math.max(budgetLeft, 1.5))
       .map((recipe) => ({
@@ -65,12 +74,28 @@ export function HomeView({
     return candidate ?? null;
   })();
 
-  // Mensaje contextual de la mascota segun el estado real.
+  // La sugerencia activa: cena tiene prioridad a su hora; si no, caducidad.
+  const activeSuggestion = dinnerSug
+    ? { kind: "dinner" as const, ...dinnerSug }
+    : expirySug
+      ? { kind: "expiry" as const, recipe: expirySug.recipe, usedItem: expirySug.usedItem! }
+      : null;
+
+  // Mensaje contextual de la mascota — incluye notificación de cierre de día (Feature 5).
   const mascotInsight = (() => {
+    const hour = new Date().getHours();
     const urgent = expiring.find((item) => daysUntil(item.expires) <= 1);
     if (urgent) return `${urgent.name} caduca ${daysUntil(urgent.expires) < 0 ? "ya" : "mañana"}. ¿Lo usamos hoy?`;
+    if (hour >= 20 && pending.kcal > 300) {
+      const closer = allRecipes(state)
+        .filter((r) => r.cost <= Math.max(budgetLeft, 1))
+        .sort((a, b) => Math.abs(a.kcal - pending.kcal) - Math.abs(b.kcal - pending.kcal))[0];
+      return closer
+        ? `Son las ${hour}h y faltan ${Math.round(pending.kcal)} kcal. ${closer.title} encaja bien para cerrar el día.`
+        : `Son las ${hour}h y todavía faltan ${Math.round(pending.kcal)} kcal. ¡Cierra el día!`;
+    }
     if (pending.protein > 40) return `Te faltan ${Math.round(pending.protein)} g de proteína para cerrar el día.`;
-    if (budgetLeft <= state.weeklyBudget * 0.2 && state.weeklyBudget > 0)
+    if (budgetLeft <= state.weeklyBudget * (1 - budgetWarnPct / 100) && state.weeklyBudget > 0)
       return `Queda poco presupuesto de comida: ${eur(budgetLeft)}. Mira las recetas económicas.`;
     if (kcalPct >= 95) return "Día completado. Macros cerrados, ¡bien hecho!";
     return "Todo en orden. Sigue así.";
@@ -88,7 +113,7 @@ export function HomeView({
         </button>
       )}
 
-      <div className={`bento-grid ${suggestion ? "" : "no-suggest"}`}>
+      <div className={`bento-grid ${activeSuggestion ? "" : "no-suggest"}`}>
         {/* Macros del dia — la tarjeta principal */}
         <article className="panel bento-macros">
           <div className="bento-macros-head">
@@ -177,7 +202,7 @@ export function HomeView({
           <small className="budget-sub">
             disponibles de {eur(state.weeklyBudget)} · gastados {eur(foodSpend)}
           </small>
-          <div className={`budget-track ${budgetPct >= 80 ? "warn" : ""}`}>
+          <div className={`budget-track ${budgetPct >= budgetWarnPct ? "warn" : ""}`}>
             <i style={{ width: `${budgetPct}%` }} />
           </div>
         </article>
@@ -187,17 +212,69 @@ export function HomeView({
           <button className="quick-action" onClick={() => goTo("inventory")}>
             <span>＋</span> Añadir alimento
           </button>
-          <button className="quick-action" onClick={() => goTo("nutrition")}>
-            <span>🍽</span> Registrar comida
+          <button className="quick-action" onClick={() => goTo("diary")}>
+            <span>🍽</span> Registro
           </button>
           <button className="quick-action" onClick={() => goTo("cart")}>
             <span>🛒</span> Carrito
             {pendingCart.length > 0 && <b className="quick-badge">{pendingCart.length}</b>}
           </button>
           <button className="quick-action" onClick={() => goTo("recipes")}>
-            <span>✦</span> Buscar receta
+            <span>✦</span> Recetas
+          </button>
+          <button
+            className="quick-action what-to-eat"
+            onClick={() => setWhatToEatOpen((v) => !v)}
+          >
+            <span>🤔</span> ¿Qué como ahora?
           </button>
         </article>
+
+        {/* Panel "¿Qué como ahora?" */}
+        {whatToEatOpen && (
+          <article className="panel bento-what-to-eat">
+            <div className="panel-head">
+              <h3>🤔 Mejor opción ahora mismo</h3>
+              <button className="text-button" onClick={() => setWhatToEatOpen(false)}>Cerrar</button>
+            </div>
+            <p className="what-to-eat-context">
+              Te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
+              <strong>{Math.round(pending.protein)}g de proteína</strong>.{" "}
+              Presupuesto: <strong>{eur(budgetLeft)}</strong>.
+            </p>
+            <div className="what-to-eat-list">
+              {allRecipes(state)
+                .map((r) => {
+                  const match = getRecipeMatch(state, r);
+                  const kcalFit = pending.kcal > 0 ? 1 - Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1) : 0.5;
+                  const score = match.pct * 0.5 + Math.max(0, kcalFit) * 30 + (r.cost <= budgetLeft ? 20 : 0);
+                  return { r, match, score };
+                })
+                .filter((e) => e.r.cost <= Math.max(budgetLeft + 1, 2))
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 4)
+                .map(({ r, match }) => (
+                  <div key={r.id} className="what-to-eat-card">
+                    <div className="what-to-eat-info">
+                      <strong>{r.title}</strong>
+                      <small>{r.kcal} kcal · {r.protein}g prot · {eur(r.cost)} · {match.pct}% disponible</small>
+                    </div>
+                    <div className="what-to-eat-actions">
+                      <button className="small-action" onClick={() => { openRecipe(r.id); setWhatToEatOpen(false); }}>
+                        Ver
+                      </button>
+                      <button className="small-action good" onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}>
+                        Cocinar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              {allRecipes(state).length === 0 && (
+                <p className="empty">Añade recetas para ver sugerencias.</p>
+              )}
+            </div>
+          </article>
+        )}
 
         {/* Mascota con insight contextual */}
         <article className="panel bento-mascot">
@@ -210,32 +287,49 @@ export function HomeView({
           </div>
         </article>
 
-        {/* Sugerencia inteligente — solo con motivo real */}
-        {suggestion && (
-          <article className="panel bento-suggest">
-            <p className="eyebrow">Sugerencia con motivo</p>
-            <h3>{suggestion.recipe.title}</h3>
-            <p className="suggest-why">
-              Usa <strong>{suggestion.usedItem!.name.toLowerCase()}</strong> que caduca{" "}
-              {daysUntil(suggestion.usedItem!.expires) <= 0
-                ? "hoy"
-                : daysUntil(suggestion.usedItem!.expires) === 1
-                  ? "mañana"
-                  : `en ${daysUntil(suggestion.usedItem!.expires)} días`}
-              , aporta <strong>{suggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
-              {eur(suggestion.recipe.cost)} — dentro de tu presupuesto.
-            </p>
+        {/* Sugerencia inteligente — cena para cerrar macros o receta con caducidad */}
+        {activeSuggestion && (
+          <article className={`panel bento-suggest ${activeSuggestion.kind === "dinner" ? "dinner" : ""}`}>
+            {activeSuggestion.kind === "dinner" ? (
+              <>
+                <p className="eyebrow">🌙 Cena para cerrar macros</p>
+                <h3>{activeSuggestion.recipe.title}</h3>
+                <p className="suggest-why">
+                  Te quedan <strong>{activeSuggestion.pendingKcal} kcal</strong> y{" "}
+                  <strong>{activeSuggestion.pendingProtein} g de proteína</strong> — esta receta encaja bien para cenar.
+                  {activeSuggestion.usedExpiringItem && (
+                    <> Además usa <strong>{activeSuggestion.usedExpiringItem.name.toLowerCase()}</strong>, que caduca{" "}
+                    {daysUntil(activeSuggestion.usedExpiringItem.expires) <= 0
+                      ? "hoy"
+                      : daysUntil(activeSuggestion.usedExpiringItem.expires) === 1
+                        ? "mañana"
+                        : `en ${daysUntil(activeSuggestion.usedExpiringItem.expires)} días`}.</>
+                  )}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">Sugerencia con motivo</p>
+                <h3>{activeSuggestion.recipe.title}</h3>
+                <p className="suggest-why">
+                  Usa <strong>{activeSuggestion.usedItem.name.toLowerCase()}</strong> que caduca{" "}
+                  {daysUntil(activeSuggestion.usedItem.expires) <= 0
+                    ? "hoy"
+                    : daysUntil(activeSuggestion.usedItem.expires) === 1
+                      ? "mañana"
+                      : `en ${daysUntil(activeSuggestion.usedItem.expires)} días`}
+                  , aporta <strong>{activeSuggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
+                  {eur(activeSuggestion.recipe.cost)} — dentro de tu presupuesto.
+                </p>
+              </>
+            )}
             <div className="card-actions">
-              <button className="small-action" onClick={() => openRecipe(suggestion.recipe.id)}>
+              <button className="small-action" onClick={() => openRecipe(activeSuggestion.recipe.id)}>
                 Ver receta
               </button>
               <button
                 className="small-action good"
-                onClick={() => {
-                  mutate((draft) => actions.cookRecipe(draft, suggestion.recipe));
-                  setMascotMessage("Receta cocinada. Objetivos actualizados.");
-                  showToast("Receta registrada en nutrición");
-                }}
+                onClick={() => setCookingRecipe(activeSuggestion.recipe)}
               >
                 Cocinar
               </button>
@@ -245,6 +339,7 @@ export function HomeView({
       </div>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
+      {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
     </section>
   );
 }

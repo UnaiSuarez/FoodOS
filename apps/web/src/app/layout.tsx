@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { DM_Mono, DM_Serif_Display, Outfit } from "next/font/google";
 import "./globals.css";
+import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
 
 const serif = DM_Serif_Display({
   weight: "400",
@@ -31,8 +32,10 @@ export const metadata: Metadata = {
   description:
     "FoodOS unifica inventario de alimentos, recetas, lista de la compra, nutrición y finanzas personales en una sola app. Gratis en lo esencial.",
   icons: {
-    icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070a05'/%3E%3Ctext x='32' y='46' font-family='Georgia,serif' font-size='42' fill='%234ade80' text-anchor='middle'%3EF%3C/text%3E%3C/svg%3E",
+    icon: "/icon.svg",
+    apple: "/icon.svg",
   },
+  manifest: "/manifest.json",
   openGraph: {
     title: "FoodOS — Tu nevera, tus macros y tu dinero, conectados",
     description:
@@ -52,6 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <div className="noise" aria-hidden="true" />
         {children}
+        <ServiceWorkerRegistrar />
       </body>
     </html>
   );
