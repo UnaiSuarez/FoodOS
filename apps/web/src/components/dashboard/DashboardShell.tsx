@@ -18,6 +18,7 @@ import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
+import { OnboardingFlow } from "./OnboardingFlow";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
@@ -50,6 +51,10 @@ function DashboardInner() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !localStorage.getItem("foodos-ob-done") && !state.profile;
+  });
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -84,7 +89,16 @@ function DashboardInner() {
     }
   }
 
+  function handleOnboardingDone() {
+    localStorage.setItem("foodos-ob-done", "1");
+    setShowOnboarding(false);
+  }
+
   return (
+    <>
+    {hydrated && showOnboarding && (
+      <OnboardingFlow onDone={handleOnboardingDone} />
+    )}
     <div className="app-shell">
       <aside className="sidebar">
         <Link className="brand" href="/" aria-label="Volver a la portada">
@@ -197,5 +211,6 @@ function DashboardInner() {
         {toast}
       </div>
     </div>
+    </>
   );
 }
