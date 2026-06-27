@@ -1,13 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import type { MealType } from "@foodos/types";
+import type { FoodLogEntry, MealType } from "@foodos/types";
 import { actions, getLogByDay, getWaterToday, useFoodOS } from "@/lib/state";
 import { todayPlus } from "@/lib/utils";
+import { DiaryEntryDetailModal } from "../DiaryEntryDetailModal";
+import { EditLogModal } from "../EditLogModal";
+import { LogMealModal } from "../LogMealModal";
 
 // Valor por defecto; se reemplaza con state.settings.waterGoalMl en el componente.
 const WATER_GOAL_DEFAULT = 2500;
-const SOURCE_ICONS: Record<string, string> = { recipe: "🍽", inventory: "🥕", manual: "✎" };
+const SOURCE_ICONS: Record<string, string> = { recipe: "🍽", inventory: "🥕", manual: "🥘" };
 
 const MEAL_CHIPS: Record<MealType, { label: string; cls: string }> = {
   breakfast: { label: "🌅 Desayuno", cls: "breakfast" },
@@ -35,9 +38,19 @@ export function DiaryView() {
   const today = todayPlus(0);
   const hasToday = days.some((day) => day.date === today);
   const [editingMealTypeId, setEditingMealTypeId] = useState<string | null>(null);
+  const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
+  const [detailEntry, setDetailEntry] = useState<FoodLogEntry | null>(null);
+  const [showLogMeal, setShowLogMeal] = useState(false);
 
   return (
     <section className="view">
+      {/* Registro de comida */}
+      <div className="diary-log-btn-wrap">
+        <button className="primary-button diary-log-btn" onClick={() => setShowLogMeal(true)}>
+          + ¿Qué has comido?
+        </button>
+      </div>
+
       {/* Agua de hoy */}
       <article className="panel water-panel">
         <div className="panel-head">
@@ -110,69 +123,121 @@ export function DiaryView() {
           </div>
 
           {day.entries.length ? (
-            <ul className="diary-list">
-              {day.entries.map((entry) => (
-                <li key={entry.id}>
-                  <span className="diary-time">{entry.time}</span>
-                  <span className="diary-icon">{SOURCE_ICONS[entry.source] ?? "🍽"}</span>
-                  <div className="diary-meal">
-                    <div className="diary-meal-head">
-                      <strong>{entry.name}</strong>
-                      {editingMealTypeId === entry.id ? (
-                        <span className="meal-type-picker">
-                          {(Object.keys(MEAL_CHIPS) as MealType[]).map((type) => (
+            <>
+              {(Object.keys(MEAL_CHIPS) as MealType[])
+                .map((mealType) => {
+                  const group = day.entries.filter((e) => e.mealType === mealType);
+                  if (group.length === 0) return null;
+                  const groupKcal = Math.round(group.reduce((s, e) => s + e.kcal, 0));
+                  const groupProtein = Math.round(group.reduce((s, e) => s + e.protein, 0));
+                  return (
+                    <div key={mealType} className="diary-meal-group">
+                      <div className="diary-meal-group-head">
+                        <span className={`meal-chip ${MEAL_CHIPS[mealType].cls} active`}>
+                          {MEAL_CHIPS[mealType].label}
+                        </span>
+                        <span className="diary-group-totals">
+                          {groupKcal} kcal · {groupProtein}g prot
+                        </span>
+                      </div>
+                      <ul className="diary-list">
+                        {group.map((entry) => (
+                          <li key={entry.id}>
+                            <span className="diary-time">{entry.time}</span>
+                            <span className="diary-icon">{SOURCE_ICONS[entry.source] ?? "🍽"}</span>
+                            <div className="diary-meal">
+                              <div className="diary-meal-head">
+                                <strong
+                                  className="diary-entry-name-link"
+                                  onClick={() => setDetailEntry(entry)}
+                                  title="Ver detalle"
+                                >
+                                  {entry.name}
+                                </strong>
+                                {editingMealTypeId === entry.id ? (
+                                  <span className="meal-type-picker">
+                                    {(Object.keys(MEAL_CHIPS) as MealType[]).map((type) => (
+                                      <button
+                                        key={type}
+                                        className={`meal-chip ${MEAL_CHIPS[type].cls} ${entry.mealType === type ? "active" : ""}`}
+                                        onClick={() => {
+                                          mutate((draft) => {
+                                            const e = draft.foodLog.find((x) => x.id === entry.id);
+                                            if (e) e.mealType = type;
+                                          });
+                                          setEditingMealTypeId(null);
+                                        }}
+                                      >
+                                        {MEAL_CHIPS[type].label}
+                                      </button>
+                                    ))}
+                                  </span>
+                                ) : (
+                                  <button
+                                    className={`meal-chip ${MEAL_CHIPS[mealType]?.cls ?? ""}`}
+                                    title="Cambiar tipo de comida"
+                                    onClick={() => setEditingMealTypeId(entry.id)}
+                                  >
+                                    {MEAL_CHIPS[mealType]?.label ?? mealType}
+                                  </button>
+                                )}
+                              </div>
+                              <small>
+                                {entry.qty != null ? `${entry.qty} ${entry.unit} · ` : ""}
+                                {Math.round(entry.kcal)} kcal · {entry.protein}g P · {entry.carbs}g C · {entry.fat}g G
+                              </small>
+                            </div>
                             <button
-                              key={type}
-                              className={`meal-chip ${MEAL_CHIPS[type].cls} ${entry.mealType === type ? "active" : ""}`}
+                              className="small-action"
+                              aria-label={`Editar ${entry.name}`}
+                              title="Editar cantidad"
+                              onClick={() => setEditingEntry(entry)}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              className="small-action bad"
+                              aria-label={`Borrar ${entry.name}`}
                               onClick={() => {
                                 mutate((draft) => {
-                                  const e = draft.foodLog.find((x) => x.id === entry.id);
-                                  if (e) e.mealType = type;
+                                  if (entry.source === "inventory" && (entry.qty ?? 0) > 0) {
+                                    const matches = draft.inventory.filter((item) => {
+                                      const n = item.name.toLowerCase();
+                                      const en = entry.name.toLowerCase();
+                                      return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
+                                    });
+                                    if (matches.length > 0) {
+                                      matches[0].qty = Math.round((matches[0].qty + (entry.qty ?? 0)) * 100) / 100;
+                                    }
+                                  }
+                                  draft.foodLog = draft.foodLog.filter((c) => c.id !== entry.id);
                                 });
-                                setEditingMealTypeId(null);
+                                showToast("Comida eliminada · cantidad devuelta al inventario");
                               }}
                             >
-                              {MEAL_CHIPS[type].label}
+                              ×
                             </button>
-                          ))}
-                        </span>
-                      ) : (
-                        entry.mealType && (
-                          <button
-                            className={`meal-chip ${MEAL_CHIPS[entry.mealType]?.cls ?? ""}`}
-                            title="Cambiar tipo de comida"
-                            onClick={() => setEditingMealTypeId(entry.id)}
-                          >
-                            {MEAL_CHIPS[entry.mealType]?.label ?? entry.mealType}
-                          </button>
-                        )
-                      )}
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                    <small>
-                      {entry.qty != null ? `${entry.qty} ${entry.unit} · ` : ""}
-                      {Math.round(entry.kcal)} kcal · {entry.protein}g P · {entry.carbs}g C · {entry.fat}g G
-                    </small>
-                  </div>
-                  <button
-                    className="small-action bad"
-                    aria-label={`Borrar ${entry.name}`}
-                    onClick={() => {
-                      mutate((draft) => {
-                        draft.foodLog = draft.foodLog.filter((candidate) => candidate.id !== entry.id);
-                      });
-                      showToast("Comida eliminada del diario");
-                    }}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
+                  );
+                })}
+            </>
           ) : (
             <div className="empty">Solo agua registrada este día.</div>
           )}
         </article>
       ))}
+      {detailEntry && (
+        <DiaryEntryDetailModal
+          entry={detailEntry}
+          onClose={() => setDetailEntry(null)}
+          onEdit={() => { setEditingEntry(detailEntry); setDetailEntry(null); }}
+        />
+      )}
+      {editingEntry && <EditLogModal entry={editingEntry} onClose={() => setEditingEntry(null)} />}
+      {showLogMeal && <LogMealModal onClose={() => setShowLogMeal(false)} />}
     </section>
   );
 }

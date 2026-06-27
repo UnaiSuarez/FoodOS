@@ -60,19 +60,40 @@ export function NutritionView() {
 
         <article className="panel">
           <div className="panel-head">
-            <h2>Consumido hoy</h2>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                const recipe = bestRecipe(state);
-                mutate((draft) => actions.cookRecipe(draft, recipe));
-                showToast("Receta registrada en nutrición");
-              }}
-            >
-              Registrar receta
-            </button>
+            <h2>Resumen de hoy</h2>
           </div>
-          <NutritionToday />
+          <div className="nutrition-totals">
+            {(() => {
+              const consumed = getConsumedToday(state);
+              return (
+                <>
+                  <div>
+                    <span>kcal</span>
+                    <strong>{Math.round(consumed.kcal)}</strong>
+                    <small>de {state.nutrition.kcal}</small>
+                  </div>
+                  <div>
+                    <span>Proteína</span>
+                    <strong>{Math.round(consumed.protein)}g</strong>
+                    <small>de {state.nutrition.protein}g</small>
+                  </div>
+                  <div>
+                    <span>Carbos</span>
+                    <strong>{Math.round(consumed.carbs)}g</strong>
+                    <small>de {state.nutrition.carbs}g</small>
+                  </div>
+                  <div>
+                    <span>Grasas</span>
+                    <strong>{Math.round(consumed.fat)}g</strong>
+                    <small>de {state.nutrition.fat}g</small>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+          <p className="empty" style={{ marginTop: 8 }}>
+            El detalle de comidas está en la sección <strong>Registro</strong>.
+          </p>
         </article>
       </div>
 

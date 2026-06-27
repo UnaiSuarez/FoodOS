@@ -13,11 +13,13 @@ export interface AIConfig {
 
 const STORAGE_KEY = "foodos-ai-config";
 
+// Migra modelos obsoletos o con cuota insuficiente al nuevo default
 const GEMINI_MIGRATIONS: Record<string, string> = {
-  "gemini-1.5-flash": "gemini-2.5-flash",
-  "gemini-1.5-pro":   "gemini-2.5-flash",
-  "gemini-2.0-flash": "gemini-2.5-flash",
-  "gemini-2.5-pro":   "gemini-2.5-flash",
+  "gemini-1.5-flash": "gemini-3.1-flash-lite",
+  "gemini-1.5-pro":   "gemini-3.1-flash-lite",
+  "gemini-2.0-flash": "gemini-3.1-flash-lite",
+  "gemini-2.5-pro":   "gemini-3.1-flash-lite",
+  "gemini-2.5-flash": "gemini-3.1-flash-lite",  // 20 RPD → 500 RPD
 };
 
 export function loadAIConfig(): AIConfig | null {
@@ -74,9 +76,11 @@ export const PROVIDER_KEY_LINK_LABEL: Record<AIProvider, string> = {
 
 export const PROVIDER_MODELS: Record<AIProvider, { id: string; label: string }[]> = {
   gemini: [
-    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (gratis, recomendado)" },
-    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (requiere billing)" },
-    { id: "gemini-2.5-pro",   label: "Gemini 2.5 Pro (requiere billing)" },
+    { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite (gratis · 500/día · recomendado)" },
+    { id: "gemini-3.5-flash",      label: "Gemini 3.5 Flash (gratis · 20/día · más capaz)" },
+    { id: "gemini-3-flash",        label: "Gemini 3 Flash (gratis · 20/día)" },
+    { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash (gratis · 20/día)" },
+    { id: "gemini-2.5-pro",        label: "Gemini 2.5 Pro (requiere billing)" },
   ],
   openai: [
     { id: "gpt-4o-mini", label: "GPT-4o Mini (económico)" },

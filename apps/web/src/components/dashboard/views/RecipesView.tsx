@@ -6,13 +6,19 @@ import type { Recipe } from "@foodos/types";
 import { actions, allRecipes, buildAiRecipeDraft, getBudgetLeft, getRecipeMatch, useFoodOS } from "@/lib/state";
 import { eur, uid } from "@/lib/utils";
 import { AiRecipeModal } from "../AiRecipeModal";
+import { CookModal } from "../CookModal";
+import { CreateRecipeModal } from "../CreateRecipeModal";
+import { EditRecipeModal } from "../EditRecipeModal";
 
-type Mode = "exact" | "partial" | "budget" | "ai";
+type Mode = "all" | "available" | "budget" | "protein";
 
 export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
-  const [mode, setMode] = useState<Mode>("exact");
+  const [mode, setMode] = useState<Mode>("all");
   const [aiDraft, setAiDraft] = useState<Recipe | null>(null);
+  const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editRecipe, setEditRecipe] = useState<Recipe | null>(null);
 
   // Filtros avanzados (estado local, no persisten)
   const [search, setSearch]           = useState("");
@@ -25,7 +31,8 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   const budgetLeft = getBudgetLeft(state);
   const budgetTight = budgetLeft < 5 && state.weeklyBudget > 0;
   const [savingsMode, setSavingsMode] = useState(false);
-  const effectiveSavings = budgetTight || savingsMode;
+  const [savingsDismissed, setSavingsDismissed] = useState(false);
+  const effectiveSavings = (budgetTight && !savingsDismissed) || savingsMode;
 
   const recipes = allRecipes(state);
   const allTags = ["todos", ...new Set(recipes.flatMap((r) => r.tags))];
@@ -49,10 +56,11 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   if (maxTime > 0)     filtered = filtered.filter((r) => r.time <= maxTime);
   if (onlyAvail)       filtered = filtered.filter((r) => getRecipeMatch(state, r).pct >= 60);
 
-  // Orden
+  // Filtro y orden según modo
+  if (mode === "available") filtered = filtered.filter((r) => getRecipeMatch(state, r).pct >= 60);
   filtered.sort((a, b) => {
-    if (mode === "budget") return a.cost - b.cost;
-    if (mode === "ai")     return b.protein - a.protein;
+    if (mode === "budget")  return a.cost - b.cost;
+    if (mode === "protein") return b.protein - a.protein;
     return getRecipeMatch(state, b).pct - getRecipeMatch(state, a).pct;
   });
 
@@ -76,12 +84,19 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
             <h2>Recetas que encajan con tu inventario</h2>
           </div>
           <div className="panel-actions">
-            <select value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
-              <option value="exact">Modo exacto</option>
-              <option value="partial">Modo parcial</option>
-              <option value="budget">Modo ahorro</option>
-              <option value="ai">Modo IA</option>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as Mode)}
+              title="Ordenar recetas por criterio"
+            >
+              <option value="all">Todas (por disponibilidad)</option>
+              <option value="available">Solo tengo ingredientes</option>
+              <option value="budget">Más económicas primero</option>
+              <option value="protein">Más proteína primero</option>
             </select>
+            <button className="secondary-button" onClick={() => setCreateOpen(true)}>
+              + Crear receta
+            </button>
             <button
               className="primary-button"
               onClick={() => {
@@ -97,20 +112,20 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
         </div>
 
         {/* Banner modo ahorro máximo */}
-        {(budgetTight || savingsMode) && (
+        {((budgetTight && !savingsDismissed) || savingsMode) && (
           <div className={`savings-banner ${budgetTight ? "auto" : ""}`}>
             <span>
               {budgetTight
                 ? `⚠ Presupuesto casi agotado (${eur(budgetLeft)} disponibles). Modo ahorro máximo activo — solo recetas ≤ €1,50/ración.`
                 : "💚 Modo ahorro máximo activo — solo recetas ≤ €1,50/ración."}
             </span>
-            <button className="text-button" onClick={() => setSavingsMode(false)}>
+            <button className="text-button" onClick={() => { setSavingsMode(false); setSavingsDismissed(true); }}>
               Desactivar
             </button>
           </div>
         )}
-        {!budgetTight && !savingsMode && (
-          <button className="savings-toggle" onClick={() => setSavingsMode(true)}>
+        {(!budgetTight || savingsDismissed) && !savingsMode && (
+          <button className="savings-toggle" onClick={() => { setSavingsMode(true); setSavingsDismissed(false); }}>
             💚 Activar modo ahorro máximo (≤ €1,50/ración)
           </button>
         )}
@@ -212,6 +227,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
             {filtered.map((recipe) => {
               const match = getRecipeMatch(state, recipe);
               const cls = match.pct >= 80 ? "green" : match.pct >= 35 ? "amber" : "red";
+              const isCustom = state.customRecipes.some((r) => r.id === recipe.id);
               return (
                 <article key={recipe.id} className="recipe-card">
                   <button className="recipe-open" onClick={() => openRecipe(recipe.id)} aria-label={`Abrir ${recipe.title}`}>
@@ -231,6 +247,9 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                   </button>
                   <div className="card-actions">
                     <button className="small-action" onClick={() => openRecipe(recipe.id)}>Ver detalle</button>
+                    {isCustom && (
+                      <button className="small-action" onClick={() => setEditRecipe(recipe)}>Editar</button>
+                    )}
                     <button
                       className="small-action"
                       onClick={() => {
@@ -243,11 +262,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                     </button>
                     <button
                       className="small-action good"
-                      onClick={() => {
-                        mutate((draft) => actions.cookRecipe(draft, recipe));
-                        setMascotMessage("Receta cocinada. Objetivos actualizados.");
-                        showToast("Receta registrada en nutrición");
-                      }}
+                      onClick={() => setCookingRecipe(recipe)}
                     >
                       Cocinar
                     </button>
@@ -280,6 +295,9 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
       </div>
 
       {aiDraft && <AiRecipeModal draft={aiDraft} onClose={() => setAiDraft(null)} />}
+      {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
+      {createOpen && <CreateRecipeModal onClose={() => setCreateOpen(false)} />}
+      {editRecipe && <EditRecipeModal recipe={editRecipe} onClose={() => setEditRecipe(null)} />}
     </section>
   );
 }

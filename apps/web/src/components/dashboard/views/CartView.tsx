@@ -11,6 +11,7 @@ import {
 } from "@/lib/state";
 import { todayPlus } from "@/lib/utils";
 import { eur, uid } from "@/lib/utils";
+import { EditCartItemModal } from "../EditCartItemModal";
 
 type SuggestTab = "lowstock" | "plan";
 
@@ -25,6 +26,7 @@ export function CartView() {
   const [suggestOpen, setSuggestOpen] = useState(true);
   const [activeTab, setActiveTab]     = useState<SuggestTab>("lowstock");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [editCartItem, setEditCartItem] = useState<CartItem | null>(null);
 
   const checkedCount  = state.cart.filter((i) => i.checked).length;
   const estimated     = state.cart.reduce((sum, i) => sum + Number(i.price || 0), 0);
@@ -141,17 +143,26 @@ export function CartView() {
                 <div className="suggest-list">
                   {suggestions.map((item) => (
                     <div key={item.name} className="suggest-row">
-                      <span className="suggest-name">{item.name}</span>
-                      <span className="suggest-qty">
-                        {item.qty} {item.unit}
-                      </span>
-                      <span className="suggest-price">{eur(item.price)}</span>
-                      <button
-                        className="small-action good"
-                        onClick={() => addSuggestion(item)}
-                      >
-                        + Añadir
-                      </button>
+                      <div className="suggest-row-head">
+                        <span className="suggest-name">{item.name}</span>
+                        {activeTab === "lowstock" && (
+                          <button
+                            className="suggest-dismiss"
+                            title="Ocultar sugerencia"
+                            onClick={() => mutate((draft) => actions.dismissSuggestion(draft, item.name))}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <div className="suggest-row-foot">
+                        <span className="suggest-meta">
+                          {item.qty} {item.unit} · {eur(item.price)}
+                        </span>
+                        <button className="small-action good suggest-add" onClick={() => addSuggestion(item)}>
+                          + Añadir
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -179,11 +190,7 @@ export function CartView() {
             </label>
             <label>
               Cantidad
-              <select name="qty" required defaultValue={1}>
-                {[1, 2, 3, 4, 6, 8, 12].map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
+              <input name="qty" type="number" min="0" step="0.1" defaultValue={1} required />
             </label>
             <label>
               Unidad <input name="unit" defaultValue="ud" />
@@ -309,6 +316,9 @@ export function CartView() {
                     >
                       {item.checked ? "Desmarcar" : "Marcar"}
                     </button>
+                    <button className="small-action" onClick={() => setEditCartItem(item)}>
+                      Editar
+                    </button>
                     <button
                       className="small-action bad"
                       onClick={() =>
@@ -351,6 +361,18 @@ export function CartView() {
                   <span className="history-date">{expense.date === todayPlus(0) ? "Hoy" : expense.date}</span>
                   <span className="history-desc">{expense.description}</span>
                   <span className="history-amount">{eur(expense.amount)}</span>
+                  <button
+                    className="small-action bad"
+                    title="Eliminar esta compra"
+                    onClick={() => {
+                      mutate((draft) => {
+                        draft.expenses = draft.expenses.filter((e) => e.id !== expense.id);
+                      });
+                      showToast("Compra eliminada del historial");
+                    }}
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
               <div className="history-total">
@@ -361,6 +383,7 @@ export function CartView() {
           )
         )}
       </article>
+      {editCartItem && <EditCartItemModal item={editCartItem} onClose={() => setEditCartItem(null)} />}
     </section>
   );
 }

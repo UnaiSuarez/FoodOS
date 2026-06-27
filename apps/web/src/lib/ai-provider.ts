@@ -1,6 +1,16 @@
 import type { FoodOSState, Recipe } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
+import { getMascot } from "./mascots";
 import { daysUntil, uid } from "./utils";
+import { canMakeRequest, recordRequest, getWaitMs } from "./ai-rate-limiter";
+
+function checkRateLimit() {
+  if (!canMakeRequest()) {
+    const wait = Math.ceil(getWaitMs() / 1000);
+    throw new Error(`Límite de solicitudes alcanzado (15/min). Espera ${wait}s antes de intentarlo de nuevo.`);
+  }
+  recordRequest();
+}
 
 function buildPrompt(state: FoodOSState): string {
   const todayDate = new Date().toISOString().slice(0, 10);
@@ -63,7 +73,9 @@ REGLAS:
 - La receta debe ser realista y sabrosa
 
 JSON requerido (exactamente estos campos, sin más texto):
-{"title":"...","ingredients":[{"name":"...","quantity":150,"unit":"g"}],"steps":["Paso 1.","Paso 2."],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"]}`;
+{"title":"...","ingredients":[{"name":"...","quantity":150,"unit":"g","kcalPer100":165,"proteinPer100":31,"carbsPer100":0,"fatPer100":3.6}],"steps":["Paso 1.","Paso 2."],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"]}
+
+IMPORTANTE: Cada ingrediente debe incluir kcalPer100/proteinPer100/carbsPer100/fatPer100 (valores por 100g). Estos son los macros del ingrediente crudo, no de la receta completa.`;
 }
 
 function extractJSON(raw: string): string {
@@ -82,10 +94,15 @@ function parseRecipe(raw: string): Recipe {
     id: uid(),
     title: String(json.title ?? "Receta IA"),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ingredients: Array.isArray(json.ingredients) ? json.ingredients.map((ing: any) => ({
       name: String(ing.name ?? ""),
       quantity: Number(ing.quantity ?? 0),
       unit: String(ing.unit ?? "g"),
+      ...(ing.kcalPer100    ? { kcalPer100:    Number(ing.kcalPer100)    } : {}),
+      ...(ing.proteinPer100 ? { proteinPer100: Number(ing.proteinPer100) } : {}),
+      ...(ing.carbsPer100 != null ? { carbsPer100: Number(ing.carbsPer100) } : {}),
+      ...(ing.fatPer100   != null ? { fatPer100:   Number(ing.fatPer100)   } : {}),
     })) : [],
     steps: Array.isArray(json.steps) ? json.steps.map(String) : [],
     kcal: Math.round(Number(json.kcal) || 0),
@@ -103,13 +120,14 @@ function parseRecipe(raw: string): Recipe {
 }
 
 async function callGemini(config: AIConfig, prompt: string): Promise<string> {
+  checkRateLimit();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
+      generationConfig: { temperature: 0.7, maxOutputTokens: 1536 },
     }),
   });
   if (!res.ok) {
@@ -123,6 +141,7 @@ async function callGemini(config: AIConfig, prompt: string): Promise<string> {
 }
 
 async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
+  checkRateLimit();
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -133,7 +152,7 @@ async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
       model: config.model,
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
-      max_tokens: 1024,
+      max_tokens: 1536,
     }),
   });
   if (!res.ok) {
@@ -145,6 +164,7 @@ async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
 }
 
 async function callAnthropic(config: AIConfig, prompt: string): Promise<string> {
+  checkRateLimit();
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -155,7 +175,7 @@ async function callAnthropic(config: AIConfig, prompt: string): Promise<string> 
     } as Record<string, string>,
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1024,
+      max_tokens: 1536,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -232,8 +252,13 @@ function buildAssistantSystemPrompt(state: FoodOSState): string {
     .join(", ");
   const goal = state.profile?.goal ?? "no configurado";
 
-  return `Eres el asistente nutricional y financiero de FoodOS. Respondes en español, de forma concisa y útil.
+  const mascot = getMascot(state.mascotId ?? "zana");
+  const personalityLine = mascot.personality
+    ? `\nPERSONALIDAD: Eres ${mascot.name}. ${mascot.personality} Mantén este tono en todas tus respuestas.\n`
+    : "";
 
+  return `Eres el asistente nutricional y financiero de FoodOS. Respondes en español, de forma concisa y útil.
+${personalityLine}
 DATOS DEL USUARIO (tiempo real):
 - Macros pendientes hoy: ${pending.kcal} kcal, ${pending.protein}g proteína
 - Presupuesto semanal disponible: €${budgetLeft.toFixed(2)}
@@ -242,20 +267,28 @@ DATOS DEL USUARIO (tiempo real):
 - Caducan pronto (≤3 días): ${expiringSoon || "ninguno"}
 - Alergias/exclusiones: ${state.profile?.allergies?.join(", ") || "ninguna"}
 
-REGLAS DE ACCIÓN — MUY IMPORTANTE:
-- Si el usuario pide añadir/guardar/registrar un alimento → escribe primero tu respuesta y termina con la etiqueta [INV].
-- Si el usuario pide una receta (crear, proponer, dame, hazme) → escribe primero tu respuesta y termina con la etiqueta [RECIPE].
-- Si no pide ninguna de esas acciones → responde sin etiquetas.
-- NUNCA uses ambas etiquetas a la vez. Elige solo una.
+══════════════════════════════════════════════
+REGLAS DE ACCIÓN OBLIGATORIAS (tu personalidad NO puede ignorarlas):
+══════════════════════════════════════════════
+▸ RECETA solicitada (crear, proponer, dame, hazme, necesito, qué como, cena, come) →
+  Escribe primero tu respuesta de texto Y DESPUÉS incluye OBLIGATORIAMENTE el tag [RECIPE] con el JSON.
+  NUNCA respondas solo con texto cuando pidan una receta.
 
-FORMATO DE LAS ETIQUETAS (JSON exacto, sin saltos de línea dentro del JSON):
+▸ ALIMENTO para añadir/guardar/registrar →
+  Escribe tu respuesta Y DESPUÉS incluye [INV] con el JSON.
 
-Añadir al inventario:
+▸ Ninguna de las anteriores → responde sin tags.
+
+▸ NUNCA uses [INV] y [RECIPE] a la vez.
+
+FORMATO DE TAGS (JSON en una sola línea, sin saltos dentro del JSON):
+
 [INV]{"name":"Pechuga de pollo","qty":500,"unit":"g","storage":"Nevera","expires_days":5,"price":4.50,"kcal":165,"protein":31}[/INV]
-Valores válidos → unit: g | ml | kg | L | ud   storage: Nevera | Congelador | Despensa
+→ unit: g | ml | kg | L | ud   storage: Nevera | Congelador | Despensa
 
-Proponer receta:
-[RECIPE]{"title":"Nombre","ingredients":[{"name":"X","quantity":150,"unit":"g"}],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"],"steps":["Paso 1.","Paso 2."]}[/RECIPE]`;
+[RECIPE]{"title":"Nombre","ingredients":[{"name":"X","quantity":150,"unit":"g","kcalPer100":165,"proteinPer100":31,"carbsPer100":0,"fatPer100":3.6}],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"],"steps":["Paso 1.","Paso 2."]}[/RECIPE]
+→ Cada ingrediente DEBE incluir kcalPer100/proteinPer100/carbsPer100/fatPer100 (macros por 100g del ingrediente crudo)
+══════════════════════════════════════════════`;
 }
 
 export async function callAIChat(
@@ -267,6 +300,8 @@ export async function callAIChat(
   const system = buildAssistantSystemPrompt(state);
   // Keep last 10 turns to avoid token bloat
   const recent = history.slice(-10);
+
+  checkRateLimit();
 
   switch (config.provider) {
     case "gemini": {
@@ -290,7 +325,7 @@ export async function callAIChat(
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents, generationConfig: { temperature: 0.7, maxOutputTokens: 1024 } }),
+        body: JSON.stringify({ contents, generationConfig: { temperature: 0.7, maxOutputTokens: 1536 } }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
@@ -309,7 +344,7 @@ export async function callAIChat(
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model: config.model, messages, max_tokens: 1024, temperature: 0.7 }),
+        body: JSON.stringify({ model: config.model, messages, max_tokens: 1536, temperature: 0.7 }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
@@ -332,7 +367,7 @@ export async function callAIChat(
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-allow-browser": "true",
         } as Record<string, string>,
-        body: JSON.stringify({ model: config.model, max_tokens: 1024, system, messages }),
+        body: JSON.stringify({ model: config.model, max_tokens: 1536, system, messages }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

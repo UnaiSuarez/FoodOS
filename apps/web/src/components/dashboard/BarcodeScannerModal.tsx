@@ -8,6 +8,9 @@ export interface ProductData {
   protein: number;
   carbs: number;
   fat: number;
+  salt?: number;
+  fiber?: number;
+  sugars?: number;
 }
 
 interface Props {
@@ -111,6 +114,9 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
         protein: Math.round((n.proteins_100g ?? 0) * 10) / 10,
         carbs: Math.round((n.carbohydrates_100g ?? 0) * 10) / 10,
         fat: Math.round((n.fat_100g ?? 0) * 10) / 10,
+        ...(n.salt_100g != null && { salt: Math.round(n.salt_100g * 100) / 100 }),
+        ...(n.fiber_100g != null && { fiber: Math.round(n.fiber_100g * 10) / 10 }),
+        ...(n.sugars_100g != null && { sugars: Math.round(n.sugars_100g * 10) / 10 }),
       });
     } catch {
       setError("Error de red. Comprueba tu conexión o introduce el código manualmente.");

@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { Recipe } from "@foodos/types";
 import { MASCOTS } from "@/lib/mascots";
-import { actions, getMascot, getBudgetLeft, getPendingMacros, useFoodOS } from "@/lib/state";
+import { actions, getMascot, getBudgetLeft, getPendingMacros, buildAiRecipeDraft, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { callAIChat, type ChatTurn } from "@/lib/ai-provider";
 import { eur, todayPlus, uid } from "@/lib/utils";
@@ -87,6 +87,10 @@ function buildRecipeFromRaw(raw: Record<string, unknown>): Recipe {
     name: String(i.name ?? ""),
     quantity: Number(i.quantity ?? 0),
     unit: String(i.unit ?? "g"),
+    ...(i.kcalPer100    ? { kcalPer100:    Number(i.kcalPer100)    } : {}),
+    ...(i.proteinPer100 ? { proteinPer100: Number(i.proteinPer100) } : {}),
+    ...(i.carbsPer100 != null ? { carbsPer100: Number(i.carbsPer100) } : {}),
+    ...(i.fatPer100   != null ? { fatPer100:   Number(i.fatPer100)   } : {}),
   })) : [];
   return {
     id: uid(),
@@ -105,6 +109,59 @@ function buildRecipeFromRaw(raw: Record<string, unknown>): Recipe {
     image: "",
     aiGenerated: true,
   };
+}
+
+// ── Frases motivacionales contextuales (sin IA) ──────────────────
+
+function buildContextualTips(
+  mascotId: string,
+  pending: { kcal: number; protein: number },
+  budgetLeft: number,
+  state: import("@foodos/types").FoodOSState
+): string[] {
+  const tips: string[] = [];
+  const inv = state.inventory.filter((i) => i.qty > 0);
+  const expiringSoon = inv.filter((i) => {
+    const d = Math.ceil((new Date(i.expires).getTime() - Date.now()) / 86400000);
+    return d >= 0 && d <= 3;
+  });
+
+  const totalKcal = state.nutrition.kcal;
+  const pctKcal = totalKcal > 0 ? Math.round(((totalKcal - pending.kcal) / totalKcal) * 100) : 0;
+  const goal = state.profile?.goal ?? "";
+
+  const dataFacts: string[] = [];
+  if (pending.kcal > 0) dataFacts.push(`te quedan ${Math.round(pending.kcal)} kcal y ${Math.round(pending.protein)}g de proteína para hoy`);
+  if (pctKcal > 0)      dataFacts.push(`llevas el ${pctKcal}% de tu objetivo calórico hoy`);
+  if (budgetLeft > 0)   dataFacts.push(`tu presupuesto disponible es €${budgetLeft.toFixed(2)}`);
+  if (expiringSoon.length > 0) dataFacts.push(`${expiringSoon[0].name} caduca en ${Math.max(0, Math.ceil((new Date(expiringSoon[0].expires).getTime() - Date.now()) / 86400000))} días — úsalo pronto`);
+  if (inv.length > 0)   dataFacts.push(`tienes ${inv.length} alimentos en el inventario`);
+  if (goal === "muscle_gain") dataFacts.push("estás en modo volumen — prioriza proteína en cada comida");
+  if (goal === "fat_loss")    dataFacts.push("estás en déficit calórico — las verduras de bajo IG son tus aliadas");
+  if (goal === "maintain")    dataFacts.push("en mantenimiento la consistencia es más importante que la perfección");
+
+  // Mapeo de personalidad por mascota
+  const wrappers: Record<string, (fact: string) => string> = {
+    zana:  (f) => `¡Recuerda, cariño! ${f.charAt(0).toUpperCase() + f.slice(1)}. ¡Tú puedes! 💪`,
+    basil: (f) => `Dato registrado: ${f.charAt(0).toUpperCase() + f.slice(1)}. Actúa en consecuencia.`,
+    froggy:(f) => `¡Croac! Oye, ${f}. ¡Como diría la rana: más vale saltar que esperar! 🐸`,
+    sage:  (f) => `Reflexiona… ${f.charAt(0).toUpperCase() + f.slice(1)}. Cada decisión forma el todo.`,
+    chip:  (f) => `[INFO] ${f.charAt(0).toUpperCase() + f.slice(1)}. Optimiza tu siguiente acción.`,
+    mushi: (f) => `🍄 ¡Mira! ${f.charAt(0).toUpperCase() + f.slice(1)}. ¡Que florezca tu día!`,
+    bruno: (f) => `Oye, ${f}. ¡Cuídate mucho, que Bruno está pendiente de ti! 🐻`,
+    pica:  (f) => `¡Sin excusas! ${f.charAt(0).toUpperCase() + f.slice(1)}. ¡Dale fuerte! 🌶️`,
+    okto:  (f) => `Procesando… ${f.charAt(0).toUpperCase() + f.slice(1)}. Siguiente paso: optimizar.`,
+    kiri:  (f) => `Cuenta tu historia: ${f.charAt(0).toUpperCase() + f.slice(1)}. ¿Cuál es tu próximo capítulo?`,
+    vera:  (f) => `Respira. ${f.charAt(0).toUpperCase() + f.slice(1)}. Escucha lo que tu cuerpo necesita.`,
+    pingo: (f) => `Registro: ${f.charAt(0).toUpperCase() + f.slice(1)}. Procesando siguiente objetivo.`,
+    volt:  (f) => `¡${f.toUpperCase()}! ¡VAMOS A POR ELLO AHORA MISMO! ⚡`,
+    leo:   (f) => `Escúchame: ${f.charAt(0).toUpperCase() + f.slice(1)}. Los campeones no descansan.`,
+    luna:  (f) => `Bajo la luz de los datos… ${f.charAt(0).toUpperCase() + f.slice(1)}. Sigue tu camino. 🌙`,
+  };
+
+  const wrap = wrappers[mascotId] ?? ((f: string) => `${f.charAt(0).toUpperCase() + f.slice(1)}.`);
+  for (const fact of dataFacts) tips.push(wrap(fact));
+  return tips.length > 0 ? tips : ["¡Registra alimentos para recibir consejos personalizados!"];
 }
 
 // ── Respuestas locales ────────────────────────────────────────────
@@ -141,11 +198,23 @@ export function AssistantView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [tipIdx, setTipIdx] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const active = getMascot(state.mascotId);
   const aiConfig = loadAIConfig();
   const pending = getPendingMacros(state);
   const budgetLeft = getBudgetLeft(state);
+
+  // Frases motivacionales contextuales, rotan cada 12 s
+  const contextualTips = buildContextualTips(state.mascotId ?? "zana", pending, budgetLeft, state);
+  const currentTip = contextualTips[tipIdx % contextualTips.length];
+
+  useEffect(() => {
+    if (contextualTips.length <= 1) return;
+    const id = setInterval(() => setTipIdx((i) => i + 1), 12000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mascotId, contextualTips.length]);
 
   // Cargar historial solo en el cliente, tras el montaje
   useEffect(() => {
@@ -183,15 +252,19 @@ export function AssistantView() {
           rawReply = await callAIChat(aiConfig, state, text.trim(), historySnapshot);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : "";
-          const isOverload =
+          const isRateOrQuota =
             errMsg.includes("high demand") ||
             errMsg.includes("temporarily") ||
             errMsg.includes("overloaded") ||
             errMsg.includes("503") ||
-            errMsg.includes("429");
-          rawReply = isOverload
+            errMsg.includes("429") ||
+            errMsg.toLowerCase().includes("quota") ||
+            errMsg.toLowerCase().includes("exceeded") ||
+            errMsg.toLowerCase().includes("rate") ||
+            errMsg.toLowerCase().includes("límite");
+          rawReply = isRateOrQuota
             ? localReply(pending, budgetLeft, text.trim()) +
-              "\n\n*(IA saturada — respuesta local. Reintenta en unos segundos.)*"
+              "\n\n*(Cuota de IA agotada — respuesta local. Espera un minuto antes de reintentar.)*"
             : `⚠ ${errMsg}`;
         }
       } else {
@@ -225,6 +298,14 @@ export function AssistantView() {
 
       if (recipeRaw) {
         msg.recipe = buildRecipeFromRaw(recipeRaw);
+      } else {
+        // Fallback: si pidieron receta pero la IA no incluyó [RECIPE], generamos una local
+        const recipeKeywords = ["receta", "cocinar", "preparar", "cena", "come", "comer", "plato", "hazme", "dame", "propón"];
+        const askedForRecipe = recipeKeywords.some((kw) => text.trim().toLowerCase().includes(kw));
+        if (askedForRecipe && !invRaw) {
+          const draft = buildAiRecipeDraft(state);
+          if (draft) msg.recipe = draft;
+        }
       }
 
       addMsg(msg);
@@ -341,6 +422,12 @@ export function AssistantView() {
             <div ref={bottomRef} />
           </div>
 
+          {/* Tip motivacional — siempre visible, rota cada 12 s */}
+          <div className="chat-mascot-tip" key={tipIdx}>
+            <span className="tip-dot" />
+            {currentTip}
+          </div>
+
           {!aiConfig && (
             <p className="chat-no-ai">
               Respuestas locales. Conecta tu IA con el botón <strong>✦ IA</strong> para añadir al
@@ -384,7 +471,25 @@ export function AssistantView() {
                 className={`mascot-choice ${mascot.id === state.mascotId ? "active" : ""}`}
                 onClick={() => {
                   mutate((draft) => void (draft.mascotId = mascot.id));
-                  setMascotMessage(`${mascot.name} seleccionado. ${mascot.tagline}.`);
+                  // Saludo en el estilo de la personalidad del compañero
+                  const greetings: Record<string, string> = {
+                    zana:  "¡Hola cariño! Soy Zana, y estoy aquí para motivarte en cada paso. ¡Vamos a por ello juntos!",
+                    basil: "Selección realizada. Soy Basil. Procederé a analizar tus datos con precisión académica.",
+                    froggy:"¡Croac! ¿Sabes qué le dijo la rana a la ensalada? ¡Nada, porque se la comió! Soy Froggy, ¡vamos a divertirnos comiendo sano!",
+                    sage:  "Desde otro ángulo... considera que cada elección alimentaria refleja tus valores. Soy Sage. Reflexionemos juntos.",
+                    chip:  "Chip activo. Datos cargados. Listo para optimizar tu nutrición.",
+                    mushi: "Como una flor que se abre al sol, aquí estoy yo, Mushi, lista para pintar tu día de colores y sabores.",
+                    bruno: "¡Aquí Bruno! Cuidar de ti es mi misión. Juntos vamos a construir hábitos que te hagan sentir genial.",
+                    pica:  "¡Sin excusas! Soy Pica. ¿Estás listo para dar el 100%? Porque yo ya estoy a tope.",
+                    okto:  "Sistema iniciado. 1. Mascota seleccionada: Okto. 2. Objetivo: optimizar tu alimentación. 3. Comenzamos.",
+                    kiri:  "Cada alimento tiene una historia que contar, y yo, Kiri, seré tu narrador en este viaje gastronómico.",
+                    vera:  "Respira. Con calma y sin prisa. Soy Vera, y te acompañaré a escuchar lo que tu cuerpo necesita de verdad.",
+                    pingo: "Registro iniciado. Soy Pingo. Procesaré tus datos con exactitud. Paso 1: bienvenido al sistema.",
+                    volt:  "¡VOLT CONECTADO! ¡VAMOS! ¡SIN PARAR! ¡TODO ES POSIBLE! ¡AHORA!",
+                    leo:   "Bienvenido. Soy Leo. La disciplina construye campeones. Hoy es un buen día para ser mejor.",
+                    luna:  "Como la luna que guía en la oscuridad... aquí estoy, Luna, para acompañarte en silencio hacia tu mejor versión.",
+                  };
+                  setMascotMessage(greetings[mascot.id] ?? `${mascot.name} seleccionado. ${mascot.tagline}.`);
                   showToast(`${mascot.name} es ahora tu compañero`);
                 }}
               >

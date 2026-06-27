@@ -18,6 +18,7 @@ import {
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
 import { clampPct, daysUntil, eur } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
+import { CookModal } from "../CookModal";
 import type { ViewId } from "../DashboardShell";
 
 export function HomeView({
@@ -29,6 +30,8 @@ export function HomeView({
 }) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
+  const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
+  const [whatToEatOpen, setWhatToEatOpen] = useState(false);
 
   const consumed = getConsumedToday(state);
   const pending = getPendingMacros(state);
@@ -209,17 +212,69 @@ export function HomeView({
           <button className="quick-action" onClick={() => goTo("inventory")}>
             <span>＋</span> Añadir alimento
           </button>
-          <button className="quick-action" onClick={() => goTo("nutrition")}>
-            <span>🍽</span> Registrar comida
+          <button className="quick-action" onClick={() => goTo("diary")}>
+            <span>🍽</span> Registro
           </button>
           <button className="quick-action" onClick={() => goTo("cart")}>
             <span>🛒</span> Carrito
             {pendingCart.length > 0 && <b className="quick-badge">{pendingCart.length}</b>}
           </button>
           <button className="quick-action" onClick={() => goTo("recipes")}>
-            <span>✦</span> Buscar receta
+            <span>✦</span> Recetas
+          </button>
+          <button
+            className="quick-action what-to-eat"
+            onClick={() => setWhatToEatOpen((v) => !v)}
+          >
+            <span>🤔</span> ¿Qué como ahora?
           </button>
         </article>
+
+        {/* Panel "¿Qué como ahora?" */}
+        {whatToEatOpen && (
+          <article className="panel bento-what-to-eat">
+            <div className="panel-head">
+              <h3>🤔 Mejor opción ahora mismo</h3>
+              <button className="text-button" onClick={() => setWhatToEatOpen(false)}>Cerrar</button>
+            </div>
+            <p className="what-to-eat-context">
+              Te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
+              <strong>{Math.round(pending.protein)}g de proteína</strong>.{" "}
+              Presupuesto: <strong>{eur(budgetLeft)}</strong>.
+            </p>
+            <div className="what-to-eat-list">
+              {allRecipes(state)
+                .map((r) => {
+                  const match = getRecipeMatch(state, r);
+                  const kcalFit = pending.kcal > 0 ? 1 - Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1) : 0.5;
+                  const score = match.pct * 0.5 + Math.max(0, kcalFit) * 30 + (r.cost <= budgetLeft ? 20 : 0);
+                  return { r, match, score };
+                })
+                .filter((e) => e.r.cost <= Math.max(budgetLeft + 1, 2))
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 4)
+                .map(({ r, match }) => (
+                  <div key={r.id} className="what-to-eat-card">
+                    <div className="what-to-eat-info">
+                      <strong>{r.title}</strong>
+                      <small>{r.kcal} kcal · {r.protein}g prot · {eur(r.cost)} · {match.pct}% disponible</small>
+                    </div>
+                    <div className="what-to-eat-actions">
+                      <button className="small-action" onClick={() => { openRecipe(r.id); setWhatToEatOpen(false); }}>
+                        Ver
+                      </button>
+                      <button className="small-action good" onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}>
+                        Cocinar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              {allRecipes(state).length === 0 && (
+                <p className="empty">Añade recetas para ver sugerencias.</p>
+              )}
+            </div>
+          </article>
+        )}
 
         {/* Mascota con insight contextual */}
         <article className="panel bento-mascot">
@@ -274,15 +329,7 @@ export function HomeView({
               </button>
               <button
                 className="small-action good"
-                onClick={() => {
-                  mutate((draft) => actions.cookRecipe(draft, activeSuggestion.recipe));
-                  setMascotMessage(
-                    activeSuggestion.kind === "dinner"
-                      ? "Cena registrada. ¡Macros del día cerrados!"
-                      : "Receta cocinada. Objetivos actualizados."
-                  );
-                  showToast("Receta registrada en nutrición");
-                }}
+                onClick={() => setCookingRecipe(activeSuggestion.recipe)}
               >
                 Cocinar
               </button>
@@ -292,6 +339,7 @@ export function HomeView({
       </div>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
+      {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
     </section>
   );
 }

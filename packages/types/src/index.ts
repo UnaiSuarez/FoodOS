@@ -15,8 +15,18 @@ export interface InventoryItem {
   price: number;
   /** kcal por 100 g */
   kcal: number;
-  /** Proteina por 100 g */
+  /** Proteína por 100 g */
   protein: number;
+  /** Hidratos de carbono por 100 g (de OFF / USDA) */
+  carbs?: number;
+  /** Grasas totales por 100 g (de OFF / USDA) */
+  fat?: number;
+  /** Sal por 100 g en g (de OFF) */
+  salt?: number;
+  /** Fibra por 100 g en g (de OFF / USDA) */
+  fiber?: number;
+  /** Azúcares por 100 g en g (de OFF) */
+  sugars?: number;
 }
 
 export interface CartItem {
@@ -61,6 +71,11 @@ export interface RecipeIngredient {
   name: string;
   quantity: number;
   unit: string;
+  /** Macros por 100 g — opcionales, se rellenan en la UI al crear/editar receta */
+  kcalPer100?: number;
+  proteinPer100?: number;
+  carbsPer100?: number;
+  fatPer100?: number;
 }
 
 export interface Recipe {
@@ -176,6 +191,8 @@ export interface Mascot {
   color: string;
   tagline: string;
   image: string;
+  /** Texto de personalidad inyectado en el system prompt del asistente IA */
+  personality?: string;
 }
 
 /** Ajustes configurables por el usuario (umbrales, metas, preferencias). */
@@ -221,4 +238,6 @@ export interface FoodOSState {
   mascotId: string;
   recipeTag: string;
   settings: AppSettings;
+  /** Nombres de sugerencias de stock bajo descartadas manualmente por el usuario. */
+  dismissedSuggestions?: string[];
 }
