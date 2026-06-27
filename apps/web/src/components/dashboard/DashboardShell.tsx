@@ -14,6 +14,7 @@ import { FinanceView } from "./views/FinanceView";
 import { NutritionView } from "./views/NutritionView";
 import { AssistantView } from "./views/AssistantView";
 import { SettingsView } from "./views/SettingsView";
+import { PlannerView } from "./views/PlannerView";
 import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
@@ -30,6 +31,7 @@ const VIEWS = [
   { id: "finance", icon: "€", label: "Finanzas", title: "Finanzas" },
   { id: "nutrition", icon: "%", label: "Nutrición", title: "Nutrición" },
   { id: "assistant", icon: "✦", label: "Asistente", title: "Asistente FoodOS" },
+  { id: "planner",   icon: "⊞", label: "Planificador", title: "Planificador semanal" },
   { id: "settings",  icon: "⚙", label: "Ajustes",   title: "Ajustes de la app" },
 ] as const;
 
@@ -189,7 +191,8 @@ function DashboardInner() {
             {view === "finance" && <FinanceView />}
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
-            {view === "settings"  && <SettingsView />}
+            {view === "planner"   && <PlannerView />}
+            {view === "settings"  && <SettingsView onShowOnboarding={() => setShowOnboarding(true)} />}
           </>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>

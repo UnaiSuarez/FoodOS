@@ -213,6 +213,13 @@ export interface AppSettings {
   extraExpenseCategories: string[];
 }
 
+/** Una comida planificada en el planificador semanal. */
+export interface MealPlanDay {
+  breakfast?: string;
+  lunch?: string;
+  dinner?: string;
+}
+
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
 export interface FoodOSState {
   inventory: InventoryItem[];
@@ -240,4 +247,6 @@ export interface FoodOSState {
   settings: AppSettings;
   /** Nombres de sugerencias de stock bajo descartadas manualmente por el usuario. */
   dismissedSuggestions?: string[];
+  /** Planificador semanal: key = "yyyy-mm-dd". */
+  mealPlan: Record<string, MealPlanDay>;
 }

@@ -4,7 +4,11 @@ import { DEFAULT_SETTINGS, useFoodOS } from "@/lib/state";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
-export function SettingsView() {
+interface Props {
+  onShowOnboarding?: () => void;
+}
+
+export function SettingsView({ onShowOnboarding }: Props) {
   const { state, mutate, showToast } = useFoodOS();
   const s = state.settings;
 
@@ -199,6 +203,17 @@ export function SettingsView() {
       </article>
 
       <div className="settings-footer">
+        {onShowOnboarding && (
+          <button
+            className="secondary-button"
+            onClick={() => {
+              localStorage.removeItem("foodos-ob-done");
+              onShowOnboarding();
+            }}
+          >
+            ▶ Ver onboarding de nuevo
+          </button>
+        )}
         <button className="secondary-button" onClick={resetDefaults}>
           Restaurar valores por defecto
         </button>
