@@ -222,6 +222,17 @@ export interface MealPlanDay {
   dinner?: string;
 }
 
+/** Plato rápido creado directamente en el planificador, sin receta completa. */
+export interface QuickMeal {
+  id: string;
+  name: string;
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  cost: number;
+}
+
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
 export interface FoodOSState {
   inventory: InventoryItem[];
@@ -251,4 +262,6 @@ export interface FoodOSState {
   dismissedSuggestions?: string[];
   /** Planificador semanal: key = "yyyy-mm-dd". */
   mealPlan: Record<string, MealPlanDay>;
+  /** Platos rápidos creados directamente en el planificador. */
+  plannerQuickMeals: QuickMeal[];
 }

@@ -1,22 +1,36 @@
 "use client";
 
 import Image from "next/image";
-import { Fragment, useRef, useState } from "react";
-import type { MealPlanDay } from "@foodos/types";
+import { useRef, useState } from "react";
+import type { MealPlanDay, MealType, QuickMeal } from "@foodos/types";
 import { allRecipes, useFoodOS } from "@/lib/state";
 import { eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
 
-const MEAL_SLOTS: { key: MealSlot; label: string; icon: string }[] = [
-  { key: "breakfast", label: "Desayuno",  icon: "☀" },
-  { key: "almuerzo",  label: "Almuerzo",  icon: "◔" },
-  { key: "lunch",     label: "Comida",    icon: "◉" },
-  { key: "merienda",  label: "Merienda",  icon: "◕" },
-  { key: "dinner",    label: "Cena",      icon: "◑" },
+const MEAL_SLOTS: { key: MealSlot; label: string; icon: string; mealType: MealType }[] = [
+  { key: "breakfast", label: "Desayuno", icon: "☀", mealType: "breakfast" },
+  { key: "almuerzo",  label: "Almuerzo", icon: "◔", mealType: "snack"     },
+  { key: "lunch",     label: "Comida",   icon: "◉", mealType: "lunch"     },
+  { key: "merienda",  label: "Merienda", icon: "◕", mealType: "snack"     },
+  { key: "dinner",    label: "Cena",     icon: "◑", mealType: "dinner"    },
 ];
 
 const DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
+type PlanEntry = {
+  id: string;
+  title: string;
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  cost: number;
+  image?: string;
+  isQuick: boolean;
+};
+
+const EMPTY_FORM = { name: "", kcal: "", protein: "", carbs: "", fat: "", cost: "" };
 
 function getMondayOfWeek(d: Date): Date {
   const day = d.getDay();
@@ -42,27 +56,83 @@ function fmtDay(d: Date): string {
 }
 
 export function PlannerView() {
-  const { state, mutate } = useFoodOS();
+  const { state, mutate, showToast } = useFoodOS();
   const recipes = allRecipes(state);
+  const quickMeals: QuickMeal[] = state.plannerQuickMeals ?? [];
   const plan = state.mealPlan ?? {};
 
   const [weekStart, setWeekStart] = useState(() => getMondayOfWeek(new Date()));
   const draggingId = useRef<string | null>(null);
   const [, forceRender] = useState(0);
 
+  /* Quick-add modal */
+  const [quickAdd, setQuickAdd] = useState<{ dateKey: string; slot: MealSlot } | null>(null);
+  const [quickForm, setQuickForm] = useState(EMPTY_FORM);
+
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const today = toKey(new Date());
 
-  function setMeal(dateKey: string, slot: MealSlot, recipeId: string | null) {
+  function findEntry(id: string): PlanEntry | null {
+    const r = recipes.find((x) => x.id === id);
+    if (r) return { id: r.id, title: r.title, kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat, cost: r.cost, image: r.image, isQuick: false };
+    const q = quickMeals.find((x) => x.id === id);
+    if (q) return { id: q.id, title: q.name, kcal: q.kcal, protein: q.protein, carbs: q.carbs, fat: q.fat, cost: q.cost, isQuick: true };
+    return null;
+  }
+
+  function setMeal(dateKey: string, slot: MealSlot, id: string | null) {
     mutate((draft) => {
       draft.mealPlan ||= {};
       draft.mealPlan[dateKey] ||= {};
-      if (recipeId === null) {
+      if (id === null) {
         delete draft.mealPlan[dateKey][slot];
       } else {
-        draft.mealPlan[dateKey][slot] = recipeId;
+        draft.mealPlan[dateKey][slot] = id;
       }
     });
+  }
+
+  function saveQuickMeal() {
+    if (!quickAdd || !quickForm.name.trim()) return;
+    const meal: QuickMeal = {
+      id: crypto.randomUUID(),
+      name: quickForm.name.trim(),
+      kcal: Number(quickForm.kcal) || 0,
+      protein: Number(quickForm.protein) || 0,
+      carbs: Number(quickForm.carbs) || 0,
+      fat: Number(quickForm.fat) || 0,
+      cost: Number(quickForm.cost) || 0,
+    };
+    mutate((draft) => {
+      draft.plannerQuickMeals ||= [];
+      draft.plannerQuickMeals.push(meal);
+      draft.mealPlan ||= {};
+      draft.mealPlan[quickAdd.dateKey] ||= {};
+      draft.mealPlan[quickAdd.dateKey][quickAdd.slot] = meal.id;
+    });
+    setQuickAdd(null);
+    setQuickForm(EMPTY_FORM);
+    showToast(`"${meal.name}" añadido`);
+  }
+
+  function logEntry(dateKey: string, mealType: MealType, entry: PlanEntry) {
+    mutate((draft) => {
+      draft.foodLog.push({
+        id: crypto.randomUUID(),
+        date: dateKey,
+        time: new Date().toTimeString().slice(0, 5),
+        name: entry.title,
+        qty: null,
+        unit: null,
+        kcal: entry.kcal,
+        protein: entry.protein,
+        carbs: entry.carbs,
+        fat: entry.fat,
+        source: "recipe",
+        mealType,
+      });
+    });
+    showToast(`"${entry.title}" registrado en el diario`);
   }
 
   function handleDrop(e: React.DragEvent, dateKey: string, slot: MealSlot) {
@@ -80,7 +150,7 @@ export function PlannerView() {
     e.currentTarget.classList.remove("drag-over");
   }
 
-  /* Per-day and weekly totals */
+  /* Targets */
   const targetKcal  = state.nutrition?.kcal    ?? 0;
   const targetProt  = state.nutrition?.protein  ?? 0;
   const targetCarbs = state.nutrition?.carbs    ?? 0;
@@ -92,8 +162,8 @@ export function PlannerView() {
     let kcal = 0, prot = 0, carbs = 0, fat = 0, cost = 0;
     if (day) {
       MEAL_SLOTS.forEach(({ key }) => {
-        const r = day[key] ? recipes.find((x) => x.id === day[key]) : null;
-        if (r) { kcal += r.kcal; prot += r.protein; carbs += r.carbs; fat += r.fat; cost += r.cost; }
+        const e = day[key] ? findEntry(day[key]!) : null;
+        if (e) { kcal += e.kcal; prot += e.protein; carbs += e.carbs; fat += e.fat; cost += e.cost; }
       });
     }
     return { kcal, prot, carbs, fat, cost };
@@ -129,10 +199,7 @@ export function PlannerView() {
               <button className="secondary-button" onClick={() => setWeekStart(addDays(weekStart, 7))}>
                 Siguiente →
               </button>
-              <button
-                className="secondary-button"
-                onClick={() => setWeekStart(getMondayOfWeek(new Date()))}
-              >
+              <button className="secondary-button" onClick={() => setWeekStart(getMondayOfWeek(new Date()))}>
                 Hoy
               </button>
             </div>
@@ -140,31 +207,20 @@ export function PlannerView() {
 
           {/* Resumen semanal */}
           <div className="planner-summary">
-            <span className="planner-summary-chip">
-              <b>{Math.round(weekKcal)}</b> kcal
-            </span>
-            <span className="planner-summary-chip">
-              <b>{Math.round(weekProt)}g</b> proteína
-            </span>
-            <span className="planner-summary-chip cost">
-              <b>{eur(weekCost)}</b> coste
-            </span>
-            <span className="planner-drag-hint">
-              Arrastra recetas desde el panel lateral
-            </span>
+            <span className="planner-summary-chip"><b>{Math.round(weekKcal)}</b> kcal</span>
+            <span className="planner-summary-chip"><b>{Math.round(weekProt)}g</b> proteína</span>
+            <span className="planner-summary-chip cost"><b>{eur(weekCost)}</b> coste</span>
+            <span className="planner-drag-hint">Arrastra recetas o pulsa + para añadir un plato rápido</span>
           </div>
 
-          {/* Grid de días × comidas */}
+          {/* Grid */}
           <div className="planner-scroll">
             <div className="planner-grid">
-              {/* Fila de cabecera: esquina vacía + 7 días */}
+              {/* Cabecera */}
               <div className="planner-header-row">
                 <div className="planner-corner" />
                 {days.map((d, i) => (
-                  <div
-                    key={i}
-                    className={`planner-day-head ${toKey(d) === today ? "today" : ""}`}
-                  >
+                  <div key={i} className={`planner-day-head ${toKey(d) === today ? "today" : ""}`}>
                     <span className="planner-day-name">{DAY_NAMES[i]}</span>
                     <span className="planner-day-num">{d.getDate()}</span>
                     {toKey(d) === today && <span className="planner-today-dot" />}
@@ -173,7 +229,7 @@ export function PlannerView() {
               </div>
 
               {/* Filas de comidas */}
-              {MEAL_SLOTS.map(({ key, label, icon }) => (
+              {MEAL_SLOTS.map(({ key, label, icon, mealType }) => (
                 <div key={key} className="planner-meal-row">
                   <div className="planner-meal-label">
                     <span className="planner-meal-icon">{icon}</span>
@@ -183,40 +239,57 @@ export function PlannerView() {
                   {days.map((d, di) => {
                     const dateKey = toKey(d);
                     const rid = plan[dateKey]?.[key];
-                    const recipe = rid ? recipes.find((r) => r.id === rid) : null;
+                    const entry = rid ? findEntry(rid) : null;
                     return (
                       <div
                         key={di}
-                        className={`planner-cell ${recipe ? "has-recipe" : "empty"}`}
+                        className={`planner-cell ${entry ? "has-recipe" : "empty"}`}
                         onDragOver={handleDragOver}
                         onDragLeave={handleDragLeave}
                         onDrop={(e) => handleDrop(e, dateKey, key)}
                       >
-                        {recipe ? (
+                        {entry ? (
                           <div className="planner-cell-content">
-                            <Image
-                              src={recipe.image}
-                              alt=""
-                              width={40}
-                              height={30}
-                              className="planner-cell-img"
-                            />
+                            {entry.image ? (
+                              <Image
+                                src={entry.image}
+                                alt=""
+                                width={36}
+                                height={28}
+                                className="planner-cell-img"
+                              />
+                            ) : (
+                              <div className="planner-cell-quick-icon">◌</div>
+                            )}
                             <div className="planner-cell-info">
-                              <span className="planner-cell-name">{recipe.title}</span>
-                              <span className="planner-cell-meta">
-                                {recipe.kcal} kcal · {eur(recipe.cost)}
-                              </span>
+                              <span className="planner-cell-name">{entry.title}</span>
+                              <span className="planner-cell-meta">{entry.kcal} kcal</span>
                             </div>
-                            <button
-                              className="planner-cell-remove"
-                              onClick={() => setMeal(dateKey, key, null)}
-                              aria-label="Quitar receta"
-                            >
-                              ×
-                            </button>
+                            <div className="planner-cell-actions">
+                              <button
+                                className="planner-cell-log"
+                                title="Registrar en el diario"
+                                onClick={() => logEntry(dateKey, mealType, entry)}
+                              >
+                                ✓
+                              </button>
+                              <button
+                                className="planner-cell-remove"
+                                title="Quitar"
+                                onClick={() => setMeal(dateKey, key, null)}
+                              >
+                                ×
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <span className="planner-cell-plus">+</span>
+                          <button
+                            className="planner-cell-plus"
+                            onClick={() => { setQuickAdd({ dateKey, slot: key }); setQuickForm(EMPTY_FORM); }}
+                            title="Añadir plato"
+                          >
+                            +
+                          </button>
                         )}
                       </div>
                     );
@@ -224,16 +297,16 @@ export function PlannerView() {
                 </div>
               ))}
 
-              {/* Fila de totales diarios */}
+              {/* Totales diarios */}
               <div className="planner-totals-row">
                 <div className="planner-totals-label">Totales</div>
                 {dayTotals.map((dt, i) => {
                   const kcalPct = targetKcal > 0 ? dt.kcal / targetKcal : 0;
-                  const protPct = targetProt > 0 ? dt.prot / targetProt : 0;
+                  const protPct = targetProt  > 0 ? dt.prot / targetProt  : 0;
                   const status =
                     dt.kcal === 0 ? "empty"
                     : kcalPct >= 0.85 && protPct >= 0.85 ? "good"
-                    : kcalPct >= 0.5 || protPct >= 0.5 ? "partial"
+                    : kcalPct >= 0.5  || protPct >= 0.5  ? "partial"
                     : "low";
                   return (
                     <div key={i} className={`planner-total-cell ${status}`}>
@@ -302,13 +375,7 @@ export function PlannerView() {
                   forceRender((n) => n + 1);
                 }}
               >
-                <Image
-                  src={recipe.image}
-                  alt=""
-                  width={44}
-                  height={34}
-                  className="planner-recipe-img"
-                />
+                <Image src={recipe.image} alt="" width={44} height={34} className="planner-recipe-img" />
                 <div className="planner-recipe-info">
                   <span className="planner-recipe-name">{recipe.title}</span>
                   <span className="planner-recipe-meta">
@@ -317,13 +384,67 @@ export function PlannerView() {
                 </div>
               </div>
             ))}
-            {filteredRecipes.length === 0 && (
-              <p className="planner-empty">Sin resultados.</p>
-            )}
+            {filteredRecipes.length === 0 && <p className="planner-empty">Sin resultados.</p>}
           </div>
         </div>
 
       </div>
+
+      {/* ── Modal de plato rápido ── */}
+      {quickAdd && (
+        <div className="planner-quickadd-overlay" onClick={() => setQuickAdd(null)}>
+          <div className="planner-quickadd-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="planner-quickadd-head">
+              <h3>Añadir plato</h3>
+              <button className="planner-quickadd-close" onClick={() => setQuickAdd(null)}>×</button>
+            </div>
+
+            <div className="planner-quickadd-body">
+              <input
+                className="planner-quickadd-name"
+                placeholder="Nombre del plato (ej. Tortilla de atún)"
+                value={quickForm.name}
+                onChange={(e) => setQuickForm((f) => ({ ...f, name: e.target.value }))}
+                autoFocus
+                onKeyDown={(e) => e.key === "Enter" && saveQuickMeal()}
+              />
+
+              <div className="planner-quickadd-macros">
+                {([
+                  { field: "kcal",    label: "kcal"     },
+                  { field: "protein", label: "Proteína (g)" },
+                  { field: "carbs",   label: "HC (g)"   },
+                  { field: "fat",     label: "Grasas (g)" },
+                  { field: "cost",    label: "Coste (€)", step: "0.10" },
+                ] as { field: keyof typeof quickForm; label: string; step?: string }[]).map(({ field, label, step }) => (
+                  <label key={field} className="planner-quickadd-field">
+                    <span>{label}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={step ?? "1"}
+                      placeholder="0"
+                      value={quickForm[field]}
+                      onChange={(e) => setQuickForm((f) => ({ ...f, [field]: e.target.value }))}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="planner-quickadd-foot">
+              <button className="secondary-button" onClick={() => setQuickAdd(null)}>Cancelar</button>
+              <button
+                className="primary-button"
+                onClick={saveQuickMeal}
+                disabled={!quickForm.name.trim()}
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
