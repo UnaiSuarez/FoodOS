@@ -1,12 +1,14 @@
 const ITEMS = [
   "Inventario inteligente",
-  "Recetas por macros",
-  "Lista de compra por tienda",
-  "Presupuesto alimentario",
-  "Conexión con tu banco",
   "Recetas con IA",
-  "15 compañeros",
+  "Diario alimentario",
+  "Seguimiento de peso",
+  "Lista de compra inteligente",
+  "Presupuesto alimentario",
+  "Importación masiva por foto",
   "Escaneo de código de barras",
+  "15 compañeros de cocina",
+  "Asistente IA contextual",
 ];
 
 export function Ticker() {

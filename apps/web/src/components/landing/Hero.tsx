@@ -40,12 +40,12 @@ export function Hero() {
       </div>
       <div className="hero-shade" aria-hidden="true" />
       <div className="hero-content">
-        <p className="eyebrow hero-anim">Inventario · Nutrición · Finanzas</p>
+        <p className="eyebrow hero-anim">Inventario · Recetas IA · Diario · Finanzas</p>
         <h1 id="hero-title" className="hero-anim">
           <span>Food</span>OS
         </h1>
         <p className="hero-copy hero-anim">
-          La app que sabe qué tienes en casa, qué necesitas comer y cuánto puedes gastar.
+          La IA que gestiona tu despensa, optimiza tus macros y cuadra tus cuentas — todo en una sola app.
         </p>
         <div className="hero-actions hero-anim">
           <Link className="btn primary" href="/dashboard">
@@ -58,15 +58,15 @@ export function Hero() {
         <dl className="hero-metrics hero-anim" aria-label="FoodOS en cifras">
           <div>
             <dt>3 s</dt>
-            <dd>para añadir un alimento escaneándolo</dd>
+            <dd>para añadir un alimento escaneando el código de barras</dd>
           </div>
           <div>
             <dt>0 €</dt>
-            <dd>todas las funciones esenciales, gratis</dd>
+            <dd>todas las funciones esenciales, sin coste</dd>
           </div>
           <div>
             <dt>15</dt>
-            <dd>compañeros que te acompañan</dd>
+            <dd>compañeros de cocina con personalidad propia</dd>
           </div>
         </dl>
       </div>

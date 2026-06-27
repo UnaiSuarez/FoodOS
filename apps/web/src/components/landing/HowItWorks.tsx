@@ -2,20 +2,20 @@ import { Reveal } from "./Reveal";
 
 const STEPS = [
   {
-    title: "Añade tus alimentos",
-    copy: "A mano, escaneando el código de barras o con una foto. Tres segundos por producto.",
+    title: "Añade tu despensa",
+    copy: "A mano, escaneando el código de barras o con una foto en masa. Los datos nutricionales se rellenan solos.",
   },
   {
-    title: "Cuéntale tu objetivo",
-    copy: "Perder grasa, ganar músculo o mantenerte. FoodOS calcula tus calorías y macros diarios.",
+    title: "Configura tu perfil",
+    copy: "Peso, altura y objetivo. FoodOS calcula tu TMB, TDEE y te asigna macros diarios adaptados a ti.",
   },
   {
-    title: "Cocina con cabeza",
-    copy: "Recetas ordenadas por lo que tienes en casa, lo que te falta por comer y lo que cuestan.",
+    title: "Cocina, come y registra",
+    copy: "Recetas filtradas por lo que tienes en casa. Anota cada comida en el diario y controla el agua.",
   },
   {
-    title: "Compra sin pensar",
-    copy: "La lista se hace sola, y al completar la compra se actualizan tu despensa y tus cuentas.",
+    title: "La IA lo conecta todo",
+    copy: "El asistente sugiere la cena, la lista de compra se genera sola y tus cuentas se cuadran al finalizar la compra.",
   },
 ];
 
