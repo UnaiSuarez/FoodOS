@@ -81,20 +81,22 @@ export function PlannerView() {
   }
 
   /* Per-day and weekly totals */
-  const targetKcal = state.nutrition?.kcal ?? 0;
-  const targetProt = state.nutrition?.protein ?? 0;
+  const targetKcal  = state.nutrition?.kcal    ?? 0;
+  const targetProt  = state.nutrition?.protein  ?? 0;
+  const targetCarbs = state.nutrition?.carbs    ?? 0;
+  const targetFat   = state.nutrition?.fat      ?? 0;
 
-  type DayTotal = { kcal: number; prot: number; cost: number };
+  type DayTotal = { kcal: number; prot: number; carbs: number; fat: number; cost: number };
   const dayTotals: DayTotal[] = days.map((d) => {
     const day = plan[toKey(d)];
-    let kcal = 0, prot = 0, cost = 0;
+    let kcal = 0, prot = 0, carbs = 0, fat = 0, cost = 0;
     if (day) {
       MEAL_SLOTS.forEach(({ key }) => {
         const r = day[key] ? recipes.find((x) => x.id === day[key]) : null;
-        if (r) { kcal += r.kcal; prot += r.protein; cost += r.cost; }
+        if (r) { kcal += r.kcal; prot += r.protein; carbs += r.carbs; fat += r.fat; cost += r.cost; }
       });
     }
-    return { kcal, prot, cost };
+    return { kcal, prot, carbs, fat, cost };
   });
 
   const weekKcal = dayTotals.reduce((s, d) => s + d.kcal, 0);
@@ -235,21 +237,36 @@ export function PlannerView() {
                     : "low";
                   return (
                     <div key={i} className={`planner-total-cell ${status}`}>
-                      <span className="planner-total-kcal">
-                        {dt.kcal > 0 ? `${Math.round(dt.kcal)} kcal` : "—"}
-                      </span>
-                      {dt.prot > 0 && (
-                        <span className="planner-total-prot">
-                          {Math.round(dt.prot)}g prot
-                        </span>
-                      )}
-                      {targetKcal > 0 && dt.kcal > 0 && (
-                        <div className="planner-total-bar">
-                          <div
-                            className="planner-total-bar-fill"
-                            style={{ width: `${Math.min(kcalPct * 100, 100)}%` }}
-                          />
-                        </div>
+                      {dt.kcal === 0 ? (
+                        <span className="planner-total-empty">—</span>
+                      ) : (
+                        <>
+                          <span className="planner-total-kcal">
+                            {Math.round(dt.kcal)}
+                            {targetKcal > 0 && <span className="planner-total-target">/{targetKcal}</span>}
+                            <span className="planner-total-unit"> kcal</span>
+                          </span>
+                          <div className="planner-total-bar">
+                            <div
+                              className="planner-total-bar-fill"
+                              style={{ width: `${Math.min(kcalPct * 100, 100)}%` }}
+                            />
+                          </div>
+                          <div className="planner-total-macros">
+                            <span>
+                              <b>{Math.round(dt.prot)}</b>
+                              {targetProt > 0 && <span className="planner-total-target">/{targetProt}</span>}g P
+                            </span>
+                            <span>
+                              <b>{Math.round(dt.fat)}</b>
+                              {targetFat > 0 && <span className="planner-total-target">/{targetFat}</span>}g G
+                            </span>
+                            <span>
+                              <b>{Math.round(dt.carbs)}</b>
+                              {targetCarbs > 0 && <span className="planner-total-target">/{targetCarbs}</span>}g HC
+                            </span>
+                          </div>
+                        </>
                       )}
                     </div>
                   );
