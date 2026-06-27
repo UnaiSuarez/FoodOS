@@ -47,17 +47,41 @@ function ingToRecord(ing: IngDraft): RecipeIngredient {
   };
 }
 
-export function CreateRecipeModal({ onClose }: { onClose: () => void }) {
+function riToIngDraft(ri: RecipeIngredient): IngDraft {
+  const hasMacros = (ri.kcalPer100 ?? 0) > 0;
+  return {
+    name: ri.name, quantity: ri.quantity, unit: ri.unit,
+    kcalPer100:    ri.kcalPer100    ?? 0,
+    proteinPer100: ri.proteinPer100 ?? 0,
+    carbsPer100:   ri.carbsPer100   ?? 0,
+    fatPer100:     ri.fatPer100     ?? 0,
+    status: hasMacros ? "found" : "idle",
+  };
+}
+
+interface CreateRecipeModalProps {
+  onClose: () => void;
+  /** Pre-fill form from an existing recipe (e.g. AI-generated draft for review) */
+  initialData?: Recipe;
+}
+
+export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalProps) {
   const { state, mutate, showToast } = useFoodOS();
-  const [title, setTitle]       = useState("");
-  const [time, setTime]         = useState(30);
-  const [servings, setServings] = useState(2);
-  const [difficulty, setDifficulty] = useState("media");
-  const [tags, setTags]   = useState("");
-  const [cost, setCost]   = useState(2.5);
-  const [ingredients, setIngredients] = useState<IngDraft[]>([blankIng(), blankIng()]);
-  const [steps, setSteps] = useState(["", "", ""]);
-  const [macroOverride, setMacroOverride] = useState<{ kcal: number; protein: number; carbs: number; fat: number } | null>(null);
+  const [title, setTitle]       = useState(initialData?.title ?? "");
+  const [time, setTime]         = useState(initialData?.time ?? 30);
+  const [servings, setServings] = useState(initialData?.servings ?? 2);
+  const [difficulty, setDifficulty] = useState(initialData?.difficulty ?? "media");
+  const [tags, setTags]   = useState(initialData?.tags.join(", ") ?? "");
+  const [cost, setCost]   = useState(initialData?.cost ?? 2.5);
+  const [ingredients, setIngredients] = useState<IngDraft[]>(
+    initialData?.ingredients.length
+      ? initialData.ingredients.map(riToIngDraft)
+      : [blankIng(), blankIng()]
+  );
+  const [steps, setSteps] = useState(initialData?.steps.length ? [...initialData.steps] : ["", "", ""]);
+  const [macroOverride, setMacroOverride] = useState<{ kcal: number; protein: number; carbs: number; fat: number } | null>(
+    initialData ? { kcal: initialData.kcal, protein: initialData.protein, carbs: initialData.carbs, fat: initialData.fat } : null
+  );
 
   const derivedMacros = useMemo(() => {
     if (servings < 1) return { kcal: 0, protein: 0, carbs: 0, fat: 0 };
@@ -175,7 +199,7 @@ export function CreateRecipeModal({ onClose }: { onClose: () => void }) {
   ];
 
   return (
-    <Modal title="Crear receta" onClose={onClose}>
+    <Modal title={initialData ? "Revisar receta IA" : "Crear receta"} onClose={onClose}>
       <div className="create-recipe-form">
         {/* Basic info */}
         <div className="form-grid compact">

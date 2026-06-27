@@ -8,6 +8,7 @@ import { actions, getMascot, getBudgetLeft, getPendingMacros, buildAiRecipeDraft
 import { loadAIConfig } from "@/lib/ai-config";
 import { callAIChat, type ChatTurn } from "@/lib/ai-provider";
 import { eur, todayPlus, uid } from "@/lib/utils";
+import { CreateRecipeModal } from "../CreateRecipeModal";
 
 // ── Tipos ─────────────────────────────────────────────────────────
 
@@ -199,6 +200,7 @@ export function AssistantView() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [tipIdx, setTipIdx] = useState(0);
+  const [reviewRecipe, setReviewRecipe] = useState<Recipe | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const active = getMascot(state.mascotId);
   const aiConfig = loadAIConfig();
@@ -383,11 +385,7 @@ export function AssistantView() {
                   {msg.recipe && (
                     <ChatRecipeCard
                       recipe={msg.recipe}
-                      onSave={() => {
-                        mutate((draft) => { draft.customRecipes.push(msg.recipe!); });
-                        showToast("Receta guardada");
-                        setMascotMessage("Receta de la IA guardada en tu colección.");
-                      }}
+                      onReview={() => setReviewRecipe(msg.recipe!)}
                       onCart={() => {
                         mutate((draft) => actions.addRecipeToCart(draft, msg.recipe!));
                         showToast("Ingredientes añadidos al carrito");
@@ -506,6 +504,13 @@ export function AssistantView() {
           </p>
         </article>
       </div>
+
+      {reviewRecipe && (
+        <CreateRecipeModal
+          initialData={reviewRecipe}
+          onClose={() => setReviewRecipe(null)}
+        />
+      )}
     </section>
   );
 }
@@ -514,16 +519,15 @@ export function AssistantView() {
 
 function ChatRecipeCard({
   recipe,
-  onSave,
+  onReview,
   onCart,
   onCook,
 }: {
   recipe: Recipe;
-  onSave: () => void;
+  onReview: () => void;
   onCart: () => void;
   onCook: () => void;
 }) {
-  const [saved, setSaved] = useState(false);
   const [cooked, setCooked] = useState(false);
 
   return (
@@ -556,18 +560,14 @@ function ChatRecipeCard({
       )}
 
       <div className="card-actions">
-        <button
-          className={`small-action ${saved ? "good" : ""}`}
-          onClick={() => { onSave(); setSaved(true); }}
-          disabled={saved}
-        >
-          {saved ? "Guardada ✓" : "Guardar receta"}
+        <button className="small-action good" onClick={onReview}>
+          Revisar y guardar
         </button>
         <button className="small-action" onClick={onCart}>
-          Añadir al carrito
+          Al carrito
         </button>
         <button
-          className={`small-action ${cooked ? "good" : "good"}`}
+          className={`small-action ${cooked ? "good" : ""}`}
           onClick={() => { onCook(); setCooked(true); }}
           disabled={cooked}
         >
