@@ -2,8 +2,9 @@
 
 import Image from "next/image";
 import { useRef, useState } from "react";
-import type { MealPlanDay, MealType, QuickMeal } from "@foodos/types";
+import type { MealPlanDay, MealType, QuickMeal, Recipe } from "@foodos/types";
 import { allRecipes, getMealPlanShoppingList, useFoodOS } from "@/lib/state";
+import { CookModal } from "../CookModal";
 import { eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
@@ -69,8 +70,11 @@ export function PlannerView() {
   const [quickAdd, setQuickAdd] = useState<{ dateKey: string; slot: MealSlot } | null>(null);
   const [quickForm, setQuickForm] = useState(EMPTY_FORM);
 
+  /* CookModal para recetas del planificador */
+  const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
+
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-  const today = toKey(new Date());
+  const today = state.debugDate ?? toKey(new Date());
 
   function findEntry(id: string): PlanEntry | null {
     const r = recipes.find((x) => x.id === id);
@@ -116,6 +120,12 @@ export function PlannerView() {
   }
 
   function logEntry(dateKey: string, mealType: MealType, entry: PlanEntry) {
+    if (!entry.isQuick) {
+      // Receta real → abre CookModal para descuento de inventario
+      const recipe = recipes.find((r) => r.id === entry.id);
+      if (recipe) { setCookingRecipe(recipe); return; }
+    }
+    // Plato rápido → registro directo (sin ingredientes que descontar)
     mutate((draft) => {
       draft.foodLog.push({
         id: crypto.randomUUID(),
@@ -132,7 +142,7 @@ export function PlannerView() {
         mealType,
       });
     });
-    showToast(`"${entry.title}" registrado en el diario`);
+    showToast(`"${entry.title}" registrado`);
   }
 
   function handleBuyWeek() {
@@ -384,6 +394,13 @@ export function PlannerView() {
                 onDragStart={(e) => {
                   e.dataTransfer.setData("recipeId", recipe.id);
                   draggingId.current = recipe.id;
+                  // Ghost personalizado para evitar el rectángulo blanco del navegador
+                  const ghost = document.createElement("div");
+                  ghost.className = "planner-drag-ghost";
+                  ghost.textContent = recipe.title;
+                  document.body.appendChild(ghost);
+                  e.dataTransfer.setDragImage(ghost, 12, 12);
+                  requestAnimationFrame(() => document.body.removeChild(ghost));
                   forceRender((n) => n + 1);
                 }}
                 onDragEnd={() => {
@@ -405,6 +422,10 @@ export function PlannerView() {
         </div>
 
       </div>
+
+      {cookingRecipe && (
+        <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />
+      )}
 
       {/* ── Modal de plato rápido ── */}
       {quickAdd && (

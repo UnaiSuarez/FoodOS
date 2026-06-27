@@ -202,6 +202,33 @@ export function SettingsView({ onShowOnboarding }: Props) {
         </p>
       </article>
 
+      {/* Herramientas de prueba */}
+      <article className="panel settings-section">
+        <h2>Herramientas de prueba</h2>
+        <p className="form-intro">
+          Fuerza una fecha concreta para simular diferentes días sin esperar que pase el tiempo real.
+          Vacía el campo para volver al día actual.
+        </p>
+        <div className="settings-grid">
+          <label className="settings-field">
+            <span>Fecha simulada</span>
+            <input
+              type="date"
+              value={state.debugDate ?? ""}
+              onChange={(e) => {
+                const val = e.target.value || null;
+                mutate((draft) => { draft.debugDate = val; });
+              }}
+            />
+            {state.debugDate && (
+              <small style={{ color: "#fbbf24" }}>
+                ⚠ Fecha simulada activa: {state.debugDate}. El panel, registro y planificador muestran ese día.
+              </small>
+            )}
+          </label>
+        </div>
+      </article>
+
       <div className="settings-footer">
         {onShowOnboarding && (
           <button

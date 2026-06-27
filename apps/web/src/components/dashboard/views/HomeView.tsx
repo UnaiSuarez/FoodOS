@@ -44,7 +44,7 @@ export function HomeView({
   const mascot = getMascot(state.mascotId);
 
   /* Plan de hoy */
-  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayKey = state.debugDate ?? new Date().toISOString().slice(0, 10);
   const todayPlan: MealPlanDay = state.mealPlan?.[todayKey] ?? {};
   const TODAY_SLOTS = [
     { key: "breakfast" as keyof MealPlanDay, label: "Desayuno",  icon: "☀", mealType: "breakfast" as const },

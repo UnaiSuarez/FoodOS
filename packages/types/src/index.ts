@@ -264,4 +264,6 @@ export interface FoodOSState {
   mealPlan: Record<string, MealPlanDay>;
   /** Platos rápidos creados directamente en el planificador. */
   plannerQuickMeals: QuickMeal[];
+  /** Fecha de depuración (YYYY-MM-DD). Sustituye "hoy" en toda la app cuando está activa. */
+  debugDate?: string | null;
 }

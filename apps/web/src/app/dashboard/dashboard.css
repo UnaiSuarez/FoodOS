@@ -5244,6 +5244,23 @@ select:focus {
   border-top: 1px solid rgba(255,255,255,0.07);
 }
 
+/* Ghost image durante el drag */
+.planner-drag-ghost {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
 /* ── Panel lateral de recetas ─ */
 .planner-sidebar {
   position: sticky;

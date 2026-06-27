@@ -52,6 +52,7 @@ export const defaultState: FoodOSState = {
   dismissedSuggestions: [],
   mealPlan: {},
   plannerQuickMeals: [],
+  debugDate: null,
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -321,6 +322,11 @@ export function findRecipe(state: FoodOSState, recipeId: string): Recipe | undef
   return allRecipes(state).find((recipe) => recipe.id === recipeId);
 }
 
+/** Devuelve "hoy" teniendo en cuenta la fecha de depuración si está activa. */
+export function getToday(state: FoodOSState): string {
+  return state.debugDate ?? todayPlus(0);
+}
+
 /** Resuelve un ID del planificador buscando en recetas y en platos rápidos. */
 export function findPlanEntry(
   state: FoodOSState,
@@ -367,7 +373,7 @@ function nowTime(): string {
 
 /** Entradas del diario de hoy, ordenadas por hora. */
 export function getTodayLog(state: FoodOSState): FoodLogEntry[] {
-  const today = todayPlus(0);
+  const today = getToday(state);
   return state.foodLog
     .filter((entry) => entry.date === today)
     .sort((a, b) => a.time.localeCompare(b.time));
@@ -387,7 +393,7 @@ export function getConsumedToday(state: FoodOSState): MacroTotals {
 }
 
 export function getWaterToday(state: FoodOSState): number {
-  return state.waterLog[todayPlus(0)] ?? 0;
+  return state.waterLog[getToday(state)] ?? 0;
 }
 
 /** Diario agrupado por dia (mas reciente primero), con totales. */
