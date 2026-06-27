@@ -233,12 +233,18 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                   <button className="recipe-open" onClick={() => openRecipe(recipe.id)} aria-label={`Abrir ${recipe.title}`}>
                     <span className="recipe-image">
                       <Image src={recipe.image} alt="" width={420} height={280} />
+                      <span className="recipe-avail-bar" aria-hidden="true">
+                        <span className={`recipe-avail-fill ${cls}`} style={{ width: `${match.pct}%` }} />
+                      </span>
                     </span>
-                    <span className={`badge ${cls}`}>{match.pct}% disponible</span>
+                    <span className={`badge ${cls} recipe-avail-badge`}>{match.pct}% ingredientes</span>
                     <h3>{recipe.title}</h3>
-                    <p>
-                      {recipe.kcal} kcal · {recipe.protein} g proteína · {recipe.time} min · {eur(recipe.cost)}
-                    </p>
+                    <div className="recipe-macro-row">
+                      <span className="recipe-macro-chip kcal">{recipe.kcal} kcal</span>
+                      <span className="recipe-macro-chip prot">{recipe.protein}g P</span>
+                      <span className="recipe-macro-chip time">{recipe.time} min</span>
+                      <span className="recipe-macro-chip cost">{eur(recipe.cost)}</span>
+                    </div>
                     <span className="meta-row">
                       {recipe.tags.map((tag) => (
                         <span key={tag} className="badge">{tag}</span>

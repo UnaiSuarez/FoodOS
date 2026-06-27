@@ -4254,3 +4254,155 @@ select:focus {
   justify-content: flex-end;
 }
 
+/* =========================================================
+   Anillo de kcal + barras de macros (TodayRingPanel)
+   ========================================================= */
+
+.today-ring-layout {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.kcal-ring-wrap {
+  flex-shrink: 0;
+  position: relative;
+  width: 136px;
+  height: 136px;
+  border-radius: 50%;
+}
+
+.kcal-ring-center {
+  position: absolute;
+  inset: 18px;
+  border-radius: 50%;
+  background: var(--surface2, #111a0d);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.kcal-ring-center strong {
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--green);
+  line-height: 1;
+}
+
+.kcal-ring-center span {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1;
+}
+
+.kcal-ring-center small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.macro-bars {
+  flex: 1;
+  display: grid;
+  gap: 14px;
+}
+
+.macro-bar-row {
+  display: grid;
+  gap: 5px;
+}
+
+.macro-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.macro-bar-label em {
+  font-style: normal;
+  color: var(--hint);
+}
+
+.macro-bar-label b {
+  color: var(--text);
+}
+
+.macro-bar-track {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(240, 244, 238, 0.08);
+  overflow: hidden;
+}
+
+.macro-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.macro-bar-prot  { background: var(--green); }
+.macro-bar-carbs { background: var(--amber); }
+.macro-bar-fat   { background: var(--blue); }
+
+.today-ring-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--hint);
+}
+
+/* =========================================================
+   Tarjetas de receta — chips de macros + barra disponibilidad
+   ========================================================= */
+
+.recipe-image {
+  position: relative;
+}
+
+.recipe-avail-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: rgba(240, 244, 238, 0.1);
+}
+
+.recipe-avail-fill {
+  display: block;
+  height: 100%;
+  transition: width 400ms ease;
+}
+
+.recipe-avail-fill.green { background: var(--green); }
+.recipe-avail-fill.amber { background: var(--amber); }
+.recipe-avail-fill.red   { background: rgba(239, 68, 68, 0.75); }
+
+.recipe-avail-badge {
+  margin-top: 10px;
+}
+
+.recipe-macro-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 10px;
+}
+
+.recipe-macro-chip {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.recipe-macro-chip.kcal { background: rgba(74, 222, 128, 0.13);  color: var(--green); }
+.recipe-macro-chip.prot { background: rgba(59, 130, 246, 0.15);  color: #93c5fd; }
+.recipe-macro-chip.time { background: rgba(240, 244, 238, 0.07); color: var(--muted); }
+.recipe-macro-chip.cost { background: rgba(251, 191, 36, 0.13);  color: var(--amber); }
+

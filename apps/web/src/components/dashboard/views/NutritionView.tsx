@@ -58,43 +58,7 @@ export function NutritionView() {
           <ProfileSummary onEdit={() => setEditing(true)} />
         )}
 
-        <article className="panel">
-          <div className="panel-head">
-            <h2>Resumen de hoy</h2>
-          </div>
-          <div className="nutrition-totals">
-            {(() => {
-              const consumed = getConsumedToday(state);
-              return (
-                <>
-                  <div>
-                    <span>kcal</span>
-                    <strong>{Math.round(consumed.kcal)}</strong>
-                    <small>de {state.nutrition.kcal}</small>
-                  </div>
-                  <div>
-                    <span>Proteína</span>
-                    <strong>{Math.round(consumed.protein)}g</strong>
-                    <small>de {state.nutrition.protein}g</small>
-                  </div>
-                  <div>
-                    <span>Carbos</span>
-                    <strong>{Math.round(consumed.carbs)}g</strong>
-                    <small>de {state.nutrition.carbs}g</small>
-                  </div>
-                  <div>
-                    <span>Grasas</span>
-                    <strong>{Math.round(consumed.fat)}g</strong>
-                    <small>de {state.nutrition.fat}g</small>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-          <p className="empty" style={{ marginTop: 8 }}>
-            El detalle de comidas está en la sección <strong>Registro</strong>.
-          </p>
-        </article>
+        <TodayRingPanel />
       </div>
 
       {state.profile && <MacroWeekChart />}
@@ -745,6 +709,76 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           ))}
         </div>
       )}
+    </article>
+  );
+}
+
+// ---------- Anillo de kcal + barras de macros (Resumen de hoy) ----------
+
+function TodayRingPanel() {
+  const { state } = useFoodOS();
+  const consumed = getConsumedToday(state);
+  const targets  = state.nutrition;
+  const profile  = state.profile;
+  const gymToday = profile ? isGymDay(profile) : false;
+
+  const clamp = (v: number) => Math.min(100, Math.max(0, v));
+  const kcalPct = targets.kcal   > 0 ? clamp(Math.round((consumed.kcal    / targets.kcal)    * 100)) : 0;
+  const protPct = targets.protein > 0 ? clamp(Math.round((consumed.protein / targets.protein) * 100)) : 0;
+  const carbPct = targets.carbs   > 0 ? clamp(Math.round((consumed.carbs   / targets.carbs)   * 100)) : 0;
+  const fatPct  = targets.fat     > 0 ? clamp(Math.round((consumed.fat     / targets.fat)     * 100)) : 0;
+
+  const ringColor = kcalPct >= 90 ? "var(--amber)" : "var(--green)";
+  const ringBg    = `conic-gradient(${ringColor} 0deg ${kcalPct * 3.6}deg, rgba(240,244,238,0.1) ${kcalPct * 3.6}deg 360deg)`;
+
+  const MACROS = [
+    { key: "prot",    label: "Proteína", consumed: consumed.protein, target: targets.protein, unit: "g", pct: protPct },
+    { key: "carbs",   label: "Carbos",   consumed: consumed.carbs,   target: targets.carbs,   unit: "g", pct: carbPct },
+    { key: "fat",     label: "Grasas",   consumed: consumed.fat,     target: targets.fat,     unit: "g", pct: fatPct  },
+  ];
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <h2>Resumen de hoy</h2>
+        {profile && (
+          <span className={`badge ${gymToday ? "green" : "blue"}`}>
+            {gymToday ? "Gym 💪" : "Descanso 😴"}
+          </span>
+        )}
+      </div>
+      <div className="today-ring-layout">
+        <div
+          className="kcal-ring-wrap"
+          style={{ background: ringBg }}
+          role="img"
+          aria-label={`${kcalPct}% de las calorías del día consumidas`}
+        >
+          <div className="kcal-ring-center">
+            <strong>{kcalPct}%</strong>
+            <span>{Math.round(consumed.kcal)}</span>
+            <small>/ {targets.kcal} kcal</small>
+          </div>
+        </div>
+        <div className="macro-bars">
+          {MACROS.map(({ key, label, consumed: c, target: t, unit, pct }) => (
+            <div key={key} className="macro-bar-row">
+              <div className="macro-bar-label">
+                <span>{label}</span>
+                <span>
+                  {Math.round(c)}{unit} <em>/ {t}{unit}</em> · <b>{pct}%</b>
+                </span>
+              </div>
+              <div className="macro-bar-track">
+                <div className={`macro-bar-fill macro-bar-${key}`} style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          ))}
+          <p className="today-ring-hint">
+            Detalle de comidas en <strong>Registro</strong>
+          </p>
+        </div>
+      </div>
     </article>
   );
 }
