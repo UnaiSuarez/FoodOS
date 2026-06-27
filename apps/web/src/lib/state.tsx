@@ -321,6 +321,18 @@ export function findRecipe(state: FoodOSState, recipeId: string): Recipe | undef
   return allRecipes(state).find((recipe) => recipe.id === recipeId);
 }
 
+/** Resuelve un ID del planificador buscando en recetas y en platos rápidos. */
+export function findPlanEntry(
+  state: FoodOSState,
+  id: string
+): { title: string; kcal: number; protein: number; carbs: number; fat: number; cost: number; image?: string } | null {
+  const r = allRecipes(state).find((x) => x.id === id);
+  if (r) return { title: r.title, kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat, cost: r.cost, image: r.image };
+  const q = (state.plannerQuickMeals ?? []).find((x) => x.id === id);
+  if (q) return { title: q.name, kcal: q.kcal, protein: q.protein, carbs: q.carbs, fat: q.fat, cost: q.cost };
+  return null;
+}
+
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
   const names = state.inventory.map((item) => item.name.toLowerCase());
   const matches = recipe.ingredients.filter((ingredient) =>
@@ -673,6 +685,62 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
       unit: data.unit,
       price: Math.round(data.price * 100) / 100,
       store: "Mercadona",
+      checked: false,
+      source: "plan" as const,
+    }));
+}
+
+/** Genera lista de la compra desde el mealPlan real del usuario para los días indicados. */
+export function getMealPlanShoppingList(
+  state: FoodOSState,
+  dateKeys: string[]
+): import("@foodos/types").CartItem[] {
+  const inCart = new Set(
+    state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
+  );
+  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+
+  for (const dateKey of dateKeys) {
+    const day = state.mealPlan?.[dateKey];
+    if (!day) continue;
+    for (const slotId of Object.values(day)) {
+      if (!slotId) continue;
+      const recipe = allRecipes(state).find((r) => r.id === slotId);
+      if (!recipe) continue;
+      for (const ing of recipe.ingredients) {
+        const key = ing.name.toLowerCase();
+        if (inCart.has(key)) continue;
+        const inStock = state.inventory
+          .filter((inv) => {
+            const n = inv.name.toLowerCase();
+            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
+          })
+          .reduce((sum, inv) => sum + inv.qty, 0);
+        const shortfall = Math.max(0, ing.quantity - inStock);
+        if (shortfall <= 0) continue;
+        const existing = needed.get(key);
+        if (existing) {
+          existing.qty += shortfall;
+        } else {
+          needed.set(key, {
+            qty: shortfall,
+            unit: ing.unit,
+            price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(needed.entries())
+    .slice(0, 30)
+    .map(([name, data]) => ({
+      id: uid(),
+      name,
+      qty: Math.round(data.qty),
+      unit: data.unit,
+      price: Math.round(data.price * 100) / 100,
+      store: state.settings?.defaultStore ?? "Mercadona",
       checked: false,
       source: "plan" as const,
     }));

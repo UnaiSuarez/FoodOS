@@ -2,10 +2,11 @@
 
 import Image from "next/image";
 import { useState } from "react";
-import type { InventoryItem } from "@foodos/types";
+import type { InventoryItem, MealPlanDay } from "@foodos/types";
 import {
   actions,
   allRecipes,
+  findPlanEntry,
   getBudgetLeft,
   getConsumedToday,
   getDinnerSuggestion,
@@ -41,6 +42,40 @@ export function HomeView({
   const kcalPct = clampPct(consumed.kcal, state.nutrition.kcal);
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
+
+  /* Plan de hoy */
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayPlan: MealPlanDay = state.mealPlan?.[todayKey] ?? {};
+  const TODAY_SLOTS = [
+    { key: "breakfast" as keyof MealPlanDay, label: "Desayuno",  icon: "☀", mealType: "breakfast" as const },
+    { key: "almuerzo"  as keyof MealPlanDay, label: "Almuerzo",  icon: "◔", mealType: "snack"     as const },
+    { key: "lunch"     as keyof MealPlanDay, label: "Comida",    icon: "◉", mealType: "lunch"     as const },
+    { key: "merienda"  as keyof MealPlanDay, label: "Merienda",  icon: "◕", mealType: "snack"     as const },
+    { key: "dinner"    as keyof MealPlanDay, label: "Cena",      icon: "◑", mealType: "dinner"    as const },
+  ];
+  const plannedCount = TODAY_SLOTS.filter(s => todayPlan[s.key]).length;
+
+  function logPlanEntry(entryId: string, mealType: "breakfast" | "lunch" | "dinner" | "snack") {
+    const entry = findPlanEntry(state, entryId);
+    if (!entry) return;
+    mutate((draft) => {
+      draft.foodLog.push({
+        id: crypto.randomUUID(),
+        date: todayKey,
+        time: new Date().toTimeString().slice(0, 5),
+        name: entry.title,
+        qty: null,
+        unit: null,
+        kcal: entry.kcal,
+        protein: entry.protein,
+        carbs: entry.carbs,
+        fat: entry.fat,
+        source: "recipe",
+        mealType,
+      });
+    });
+    showToast(`"${entry.title}" registrado`);
+  }
 
   const expiryWarnDays = state.settings?.expiryWarnDays ?? 3;
   const budgetWarnPct  = state.settings?.budgetWarnPct ?? 80;
@@ -337,6 +372,58 @@ export function HomeView({
           </article>
         )}
       </div>
+
+      {/* Plan de hoy */}
+      <article className="panel today-plan-panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">
+              {new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+            </p>
+            <h3>Tu plan de hoy</h3>
+          </div>
+          <button className="text-button" onClick={() => goTo("planner")}>
+            {plannedCount === 0 ? "Planificar →" : "Editar →"}
+          </button>
+        </div>
+
+        {plannedCount === 0 ? (
+          <p className="today-plan-empty">
+            No tienes nada planificado para hoy.{" "}
+            <button className="link-button" onClick={() => goTo("planner")}>Ir al planificador</button>
+          </p>
+        ) : (
+          <div className="today-plan-slots">
+            {TODAY_SLOTS.map(({ key, label, icon, mealType }) => {
+              const entryId = todayPlan[key];
+              const entry = entryId ? findPlanEntry(state, entryId) : null;
+              return (
+                <div key={key} className={`today-plan-slot ${entry ? "filled" : "empty"}`}>
+                  <div className="today-plan-slot-head">
+                    <span className="today-plan-slot-icon">{icon}</span>
+                    <span className="today-plan-slot-label">{label}</span>
+                  </div>
+                  {entry ? (
+                    <>
+                      <p className="today-plan-slot-name">{entry.title}</p>
+                      <p className="today-plan-slot-meta">{entry.kcal} kcal · {Math.round(entry.protein)}g P</p>
+                      <button
+                        className="today-plan-slot-log"
+                        onClick={() => logPlanEntry(entryId!, mealType)}
+                        title="Registrar en el diario"
+                      >
+                        ✓ Registrar
+                      </button>
+                    </>
+                  ) : (
+                    <p className="today-plan-slot-empty">—</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </article>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
       {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}

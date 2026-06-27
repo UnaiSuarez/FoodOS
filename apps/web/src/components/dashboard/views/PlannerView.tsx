@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useRef, useState } from "react";
 import type { MealPlanDay, MealType, QuickMeal } from "@foodos/types";
-import { allRecipes, useFoodOS } from "@/lib/state";
+import { allRecipes, getMealPlanShoppingList, useFoodOS } from "@/lib/state";
 import { eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
@@ -135,6 +135,19 @@ export function PlannerView() {
     showToast(`"${entry.title}" registrado en el diario`);
   }
 
+  function handleBuyWeek() {
+    const items = getMealPlanShoppingList(state, days.map(toKey));
+    if (items.length === 0) {
+      showToast("Todo lo necesario ya está en el inventario o el carrito");
+      return;
+    }
+    mutate((draft) => {
+      const existing = new Set(draft.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase()));
+      draft.cart.push(...items.filter((item) => !existing.has(item.name.toLowerCase())));
+    });
+    showToast(`${items.length} ingredientes añadidos al carrito`);
+  }
+
   function handleDrop(e: React.DragEvent, dateKey: string, slot: MealSlot) {
     e.currentTarget.classList.remove("drag-over");
     const id = e.dataTransfer.getData("recipeId") || draggingId.current;
@@ -201,6 +214,9 @@ export function PlannerView() {
               </button>
               <button className="secondary-button" onClick={() => setWeekStart(getMondayOfWeek(new Date()))}>
                 Hoy
+              </button>
+              <button className="secondary-button planner-buy-btn" onClick={handleBuyWeek} title="Generar lista de la compra desde las recetas de esta semana">
+                🛒 Comprar semana
               </button>
             </div>
           </div>
