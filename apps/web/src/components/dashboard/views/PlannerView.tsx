@@ -9,9 +9,11 @@ import { eur } from "@/lib/utils";
 type MealSlot = keyof MealPlanDay;
 
 const MEAL_SLOTS: { key: MealSlot; label: string; icon: string }[] = [
-  { key: "breakfast", label: "Desayuno", icon: "☀" },
-  { key: "lunch",     label: "Comida",   icon: "◉" },
-  { key: "dinner",    label: "Cena",     icon: "◑" },
+  { key: "breakfast", label: "Desayuno",  icon: "☀" },
+  { key: "almuerzo",  label: "Almuerzo",  icon: "◔" },
+  { key: "lunch",     label: "Comida",    icon: "◉" },
+  { key: "merienda",  label: "Merienda",  icon: "◕" },
+  { key: "dinner",    label: "Cena",      icon: "◑" },
 ];
 
 const DAY_NAMES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
@@ -78,17 +80,26 @@ export function PlannerView() {
     e.currentTarget.classList.remove("drag-over");
   }
 
-  /* Weekly totals */
-  let weekKcal = 0, weekCost = 0, weekProt = 0;
-  days.forEach((d) => {
+  /* Per-day and weekly totals */
+  const targetKcal = state.nutrition?.kcal ?? 0;
+  const targetProt = state.nutrition?.protein ?? 0;
+
+  type DayTotal = { kcal: number; prot: number; cost: number };
+  const dayTotals: DayTotal[] = days.map((d) => {
     const day = plan[toKey(d)];
-    if (!day) return;
-    MEAL_SLOTS.forEach(({ key }) => {
-      const rid = day[key];
-      const r = rid ? recipes.find((x) => x.id === rid) : null;
-      if (r) { weekKcal += r.kcal; weekCost += r.cost; weekProt += r.protein; }
-    });
+    let kcal = 0, prot = 0, cost = 0;
+    if (day) {
+      MEAL_SLOTS.forEach(({ key }) => {
+        const r = day[key] ? recipes.find((x) => x.id === day[key]) : null;
+        if (r) { kcal += r.kcal; prot += r.protein; cost += r.cost; }
+      });
+    }
+    return { kcal, prot, cost };
   });
+
+  const weekKcal = dayTotals.reduce((s, d) => s + d.kcal, 0);
+  const weekProt = dayTotals.reduce((s, d) => s + d.prot, 0);
+  const weekCost = dayTotals.reduce((s, d) => s + d.cost, 0);
 
   const [search, setSearch] = useState("");
   const filteredRecipes = search.trim()
@@ -210,6 +221,40 @@ export function PlannerView() {
                   })}
                 </div>
               ))}
+
+              {/* Fila de totales diarios */}
+              <div className="planner-totals-row">
+                <div className="planner-totals-label">Totales</div>
+                {dayTotals.map((dt, i) => {
+                  const kcalPct = targetKcal > 0 ? dt.kcal / targetKcal : 0;
+                  const protPct = targetProt > 0 ? dt.prot / targetProt : 0;
+                  const status =
+                    dt.kcal === 0 ? "empty"
+                    : kcalPct >= 0.85 && protPct >= 0.85 ? "good"
+                    : kcalPct >= 0.5 || protPct >= 0.5 ? "partial"
+                    : "low";
+                  return (
+                    <div key={i} className={`planner-total-cell ${status}`}>
+                      <span className="planner-total-kcal">
+                        {dt.kcal > 0 ? `${Math.round(dt.kcal)} kcal` : "—"}
+                      </span>
+                      {dt.prot > 0 && (
+                        <span className="planner-total-prot">
+                          {Math.round(dt.prot)}g prot
+                        </span>
+                      )}
+                      {targetKcal > 0 && dt.kcal > 0 && (
+                        <div className="planner-total-bar">
+                          <div
+                            className="planner-total-bar-fill"
+                            style={{ width: `${Math.min(kcalPct * 100, 100)}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>

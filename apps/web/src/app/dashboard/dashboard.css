@@ -5081,6 +5081,72 @@ select:focus {
   padding: 12px 0;
 }
 
+/* Fila totales diarios */
+.planner-totals-row {
+  display: contents;
+}
+
+.planner-totals-label {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 10px 6px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+
+.planner-total-cell {
+  padding: 6px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  border-radius: 0 0 6px 6px;
+}
+
+.planner-total-cell.empty { opacity: 0.35; }
+
+.planner-total-kcal {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.planner-total-prot {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.planner-total-bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.planner-total-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.planner-total-cell.good   .planner-total-bar-fill { background: #4ade80; }
+.planner-total-cell.partial .planner-total-bar-fill { background: #fbbf24; }
+.planner-total-cell.low    .planner-total-bar-fill { background: #f87171; }
+
+.planner-total-cell.good   .planner-total-kcal { color: #4ade80; }
+.planner-total-cell.partial .planner-total-kcal { color: #fbbf24; }
+.planner-total-cell.low    .planner-total-kcal { color: #f87171; }
+
 @media (max-width: 1080px) {
   .planner-layout {
     grid-template-columns: 1fr;

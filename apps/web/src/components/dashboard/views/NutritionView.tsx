@@ -7,14 +7,12 @@ import {
   bestRecipe,
   countLowProteinDays,
   findRecipe,
-  generateWeeklyPlan,
   getConsumedToday,
   getLatestWeight,
   getProteinRanking,
   getTodayLog,
   getWeeklyMacroHistory,
   useFoodOS,
-  type WeeklyDayPlan,
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
@@ -66,8 +64,6 @@ export function NutritionView() {
       {state.profile && <ProteinOptimizerPanel />}
 
       {state.profile && <WeightPanel />}
-
-      {state.profile && <WeeklyPlanPanel />}
     </section>
   );
 }
@@ -415,92 +411,6 @@ function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: num
   );
 }
 
-// ---------- Plan semanal automático (Feature 4) ----------
-
-function WeeklyPlanPanel() {
-  const { state, mutate, showToast } = useFoodOS();
-  const [plan, setPlan] = useState<WeeklyDayPlan[] | null>(null);
-
-  function generate() {
-    setPlan(generateWeeklyPlan(state));
-    showToast("Plan semanal generado");
-  }
-
-  function cookDay(day: WeeklyDayPlan) {
-    const meals = [day.breakfast, day.lunch, day.dinner].filter(Boolean) as import("@foodos/types").Recipe[];
-    mutate((draft) => {
-      meals.forEach((recipe) => {
-        draft.foodLog.push({
-          id: crypto.randomUUID(),
-          date: todayPlus(0),
-          time: new Date().toTimeString().slice(0, 5),
-          name: recipe.title,
-          qty: null,
-          unit: null,
-          kcal: recipe.kcal,
-          protein: recipe.protein,
-          carbs: recipe.carbs,
-          fat: recipe.fat,
-          source: "recipe",
-          mealType: "lunch",
-        });
-      });
-    });
-    showToast(`${meals.length} recetas de ${day.dayName} registradas`);
-  }
-
-  return (
-    <article className="panel">
-      <div className="panel-head">
-        <div>
-          <p className="eyebrow">Automatización</p>
-          <h2>Plan semanal</h2>
-        </div>
-        <button className="secondary-button" onClick={generate}>
-          {plan ? "Regenerar" : "Generar plan"}
-        </button>
-      </div>
-
-      {!plan && (
-        <p className="empty">
-          FoodOS generará 7 días de comidas ajustadas a tu ciclado gym/descanso, presupuesto y
-          alimentos disponibles.
-        </p>
-      )}
-
-      {plan && (
-        <div className="weekly-plan-grid">
-          {plan.map((day) => (
-            <div key={day.date} className={`plan-day ${day.isGym ? "gym" : ""}`}>
-              <div className="plan-day-head">
-                <strong>{day.dayName}</strong>
-                <span className={`badge ${day.isGym ? "green" : "blue"}`}>
-                  {day.isGym ? "💪" : "😴"} {day.targets.kcal} kcal
-                </span>
-              </div>
-              <ul className="plan-meals">
-                {[
-                  { label: "🌅", recipe: day.breakfast },
-                  { label: "☀️", recipe: day.lunch },
-                  { label: "🌙", recipe: day.dinner },
-                ].map(({ label, recipe }) => (
-                  <li key={label}>
-                    <span>{label}</span>
-                    <span>{recipe ? recipe.title : <em>—</em>}</span>
-                  </li>
-                ))}
-              </ul>
-              <button className="small-action good" onClick={() => cookDay(day)}>
-                Registrar todo
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </article>
-  );
-}
-
 // ---------- Gráfica semanal de macros (analytics) ----------
 
 function MacroWeekChart() {
@@ -582,7 +492,7 @@ function ProteinOptimizerPanel() {
     <article className="panel">
       <div className="panel-head">
         <div>
-          <p className="eyebrow">§9.8 Eficiencia</p>
+          <p className="eyebrow">Eficiencia</p>
           <h2>Optimizador proteína/€</h2>
         </div>
         {lowDays >= 2 && (

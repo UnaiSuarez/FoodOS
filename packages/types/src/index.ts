@@ -216,7 +216,9 @@ export interface AppSettings {
 /** Una comida planificada en el planificador semanal. */
 export interface MealPlanDay {
   breakfast?: string;
+  almuerzo?: string;
   lunch?: string;
+  merienda?: string;
   dinner?: string;
 }
 
