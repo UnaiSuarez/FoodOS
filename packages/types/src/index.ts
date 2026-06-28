@@ -279,4 +279,6 @@ export interface FoodOSState {
   plannerQuickMeals: QuickMeal[];
   /** Fecha de depuración (YYYY-MM-DD). Sustituye "hoy" en toda la app cuando está activa. */
   debugDate?: string | null;
+  /** Presupuesto mensual por categoría (€), editable por el usuario. Clave = nombre de categoría. */
+  categoryBudgets: Record<string, number>;
 }

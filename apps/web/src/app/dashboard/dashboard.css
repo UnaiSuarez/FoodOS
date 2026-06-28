@@ -6752,3 +6752,87 @@ button.secondary-button.small {
   margin-top: 2px;
 }
 
+/* ── Desglose editable por categoría dentro de cubetas ────────── */
+.cat-budget-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+.cat-budget-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cat-budget-row.savings-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.cat-budget-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.cat-budget-name {
+  font-size: 0.69rem;
+  color: var(--fg-muted);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cat-budget-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cat-budget-input {
+  width: 56px;
+  padding: 2px 4px;
+  font-size: 0.67rem;
+  font-family: var(--mono);
+  background: rgba(240,244,238,0.06);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  text-align: right;
+}
+.cat-budget-input:focus {
+  outline: none;
+  border-color: rgba(74,222,128,0.5);
+}
+.cat-budget-bottom {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.cat-budget-bar-wrap {
+  flex: 1;
+  height: 3px;
+  background: rgba(240,244,238,0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.cat-budget-bar {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.35s ease;
+}
+.cat-budget-bar.needs { background: #60a5fa; }
+.cat-budget-bar.wants { background: #f59e0b; }
+.cat-budget-bar.over  { background: #f87171; }
+.cat-budget-rem {
+  font-size: 0.64rem;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--green);
+  white-space: nowrap;
+  min-width: 58px;
+  text-align: right;
+}
+.cat-budget-rem.neg { color: #f87171; }
+

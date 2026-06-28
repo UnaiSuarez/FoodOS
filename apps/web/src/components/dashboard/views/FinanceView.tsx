@@ -19,6 +19,20 @@ const WANTS_CATS = new Set(["Ocio", "Suscripciones", "Ropa", "Formación", "Otro
 const EXPENSE_CATS = ["Comida", "Vivienda", "Suministros", "Transporte", "Suscripciones", "Ocio", "Salud", "Ropa", "Formación", "Otros"];
 const INCOME_CATS  = ["Trabajo", "Venta", "Bizum", "Freelance", "Regalo", "Otros"];
 
+// Porcentaje sugerido de cada categoría DENTRO de su cubeta (sum = 1.0)
+const DEFAULT_BUCKET_PCTS: Record<string, number> = {
+  "Vivienda":     0.52,
+  "Comida":       0.27,
+  "Transporte":   0.12,
+  "Salud":        0.05,
+  "Suministros":  0.04,
+  "Ocio":         0.35,
+  "Ropa":         0.25,
+  "Suscripciones":0.20,
+  "Formación":    0.12,
+  "Otros":        0.08,
+};
+
 function catBucket(cat: string): { label: string; color: string } {
   if (NEEDS_CATS.has(cat)) return { label: "Necesidades", color: "needs" };
   if (WANTS_CATS.has(cat)) return { label: "Deseos", color: "wants" };
@@ -133,7 +147,11 @@ export function FinanceView() {
 
   // ── Presupuesto semanal ───────────────────────────────────────
   const foodSpendWeek = getFoodSpend(state);
-  const weeklyBudget  = state.weeklyBudget || 0;
+  // Si hay presupuesto de categoría "Comida" guardado, derivamos el semanal; si no, usamos el manual
+  const foodMonthlyBudget = (state.categoryBudgets ?? {})["Comida"];
+  const weeklyBudget  = foodMonthlyBudget != null
+    ? foodMonthlyBudget / 4.33
+    : (state.weeklyBudget || 0);
   const budgetPct     = weeklyBudget > 0 ? Math.min(100, (foodSpendWeek / weeklyBudget) * 100) : 0;
   const budgetOverrun = foodSpendWeek > weeklyBudget && weeklyBudget > 0;
   const budgetWarn    = budgetPct >= (state.settings?.budgetWarnPct ?? 80) && !budgetOverrun;
@@ -202,6 +220,10 @@ export function FinanceView() {
   const balanceSign = monthlySavings >= 0 ? "positive" : "negative";
   const bucket = catBucket(formCategory);
 
+  // ── Helper: presupuesto de una categoría (guardado o sugerido) ──
+  const catBudget = (cat: string, bucketTarget: number): number =>
+    (state.categoryBudgets ?? {})[cat] ?? bucketTarget * (DEFAULT_BUCKET_PCTS[cat] ?? 0);
+
   // ── Datos cubetas 50/30/20 ────────────────────────────────────
   const buckets = [
     {
@@ -211,7 +233,7 @@ export function FinanceView() {
       target: needsTarget,
       actual: needs,
       higherIsBetter: false,
-      cats: ["Vivienda", "Comida", "Suministros", "Transporte", "Salud"],
+      catList: ["Vivienda", "Comida", "Transporte", "Salud", "Suministros"],
     },
     {
       key: "wants",
@@ -220,7 +242,7 @@ export function FinanceView() {
       target: wantsTarget,
       actual: wants,
       higherIsBetter: false,
-      cats: ["Ocio", "Suscripciones", "Ropa", "Formación", "Otros"],
+      catList: ["Ocio", "Ropa", "Suscripciones", "Formación", "Otros"],
     },
     {
       key: "savings",
@@ -229,7 +251,7 @@ export function FinanceView() {
       target: savingsTarget,
       actual: savingsAmt,
       higherIsBetter: true,
-      cats: ["Ingresos − Gastos"],
+      catList: [] as string[],
     },
   ];
 
@@ -492,14 +514,12 @@ export function FinanceView() {
             <div className="rule-bucket-cards">
               {buckets.map((b) => {
                 const usedPct = b.target > 0 ? Math.min(120, (b.actual / b.target) * 100) : 0;
-                // "over" means BAD: needs/wants overspent, savings under-saved
                 const bad = b.higherIsBetter
                   ? b.actual < b.target && b.target > 0
                   : b.actual > b.target && b.target > 0;
-                // diff: positive = good surplus, negative = bad deficit
                 const diff = b.higherIsBetter
-                  ? b.actual - b.target   // savings: positive = extra saved
-                  : b.target - b.actual;  // needs/wants: positive = money left
+                  ? b.actual - b.target
+                  : b.target - b.actual;
                 return (
                   <div key={b.key} className={`rule-bucket-card ${bad ? "over" : "ok"}`}>
                     <div className="rule-bucket-head">
@@ -511,19 +531,78 @@ export function FinanceView() {
                       <div className={`rule-bucket-fill ${b.key}${bad ? " over" : ""}`} style={{ width: `${usedPct}%` }} />
                     </div>
                     <div className="rule-bucket-nums">
-                      <span>{eur(Math.round(b.actual))}</span>
-                      <span className="rule-bucket-target">/ {eur(Math.round(b.target))}</span>
+                      <span>{eur(b.actual)}</span>
+                      <span className="rule-bucket-target">/ {eur(b.target)}</span>
                     </div>
                     <div className={`rule-bucket-diff ${bad ? "neg" : "pos"}`}>
                       {b.target === 0
                         ? "—"
                         : diff >= 0
                           ? b.higherIsBetter
-                            ? `+${eur(Math.round(diff))} extra`
-                            : `+${eur(Math.round(diff))} libre`
-                          : `−${eur(Math.round(Math.abs(diff)))} ${b.higherIsBetter ? "faltan" : "pasado"}`}
+                            ? `+${eur(diff)} extra`
+                            : `+${eur(diff)} libre`
+                          : `−${eur(Math.abs(diff))} ${b.higherIsBetter ? "faltan" : "pasado"}`}
                     </div>
-                    <div className="rule-bucket-cats">{b.cats.join(" · ")}</div>
+
+                    {/* Desglose editable por categoría (solo needs y wants) */}
+                    {b.catList.length > 0 && (
+                      <div className="cat-budget-list">
+                        {b.catList.map((cat) => {
+                          const budget = catBudget(cat, b.target);
+                          const spent  = byCategory[cat] ?? 0;
+                          const rem    = budget - spent;
+                          const barPct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+                          return (
+                            <div key={cat} className="cat-budget-row">
+                              <div className="cat-budget-top">
+                                <span className="cat-budget-name">{cat}</span>
+                                <div className="cat-budget-right">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={budget.toFixed(2)}
+                                    onChange={(e) =>
+                                      mutate((d) => { d.categoryBudgets[cat] = Number(e.target.value); })
+                                    }
+                                    className="cat-budget-input"
+                                    title={`Presupuesto mensual ${cat} (€)`}
+                                  />
+                                </div>
+                              </div>
+                              <div className="cat-budget-bottom">
+                                <div className="cat-budget-bar-wrap">
+                                  <div
+                                    className={`cat-budget-bar ${b.key}${spent > budget && budget > 0 ? " over" : ""}`}
+                                    style={{ width: `${barPct}%` }}
+                                  />
+                                </div>
+                                <span className={`cat-budget-rem ${rem < 0 ? "neg" : ""}`}>
+                                  {rem >= 0 ? `+${eur(rem)}` : `−${eur(Math.abs(rem))}`}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {b.key === "savings" && (
+                      <div className="cat-budget-list">
+                        <div className="cat-budget-row savings-row">
+                          <span className="cat-budget-name">Meta mensual</span>
+                          <span className={`cat-budget-rem ${b.actual >= b.target ? "" : "neg"}`}>
+                            {eur(b.actual)} / {eur(b.target)}
+                          </span>
+                        </div>
+                        {totalMonthlyIncome > 0 && (
+                          <div className="cat-budget-row savings-row">
+                            <span className="cat-budget-name">Comida semanal derivada</span>
+                            <span className="cat-budget-rem">{eur(catBudget("Comida", needsTarget) / 4.33)}/sem</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -539,7 +618,7 @@ export function FinanceView() {
           {/* Proyección */}
           <div className="projection-card">
             <div className="panel-head">
-              <h3>Si ahorras ~{eur(Math.max(0, Math.round(monthlySavings)))}/mes…</h3>
+              <h3>Si ahorras ~{eur(Math.max(0, monthlySavings))}/mes…</h3>
             </div>
             {monthlySavings > 0 ? (
               <>
