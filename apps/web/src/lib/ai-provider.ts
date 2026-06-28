@@ -397,6 +397,78 @@ export async function callAIChat(
   }
 }
 
+export type MealSlot = "breakfast" | "almuerzo" | "lunch" | "merienda" | "dinner";
+export type WeekPlanResult = Record<string, Partial<Record<MealSlot, string | null>>>;
+
+function buildWeeklyPlanPrompt(state: FoodOSState, recipes: Recipe[], dateKeys: string[]): string {
+  const targets = state.nutrition;
+  const profile = state.profile;
+  const excluded = [...(profile?.allergies ?? []), ...(profile?.excludedFoods ?? [])].filter(Boolean);
+  const goalLine = profile ? `Objetivo: ${profile.goal}. Días de gym: ${profile.gymDays.join(",")} (1=lun..7=dom).` : "";
+
+  const recipeLines = recipes
+    .slice(0, 40)
+    .map((r) => `  {"id":"${r.id}","title":"${r.title}","kcal":${r.kcal},"protein":${r.protein},"carbs":${r.carbs},"fat":${r.fat}}`)
+    .join(",\n");
+
+  return `Eres nutricionista. Genera un plan de comidas para ${dateKeys.length} días. Responde SOLO con JSON válido, sin texto extra.
+
+OBJETIVOS DIARIOS: ${targets.kcal} kcal · ${targets.protein}g proteína · ${targets.carbs}g carbos · ${targets.fat}g grasas.
+${goalLine}
+Alergias/exclusiones: ${excluded.join(", ") || "ninguna"}.
+
+RECETAS DISPONIBLES:
+[
+${recipeLines}
+]
+
+REGLAS:
+- Usa solo IDs de las recetas listadas arriba.
+- Distribuye entre los 5 slots: breakfast, almuerzo, lunch, merienda, dinner.
+- La suma de los slots del día debe aproximarse a los objetivos diarios.
+- No repitas la misma receta más de 2 veces en la semana.
+- Si no hay suficientes recetas para un slot, usa null.
+- Varía los platos para aportar nutrientes diferentes cada día.
+
+DÍAS A PLANIFICAR: ${dateKeys.join(", ")}
+
+JSON requerido (exactamente este formato):
+{"${dateKeys[0]}":{"breakfast":"id_o_null","almuerzo":"id_o_null","lunch":"id_o_null","merienda":"id_o_null","dinner":"id_o_null"}${dateKeys.length > 1 ? `,"${dateKeys[1]}":{"breakfast":"id_o_null","almuerzo":"id_o_null","lunch":"id_o_null","merienda":"id_o_null","dinner":"id_o_null"}` : ""}}`;
+}
+
+function parseWeekPlan(raw: string, validIds: Set<string>): WeekPlanResult {
+  const json = JSON.parse(extractJSON(raw)) as Record<string, Record<string, string | null>>;
+  const result: WeekPlanResult = {};
+  for (const [date, slots] of Object.entries(json)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    const day: Partial<Record<MealSlot, string | null>> = {};
+    for (const slot of ["breakfast", "almuerzo", "lunch", "merienda", "dinner"] as MealSlot[]) {
+      const val = slots[slot];
+      day[slot] = val && validIds.has(val) ? val : null;
+    }
+    result[date] = day;
+  }
+  return result;
+}
+
+export async function generateAIWeeklyPlan(
+  config: AIConfig,
+  state: FoodOSState,
+  recipes: Recipe[],
+  dateKeys: string[]
+): Promise<WeekPlanResult> {
+  const prompt = buildWeeklyPlanPrompt(state, recipes, dateKeys);
+  const validIds = new Set(recipes.map((r) => r.id));
+  let text: string;
+  switch (config.provider) {
+    case "gemini":    text = await callGemini(config, prompt);    break;
+    case "openai":    text = await callOpenAI(config, prompt);    break;
+    case "anthropic": text = await callAnthropic(config, prompt); break;
+    case "ollama":    text = await callOllama(config, prompt);    break;
+  }
+  return parseWeekPlan(text, validIds);
+}
+
 export async function testAIConnection(config: AIConfig): Promise<void> {
   const ping = 'Responde SOLO con este JSON: {"ok":true}';
   switch (config.provider) {

@@ -7,8 +7,10 @@ import {
   bestRecipe,
   countLowProteinDays,
   findRecipe,
+  getAdherenceStreak,
   getConsumedToday,
   getLatestWeight,
+  getMacroAdherenceHistory,
   getProteinRanking,
   getTodayLog,
   getWeeklyMacroHistory,
@@ -60,6 +62,8 @@ export function NutritionView() {
       </div>
 
       {state.profile && <MacroWeekChart />}
+
+      {state.profile && <MacroAdherencePanel />}
 
       {state.profile && <ProteinOptimizerPanel />}
 
@@ -477,6 +481,96 @@ function MacroWeekChart() {
       <p className="chart-legend">
         Las barras verdes muestran % de proteína alcanzado. Las azules, % de calorías.
       </p>
+    </article>
+  );
+}
+
+// ---------- Panel de adherencia: racha + heatmap 28 días ----------
+
+function MacroAdherencePanel() {
+  const { state } = useFoodOS();
+  const history = getMacroAdherenceHistory(state, 28);
+  const streak  = getAdherenceStreak(state);
+
+  const last7   = history.slice(-7);
+  const hitDays = last7.filter((d) => d.status === "hit").length;
+  const avgKcal = Math.round(
+    last7.reduce((s, d) => {
+      const entries = state.foodLog.filter((e) => e.date === d.date);
+      return s + entries.reduce((ss, e) => ss + e.kcal, 0);
+    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
+  );
+  const avgProt = Math.round(
+    last7.reduce((s, d) => {
+      const entries = state.foodLog.filter((e) => e.date === d.date);
+      return s + entries.reduce((ss, e) => ss + e.protein, 0);
+    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
+  );
+
+  const statusColor: Record<string, string> = {
+    hit:     "var(--green)",
+    partial: "var(--amber)",
+    miss:    "rgba(239,68,68,0.55)",
+    empty:   "rgba(150,163,144,0.15)",
+  };
+
+  return (
+    <article className="panel adherence-panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Constancia</p>
+          <h2>Adherencia a macros</h2>
+        </div>
+        {streak >= 3 && (
+          <span className="badge green">🔥 Racha {streak} días</span>
+        )}
+      </div>
+
+      <div className="adherence-body">
+        {/* Racha + stats */}
+        <div className="adherence-stats">
+          <div className="adherence-streak-block">
+            <span className="adherence-streak-num">{streak}</span>
+            <span className="adherence-streak-label">días de racha</span>
+          </div>
+          <div className="adherence-week-stats">
+            <div className="adherence-stat">
+              <span>{hitDays}/7</span>
+              <small>días objetivo esta semana</small>
+            </div>
+            <div className="adherence-stat">
+              <span>{avgKcal} kcal</span>
+              <small>promedio vs {state.nutrition.kcal} objetivo</small>
+            </div>
+            <div className="adherence-stat">
+              <span>{avgProt}g</span>
+              <small>proteína promedio vs {state.nutrition.protein}g</small>
+            </div>
+          </div>
+        </div>
+
+        {/* Heatmap 28 días: 4 filas × 7 cols */}
+        <div className="adherence-heatmap">
+          {["L", "M", "X", "J", "V", "S", "D"].map((d) => (
+            <span key={d} className="adherence-heatmap-header">{d}</span>
+          ))}
+          {history.map((day) => (
+            <div
+              key={day.date}
+              className="adherence-cell"
+              title={`${day.date}: ${day.status === "hit" ? "objetivo cumplido" : day.status === "partial" ? "parcial" : day.status === "miss" ? "no cumplido" : "sin datos"}`}
+              style={{ background: statusColor[day.status] }}
+            />
+          ))}
+        </div>
+
+        <div className="adherence-legend">
+          <span style={{ color: "var(--green)" }}>■ Cumplido</span>
+          <span style={{ color: "var(--amber)" }}>■ Parcial (proteína O kcal)</span>
+          <span style={{ color: "rgba(239,68,68,0.75)" }}>■ No cumplido</span>
+          <span style={{ color: "rgba(150,163,144,0.5)" }}>■ Sin datos</span>
+        </div>
+      </div>
     </article>
   );
 }

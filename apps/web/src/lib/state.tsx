@@ -802,6 +802,41 @@ export function getWeeklyMacroHistory(
   });
 }
 
+/** Por cada uno de los últimos N días, devuelve si se cumplieron los objetivos de macros.
+ *  hit: proteína ≥80% target Y kcal entre 80–115% target.
+ *  partial: se cumple uno de los dos.
+ *  miss: ninguno (o sin datos). */
+export function getMacroAdherenceHistory(
+  state: FoodOSState,
+  days = 28
+): Array<{ date: string; status: "hit" | "partial" | "miss" | "empty" }> {
+  const targetKcal = state.nutrition.kcal;
+  const targetProtein = state.nutrition.protein;
+  return Array.from({ length: days }, (_, i) => {
+    const date = todayPlus(-(days - 1 - i));
+    const entries = state.foodLog.filter((e) => e.date === date);
+    if (!entries.length) return { date, status: "empty" };
+    const kcal = entries.reduce((s, e) => s + e.kcal, 0);
+    const protein = entries.reduce((s, e) => s + e.protein, 0);
+    const protOk = targetProtein > 0 && protein >= targetProtein * 0.8;
+    const kcalOk = targetKcal > 0 && kcal >= targetKcal * 0.8 && kcal <= targetKcal * 1.15;
+    if (protOk && kcalOk) return { date, status: "hit" };
+    if (protOk || kcalOk) return { date, status: "partial" };
+    return { date, status: "miss" };
+  });
+}
+
+/** Racha actual: días consecutivos terminando hoy con status "hit". */
+export function getAdherenceStreak(state: FoodOSState): number {
+  const history = getMacroAdherenceHistory(state, 60);
+  let streak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].status === "hit") streak++;
+    else break;
+  }
+  return streak;
+}
+
 export function expiryBadge(expires: string): { label: string; cls: string } {
   const days = daysUntil(expires);
   if (days < 0)  return { label: "Caducado",      cls: "red pulse" };

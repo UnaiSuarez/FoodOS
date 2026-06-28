@@ -5,6 +5,8 @@ import { useRef, useState } from "react";
 import type { MealPlanDay, MealType, QuickMeal, Recipe } from "@foodos/types";
 import { allRecipes, getMealPlanShoppingList, useFoodOS } from "@/lib/state";
 import { CookModal } from "../CookModal";
+import { loadAIConfig } from "@/lib/ai-config";
+import { generateAIWeeklyPlan } from "@/lib/ai-provider";
 import { eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
@@ -72,6 +74,9 @@ export function PlannerView() {
 
   /* CookModal para recetas del planificador */
   const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
+
+  /* Plan IA */
+  const [aiLoading, setAiLoading] = useState(false);
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const today = state.debugDate ?? toKey(new Date());
@@ -143,6 +148,40 @@ export function PlannerView() {
       });
     });
     showToast(`"${entry.title}" registrado`);
+  }
+
+  async function handleAIPlan() {
+    const config = loadAIConfig();
+    if (!config) {
+      showToast("Configura tu IA primero (botón IA en la barra superior)");
+      return;
+    }
+    if (recipes.length === 0) {
+      showToast("Añade recetas antes de generar un plan");
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const dateKeys = days.map(toKey);
+      const weekPlan = await generateAIWeeklyPlan(config, state, recipes, dateKeys);
+      mutate((draft) => {
+        draft.mealPlan ||= {};
+        for (const [dateKey, slots] of Object.entries(weekPlan)) {
+          draft.mealPlan[dateKey] ||= {};
+          for (const [slot, id] of Object.entries(slots)) {
+            if (id) (draft.mealPlan[dateKey] as Record<string, string>)[slot] = id;
+          }
+        }
+      });
+      const filled = Object.values(weekPlan).reduce(
+        (n, day) => n + Object.values(day).filter(Boolean).length, 0
+      );
+      showToast(`Plan IA generado: ${filled} comidas planificadas`);
+    } catch (err) {
+      showToast(`Error al generar plan: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAiLoading(false);
+    }
   }
 
   function handleBuyWeek() {
@@ -224,6 +263,14 @@ export function PlannerView() {
               </button>
               <button className="secondary-button" onClick={() => setWeekStart(getMondayOfWeek(new Date()))}>
                 Hoy
+              </button>
+              <button
+                className="secondary-button planner-ai-btn"
+                onClick={handleAIPlan}
+                disabled={aiLoading}
+                title="La IA genera un plan semanal equilibrado usando tus recetas y macros objetivo"
+              >
+                {aiLoading ? "Generando…" : "✨ Plan IA"}
               </button>
               <button className="secondary-button planner-buy-btn" onClick={handleBuyWeek} title="Generar lista de la compra desde las recetas de esta semana">
                 🛒 Comprar semana
