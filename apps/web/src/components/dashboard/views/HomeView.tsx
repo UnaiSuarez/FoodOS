@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { InventoryItem, MealPlanDay } from "@foodos/types";
 import {
   actions,
@@ -33,7 +33,7 @@ export function HomeView({
   goTo: (view: ViewId) => void;
   openRecipe: (id: string) => void;
 }) {
-  const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const { state, mutate, showToast, setMascotMessage, triggerMascot } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
   const [whatToEatOpen, setWhatToEatOpen] = useState(false);
@@ -59,6 +59,19 @@ export function HomeView({
 
   /* Stock bajo */
   const lowStock = getLowStockSuggestions(state).slice(0, 3);
+
+  /* Celebrate cuando macros están cumplidos (≥80% kcal y proteína) */
+  const macroCelebrated = useRef(false);
+  useEffect(() => {
+    const kcalOk = state.nutrition.kcal > 0 && consumed.kcal >= state.nutrition.kcal * 0.8 && consumed.kcal <= state.nutrition.kcal * 1.15;
+    const protOk = state.nutrition.protein > 0 && consumed.protein >= state.nutrition.protein * 0.8;
+    if (kcalOk && protOk && !macroCelebrated.current) {
+      macroCelebrated.current = true;
+      triggerMascot("celebrate", "¡Macros del día cumplidos! Gran trabajo.");
+    } else if (!kcalOk || !protOk) {
+      macroCelebrated.current = false;
+    }
+  }, [consumed.kcal, consumed.protein, state.nutrition.kcal, state.nutrition.protein, triggerMascot]);
 
   /* Plan de hoy */
   const todayKey = state.debugDate ?? new Date().toISOString().slice(0, 10);

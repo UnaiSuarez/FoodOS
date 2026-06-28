@@ -5965,3 +5965,215 @@ select:focus {
 .export-btn-label { font-weight: 600; }
 .export-btn-desc { font-size: 11px; color: var(--muted); }
 
+/* ── Mascot Widget — Floating (bottom-right) ─────────────── */
+.mascot-widget {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.mascot-bubble {
+  max-width: 220px;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  border: 1px solid;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  pointer-events: auto;
+  animation: bubble-in 0.22s cubic-bezier(0.34,1.56,0.64,1) both;
+}
+
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.92); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/* Base sprite button */
+.mascot-sprite {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s;
+  will-change: transform;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5));
+}
+
+.mascot-sprite:active { transform: scale(0.92); }
+
+/* ── 1. idle — breathing bounce, blink every ~4s ─── */
+.mascot-idle {
+  animation: mascot-idle 3s ease-in-out infinite;
+}
+@keyframes mascot-idle {
+  0%, 100% { transform: translateY(0) scaleY(1);   }
+  40%       { transform: translateY(-4px) scaleY(1.02); }
+  55%       { transform: translateY(-3px) scaleY(1.01); }
+}
+
+/* ── 2. wave — arm sway (lean) ─────────────────── */
+.mascot-wave {
+  animation: mascot-wave 0.9s cubic-bezier(0.34,1.56,0.64,1) both;
+  transform-origin: bottom center;
+}
+@keyframes mascot-wave {
+  0%   { transform: rotate(0deg) translateY(0); }
+  20%  { transform: rotate(-12deg) translateY(-6px); }
+  40%  { transform: rotate(10deg) translateY(-4px); }
+  60%  { transform: rotate(-8deg) translateY(-6px); }
+  80%  { transform: rotate(6deg) translateY(-2px); }
+  100% { transform: rotate(0deg) translateY(0); }
+}
+
+/* ── 3. thinking — tilt head loop + dots ────────── */
+.mascot-thinking {
+  animation: mascot-thinking 2s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+@keyframes mascot-thinking {
+  0%, 100% { transform: rotate(0deg); }
+  30%       { transform: rotate(-8deg) translateY(-2px); }
+  70%       { transform: rotate(6deg) translateY(-1px); }
+}
+.mascot-dots {
+  position: absolute;
+  top: -18px;
+  right: -4px;
+  font-size: 16px;
+  color: var(--green);
+  letter-spacing: 2px;
+  animation: dots-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dots-pulse {
+  0%, 100% { opacity: 0.4; transform: translateY(0); }
+  50%       { opacity: 1;   transform: translateY(-3px); }
+}
+
+/* ── 4. celebrate — jump + squash ───────────────── */
+.mascot-celebrate {
+  animation: mascot-celebrate 1s cubic-bezier(0.34,1.56,0.64,1) both;
+  transform-origin: bottom center;
+}
+@keyframes mascot-celebrate {
+  0%   { transform: translateY(0) scaleX(1) scaleY(1); }
+  20%  { transform: translateY(-28px) scaleX(0.9) scaleY(1.1); }
+  45%  { transform: translateY(-22px) scaleX(0.95) scaleY(1.05); }
+  65%  { transform: translateY(0) scaleX(1.15) scaleY(0.85); }
+  80%  { transform: translateY(-10px) scaleX(0.98) scaleY(1.02); }
+  100% { transform: translateY(0) scaleX(1) scaleY(1); }
+}
+.mascot-sparkles {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 18px;
+  pointer-events: none;
+  animation: sparkle-burst 1s ease-out both;
+}
+@keyframes sparkle-burst {
+  0%   { opacity: 0; transform: translateX(-50%) scale(0.5) translateY(0); }
+  40%  { opacity: 1; transform: translateX(-50%) scale(1.2) translateY(-8px); }
+  100% { opacity: 0; transform: translateX(-50%) scale(0.8) translateY(-16px); }
+}
+
+/* ── 5. alert — horizontal shake ────────────────── */
+.mascot-alert {
+  animation: mascot-alert 0.6s cubic-bezier(0.36,0.07,0.19,0.97) both;
+}
+@keyframes mascot-alert {
+  0%, 100% { transform: translateX(0); }
+  15%  { transform: translateX(-10px) scaleX(1.05); }
+  30%  { transform: translateX(10px); }
+  45%  { transform: translateX(-8px); }
+  60%  { transform: translateX(8px); }
+  75%  { transform: translateX(-4px); }
+  90%  { transform: translateX(4px); }
+}
+
+/* ── 6. suggest — lean + pulse ──────────────────── */
+.mascot-suggest {
+  animation: mascot-suggest 0.7s cubic-bezier(0.34,1.56,0.64,1) both;
+  transform-origin: bottom center;
+}
+@keyframes mascot-suggest {
+  0%   { transform: rotate(0) scale(1); }
+  30%  { transform: rotate(10deg) scale(1.1) translateY(-4px); }
+  60%  { transform: rotate(-4deg) scale(1.05); }
+  100% { transform: rotate(0) scale(1); }
+}
+
+/* ── 7. sleep — very slow breathing + dim ───────── */
+.mascot-sleep {
+  animation: mascot-sleep 4s ease-in-out infinite;
+  filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)) brightness(0.75);
+}
+@keyframes mascot-sleep {
+  0%, 100% { transform: translateY(0) scaleY(1);   }
+  50%       { transform: translateY(-2px) scaleY(1.01); }
+}
+.mascot-zzz {
+  position: absolute;
+  top: -22px;
+  right: -8px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 3px;
+  animation: zzz-float 2s ease-in-out infinite;
+}
+@keyframes zzz-float {
+  0%, 100% { opacity: 0.4; transform: translateY(0) scale(0.9); }
+  50%       { opacity: 0.9; transform: translateY(-5px) scale(1); }
+}
+
+/* ── 8. success_buy — scale bounce ──────────────── */
+.mascot-success_buy {
+  animation: mascot-success 0.7s cubic-bezier(0.34,1.56,0.64,1) both;
+}
+@keyframes mascot-success {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.2) translateY(-8px); }
+  60%  { transform: scale(0.95); }
+  80%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+/* ── 9. streak — multi-bounce dance ─────────────── */
+.mascot-streak {
+  animation: mascot-streak 1.4s cubic-bezier(0.34,1.56,0.64,1) both;
+  transform-origin: bottom center;
+}
+@keyframes mascot-streak {
+  0%   { transform: translateY(0) rotate(0); }
+  15%  { transform: translateY(-20px) rotate(-10deg); }
+  30%  { transform: translateY(0) rotate(8deg); }
+  45%  { transform: translateY(-16px) rotate(-6deg); }
+  60%  { transform: translateY(0) rotate(5deg); }
+  75%  { transform: translateY(-10px) rotate(-3deg); }
+  90%  { transform: translateY(0) rotate(2deg); }
+  100% { transform: translateY(0) rotate(0); }
+}
+
+/* Respect prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .mascot-idle, .mascot-wave, .mascot-thinking, .mascot-celebrate,
+  .mascot-alert, .mascot-suggest, .mascot-sleep, .mascot-success_buy,
+  .mascot-streak, .mascot-dots, .mascot-zzz, .mascot-sparkles,
+  .mascot-bubble { animation: none; }
+}
+

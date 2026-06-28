@@ -121,15 +121,20 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   return next;
 }
 
+export type MascotState = "idle" | "wave" | "thinking" | "celebrate" | "alert" | "suggest" | "sleep" | "success_buy" | "streak";
+const LOOP_MASCOT_STATES: MascotState[] = ["idle", "thinking", "sleep"];
+
 interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
   toast: string;
   mascotMessage: string;
+  mascotState: MascotState;
   remoteReady: boolean;
   authUser: User | null;
   showToast: (message: string) => void;
   setMascotMessage: (message: string) => void;
+  triggerMascot: (anim: MascotState, message?: string) => void;
   mutate: (fn: (draft: FoodOSState) => void) => void;
   resetAll: () => void;
   seedDemo: () => void;
@@ -142,6 +147,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [toast, setToast] = useState("");
   const [mascotMessage, setMascotMessage] = useState("Lista para organizar tu comida.");
+  const [mascotState, setMascotState] = useState<MascotState>("idle");
+  const mascotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -262,6 +269,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     showToast("Datos demo cargados");
   }, [showToast]);
 
+  const triggerMascot = useCallback((anim: MascotState, message?: string) => {
+    if (mascotTimer.current) clearTimeout(mascotTimer.current);
+    setMascotState(anim);
+    if (message) setMascotMessage(message);
+    if (!LOOP_MASCOT_STATES.includes(anim)) {
+      mascotTimer.current = setTimeout(() => setMascotState("idle"), 2800);
+    }
+  }, []);
+
   return (
     <FoodOSContext.Provider
       value={{
@@ -269,10 +285,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         hydrated,
         toast,
         mascotMessage,
+        mascotState,
         remoteReady,
         authUser,
         showToast,
         setMascotMessage,
+        triggerMascot,
         mutate,
         resetAll,
         seedDemo,

@@ -194,7 +194,7 @@ function localReply(
 // ── Componente principal ──────────────────────────────────────────
 
 export function AssistantView() {
-  const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const { state, mutate, showToast, setMascotMessage, triggerMascot } = useFoodOS();
   // Inicializar vacío para evitar hidratación SSR; cargar de localStorage en useEffect
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -246,6 +246,7 @@ export function AssistantView() {
     addMsg({ role: "user", text: text.trim() });
     setInput("");
     setLoading(true);
+    triggerMascot("thinking");
 
     try {
       let rawReply: string;
@@ -311,6 +312,7 @@ export function AssistantView() {
       }
 
       addMsg(msg);
+      triggerMascot("suggest");
     } finally {
       setLoading(false);
     }

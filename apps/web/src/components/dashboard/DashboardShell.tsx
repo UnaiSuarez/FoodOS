@@ -20,6 +20,7 @@ import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { OnboardingFlow } from "./OnboardingFlow";
+import { MascotWidget } from "./MascotWidget";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
@@ -209,6 +210,8 @@ function DashboardInner() {
           }}
         />
       )}
+
+      <MascotWidget />
 
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
         {toast}
