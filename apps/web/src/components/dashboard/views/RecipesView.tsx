@@ -9,6 +9,7 @@ import { AiRecipeModal } from "../AiRecipeModal";
 import { CookModal } from "../CookModal";
 import { CreateRecipeModal } from "../CreateRecipeModal";
 import { EditRecipeModal } from "../EditRecipeModal";
+import { ImportRecipeModal } from "../ImportRecipeModal";
 
 type Mode = "all" | "available" | "budget" | "protein";
 
@@ -18,6 +19,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   const [aiDraft, setAiDraft] = useState<Recipe | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editRecipe, setEditRecipe] = useState<Recipe | null>(null);
 
   // Filtros avanzados (estado local, no persisten)
@@ -94,6 +96,9 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
               <option value="budget">Más económicas primero</option>
               <option value="protein">Más proteína primero</option>
             </select>
+            <button className="secondary-button" onClick={() => setImportOpen(true)}>
+              ↓ Importar
+            </button>
             <button className="secondary-button" onClick={() => setCreateOpen(true)}>
               + Crear receta
             </button>
@@ -303,6 +308,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
       {aiDraft && <AiRecipeModal draft={aiDraft} onClose={() => setAiDraft(null)} />}
       {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
       {createOpen && <CreateRecipeModal onClose={() => setCreateOpen(false)} />}
+      {importOpen && <ImportRecipeModal onClose={() => setImportOpen(false)} />}
       {editRecipe && <EditRecipeModal recipe={editRecipe} onClose={() => setEditRecipe(null)} />}
     </section>
   );

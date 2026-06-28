@@ -469,6 +469,119 @@ export async function generateAIWeeklyPlan(
   return parseWeekPlan(text, validIds);
 }
 
+const RECIPE_IMPORT_PROMPT = `Analiza el siguiente texto/imagen y extrae la receta que contiene.
+Responde ÚNICAMENTE con JSON válido, sin texto extra ni markdown.
+Si no hay receta reconocible, devuelve {"error":"no_recipe"}.
+
+JSON requerido (exactamente estos campos):
+{"title":"...","ingredients":[{"name":"...","quantity":150,"unit":"g","kcalPer100":165,"proteinPer100":31,"carbsPer100":0,"fatPer100":3.6}],"steps":["Paso 1.","Paso 2."],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"]}
+
+REGLAS:
+- Estima los macros nutricionales de los ingredientes aunque no estén en el texto (usa valores típicos).
+- Si no hay pasos, genera 2-3 pasos básicos derivados de los ingredientes.
+- Adapta las unidades a: g, ml, kg, L, ud.
+- Traduce al español si el texto está en otro idioma.`;
+
+export async function importRecipeFromText(config: AIConfig, text: string): Promise<Recipe> {
+  const prompt = `${RECIPE_IMPORT_PROMPT}\n\nTEXTO DE LA RECETA:\n${text}`;
+  let raw: string;
+  switch (config.provider) {
+    case "gemini":    raw = await callGemini(config, prompt);    break;
+    case "openai":    raw = await callOpenAI(config, prompt);    break;
+    case "anthropic": raw = await callAnthropic(config, prompt); break;
+    case "ollama":    raw = await callOllama(config, prompt);    break;
+  }
+  const json = JSON.parse(extractJSON(raw)) as Record<string, unknown>;
+  if (json.error) throw new Error("No se detectó ninguna receta en el texto.");
+  return parseRecipe(raw);
+}
+
+export async function importRecipeFromImage(config: AIConfig, base64: string, mimeType: string): Promise<Recipe> {
+  checkRateLimit();
+  let raw: string;
+
+  if (config.provider === "gemini") {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: RECIPE_IMPORT_PROMPT },
+            { inlineData: { mimeType, data: base64 } },
+          ],
+        }],
+        generationConfig: { temperature: 0.5, maxOutputTokens: 2048 },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+      throw new Error(err.error?.message ?? `Gemini error ${res.status}`);
+    }
+    const data = await res.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+    raw = data.candidates[0].content.parts[0].text;
+
+  } else if (config.provider === "openai") {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({
+        model: config.model.includes("vision") || config.model.includes("gpt-4o") ? config.model : "gpt-4o",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: RECIPE_IMPORT_PROMPT },
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+          ],
+        }],
+        max_tokens: 2048,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+      throw new Error(err.error?.message ?? `OpenAI error ${res.status}`);
+    }
+    const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+    raw = data.choices[0].message.content;
+
+  } else if (config.provider === "anthropic") {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": config.apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-allow-browser": "true",
+      } as Record<string, string>,
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 2048,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: mimeType, data: base64 } },
+            { type: "text", text: RECIPE_IMPORT_PROMPT },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+      throw new Error(err.error?.message ?? `Anthropic error ${res.status}`);
+    }
+    const data = await res.json() as { content: Array<{ text: string }> };
+    raw = data.content[0].text;
+
+  } else {
+    throw new Error("Tu proveedor de IA no soporta análisis de imágenes. Usa Gemini, OpenAI o Anthropic.");
+  }
+
+  const json = JSON.parse(extractJSON(raw)) as Record<string, unknown>;
+  if (json.error) throw new Error("No se detectó ninguna receta en la imagen.");
+  return parseRecipe(raw);
+}
+
 export async function testAIConnection(config: AIConfig): Promise<void> {
   const ping = 'Responde SOLO con este JSON: {"ok":true}';
   switch (config.provider) {
