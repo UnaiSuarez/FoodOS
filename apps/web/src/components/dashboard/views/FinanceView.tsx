@@ -530,18 +530,20 @@ export function FinanceView() {
                     <div className="rule-bucket-bar">
                       <div className={`rule-bucket-fill ${b.key}${bad ? " over" : ""}`} style={{ width: `${usedPct}%` }} />
                     </div>
-                    <div className="rule-bucket-nums">
-                      <span>{eur(b.actual)}</span>
-                      <span className="rule-bucket-target">/ {eur(b.target)}</span>
-                    </div>
-                    <div className={`rule-bucket-diff ${bad ? "neg" : "pos"}`}>
-                      {b.target === 0
-                        ? "—"
-                        : diff >= 0
-                          ? b.higherIsBetter
-                            ? `+${eur(diff)} extra`
-                            : `+${eur(diff)} libre`
-                          : `−${eur(Math.abs(diff))} ${b.higherIsBetter ? "faltan" : "pasado"}`}
+                    <div className="rule-bucket-summary">
+                      <div className="rule-bucket-nums">
+                        <span>{eur(b.actual)}</span>
+                        <span className="rule-bucket-target">/ {eur(b.target)}</span>
+                      </div>
+                      <div className={`rule-bucket-diff ${bad ? "neg" : "pos"}`}>
+                        {b.target === 0
+                          ? "—"
+                          : diff >= 0
+                            ? b.higherIsBetter
+                              ? `+${eur(diff)} extra`
+                              : `+${eur(diff)} libre`
+                            : `−${eur(Math.abs(diff))} ${b.higherIsBetter ? "faltan" : "pasado"}`}
+                      </div>
                     </div>
 
                     {/* Desglose editable por categoría (solo needs y wants) */}
