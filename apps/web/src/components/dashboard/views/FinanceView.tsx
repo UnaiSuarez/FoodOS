@@ -16,49 +16,65 @@ const FREQUENCY_LABELS: Record<IncomeFrequency, string> = {
 const NEEDS_CATS = new Set(["Comida", "Vivienda", "Suministros", "Transporte", "Salud"]);
 const WANTS_CATS = new Set(["Ocio", "Suscripciones", "Ropa", "Formación", "Otros"]);
 
+const EXPENSE_CATS = ["Comida", "Vivienda", "Suministros", "Transporte", "Suscripciones", "Ocio", "Salud", "Ropa", "Formación", "Otros"];
+const INCOME_CATS  = ["Trabajo", "Venta", "Bizum", "Freelance", "Regalo", "Otros"];
+
+function catBucket(cat: string): { label: string; color: string } {
+  if (NEEDS_CATS.has(cat)) return { label: "Necesidades", color: "needs" };
+  if (WANTS_CATS.has(cat)) return { label: "Deseos", color: "wants" };
+  return { label: "Variable", color: "wants" };
+}
+
 function buildTip(params: {
   savingsRate: number;
   savingsGoalPct: number;
-  monthlyIncome: number;
+  totalIncome: number;
   monthlyFixed: number;
   foodPct: number;
   topVariableCat: string;
 }): { icon: string; text: string; type: "good" | "warn" | "alert" | "info" } {
-  const { savingsRate, savingsGoalPct, monthlyIncome, monthlyFixed, foodPct, topVariableCat } = params;
-
-  if (monthlyIncome === 0) {
+  const { savingsRate, savingsGoalPct, totalIncome, monthlyFixed, foodPct, topVariableCat } = params;
+  if (totalIncome === 0)
     return { icon: "→", text: "Añade tus fuentes de ingreso para calcular tu tasa de ahorro real.", type: "info" };
-  }
-  if (savingsRate >= savingsGoalPct) {
+  if (savingsRate >= savingsGoalPct)
     return { icon: "✓", text: `¡Meta de ahorro alcanzada! Llevas el ${Math.round(savingsRate)}% de ahorro. Considera invertir el excedente en un fondo indexado.`, type: "good" };
-  }
-  if (monthlyFixed > monthlyIncome * 0.6) {
-    return { icon: "⚠", text: `Tus gastos fijos son el ${Math.round((monthlyFixed / monthlyIncome) * 100)}% de tus ingresos. Revisa suscripciones o servicios que puedas reducir.`, type: "alert" };
-  }
-  if (foodPct > 40) {
+  if (monthlyFixed > totalIncome * 0.6)
+    return { icon: "⚠", text: `Tus gastos fijos son el ${Math.round((monthlyFixed / totalIncome) * 100)}% de tus ingresos. Revisa suscripciones o servicios que puedas reducir.`, type: "alert" };
+  if (foodPct > 40)
     return { icon: "◌", text: `La comida representa el ${Math.round(foodPct)}% de tus gastos variables. Activa el modo ahorro en Recetas para reducir el coste por ración.`, type: "warn" };
-  }
-  if (savingsRate < 10 && savingsRate > 0) {
+  if (savingsRate < 10 && savingsRate > 0)
     return { icon: "⚠", text: `Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Intenta reducir los gastos en ${topVariableCat || "ocio"} para subir al ${savingsGoalPct}%.`, type: "warn" };
-  }
-  if (savingsRate <= 0) {
-    return { icon: "!", text: `Este mes gastas más de lo que ingresas. Revisa el desglose por categoría y activa el modo ahorro en Recetas.`, type: "alert" };
-  }
+  if (savingsRate <= 0)
+    return { icon: "!", text: "Este mes gastas más de lo que ingresas. Revisa el desglose por categoría y activa el modo ahorro en Recetas.", type: "alert" };
   return { icon: "✦", text: `Vas bien. Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Sube la meta al ${savingsGoalPct}% para acelerar tu fondo de emergencia.`, type: "info" };
 }
 
 export function FinanceView() {
   const { state, mutate, showToast } = useFoodOS();
 
+  // ── UI state ─────────────────────────────────────────────────
+  const [formType, setFormType]       = useState<"expense" | "income">("expense");
+  const [formCategory, setFormCategory] = useState("Comida");
+  const [incomeOpen, setIncomeOpen]   = useState(false);
+  const [showAllMovements, setShowAllMovements] = useState(false);
+
   // ── Cálculos base ────────────────────────────────────────────
   const now = new Date();
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30);
   const sixtyDaysAgo  = new Date(now); sixtyDaysAgo.setDate(now.getDate() - 60);
 
-  const monthlyIncome = state.incomeSources
+  // Ingresos
+  const recurringIncome = state.incomeSources
     .filter((s) => s.active)
     .reduce((sum, s) => sum + monthlyAmountOf(s.frequency, s.amount), 0);
 
+  const oneTimeIncome = state.expenses
+    .filter((e) => e.type === "income" && new Date(e.date) >= thirtyDaysAgo)
+    .reduce((sum, e) => sum + Number(e.amount), 0);
+
+  const totalMonthlyIncome = recurringIncome + oneTimeIncome;
+
+  // Gastos
   const monthlyFixed = (state.recurringExpenses ?? [])
     .filter((r) => r.active)
     .reduce((sum, r) => sum + monthlyAmountOf(r.frequency, r.amount), 0);
@@ -68,29 +84,26 @@ export function FinanceView() {
   );
   const monthlyVariable = variableExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
 
-  const prevMonthExpenses = state.expenses
+  const prevMonthVariable = state.expenses
     .filter((e) => e.type === "expense" && new Date(e.date) >= sixtyDaysAgo && new Date(e.date) < thirtyDaysAgo)
     .reduce((sum, e) => sum + Number(e.amount), 0);
 
   const totalMonthlyExpenses = monthlyFixed + monthlyVariable;
-  const monthlySavings = monthlyIncome - totalMonthlyExpenses;
-  const savingsRate = monthlyIncome > 0 ? (monthlySavings / monthlyIncome) * 100 : 0;
+  const monthlySavings = totalMonthlyIncome - totalMonthlyExpenses;
+  const savingsRate    = totalMonthlyIncome > 0 ? (monthlySavings / totalMonthlyIncome) * 100 : 0;
   const savingsGoalPct = state.savingsGoalPct ?? 20;
+  const projection     = projectSavings(Math.max(0, monthlySavings), totalMonthlyExpenses);
 
-  const projection = projectSavings(Math.max(0, monthlySavings), totalMonthlyExpenses);
-
-  // ── Breakdown por categoría (variable) ───────────────────────
+  // ── Breakdown categorías ──────────────────────────────────────
   const byCategory: Record<string, number> = {};
   variableExpenses.forEach((e) => {
     byCategory[e.category] = (byCategory[e.category] ?? 0) + Number(e.amount || 0);
   });
-  // Sumar gastos fijos al breakdown
   (state.recurringExpenses ?? []).filter((r) => r.active).forEach((r) => {
-    const monthly = monthlyAmountOf(r.frequency, r.amount);
-    byCategory[r.category] = (byCategory[r.category] ?? 0) + monthly;
+    byCategory[r.category] = (byCategory[r.category] ?? 0) + monthlyAmountOf(r.frequency, r.amount);
   });
-  const categories = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
-  const maxCategory = Math.max(...categories.map(([, v]) => v), 1);
+  const categories   = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
+  const maxCategory  = Math.max(...categories.map(([, v]) => v), 1);
   const topVariableCat = Object.entries(
     variableExpenses.reduce<Record<string, number>>((acc, e) => {
       acc[e.category] = (acc[e.category] ?? 0) + Number(e.amount);
@@ -104,23 +117,32 @@ export function FinanceView() {
     if (NEEDS_CATS.has(cat)) needs += amt;
     else if (WANTS_CATS.has(cat)) wants += amt;
   });
-  const savingsAmt = Math.max(0, monthlySavings);
-  const rule_total = needs + wants + savingsAmt || 1;
-  const needsPct  = Math.round((needs / rule_total) * 100);
-  const wantsPct  = Math.round((wants / rule_total) * 100);
-  const savingsPct = Math.round((savingsAmt / rule_total) * 100);
+  const savingsAmt   = Math.max(0, monthlySavings);
+  const needsTarget  = totalMonthlyIncome * 0.5;
+  const wantsTarget  = totalMonthlyIncome * 0.3;
+  const savingsTarget = totalMonthlyIncome * 0.2;
 
-  // ── Consejo automático ────────────────────────────────────────
-  const foodSpend = variableExpenses
-    .filter((e) => e.category === "Comida")
-    .reduce((s, e) => s + Number(e.amount), 0);
-  const foodPct = monthlyVariable > 0 ? (foodSpend / monthlyVariable) * 100 : 0;
-  const tip = buildTip({ savingsRate, savingsGoalPct, monthlyIncome, monthlyFixed, foodPct, topVariableCat });
+  // ── Consejo ───────────────────────────────────────────────────
+  const foodSpend = variableExpenses.filter((e) => e.category === "Comida").reduce((s, e) => s + Number(e.amount), 0);
+  const foodPct   = monthlyVariable > 0 ? (foodSpend / monthlyVariable) * 100 : 0;
+  const tip       = buildTip({ savingsRate, savingsGoalPct, totalIncome: totalMonthlyIncome, monthlyFixed, foodPct, topVariableCat });
 
   // ── Comparativa mes anterior ──────────────────────────────────
-  const vsLastMonth = monthlyVariable - prevMonthExpenses;
-  const hasPrevData = prevMonthExpenses > 0;
+  const vsLastMonth = monthlyVariable - prevMonthVariable;
+  const hasPrevData = prevMonthVariable > 0;
 
+  // ── Presupuesto semanal ───────────────────────────────────────
+  const foodSpendWeek = getFoodSpend(state);
+  const weeklyBudget  = state.weeklyBudget || 0;
+  const budgetPct     = weeklyBudget > 0 ? Math.min(100, (foodSpendWeek / weeklyBudget) * 100) : 0;
+  const budgetOverrun = foodSpendWeek > weeklyBudget && weeklyBudget > 0;
+  const budgetWarn    = budgetPct >= (state.settings?.budgetWarnPct ?? 80) && !budgetOverrun;
+
+  // ── Lista movimientos ─────────────────────────────────────────
+  const allMovements = [...state.expenses].reverse();
+  const visibleMovements = showAllMovements ? allMovements : allMovements.slice(0, 8);
+
+  // ── Handlers ─────────────────────────────────────────────────
   function addMovement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -128,15 +150,16 @@ export function FinanceView() {
     mutate((draft) => {
       draft.expenses.push({
         id: uid(),
-        type: "expense",
+        type: formType,
         amount: Number(data.get("amount")),
         category: String(data.get("category")),
         description: String(data.get("description")).trim(),
         date: todayPlus(0),
       });
     });
-    showToast("Gasto guardado");
+    showToast(formType === "income" ? "Ingreso registrado" : "Gasto guardado");
     form.reset();
+    setFormCategory(formType === "income" ? "Trabajo" : "Comida");
   }
 
   function addRecurring(event: FormEvent<HTMLFormElement>) {
@@ -177,72 +200,111 @@ export function FinanceView() {
   }
 
   const balanceSign = monthlySavings >= 0 ? "positive" : "negative";
+  const bucket = catBucket(formCategory);
 
-  // Estado UI local
-  const [incomeOpen, setIncomeOpen] = useState(false);
-  const [showAllExpenses, setShowAllExpenses] = useState(false);
-
-  // Presupuesto semanal
-  const foodSpendWeek = getFoodSpend(state);
-  const weeklyBudget = state.weeklyBudget || 0;
-  const budgetPct = weeklyBudget > 0 ? Math.min(100, (foodSpendWeek / weeklyBudget) * 100) : 0;
-  const budgetOverrun = foodSpendWeek > weeklyBudget && weeklyBudget > 0;
-  const budgetWarn = budgetPct >= (state.settings?.budgetWarnPct ?? 80) && !budgetOverrun;
-
-  // Lista gastos
-  const allExpenses = [...state.expenses].reverse();
-  const visibleExpenses = showAllExpenses ? allExpenses : allExpenses.slice(0, 8);
+  // ── Datos cubetas 50/30/20 ────────────────────────────────────
+  const buckets = [
+    {
+      key: "needs",
+      label: "Necesidades",
+      goal: 50,
+      target: needsTarget,
+      actual: needs,
+      higherIsBetter: false,
+      cats: ["Vivienda", "Comida", "Suministros", "Transporte", "Salud"],
+    },
+    {
+      key: "wants",
+      label: "Deseos",
+      goal: 30,
+      target: wantsTarget,
+      actual: wants,
+      higherIsBetter: false,
+      cats: ["Ocio", "Suscripciones", "Ropa", "Formación", "Otros"],
+    },
+    {
+      key: "savings",
+      label: "Ahorro",
+      goal: 20,
+      target: savingsTarget,
+      actual: savingsAmt,
+      higherIsBetter: true,
+      cats: ["Ingresos − Gastos"],
+    },
+  ];
 
   return (
     <section className="view">
       <div className="work-grid">
 
-        {/* ── Columna izquierda: formularios ── */}
+        {/* ── Columna izquierda ── */}
         <div className="stack-panels">
 
-          {/* Registrar gasto puntual */}
+          {/* Formulario unificado Gasto / Ingreso */}
           <form className="panel" onSubmit={addMovement}>
-            <h2>Registrar gasto</h2>
-            <div className="form-grid compact">
+            <div className="form-type-tabs">
+              <button
+                type="button"
+                className={`form-type-tab ${formType === "expense" ? "active" : ""}`}
+                onClick={() => { setFormType("expense"); setFormCategory("Comida"); }}
+              >
+                − Gasto
+              </button>
+              <button
+                type="button"
+                className={`form-type-tab income ${formType === "income" ? "active" : ""}`}
+                onClick={() => { setFormType("income"); setFormCategory("Trabajo"); }}
+              >
+                + Ingreso
+              </button>
+            </div>
+
+            <div className="form-grid compact" style={{ marginTop: 14 }}>
               <label>
-                Importe €<input name="amount" type="number" min="0" step="0.01" defaultValue="12" required />
+                Importe €
+                <input name="amount" type="number" min="0" step="0.01" defaultValue="12" required />
               </label>
               <label>
                 Categoría
-                <select name="category" defaultValue="Comida">
-                  <option>Comida</option>
-                  <option>Vivienda</option>
-                  <option>Suministros</option>
-                  <option>Transporte</option>
-                  <option>Suscripciones</option>
-                  <option>Ocio</option>
-                  <option>Salud</option>
-                  <option>Ropa</option>
-                  <option>Formación</option>
-                  <option>Otros</option>
-                  {state.settings.extraExpenseCategories?.map((c) => (
+                <select
+                  name="category"
+                  value={formCategory}
+                  onChange={(e) => setFormCategory(e.target.value)}
+                >
+                  {(formType === "expense" ? EXPENSE_CATS : INCOME_CATS).map((c) => (
+                    <option key={c}>{c}</option>
+                  ))}
+                  {formType === "expense" && state.settings.extraExpenseCategories?.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
                 </select>
+                {formType === "expense" && (
+                  <span className={`bucket-hint bucket-hint-${bucket.color}`}>
+                    → {bucket.label}
+                  </span>
+                )}
               </label>
               <label>
-                Descripción<input name="description" placeholder="Compra semanal" />
+                Descripción
+                <input
+                  name="description"
+                  placeholder={formType === "income" ? "Bizum de Pedro, paga extra…" : "Compra semanal…"}
+                />
               </label>
             </div>
-            <button className="primary-button" type="submit">Guardar gasto</button>
+
+            <button className={`primary-button ${formType === "income" ? "income-btn" : ""}`} type="submit">
+              {formType === "income" ? "+ Guardar ingreso" : "Guardar gasto"}
+            </button>
           </form>
 
-          {/* Gastos fijos mensuales (E) */}
+          {/* Gastos fijos */}
           <form className="panel" onSubmit={addRecurring}>
             <h2>Gastos fijos</h2>
             <p className="panel-hint">Alquiler, suministros, suscripciones… se descuentan del balance automáticamente cada mes.</p>
             <div className="form-grid compact">
-              <label>
-                Nombre<input name="name" required placeholder="Alquiler" />
-              </label>
-              <label>
-                Importe €<input name="amount" type="number" min="0" step="0.01" required placeholder="650" />
-              </label>
+              <label>Nombre<input name="name" required placeholder="Alquiler" /></label>
+              <label>Importe €<input name="amount" type="number" min="0" step="0.01" required placeholder="650" /></label>
               <label>
                 Frecuencia
                 <select name="frequency" defaultValue="monthly">
@@ -254,13 +316,8 @@ export function FinanceView() {
               <label>
                 Categoría
                 <select name="category" defaultValue="Vivienda">
-                  <option>Vivienda</option>
-                  <option>Suministros</option>
-                  <option>Transporte</option>
-                  <option>Suscripciones</option>
-                  <option>Salud</option>
-                  <option>Comida</option>
-                  <option>Otros</option>
+                  <option>Vivienda</option><option>Suministros</option><option>Transporte</option>
+                  <option>Suscripciones</option><option>Salud</option><option>Comida</option><option>Otros</option>
                 </select>
               </label>
             </div>
@@ -272,38 +329,23 @@ export function FinanceView() {
                   <article key={r.id} className={`card ${r.active ? "" : "inactive"}`}>
                     <div>
                       <h3>{r.name}</h3>
-                      <small>
-                        {eur(r.amount)} · {FREQUENCY_LABELS[r.frequency]} · {r.category} ·{" "}
-                        {eur(monthlyAmountOf(r.frequency, r.amount))}/mes
-                      </small>
+                      <small>{eur(r.amount)} · {FREQUENCY_LABELS[r.frequency]} · {r.category} · {eur(monthlyAmountOf(r.frequency, r.amount))}/mes</small>
                     </div>
                     <div className="card-actions">
                       <button
                         className={`small-action ${r.active ? "good" : ""}`}
-                        onClick={() =>
-                          mutate((draft) => {
-                            const t = draft.recurringExpenses.find((x) => x.id === r.id);
-                            if (t) t.active = !t.active;
-                          })
-                        }
+                        onClick={() => mutate((d) => { const t = d.recurringExpenses.find((x) => x.id === r.id); if (t) t.active = !t.active; })}
                       >
                         {r.active ? "Activo" : "Pausado"}
                       </button>
-                      <button
-                        className="small-action bad"
-                        onClick={() =>
-                          mutate((draft) => {
-                            draft.recurringExpenses = draft.recurringExpenses.filter((x) => x.id !== r.id);
-                          })
-                        }
-                      >
+                      <button className="small-action bad" onClick={() => mutate((d) => { d.recurringExpenses = d.recurringExpenses.filter((x) => x.id !== r.id); })}>
                         Borrar
                       </button>
                     </div>
                   </article>
                 ))
               ) : (
-                <div className="empty">Sin gastos fijos todavía. Añade el alquiler, la luz, Spotify…</div>
+                <div className="empty">Sin gastos fijos. Añade el alquiler, la luz, Spotify…</div>
               )}
             </div>
           </form>
@@ -312,21 +354,14 @@ export function FinanceView() {
           <div className="panel">
             <button className="smart-suggest-toggle" onClick={() => setIncomeOpen((v) => !v)}>
               <span>Fuentes de ingreso</span>
-              <span className="suggest-counts">
-                <span className="badge green">{eur(monthlyIncome)}/mes</span>
-              </span>
+              <span className="suggest-counts"><span className="badge green">{eur(recurringIncome)}/mes</span></span>
               <span className="suggest-chevron">{incomeOpen ? "▲" : "▼"}</span>
             </button>
-
             {incomeOpen && (
               <form onSubmit={addIncomeSource} style={{ marginTop: 12 }}>
                 <div className="form-grid compact">
-                  <label>
-                    Nombre<input name="name" required placeholder="Nómina" />
-                  </label>
-                  <label>
-                    Importe €<input name="amount" type="number" min="0" step="0.01" required placeholder="1450" />
-                  </label>
+                  <label>Nombre<input name="name" required placeholder="Nómina" /></label>
+                  <label>Importe €<input name="amount" type="number" min="0" step="0.01" required placeholder="1450" /></label>
                   <label>
                     Frecuencia
                     <select name="frequency" defaultValue="monthly">
@@ -341,39 +376,22 @@ export function FinanceView() {
                   </label>
                 </div>
                 <button className="secondary-button" type="submit">Añadir fuente</button>
-
                 <div className="card-list income-list">
                   {state.incomeSources.length ? (
-                    state.incomeSources.map((source) => (
-                      <article key={source.id} className={`card ${source.active ? "" : "inactive"}`}>
+                    state.incomeSources.map((s) => (
+                      <article key={s.id} className={`card ${s.active ? "" : "inactive"}`}>
                         <div>
-                          <h3>{source.name}</h3>
-                          <small>
-                            {eur(source.amount)} · {FREQUENCY_LABELS[source.frequency]}
-                            {source.dayOfMonth ? ` · día ${source.dayOfMonth}` : ""} ·{" "}
-                            {eur(monthlyAmountOf(source.frequency, source.amount))}/mes
-                          </small>
+                          <h3>{s.name}</h3>
+                          <small>{eur(s.amount)} · {FREQUENCY_LABELS[s.frequency]}{s.dayOfMonth ? ` · día ${s.dayOfMonth}` : ""} · {eur(monthlyAmountOf(s.frequency, s.amount))}/mes</small>
                         </div>
                         <div className="card-actions">
                           <button
-                            className={`small-action ${source.active ? "good" : ""}`}
-                            onClick={() =>
-                              mutate((draft) => {
-                                const t = draft.incomeSources.find((x) => x.id === source.id);
-                                if (t) t.active = !t.active;
-                              })
-                            }
+                            className={`small-action ${s.active ? "good" : ""}`}
+                            onClick={() => mutate((d) => { const t = d.incomeSources.find((x) => x.id === s.id); if (t) t.active = !t.active; })}
                           >
-                            {source.active ? "Activa" : "Pausada"}
+                            {s.active ? "Activa" : "Pausada"}
                           </button>
-                          <button
-                            className="small-action bad"
-                            onClick={() =>
-                              mutate((draft) => {
-                                draft.incomeSources = draft.incomeSources.filter((x) => x.id !== source.id);
-                              })
-                            }
-                          >
+                          <button className="small-action bad" onClick={() => mutate((d) => { d.incomeSources = d.incomeSources.filter((x) => x.id !== s.id); })}>
                             Borrar
                           </button>
                         </div>
@@ -391,7 +409,7 @@ export function FinanceView() {
         {/* ── Columna derecha: dashboard ── */}
         <article className="panel finance-dashboard" data-tour="finance-summary">
 
-          {/* Balance principal */}
+          {/* Balance */}
           <div className="finance-balance">
             <div className="finance-balance-head">
               <h2>Balance mensual</h2>
@@ -399,12 +417,17 @@ export function FinanceView() {
                 {monthlySavings >= 0 ? "+" : ""}{eur(monthlySavings)}
               </strong>
             </div>
-
             <div className="finance-stats">
               <div>
-                <span>Ingresos/mes</span>
-                <strong className="positive">{eur(monthlyIncome)}</strong>
+                <span>Ingresos fijos/mes</span>
+                <strong className="positive">{eur(recurringIncome)}</strong>
               </div>
+              {oneTimeIncome > 0 && (
+                <div>
+                  <span>Ingresos extra (30 días)</span>
+                  <strong className="positive">+{eur(oneTimeIncome)}</strong>
+                </div>
+              )}
               <div>
                 <span>Gastos fijos/mes</span>
                 <strong>{eur(monthlyFixed)}</strong>
@@ -420,20 +443,18 @@ export function FinanceView() {
               </div>
               <div>
                 <span>Comida (7 días)</span>
-                <strong>{eur(getFoodSpend(state))}</strong>
+                <strong>{eur(foodSpendWeek)}</strong>
               </div>
             </div>
 
-            {/* A: Tasa de ahorro + meta */}
+            {/* Tasa de ahorro */}
             <div className="savings-rate-card">
               <div className="savings-rate-head">
                 <span>Tasa de ahorro</span>
                 <div className="savings-rate-goal">
                   <span>Meta:</span>
                   <input
-                    type="number"
-                    min="1"
-                    max="80"
+                    type="number" min="1" max="80"
                     value={savingsGoalPct}
                     onChange={(e) => mutate((d) => { d.savingsGoalPct = Number(e.target.value); })}
                     className="savings-goal-input"
@@ -447,11 +468,7 @@ export function FinanceView() {
                     className={`savings-rate-fill ${savingsRate >= savingsGoalPct ? "goal-reached" : ""}`}
                     style={{ width: `${Math.min(100, Math.max(0, savingsRate))}%` }}
                   />
-                  <div
-                    className="savings-goal-marker"
-                    style={{ left: `${Math.min(100, savingsGoalPct)}%` }}
-                    title={`Meta: ${savingsGoalPct}%`}
-                  />
+                  <div className="savings-goal-marker" style={{ left: `${Math.min(100, savingsGoalPct)}%` }} />
                 </div>
                 <span className={`savings-rate-pct ${savingsRate >= savingsGoalPct ? "goal-reached" : savingsRate < 0 ? "neg" : ""}`}>
                   {savingsRate > 0 ? Math.round(savingsRate) : 0}%
@@ -460,37 +477,66 @@ export function FinanceView() {
             </div>
           </div>
 
-          {/* D: Consejo automático */}
+          {/* Consejo */}
           <div className={`finance-tip tip-${tip.type}`}>
             <span className="tip-icon">{tip.icon}</span>
             <p>{tip.text}</p>
           </div>
 
-          {/* C: Regla 50/30/20 */}
-          <div className="rule-5030-card">
-            <div className="rule-head">
+          {/* 50/30/20 cubetas detalladas */}
+          <div className="rule-buckets-section">
+            <div className="rule-buckets-head">
               <h3>Distribución 50/30/20</h3>
-              <span className="rule-hint">Necesidades · Deseos · Ahorro</span>
+              {totalMonthlyIncome === 0 && <span className="rule-hint">Añade ingresos para ver las metas</span>}
             </div>
-            <div className="rule-bar">
-              <div className="rule-needs"  style={{ width: needsPct > 0 ? `max(4%, ${needsPct}%)` : "0" }}  title={`Necesidades ${needsPct}%`} />
-              <div className="rule-wants"  style={{ width: wantsPct > 0 ? `max(4%, ${wantsPct}%)` : "0" }}  title={`Deseos ${wantsPct}%`} />
-              <div className="rule-savings" style={{ width: savingsPct > 0 ? `max(4%, ${savingsPct}%)` : "0" }} title={`Ahorro ${savingsPct}%`} />
-            </div>
-            <div className="rule-legend">
-              <span><i className="rule-dot needs" />{needsPct}% Necesidades <small>(meta 50%)</small></span>
-              <span><i className="rule-dot wants" />{wantsPct}% Deseos <small>(meta 30%)</small></span>
-              <span><i className="rule-dot savings" />{savingsPct}% Ahorro <small>(meta 20%)</small></span>
+            <div className="rule-bucket-cards">
+              {buckets.map((b) => {
+                const usedPct = b.target > 0 ? Math.min(120, (b.actual / b.target) * 100) : 0;
+                // "over" means BAD: needs/wants overspent, savings under-saved
+                const bad = b.higherIsBetter
+                  ? b.actual < b.target && b.target > 0
+                  : b.actual > b.target && b.target > 0;
+                // diff: positive = good surplus, negative = bad deficit
+                const diff = b.higherIsBetter
+                  ? b.actual - b.target   // savings: positive = extra saved
+                  : b.target - b.actual;  // needs/wants: positive = money left
+                return (
+                  <div key={b.key} className={`rule-bucket-card ${bad ? "over" : "ok"}`}>
+                    <div className="rule-bucket-head">
+                      <i className={`rule-dot ${b.key}`} />
+                      <strong>{b.label}</strong>
+                      <span className="rule-bucket-goal-pct">{b.goal}%</span>
+                    </div>
+                    <div className="rule-bucket-bar">
+                      <div className={`rule-bucket-fill ${b.key}${bad ? " over" : ""}`} style={{ width: `${usedPct}%` }} />
+                    </div>
+                    <div className="rule-bucket-nums">
+                      <span>{eur(Math.round(b.actual))}</span>
+                      <span className="rule-bucket-target">/ {eur(Math.round(b.target))}</span>
+                    </div>
+                    <div className={`rule-bucket-diff ${bad ? "neg" : "pos"}`}>
+                      {b.target === 0
+                        ? "—"
+                        : diff >= 0
+                          ? b.higherIsBetter
+                            ? `+${eur(Math.round(diff))} extra`
+                            : `+${eur(Math.round(diff))} libre`
+                          : `−${eur(Math.round(Math.abs(diff)))} ${b.higherIsBetter ? "faltan" : "pasado"}`}
+                    </div>
+                    <div className="rule-bucket-cats">{b.cats.join(" · ")}</div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
           {/* Gráfico 4 semanas */}
           <div className="chart-card">
-            <h3>Gasto variables — últimas 4 semanas</h3>
+            <h3>Gastos variables — últimas 4 semanas</h3>
             <FinanceChart />
           </div>
 
-          {/* Proyección ahorro */}
+          {/* Proyección */}
           <div className="projection-card">
             <div className="panel-head">
               <h3>Si ahorras ~{eur(Math.max(0, Math.round(monthlySavings)))}/mes…</h3>
@@ -503,36 +549,25 @@ export function FinanceView() {
                   <div><span>5 años (cuenta)</span><strong>{eur(projection.years5Bank)}</strong></div>
                   <div><span>5 años (fondo 7%)</span><strong className="highlight">{eur(projection.years5Fund)}</strong></div>
                   <div><span>10 años (fondo 7%)</span><strong className="highlight">{eur(projection.years10Fund)}</strong></div>
-                  <div>
-                    <span>Fondo emergencia (3 meses)</span>
-                    <strong>{projection.emergencyFundMonths ? `en ${projection.emergencyFundMonths} meses` : "—"}</strong>
-                  </div>
+                  <div><span>Fondo emergencia (3 meses)</span><strong>{projection.emergencyFundMonths ? `en ${projection.emergencyFundMonths} meses` : "—"}</strong></div>
                 </div>
-                <p className="projection-disclaimer">
-                  El 7% es la rentabilidad histórica media de fondos indexados. Rentabilidades pasadas no garantizan rentabilidades futuras.
-                </p>
+                <p className="projection-disclaimer">El 7% es la rentabilidad histórica media de fondos indexados. Rentabilidades pasadas no garantizan rentabilidades futuras.</p>
               </>
             ) : (
               <p className="projection-disclaimer">
-                {monthlyIncome === 0
-                  ? "Añade una fuente de ingreso para ver tu proyección."
-                  : "Este mes el balance es negativo. Reduce gastos para liberar margen de ahorro."}
+                {totalMonthlyIncome === 0 ? "Añade una fuente de ingreso para ver tu proyección." : "Este mes el balance es negativo. Reduce gastos para liberar margen de ahorro."}
               </p>
             )}
           </div>
 
-          {/* Breakdown por categoría */}
+          {/* Breakdown categorías */}
           <div className="category-breakdown">
             <h3>Gasto por categoría <small>(fijos + variables)</small></h3>
             {categories.length ? (
               categories.map(([cat, amt]) => (
                 <div key={cat} className="category-row">
-                  <span className={`cat-label ${NEEDS_CATS.has(cat) ? "needs" : WANTS_CATS.has(cat) ? "wants" : ""}`}>
-                    {cat}
-                  </span>
-                  <div className="category-track">
-                    <i style={{ width: `${Math.round((amt / maxCategory) * 100)}%` }} />
-                  </div>
+                  <span className={`cat-label ${NEEDS_CATS.has(cat) ? "needs" : WANTS_CATS.has(cat) ? "wants" : ""}`}>{cat}</span>
+                  <div className="category-track"><i style={{ width: `${Math.round((amt / maxCategory) * 100)}%` }} /></div>
                   <strong>{eur(amt)}</strong>
                 </div>
               ))
@@ -541,16 +576,13 @@ export function FinanceView() {
             )}
           </div>
 
-          {/* Presupuesto semanal comida con barra */}
+          {/* Presupuesto semanal comida */}
           <div className="budget-card-v2">
             <div className="budget-card-head">
               <span>Presupuesto semanal de comida</span>
               <div className="budget-edit">
                 <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={state.weeklyBudget}
+                  type="number" min="0" step="1" value={state.weeklyBudget}
                   onChange={(e) => mutate((d) => void (d.weeklyBudget = Number(e.target.value)))}
                   className="budget-input"
                 />
@@ -559,53 +591,49 @@ export function FinanceView() {
             </div>
             <div className="budget-bar-wrap">
               <div className="budget-bar">
-                <div
-                  className={`budget-bar-fill ${budgetOverrun ? "overrun" : budgetWarn ? "warn" : ""}`}
-                  style={{ width: `${budgetPct}%` }}
-                />
+                <div className={`budget-bar-fill ${budgetOverrun ? "overrun" : budgetWarn ? "warn" : ""}`} style={{ width: `${budgetPct}%` }} />
               </div>
               <span className={`budget-bar-label ${budgetOverrun ? "overrun" : budgetWarn ? "warn" : ""}`}>
                 {eur(foodSpendWeek)} / {eur(weeklyBudget)}
               </span>
             </div>
-            {budgetOverrun && (
-              <p className="budget-alert">⚠ Has superado el presupuesto semanal en {eur(foodSpendWeek - weeklyBudget)}</p>
-            )}
+            {budgetOverrun && <p className="budget-alert">⚠ Superado en {eur(foodSpendWeek - weeklyBudget)}</p>}
           </div>
 
-          {/* Lista últimos movimientos */}
+          {/* Últimos movimientos */}
           <div className="expenses-list-section">
             <div className="panel-head">
-              <h3>Últimos gastos</h3>
-              {allExpenses.length > 8 && (
-                <button className="secondary-button small" onClick={() => setShowAllExpenses((v) => !v)}>
-                  {showAllExpenses ? "Ver menos" : `Ver todos (${allExpenses.length})`}
+              <h3>Movimientos</h3>
+              {allMovements.length > 8 && (
+                <button className="secondary-button small" onClick={() => setShowAllMovements((v) => !v)}>
+                  {showAllMovements ? "Ver menos" : `Ver todos (${allMovements.length})`}
                 </button>
               )}
             </div>
             <div className="card-list">
-              {visibleExpenses.length ? (
-                visibleExpenses.map((entry) => (
-                  <article key={entry.id} className="card">
-                    <div>
-                      <h3>{entry.description || entry.category}</h3>
-                      <small>{entry.category} · {entry.date}</small>
-                    </div>
-                    <div className="card-actions">
-                      <span className="money">-{eur(entry.amount)}</span>
-                      <button
-                        className="small-action bad"
-                        onClick={() =>
-                          mutate((draft) => {
-                            draft.expenses = draft.expenses.filter((c) => c.id !== entry.id);
-                          })
-                        }
-                      >
-                        Borrar
-                      </button>
-                    </div>
-                  </article>
-                ))
+              {visibleMovements.length ? (
+                visibleMovements.map((entry) => {
+                  const isIncome = entry.type === "income";
+                  return (
+                    <article key={entry.id} className={`card ${isIncome ? "income-entry" : ""}`}>
+                      <div>
+                        <h3>{entry.description || entry.category}</h3>
+                        <small>{entry.category} · {entry.date}</small>
+                      </div>
+                      <div className="card-actions">
+                        <span className={`money ${isIncome ? "positive" : ""}`}>
+                          {isIncome ? "+" : "−"}{eur(entry.amount)}
+                        </span>
+                        <button
+                          className="small-action bad"
+                          onClick={() => mutate((d) => { d.expenses = d.expenses.filter((c) => c.id !== entry.id); })}
+                        >
+                          Borrar
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })
               ) : (
                 <div className="empty">No hay movimientos todavía.</div>
               )}
@@ -626,7 +654,6 @@ function FinanceChart() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
     const width = canvas.clientWidth;
     const height = 220;
     const dpr = window.devicePixelRatio || 1;
@@ -634,7 +661,6 @@ function FinanceChart() {
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
-
     const weeks = [3, 2, 1, 0].map((offset) => {
       const start = new Date(); start.setDate(start.getDate() - (offset + 1) * 7);
       const end   = new Date(); end.setDate(end.getDate() - offset * 7);
@@ -643,12 +669,10 @@ function FinanceChart() {
         .filter((e) => { const d = new Date(e.date); return d > start && d <= end; })
         .reduce((sum, e) => sum + Number(e.amount || 0), 0);
     });
-
     const max = Math.max(...weeks, 10);
     const pad = 28;
     const gap = (width - pad * 2) / 4;
     const barWidth = Math.max(28, gap * 0.46);
-
     weeks.forEach((value, i) => {
       const barHeight = (value / max) * (height - 58);
       const x = pad + i * gap + (gap - barWidth) / 2;

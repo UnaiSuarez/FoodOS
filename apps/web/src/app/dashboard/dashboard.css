@@ -6594,3 +6594,161 @@ button.secondary-button.small {
   font-size: 0.72rem;
   padding: 3px 10px;
 }
+
+/* ── Form type tabs (Gasto / Ingreso) ─────────────────────────── */
+.form-type-tabs {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  width: 100%;
+}
+.form-type-tab {
+  flex: 1;
+  padding: 7px 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  letter-spacing: 0.02em;
+}
+.form-type-tab.active {
+  background: rgba(248, 113, 113, 0.13);
+  color: #f87171;
+}
+.form-type-tab.income.active {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--green);
+}
+.form-type-tab:hover:not(.active) {
+  background: rgba(240, 244, 238, 0.05);
+}
+
+/* ── Bucket hint bajo el select de categoría ──────────────────── */
+.bucket-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  transition: color 0.15s;
+}
+.bucket-hint-needs { color: #60a5fa; }
+.bucket-hint-wants { color: #f59e0b; }
+
+/* ── Botón guardar ingreso ────────────────────────────────────── */
+.primary-button.income-btn {
+  background: rgba(74, 222, 128, 0.15);
+  border-color: rgba(74, 222, 128, 0.35);
+  color: var(--green);
+}
+.primary-button.income-btn:hover {
+  background: rgba(74, 222, 128, 0.25);
+}
+
+/* ── Entrada de ingreso en la lista de movimientos ───────────── */
+.card.income-entry {
+  border-color: rgba(74, 222, 128, 0.2);
+  background: rgba(74, 222, 128, 0.04);
+}
+.money { font-weight: 600; font-size: 0.9rem; font-family: var(--mono); color: var(--text); }
+.money.positive { color: var(--green); }
+
+/* ── Regla 50/30/20 — cubetas detalladas ─────────────────────── */
+.rule-buckets-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rule-buckets-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.rule-buckets-head h3 {
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg-muted);
+}
+.rule-bucket-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+@media (max-width: 680px) {
+  .rule-bucket-cards { grid-template-columns: 1fr; }
+}
+.rule-bucket-card {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color 0.2s;
+}
+.rule-bucket-card.over {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.03);
+}
+.rule-bucket-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rule-bucket-head strong {
+  font-size: 0.8rem;
+  font-weight: 700;
+  flex: 1;
+}
+.rule-bucket-goal-pct {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.rule-bucket-bar {
+  height: 5px;
+  background: rgba(240, 244, 238, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.rule-bucket-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.4s ease;
+}
+.rule-bucket-fill.needs { background: #60a5fa; }
+.rule-bucket-fill.wants { background: #f59e0b; }
+.rule-bucket-fill.savings { background: #4ade80; }
+.rule-bucket-fill.over { filter: brightness(1.2); }
+.rule-bucket-nums {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.rule-bucket-target {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+.rule-bucket-diff {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.rule-bucket-diff.pos { color: var(--green); }
+.rule-bucket-diff.neg { color: #f87171; }
+.rule-bucket-cats {
+  font-size: 0.65rem;
+  color: var(--fg-muted);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
