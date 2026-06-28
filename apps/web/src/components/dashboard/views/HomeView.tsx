@@ -7,13 +7,17 @@ import {
   actions,
   allRecipes,
   findPlanEntry,
+  getAdherenceStreak,
   getBudgetLeft,
   getConsumedToday,
   getDinnerSuggestion,
   getFoodSpend,
+  getLowStockSuggestions,
+  getMacroAdherenceHistory,
   getMascot,
   getPendingMacros,
   getRecipeMatch,
+  getWaterToday,
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
@@ -42,6 +46,19 @@ export function HomeView({
   const kcalPct = clampPct(consumed.kcal, state.nutrition.kcal);
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
+
+  /* Agua */
+  const waterMl = getWaterToday(state);
+  const waterGoalMl = state.settings?.waterGoalMl ?? 2500;
+  const waterPct = Math.min(100, Math.round((waterMl / waterGoalMl) * 100));
+
+  /* Racha de adherencia */
+  const streak = getAdherenceStreak(state);
+  const adherenceHistory = getMacroAdherenceHistory(state, 7);
+  const hitThisWeek = adherenceHistory.filter(d => d.status === "hit").length;
+
+  /* Stock bajo */
+  const lowStock = getLowStockSuggestions(state).slice(0, 3);
 
   /* Plan de hoy */
   const todayKey = state.debugDate ?? new Date().toISOString().slice(0, 10);
@@ -158,14 +175,21 @@ export function HomeView({
                 {Math.round(consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
               </h2>
             </div>
-            {state.profile && (
-              <div className="bento-day-badges">
-                <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
-                  {isGymDay(state.profile) ? "💪 Día de gym" : "Día de descanso"}
+            <div className="bento-day-badges">
+              {state.profile && (
+                <>
+                  <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
+                    {isGymDay(state.profile) ? "💪 Gym" : "Descanso"}
+                  </span>
+                  <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
+                </>
+              )}
+              {streak >= 2 && (
+                <span className="badge green" title={`${streak} días consecutivos cumpliendo objetivos`}>
+                  🔥 {streak}d
                 </span>
-                <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           <div className="bento-macros-body">
             <div
@@ -192,12 +216,45 @@ export function HomeView({
               )}
             </div>
           </div>
+
+          {/* Agua */}
+          <div className="bento-water">
+            <div className="bento-water-head">
+              <span className="bento-water-label">💧 Agua</span>
+              <span className="bento-water-value">
+                {waterMl >= 1000 ? `${(waterMl / 1000).toFixed(1).replace(".", ",")} L` : `${waterMl} ml`}
+                <em> / {waterGoalMl >= 1000 ? `${waterGoalMl / 1000}L` : `${waterGoalMl}ml`}</em>
+              </span>
+            </div>
+            <div className="bento-water-track">
+              <div className="bento-water-fill" style={{ width: `${waterPct}%` }} />
+            </div>
+            <div className="bento-water-btns">
+              {[250, 500, 750].map(ml => (
+                <button
+                  key={ml}
+                  className="bento-water-btn"
+                  onClick={() => mutate(draft => actions.addWater(draft, ml))}
+                >
+                  +{ml < 1000 ? `${ml}ml` : `${ml / 1000}L`}
+                </button>
+              ))}
+              {waterMl > 0 && (
+                <button
+                  className="bento-water-btn dim"
+                  onClick={() => mutate(draft => { draft.waterLog[todayKey] = Math.max(0, waterMl - 250); })}
+                >
+                  −250ml
+                </button>
+              )}
+            </div>
+          </div>
         </article>
 
-        {/* Caducidades */}
+        {/* Caducidades + Stock bajo */}
         <article className="panel bento-expiry">
           <div className="panel-head">
-            <h3>🥕 Caduca pronto</h3>
+            <h3>🥕 Alertas</h3>
             <button className="text-button" onClick={() => goTo("inventory")}>
               Inventario
             </button>
@@ -221,7 +278,33 @@ export function HomeView({
               })}
             </ul>
           ) : (
-            <p className="bento-empty">Nada en riesgo. Tu nevera está bajo control ✓</p>
+            <p className="bento-empty">Nada en riesgo ✓</p>
+          )}
+
+          {lowStock.length > 0 && (
+            <>
+              <p className="bento-section-divider">Stock bajo</p>
+              <ul className="expiry-list">
+                {lowStock.map((item) => (
+                  <li key={item.id}>
+                    <span className="expiry-dot blue" />
+                    <div>
+                      <strong>{item.name}</strong>
+                      <small>quedan pocas unidades</small>
+                    </div>
+                    <button
+                      className="small-action"
+                      onClick={() => {
+                        mutate(draft => { draft.cart.push({ ...item, id: crypto.randomUUID() }); });
+                        showToast(`${item.name} añadido al carrito`);
+                      }}
+                    >
+                      + Carrito
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </article>
 
@@ -382,9 +465,16 @@ export function HomeView({
             </p>
             <h3>Tu plan de hoy</h3>
           </div>
-          <button className="text-button" onClick={() => goTo("planner")}>
-            {plannedCount === 0 ? "Planificar →" : "Editar →"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {state.profile && (
+              <span className="badge" title="Días esta semana con objetivos de macros cumplidos">
+                {hitThisWeek}/7 días ✓
+              </span>
+            )}
+            <button className="text-button" onClick={() => goTo("planner")}>
+              {plannedCount === 0 ? "Planificar →" : "Editar →"}
+            </button>
+          </div>
         </div>
 
         {plannedCount === 0 ? (

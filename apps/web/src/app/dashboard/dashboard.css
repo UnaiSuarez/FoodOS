@@ -1203,6 +1203,98 @@ select:focus {
   color: var(--green);
 }
 
+/* Agua en panel principal */
+.bento-water {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.bento-water-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+
+.bento-water-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bento-water-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.bento-water-value em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.bento-water-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(96, 165, 250, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.bento-water-fill {
+  height: 100%;
+  background: #60a5fa;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.bento-water-btns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bento-water-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: var(--radius-sm);
+  color: #60a5fa;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.bento-water-btn:hover { background: rgba(96, 165, 250, 0.22); }
+.bento-water-btn.dim {
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+}
+.bento-water-btn.dim:hover { background: rgba(255,255,255,0.05); }
+
+/* Separador de sección en tarjeta alertas */
+.bento-section-divider {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 12px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* Dot azul para stock bajo */
+.expiry-dot.blue {
+  background: #60a5fa;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
+}
+
 /* Caducidades */
 
 .expiry-list {
