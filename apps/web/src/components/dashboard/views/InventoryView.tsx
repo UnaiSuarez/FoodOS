@@ -313,7 +313,7 @@ export function InventoryView() {
         <form className="panel form-panel" onSubmit={addItem}>
           <h2>Añadir alimento</h2>
 
-          <div className="quick-actions">
+          <div className="quick-actions" data-tour="inventory-add">
             <button
               className="secondary-button"
               type="button"

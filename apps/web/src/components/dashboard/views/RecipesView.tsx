@@ -79,7 +79,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
 
   return (
     <section className="view">
-      <div className="panel">
+      <div className="panel" data-tour="recipes-panel">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Búsqueda por ingredientes</p>

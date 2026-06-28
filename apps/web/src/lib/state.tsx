@@ -34,6 +34,8 @@ export const defaultState: FoodOSState = {
   cart: [],
   expenses: [],
   incomeSources: [],
+  recurringExpenses: [],
+  savingsGoalPct: 20,
   feedPosts: [],
   foodLog: [],
   waterLog: {},
@@ -69,6 +71,8 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   const legacyMode = LEGACY_MODES[next.nutrition.mode as unknown as string];
   if (legacyMode) next.nutrition.mode = legacyMode;
   next.incomeSources ||= [];
+  next.recurringExpenses ||= [];
+  next.savingsGoalPct ??= 20;
   next.foodLog ||= [];
   next.waterLog ||= {};
   next.weightLog ||= [];
@@ -239,13 +243,19 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     demo.incomeSources = [
       { id: uid(), name: "Nómina", amount: 1450, frequency: "monthly", dayOfMonth: 28, active: true },
     ];
+    demo.recurringExpenses = [
+      { id: uid(), name: "Alquiler", amount: 620, frequency: "monthly", category: "Vivienda", active: true },
+      { id: uid(), name: "Luz + agua", amount: 65, frequency: "monthly", category: "Suministros", active: true },
+      { id: uid(), name: "Internet", amount: 38, frequency: "monthly", category: "Suministros", active: true },
+      { id: uid(), name: "Spotify", amount: 11.99, frequency: "monthly", category: "Suscripciones", active: true },
+    ];
     demo.expenses = [
       { id: uid(), type: "expense", amount: 38.4, category: "Comida", description: "Mercadona demo", date: todayMinus(1) },
       { id: uid(), type: "expense", amount: 22.5, category: "Comida", description: "Frutería demo", date: todayMinus(5) },
       { id: uid(), type: "expense", amount: 24.2, category: "Salud", description: "Suplementos demo", date: todayMinus(10) },
       { id: uid(), type: "expense", amount: 47.9, category: "Comida", description: "Lidl demo", date: todayMinus(16) },
       { id: uid(), type: "expense", amount: 19.6, category: "Ocio", description: "Cena fuera demo", date: todayMinus(23) },
-      { id: uid(), type: "expense", amount: 620, category: "Vivienda", description: "Alquiler demo", date: todayMinus(12) },
+      { id: uid(), type: "expense", amount: 32.0, category: "Ocio", description: "Fin de semana demo", date: todayMinus(28) },
     ];
     demo.feedPosts = buildDemoPosts();
     // Historial demo del diario: ayer y anteayer con comidas y agua.

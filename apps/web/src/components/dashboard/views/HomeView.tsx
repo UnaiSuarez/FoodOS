@@ -180,7 +180,7 @@ export function HomeView({
 
       <div className={`bento-grid ${activeSuggestion ? "" : "no-suggest"}`}>
         {/* Macros del dia — la tarjeta principal */}
-        <article className="panel bento-macros">
+        <article className="panel bento-macros" data-tour="panel-macros">
           <div className="bento-macros-head">
             <div>
               <p className="eyebrow">Hoy</p>

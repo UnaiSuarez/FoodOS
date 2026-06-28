@@ -20,6 +20,7 @@ import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { OnboardingFlow } from "./OnboardingFlow";
+import { AppTour } from "./AppTour";
 import { MascotWidget } from "./MascotWidget";
 
 const VIEWS = [
@@ -58,6 +59,7 @@ function DashboardInner() {
     if (typeof window === "undefined") return false;
     return !localStorage.getItem("foodos-ob-done") && !state.profile;
   });
+  const [tourActive, setTourActive] = useState(false);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -95,6 +97,13 @@ function DashboardInner() {
   function handleOnboardingDone() {
     localStorage.setItem("foodos-ob-done", "1");
     setShowOnboarding(false);
+    if (!localStorage.getItem("foodos-tour-done")) {
+      setTourActive(true);
+    }
+  }
+
+  function startTour() {
+    setTourActive(true);
   }
 
   return (
@@ -193,7 +202,7 @@ function DashboardInner() {
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
             {view === "planner"   && <PlannerView />}
-            {view === "settings"  && <SettingsView onShowOnboarding={() => setShowOnboarding(true)} />}
+            {view === "settings"  && <SettingsView onShowOnboarding={() => setShowOnboarding(true)} onStartTour={startTour} />}
           </>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>
@@ -209,6 +218,10 @@ function DashboardInner() {
             setAiConfigured(loadAIConfig() !== null);
           }}
         />
+      )}
+
+      {tourActive && !showOnboarding && (
+        <AppTour setView={setView} onDone={() => setTourActive(false)} />
       )}
 
       <MascotWidget />

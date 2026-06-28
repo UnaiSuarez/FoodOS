@@ -8,9 +8,10 @@ const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería"
 
 interface Props {
   onShowOnboarding?: () => void;
+  onStartTour?: () => void;
 }
 
-export function SettingsView({ onShowOnboarding }: Props) {
+export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
   const { state, mutate, showToast } = useFoodOS();
   const s = state.settings;
 
@@ -298,6 +299,17 @@ export function SettingsView({ onShowOnboarding }: Props) {
             }}
           >
             ▶ Ver onboarding de nuevo
+          </button>
+        )}
+        {onStartTour && (
+          <button
+            className="secondary-button"
+            onClick={() => {
+              localStorage.removeItem("foodos-tour-done");
+              onStartTour();
+            }}
+          >
+            ◎ Tour por la app
           </button>
         )}
         <button className="secondary-button" onClick={resetDefaults}>

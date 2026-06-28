@@ -218,7 +218,7 @@ export function PlannerView() {
 
   return (
     <section className="view">
-      <div className="planner-layout">
+      <div className="planner-layout" data-tour="planner-grid">
 
         {/* ── Panel principal ── */}
         <div className="panel planner-main-panel">

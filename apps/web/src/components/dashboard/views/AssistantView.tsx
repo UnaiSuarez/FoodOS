@@ -328,7 +328,7 @@ export function AssistantView() {
     <section className="view">
       <div className="assistant-grid">
         {/* Panel de chat */}
-        <article className="panel chat-panel">
+        <article className="panel chat-panel" data-tour="assistant-chat">
           <div className="chat-header">
             <Image src={active.image} alt={active.name} width={48} height={53} />
             <div>

@@ -55,6 +55,16 @@ export interface Movement {
 
 export type IncomeFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
 
+/** Gasto fijo mensual recurrente (alquiler, suscripciones, suministros…). */
+export interface RecurringExpense {
+  id: string;
+  name: string;
+  amount: number;
+  frequency: IncomeFrequency;
+  category: string;
+  active: boolean;
+}
+
 /** Fuente de ingreso recurrente (PDF §8.1). */
 export interface IncomeSource {
   id: string;
@@ -239,6 +249,9 @@ export interface FoodOSState {
   cart: CartItem[];
   expenses: Movement[];
   incomeSources: IncomeSource[];
+  recurringExpenses: RecurringExpense[];
+  /** Meta de ahorro mensual en % sobre ingresos (por defecto 20). */
+  savingsGoalPct: number;
   feedPosts: FeedPost[];
   /** Diario de comidas con fecha — la fuente de verdad de lo consumido. */
   foodLog: FoodLogEntry[];
