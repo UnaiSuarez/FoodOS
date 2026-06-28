@@ -1,12 +1,23 @@
 "use client";
 
+import { useState } from "react";
 import { DEFAULT_SETTINGS, useFoodOS } from "@/lib/state";
+import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
-export function SettingsView() {
+interface Props {
+  onShowOnboarding?: () => void;
+  onStartTour?: () => void;
+}
+
+export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
   const { state, mutate, showToast } = useFoodOS();
   const s = state.settings;
+
+  const now = new Date();
+  const [exportYear, setExportYear] = useState(now.getFullYear());
+  const [exportMonth, setExportMonth] = useState(now.getMonth() + 1);
 
   function set<K extends keyof typeof s>(key: K, value: (typeof s)[K]) {
     mutate((draft) => { draft.settings[key] = value; });
@@ -185,6 +196,59 @@ export function SettingsView() {
         </div>
       </article>
 
+      {/* Exportar datos */}
+      <article className="panel settings-section">
+        <h2>Exportar datos</h2>
+        <p className="form-intro">
+          Descarga tus datos en formato CSV para abrirlos en Excel, Google Sheets o cualquier hoja de cálculo.
+        </p>
+
+        <div className="export-month-row">
+          <label>
+            Mes:
+            <select value={exportMonth} onChange={(e) => setExportMonth(Number(e.target.value))}>
+              {["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+                .map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+          </label>
+          <label>
+            Año:
+            <select value={exportYear} onChange={(e) => setExportYear(Number(e.target.value))}>
+              {[now.getFullYear() - 1, now.getFullYear()].map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="export-grid">
+          <button
+            className="export-btn"
+            onClick={() => { exportFoodDiaryCSV(state, exportYear, exportMonth); showToast("Diario exportado"); }}
+          >
+            <span className="export-btn-icon">🥗</span>
+            <span className="export-btn-label">Diario de comidas</span>
+            <span className="export-btn-desc">Todas las entradas del mes seleccionado</span>
+          </button>
+          <button
+            className="export-btn"
+            onClick={() => { exportFinancesCSV(state, exportYear, exportMonth); showToast("Finanzas exportadas"); }}
+          >
+            <span className="export-btn-icon">💶</span>
+            <span className="export-btn-label">Gastos del mes</span>
+            <span className="export-btn-desc">Todos los gastos del mes seleccionado</span>
+          </button>
+          <button
+            className="export-btn"
+            onClick={() => { exportWeightCSV(state); showToast("Peso exportado"); }}
+          >
+            <span className="export-btn-icon">⚖️</span>
+            <span className="export-btn-label">Registro de peso</span>
+            <span className="export-btn-desc">Historial completo de peso</span>
+          </button>
+        </div>
+      </article>
+
       {/* PWA info */}
       <article className="panel settings-section">
         <h2>Instalar FoodOS</h2>
@@ -198,7 +262,56 @@ export function SettingsView() {
         </p>
       </article>
 
+      {/* Herramientas de prueba */}
+      <article className="panel settings-section">
+        <h2>Herramientas de prueba</h2>
+        <p className="form-intro">
+          Fuerza una fecha concreta para simular diferentes días sin esperar que pase el tiempo real.
+          Vacía el campo para volver al día actual.
+        </p>
+        <div className="settings-grid">
+          <label className="settings-field">
+            <span>Fecha simulada</span>
+            <input
+              type="date"
+              value={state.debugDate ?? ""}
+              onChange={(e) => {
+                const val = e.target.value || null;
+                mutate((draft) => { draft.debugDate = val; });
+              }}
+            />
+            {state.debugDate && (
+              <small style={{ color: "#fbbf24" }}>
+                ⚠ Fecha simulada activa: {state.debugDate}. El panel, registro y planificador muestran ese día.
+              </small>
+            )}
+          </label>
+        </div>
+      </article>
+
       <div className="settings-footer">
+        {onShowOnboarding && (
+          <button
+            className="secondary-button"
+            onClick={() => {
+              localStorage.removeItem("foodos-ob-done");
+              onShowOnboarding();
+            }}
+          >
+            ▶ Ver onboarding de nuevo
+          </button>
+        )}
+        {onStartTour && (
+          <button
+            className="secondary-button"
+            onClick={() => {
+              localStorage.removeItem("foodos-tour-done");
+              onStartTour();
+            }}
+          >
+            ◎ Tour por la app
+          </button>
+        )}
         <button className="secondary-button" onClick={resetDefaults}>
           Restaurar valores por defecto
         </button>

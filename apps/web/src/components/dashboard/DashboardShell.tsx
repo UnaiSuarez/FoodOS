@@ -14,10 +14,14 @@ import { FinanceView } from "./views/FinanceView";
 import { NutritionView } from "./views/NutritionView";
 import { AssistantView } from "./views/AssistantView";
 import { SettingsView } from "./views/SettingsView";
+import { PlannerView } from "./views/PlannerView";
 import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
+import { OnboardingFlow } from "./OnboardingFlow";
+import { AppTour } from "./AppTour";
+import { MascotWidget } from "./MascotWidget";
 
 const VIEWS = [
   { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
@@ -29,6 +33,7 @@ const VIEWS = [
   { id: "finance", icon: "€", label: "Finanzas", title: "Finanzas" },
   { id: "nutrition", icon: "%", label: "Nutrición", title: "Nutrición" },
   { id: "assistant", icon: "✦", label: "Asistente", title: "Asistente FoodOS" },
+  { id: "planner",   icon: "⊞", label: "Planificador", title: "Planificador semanal" },
   { id: "settings",  icon: "⚙", label: "Ajustes",   title: "Ajustes de la app" },
 ] as const;
 
@@ -50,6 +55,11 @@ function DashboardInner() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return !localStorage.getItem("foodos-ob-done") && !state.profile;
+  });
+  const [tourActive, setTourActive] = useState(false);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -84,7 +94,23 @@ function DashboardInner() {
     }
   }
 
+  function handleOnboardingDone() {
+    localStorage.setItem("foodos-ob-done", "1");
+    setShowOnboarding(false);
+    if (!localStorage.getItem("foodos-tour-done")) {
+      setTourActive(true);
+    }
+  }
+
+  function startTour() {
+    setTourActive(true);
+  }
+
   return (
+    <>
+    {hydrated && showOnboarding && (
+      <OnboardingFlow onDone={handleOnboardingDone} />
+    )}
     <div className="app-shell">
       <aside className="sidebar">
         <Link className="brand" href="/" aria-label="Volver a la portada">
@@ -175,7 +201,8 @@ function DashboardInner() {
             {view === "finance" && <FinanceView />}
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
-            {view === "settings"  && <SettingsView />}
+            {view === "planner"   && <PlannerView />}
+            {view === "settings"  && <SettingsView onShowOnboarding={() => setShowOnboarding(true)} onStartTour={startTour} />}
           </>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>
@@ -193,9 +220,16 @@ function DashboardInner() {
         />
       )}
 
+      {tourActive && !showOnboarding && (
+        <AppTour setView={setView} onDone={() => setTourActive(false)} />
+      )}
+
+      <MascotWidget />
+
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
         {toast}
       </div>
     </div>
+    </>
   );
 }

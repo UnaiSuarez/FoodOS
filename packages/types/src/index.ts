@@ -55,6 +55,16 @@ export interface Movement {
 
 export type IncomeFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
 
+/** Gasto fijo mensual recurrente (alquiler, suscripciones, suministros…). */
+export interface RecurringExpense {
+  id: string;
+  name: string;
+  amount: number;
+  frequency: IncomeFrequency;
+  category: string;
+  active: boolean;
+}
+
 /** Fuente de ingreso recurrente (PDF §8.1). */
 export interface IncomeSource {
   id: string;
@@ -213,12 +223,35 @@ export interface AppSettings {
   extraExpenseCategories: string[];
 }
 
+/** Una comida planificada en el planificador semanal. */
+export interface MealPlanDay {
+  breakfast?: string;
+  almuerzo?: string;
+  lunch?: string;
+  merienda?: string;
+  dinner?: string;
+}
+
+/** Plato rápido creado directamente en el planificador, sin receta completa. */
+export interface QuickMeal {
+  id: string;
+  name: string;
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  cost: number;
+}
+
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
 export interface FoodOSState {
   inventory: InventoryItem[];
   cart: CartItem[];
   expenses: Movement[];
   incomeSources: IncomeSource[];
+  recurringExpenses: RecurringExpense[];
+  /** Meta de ahorro mensual en % sobre ingresos (por defecto 20). */
+  savingsGoalPct: number;
   feedPosts: FeedPost[];
   /** Diario de comidas con fecha — la fuente de verdad de lo consumido. */
   foodLog: FoodLogEntry[];
@@ -240,4 +273,12 @@ export interface FoodOSState {
   settings: AppSettings;
   /** Nombres de sugerencias de stock bajo descartadas manualmente por el usuario. */
   dismissedSuggestions?: string[];
+  /** Planificador semanal: key = "yyyy-mm-dd". */
+  mealPlan: Record<string, MealPlanDay>;
+  /** Platos rápidos creados directamente en el planificador. */
+  plannerQuickMeals: QuickMeal[];
+  /** Fecha de depuración (YYYY-MM-DD). Sustituye "hoy" en toda la app cuando está activa. */
+  debugDate?: string | null;
+  /** Presupuesto mensual por categoría (€), editable por el usuario. Clave = nombre de categoría. */
+  categoryBudgets: Record<string, number>;
 }

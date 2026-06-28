@@ -34,6 +34,8 @@ export const defaultState: FoodOSState = {
   cart: [],
   expenses: [],
   incomeSources: [],
+  recurringExpenses: [],
+  savingsGoalPct: 20,
   feedPosts: [],
   foodLog: [],
   waterLog: {},
@@ -50,6 +52,10 @@ export const defaultState: FoodOSState = {
   recipeTag: "todos",
   settings: DEFAULT_SETTINGS,
   dismissedSuggestions: [],
+  mealPlan: {},
+  plannerQuickMeals: [],
+  debugDate: null,
+  categoryBudgets: {},
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -66,9 +72,14 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   const legacyMode = LEGACY_MODES[next.nutrition.mode as unknown as string];
   if (legacyMode) next.nutrition.mode = legacyMode;
   next.incomeSources ||= [];
+  next.recurringExpenses ||= [];
+  next.savingsGoalPct ??= 20;
   next.foodLog ||= [];
   next.waterLog ||= {};
   next.weightLog ||= [];
+  next.mealPlan ||= {};
+  next.plannerQuickMeals ||= [];
+  next.categoryBudgets ||= {};
   next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
@@ -116,15 +127,20 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   return next;
 }
 
+export type MascotState = "idle" | "wave" | "thinking" | "celebrate" | "alert" | "suggest" | "sleep" | "success_buy" | "streak";
+const LOOP_MASCOT_STATES: MascotState[] = ["idle", "thinking", "sleep"];
+
 interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
   toast: string;
   mascotMessage: string;
+  mascotState: MascotState;
   remoteReady: boolean;
   authUser: User | null;
   showToast: (message: string) => void;
   setMascotMessage: (message: string) => void;
+  triggerMascot: (anim: MascotState, message?: string) => void;
   mutate: (fn: (draft: FoodOSState) => void) => void;
   resetAll: () => void;
   seedDemo: () => void;
@@ -137,6 +153,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [toast, setToast] = useState("");
   const [mascotMessage, setMascotMessage] = useState("Lista para organizar tu comida.");
+  const [mascotState, setMascotState] = useState<MascotState>("idle");
+  const mascotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -227,13 +245,19 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     demo.incomeSources = [
       { id: uid(), name: "Nómina", amount: 1450, frequency: "monthly", dayOfMonth: 28, active: true },
     ];
+    demo.recurringExpenses = [
+      { id: uid(), name: "Alquiler", amount: 620, frequency: "monthly", category: "Vivienda", active: true },
+      { id: uid(), name: "Luz + agua", amount: 65, frequency: "monthly", category: "Suministros", active: true },
+      { id: uid(), name: "Internet", amount: 38, frequency: "monthly", category: "Suministros", active: true },
+      { id: uid(), name: "Spotify", amount: 11.99, frequency: "monthly", category: "Suscripciones", active: true },
+    ];
     demo.expenses = [
       { id: uid(), type: "expense", amount: 38.4, category: "Comida", description: "Mercadona demo", date: todayMinus(1) },
       { id: uid(), type: "expense", amount: 22.5, category: "Comida", description: "Frutería demo", date: todayMinus(5) },
       { id: uid(), type: "expense", amount: 24.2, category: "Salud", description: "Suplementos demo", date: todayMinus(10) },
       { id: uid(), type: "expense", amount: 47.9, category: "Comida", description: "Lidl demo", date: todayMinus(16) },
       { id: uid(), type: "expense", amount: 19.6, category: "Ocio", description: "Cena fuera demo", date: todayMinus(23) },
-      { id: uid(), type: "expense", amount: 620, category: "Vivienda", description: "Alquiler demo", date: todayMinus(12) },
+      { id: uid(), type: "expense", amount: 32.0, category: "Ocio", description: "Fin de semana demo", date: todayMinus(28) },
     ];
     demo.feedPosts = buildDemoPosts();
     // Historial demo del diario: ayer y anteayer con comidas y agua.
@@ -257,6 +281,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     showToast("Datos demo cargados");
   }, [showToast]);
 
+  const triggerMascot = useCallback((anim: MascotState, message?: string) => {
+    if (mascotTimer.current) clearTimeout(mascotTimer.current);
+    setMascotState(anim);
+    if (message) setMascotMessage(message);
+    if (!LOOP_MASCOT_STATES.includes(anim)) {
+      mascotTimer.current = setTimeout(() => setMascotState("idle"), 2800);
+    }
+  }, []);
+
   return (
     <FoodOSContext.Provider
       value={{
@@ -264,10 +297,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         hydrated,
         toast,
         mascotMessage,
+        mascotState,
         remoteReady,
         authUser,
         showToast,
         setMascotMessage,
+        triggerMascot,
         mutate,
         resetAll,
         seedDemo,
@@ -317,6 +352,23 @@ export function findRecipe(state: FoodOSState, recipeId: string): Recipe | undef
   return allRecipes(state).find((recipe) => recipe.id === recipeId);
 }
 
+/** Devuelve "hoy" teniendo en cuenta la fecha de depuración si está activa. */
+export function getToday(state: FoodOSState): string {
+  return state.debugDate ?? todayPlus(0);
+}
+
+/** Resuelve un ID del planificador buscando en recetas y en platos rápidos. */
+export function findPlanEntry(
+  state: FoodOSState,
+  id: string
+): { title: string; kcal: number; protein: number; carbs: number; fat: number; cost: number; image?: string } | null {
+  const r = allRecipes(state).find((x) => x.id === id);
+  if (r) return { title: r.title, kcal: r.kcal, protein: r.protein, carbs: r.carbs, fat: r.fat, cost: r.cost, image: r.image };
+  const q = (state.plannerQuickMeals ?? []).find((x) => x.id === id);
+  if (q) return { title: q.name, kcal: q.kcal, protein: q.protein, carbs: q.carbs, fat: q.fat, cost: q.cost };
+  return null;
+}
+
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
   const names = state.inventory.map((item) => item.name.toLowerCase());
   const matches = recipe.ingredients.filter((ingredient) =>
@@ -351,7 +403,7 @@ function nowTime(): string {
 
 /** Entradas del diario de hoy, ordenadas por hora. */
 export function getTodayLog(state: FoodOSState): FoodLogEntry[] {
-  const today = todayPlus(0);
+  const today = getToday(state);
   return state.foodLog
     .filter((entry) => entry.date === today)
     .sort((a, b) => a.time.localeCompare(b.time));
@@ -371,7 +423,7 @@ export function getConsumedToday(state: FoodOSState): MacroTotals {
 }
 
 export function getWaterToday(state: FoodOSState): number {
-  return state.waterLog[todayPlus(0)] ?? 0;
+  return state.waterLog[getToday(state)] ?? 0;
 }
 
 /** Diario agrupado por dia (mas reciente primero), con totales. */
@@ -674,6 +726,62 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
     }));
 }
 
+/** Genera lista de la compra desde el mealPlan real del usuario para los días indicados. */
+export function getMealPlanShoppingList(
+  state: FoodOSState,
+  dateKeys: string[]
+): import("@foodos/types").CartItem[] {
+  const inCart = new Set(
+    state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
+  );
+  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+
+  for (const dateKey of dateKeys) {
+    const day = state.mealPlan?.[dateKey];
+    if (!day) continue;
+    for (const slotId of Object.values(day)) {
+      if (!slotId) continue;
+      const recipe = allRecipes(state).find((r) => r.id === slotId);
+      if (!recipe) continue;
+      for (const ing of recipe.ingredients) {
+        const key = ing.name.toLowerCase();
+        if (inCart.has(key)) continue;
+        const inStock = state.inventory
+          .filter((inv) => {
+            const n = inv.name.toLowerCase();
+            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
+          })
+          .reduce((sum, inv) => sum + inv.qty, 0);
+        const shortfall = Math.max(0, ing.quantity - inStock);
+        if (shortfall <= 0) continue;
+        const existing = needed.get(key);
+        if (existing) {
+          existing.qty += shortfall;
+        } else {
+          needed.set(key, {
+            qty: shortfall,
+            unit: ing.unit,
+            price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(needed.entries())
+    .slice(0, 30)
+    .map(([name, data]) => ({
+      id: uid(),
+      name,
+      qty: Math.round(data.qty),
+      unit: data.unit,
+      price: Math.round(data.price * 100) / 100,
+      store: state.settings?.defaultStore ?? "Mercadona",
+      checked: false,
+      source: "plan" as const,
+    }));
+}
+
 /** Ranking de recetas por gramos de proteína por euro (optimizador §9.8). */
 export function getProteinRanking(
   state: FoodOSState
@@ -722,6 +830,41 @@ export function getWeeklyMacroHistory(
       fat: Math.round(entries.reduce((s, e) => s + e.fat, 0)),
     };
   });
+}
+
+/** Por cada uno de los últimos N días, devuelve si se cumplieron los objetivos de macros.
+ *  hit: proteína ≥80% target Y kcal entre 80–115% target.
+ *  partial: se cumple uno de los dos.
+ *  miss: ninguno (o sin datos). */
+export function getMacroAdherenceHistory(
+  state: FoodOSState,
+  days = 28
+): Array<{ date: string; status: "hit" | "partial" | "miss" | "empty" }> {
+  const targetKcal = state.nutrition.kcal;
+  const targetProtein = state.nutrition.protein;
+  return Array.from({ length: days }, (_, i) => {
+    const date = todayPlus(-(days - 1 - i));
+    const entries = state.foodLog.filter((e) => e.date === date);
+    if (!entries.length) return { date, status: "empty" };
+    const kcal = entries.reduce((s, e) => s + e.kcal, 0);
+    const protein = entries.reduce((s, e) => s + e.protein, 0);
+    const protOk = targetProtein > 0 && protein >= targetProtein * 0.8;
+    const kcalOk = targetKcal > 0 && kcal >= targetKcal * 0.8 && kcal <= targetKcal * 1.15;
+    if (protOk && kcalOk) return { date, status: "hit" };
+    if (protOk || kcalOk) return { date, status: "partial" };
+    return { date, status: "miss" };
+  });
+}
+
+/** Racha actual: días consecutivos terminando hoy con status "hit". */
+export function getAdherenceStreak(state: FoodOSState): number {
+  const history = getMacroAdherenceHistory(state, 60);
+  let streak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].status === "hit") streak++;
+    else break;
+  }
+  return streak;
 }
 
 export function expiryBadge(expires: string): { label: string; cls: string } {

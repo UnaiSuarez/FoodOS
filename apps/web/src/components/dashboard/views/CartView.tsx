@@ -21,7 +21,7 @@ const SOURCE_LABELS: Record<string, { label: string; cls: string }> = {
 };
 
 export function CartView() {
-  const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const { state, mutate, showToast, setMascotMessage, triggerMascot } = useFoodOS();
 
   const [suggestOpen, setSuggestOpen] = useState(true);
   const [activeTab, setActiveTab]     = useState<SuggestTab>("lowstock");
@@ -246,7 +246,7 @@ export function CartView() {
                   if (!completed) {
                     showToast("Marca items como comprados primero");
                   } else {
-                    setMascotMessage("Compra completada. Finanzas e inventario sincronizados.");
+                    triggerMascot("success_buy", "Compra completada. Finanzas e inventario sincronizados.");
                     showToast("Compra completada");
                   }
                 }}

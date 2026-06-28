@@ -1,18 +1,23 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
-import type { InventoryItem } from "@foodos/types";
+import { useEffect, useRef, useState } from "react";
+import type { InventoryItem, MealPlanDay } from "@foodos/types";
 import {
   actions,
   allRecipes,
+  findPlanEntry,
+  getAdherenceStreak,
   getBudgetLeft,
   getConsumedToday,
   getDinnerSuggestion,
   getFoodSpend,
+  getLowStockSuggestions,
+  getMacroAdherenceHistory,
   getMascot,
   getPendingMacros,
   getRecipeMatch,
+  getWaterToday,
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
@@ -28,7 +33,7 @@ export function HomeView({
   goTo: (view: ViewId) => void;
   openRecipe: (id: string) => void;
 }) {
-  const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  const { state, mutate, showToast, setMascotMessage, triggerMascot } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
   const [whatToEatOpen, setWhatToEatOpen] = useState(false);
@@ -41,6 +46,66 @@ export function HomeView({
   const kcalPct = clampPct(consumed.kcal, state.nutrition.kcal);
   const pendingCart = state.cart.filter((item) => !item.checked);
   const mascot = getMascot(state.mascotId);
+
+  /* Agua */
+  const waterMl = getWaterToday(state);
+  const waterGoalMl = state.settings?.waterGoalMl ?? 2500;
+  const waterPct = Math.min(100, Math.round((waterMl / waterGoalMl) * 100));
+
+  /* Racha de adherencia */
+  const streak = getAdherenceStreak(state);
+  const adherenceHistory = getMacroAdherenceHistory(state, 7);
+  const hitThisWeek = adherenceHistory.filter(d => d.status === "hit").length;
+
+  /* Stock bajo */
+  const lowStock = getLowStockSuggestions(state).slice(0, 3);
+
+  /* Celebrate cuando macros están cumplidos (≥80% kcal y proteína) */
+  const macroCelebrated = useRef(false);
+  useEffect(() => {
+    const kcalOk = state.nutrition.kcal > 0 && consumed.kcal >= state.nutrition.kcal * 0.8 && consumed.kcal <= state.nutrition.kcal * 1.15;
+    const protOk = state.nutrition.protein > 0 && consumed.protein >= state.nutrition.protein * 0.8;
+    if (kcalOk && protOk && !macroCelebrated.current) {
+      macroCelebrated.current = true;
+      triggerMascot("celebrate", "¡Macros del día cumplidos! Gran trabajo.");
+    } else if (!kcalOk || !protOk) {
+      macroCelebrated.current = false;
+    }
+  }, [consumed.kcal, consumed.protein, state.nutrition.kcal, state.nutrition.protein, triggerMascot]);
+
+  /* Plan de hoy */
+  const todayKey = state.debugDate ?? new Date().toISOString().slice(0, 10);
+  const todayPlan: MealPlanDay = state.mealPlan?.[todayKey] ?? {};
+  const TODAY_SLOTS = [
+    { key: "breakfast" as keyof MealPlanDay, label: "Desayuno",  icon: "☀", mealType: "breakfast" as const },
+    { key: "almuerzo"  as keyof MealPlanDay, label: "Almuerzo",  icon: "◔", mealType: "snack"     as const },
+    { key: "lunch"     as keyof MealPlanDay, label: "Comida",    icon: "◉", mealType: "lunch"     as const },
+    { key: "merienda"  as keyof MealPlanDay, label: "Merienda",  icon: "◕", mealType: "snack"     as const },
+    { key: "dinner"    as keyof MealPlanDay, label: "Cena",      icon: "◑", mealType: "dinner"    as const },
+  ];
+  const plannedCount = TODAY_SLOTS.filter(s => todayPlan[s.key]).length;
+
+  function logPlanEntry(entryId: string, mealType: "breakfast" | "lunch" | "dinner" | "snack") {
+    const entry = findPlanEntry(state, entryId);
+    if (!entry) return;
+    mutate((draft) => {
+      draft.foodLog.push({
+        id: crypto.randomUUID(),
+        date: todayKey,
+        time: new Date().toTimeString().slice(0, 5),
+        name: entry.title,
+        qty: null,
+        unit: null,
+        kcal: entry.kcal,
+        protein: entry.protein,
+        carbs: entry.carbs,
+        fat: entry.fat,
+        source: "recipe",
+        mealType,
+      });
+    });
+    showToast(`"${entry.title}" registrado`);
+  }
 
   const expiryWarnDays = state.settings?.expiryWarnDays ?? 3;
   const budgetWarnPct  = state.settings?.budgetWarnPct ?? 80;
@@ -115,7 +180,7 @@ export function HomeView({
 
       <div className={`bento-grid ${activeSuggestion ? "" : "no-suggest"}`}>
         {/* Macros del dia — la tarjeta principal */}
-        <article className="panel bento-macros">
+        <article className="panel bento-macros" data-tour="panel-macros">
           <div className="bento-macros-head">
             <div>
               <p className="eyebrow">Hoy</p>
@@ -123,14 +188,21 @@ export function HomeView({
                 {Math.round(consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
               </h2>
             </div>
-            {state.profile && (
-              <div className="bento-day-badges">
-                <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
-                  {isGymDay(state.profile) ? "💪 Día de gym" : "Día de descanso"}
+            <div className="bento-day-badges">
+              {state.profile && (
+                <>
+                  <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
+                    {isGymDay(state.profile) ? "💪 Gym" : "Descanso"}
+                  </span>
+                  <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
+                </>
+              )}
+              {streak >= 2 && (
+                <span className="badge green" title={`${streak} días consecutivos cumpliendo objetivos`}>
+                  🔥 {streak}d
                 </span>
-                <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           <div className="bento-macros-body">
             <div
@@ -157,12 +229,45 @@ export function HomeView({
               )}
             </div>
           </div>
+
+          {/* Agua */}
+          <div className="bento-water">
+            <div className="bento-water-head">
+              <span className="bento-water-label">💧 Agua</span>
+              <span className="bento-water-value">
+                {waterMl >= 1000 ? `${(waterMl / 1000).toFixed(1).replace(".", ",")} L` : `${waterMl} ml`}
+                <em> / {waterGoalMl >= 1000 ? `${waterGoalMl / 1000}L` : `${waterGoalMl}ml`}</em>
+              </span>
+            </div>
+            <div className="bento-water-track">
+              <div className="bento-water-fill" style={{ width: `${waterPct}%` }} />
+            </div>
+            <div className="bento-water-btns">
+              {[250, 500, 750].map(ml => (
+                <button
+                  key={ml}
+                  className="bento-water-btn"
+                  onClick={() => mutate(draft => actions.addWater(draft, ml))}
+                >
+                  +{ml < 1000 ? `${ml}ml` : `${ml / 1000}L`}
+                </button>
+              ))}
+              {waterMl > 0 && (
+                <button
+                  className="bento-water-btn dim"
+                  onClick={() => mutate(draft => { draft.waterLog[todayKey] = Math.max(0, waterMl - 250); })}
+                >
+                  −250ml
+                </button>
+              )}
+            </div>
+          </div>
         </article>
 
-        {/* Caducidades */}
+        {/* Caducidades + Stock bajo */}
         <article className="panel bento-expiry">
           <div className="panel-head">
-            <h3>🥕 Caduca pronto</h3>
+            <h3>🥕 Alertas</h3>
             <button className="text-button" onClick={() => goTo("inventory")}>
               Inventario
             </button>
@@ -186,7 +291,33 @@ export function HomeView({
               })}
             </ul>
           ) : (
-            <p className="bento-empty">Nada en riesgo. Tu nevera está bajo control ✓</p>
+            <p className="bento-empty">Nada en riesgo ✓</p>
+          )}
+
+          {lowStock.length > 0 && (
+            <>
+              <p className="bento-section-divider">Stock bajo</p>
+              <ul className="expiry-list">
+                {lowStock.map((item) => (
+                  <li key={item.id}>
+                    <span className="expiry-dot blue" />
+                    <div>
+                      <strong>{item.name}</strong>
+                      <small>quedan pocas unidades</small>
+                    </div>
+                    <button
+                      className="small-action"
+                      onClick={() => {
+                        mutate(draft => { draft.cart.push({ ...item, id: crypto.randomUUID() }); });
+                        showToast(`${item.name} añadido al carrito`);
+                      }}
+                    >
+                      + Carrito
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </article>
 
@@ -337,6 +468,65 @@ export function HomeView({
           </article>
         )}
       </div>
+
+      {/* Plan de hoy */}
+      <article className="panel today-plan-panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">
+              {new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+            </p>
+            <h3>Tu plan de hoy</h3>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {state.profile && (
+              <span className="badge" title="Días esta semana con objetivos de macros cumplidos">
+                {hitThisWeek}/7 días ✓
+              </span>
+            )}
+            <button className="text-button" onClick={() => goTo("planner")}>
+              {plannedCount === 0 ? "Planificar →" : "Editar →"}
+            </button>
+          </div>
+        </div>
+
+        {plannedCount === 0 ? (
+          <p className="today-plan-empty">
+            No tienes nada planificado para hoy.{" "}
+            <button className="link-button" onClick={() => goTo("planner")}>Ir al planificador</button>
+          </p>
+        ) : (
+          <div className="today-plan-slots">
+            {TODAY_SLOTS.map(({ key, label, icon, mealType }) => {
+              const entryId = todayPlan[key];
+              const entry = entryId ? findPlanEntry(state, entryId) : null;
+              return (
+                <div key={key} className={`today-plan-slot ${entry ? "filled" : "empty"}`}>
+                  <div className="today-plan-slot-head">
+                    <span className="today-plan-slot-icon">{icon}</span>
+                    <span className="today-plan-slot-label">{label}</span>
+                  </div>
+                  {entry ? (
+                    <>
+                      <p className="today-plan-slot-name">{entry.title}</p>
+                      <p className="today-plan-slot-meta">{entry.kcal} kcal · {Math.round(entry.protein)}g P</p>
+                      <button
+                        className="today-plan-slot-log"
+                        onClick={() => logPlanEntry(entryId!, mealType)}
+                        title="Registrar en el diario"
+                      >
+                        ✓ Registrar
+                      </button>
+                    </>
+                  ) : (
+                    <p className="today-plan-slot-empty">—</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </article>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
       {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}

@@ -7,14 +7,14 @@ import {
   bestRecipe,
   countLowProteinDays,
   findRecipe,
-  generateWeeklyPlan,
+  getAdherenceStreak,
   getConsumedToday,
   getLatestWeight,
+  getMacroAdherenceHistory,
   getProteinRanking,
   getTodayLog,
   getWeeklyMacroHistory,
   useFoodOS,
-  type WeeklyDayPlan,
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
@@ -58,52 +58,16 @@ export function NutritionView() {
           <ProfileSummary onEdit={() => setEditing(true)} />
         )}
 
-        <article className="panel">
-          <div className="panel-head">
-            <h2>Resumen de hoy</h2>
-          </div>
-          <div className="nutrition-totals">
-            {(() => {
-              const consumed = getConsumedToday(state);
-              return (
-                <>
-                  <div>
-                    <span>kcal</span>
-                    <strong>{Math.round(consumed.kcal)}</strong>
-                    <small>de {state.nutrition.kcal}</small>
-                  </div>
-                  <div>
-                    <span>Proteína</span>
-                    <strong>{Math.round(consumed.protein)}g</strong>
-                    <small>de {state.nutrition.protein}g</small>
-                  </div>
-                  <div>
-                    <span>Carbos</span>
-                    <strong>{Math.round(consumed.carbs)}g</strong>
-                    <small>de {state.nutrition.carbs}g</small>
-                  </div>
-                  <div>
-                    <span>Grasas</span>
-                    <strong>{Math.round(consumed.fat)}g</strong>
-                    <small>de {state.nutrition.fat}g</small>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-          <p className="empty" style={{ marginTop: 8 }}>
-            El detalle de comidas está en la sección <strong>Registro</strong>.
-          </p>
-        </article>
+        <TodayRingPanel />
       </div>
 
       {state.profile && <MacroWeekChart />}
 
+      {state.profile && <MacroAdherencePanel />}
+
       {state.profile && <ProteinOptimizerPanel />}
 
       {state.profile && <WeightPanel />}
-
-      {state.profile && <WeeklyPlanPanel />}
     </section>
   );
 }
@@ -451,92 +415,6 @@ function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: num
   );
 }
 
-// ---------- Plan semanal automático (Feature 4) ----------
-
-function WeeklyPlanPanel() {
-  const { state, mutate, showToast } = useFoodOS();
-  const [plan, setPlan] = useState<WeeklyDayPlan[] | null>(null);
-
-  function generate() {
-    setPlan(generateWeeklyPlan(state));
-    showToast("Plan semanal generado");
-  }
-
-  function cookDay(day: WeeklyDayPlan) {
-    const meals = [day.breakfast, day.lunch, day.dinner].filter(Boolean) as import("@foodos/types").Recipe[];
-    mutate((draft) => {
-      meals.forEach((recipe) => {
-        draft.foodLog.push({
-          id: crypto.randomUUID(),
-          date: todayPlus(0),
-          time: new Date().toTimeString().slice(0, 5),
-          name: recipe.title,
-          qty: null,
-          unit: null,
-          kcal: recipe.kcal,
-          protein: recipe.protein,
-          carbs: recipe.carbs,
-          fat: recipe.fat,
-          source: "recipe",
-          mealType: "lunch",
-        });
-      });
-    });
-    showToast(`${meals.length} recetas de ${day.dayName} registradas`);
-  }
-
-  return (
-    <article className="panel">
-      <div className="panel-head">
-        <div>
-          <p className="eyebrow">Automatización</p>
-          <h2>Plan semanal</h2>
-        </div>
-        <button className="secondary-button" onClick={generate}>
-          {plan ? "Regenerar" : "Generar plan"}
-        </button>
-      </div>
-
-      {!plan && (
-        <p className="empty">
-          FoodOS generará 7 días de comidas ajustadas a tu ciclado gym/descanso, presupuesto y
-          alimentos disponibles.
-        </p>
-      )}
-
-      {plan && (
-        <div className="weekly-plan-grid">
-          {plan.map((day) => (
-            <div key={day.date} className={`plan-day ${day.isGym ? "gym" : ""}`}>
-              <div className="plan-day-head">
-                <strong>{day.dayName}</strong>
-                <span className={`badge ${day.isGym ? "green" : "blue"}`}>
-                  {day.isGym ? "💪" : "😴"} {day.targets.kcal} kcal
-                </span>
-              </div>
-              <ul className="plan-meals">
-                {[
-                  { label: "🌅", recipe: day.breakfast },
-                  { label: "☀️", recipe: day.lunch },
-                  { label: "🌙", recipe: day.dinner },
-                ].map(({ label, recipe }) => (
-                  <li key={label}>
-                    <span>{label}</span>
-                    <span>{recipe ? recipe.title : <em>—</em>}</span>
-                  </li>
-                ))}
-              </ul>
-              <button className="small-action good" onClick={() => cookDay(day)}>
-                Registrar todo
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </article>
-  );
-}
-
 // ---------- Gráfica semanal de macros (analytics) ----------
 
 function MacroWeekChart() {
@@ -607,6 +485,96 @@ function MacroWeekChart() {
   );
 }
 
+// ---------- Panel de adherencia: racha + heatmap 28 días ----------
+
+function MacroAdherencePanel() {
+  const { state } = useFoodOS();
+  const history = getMacroAdherenceHistory(state, 28);
+  const streak  = getAdherenceStreak(state);
+
+  const last7   = history.slice(-7);
+  const hitDays = last7.filter((d) => d.status === "hit").length;
+  const avgKcal = Math.round(
+    last7.reduce((s, d) => {
+      const entries = state.foodLog.filter((e) => e.date === d.date);
+      return s + entries.reduce((ss, e) => ss + e.kcal, 0);
+    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
+  );
+  const avgProt = Math.round(
+    last7.reduce((s, d) => {
+      const entries = state.foodLog.filter((e) => e.date === d.date);
+      return s + entries.reduce((ss, e) => ss + e.protein, 0);
+    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
+  );
+
+  const statusColor: Record<string, string> = {
+    hit:     "var(--green)",
+    partial: "var(--amber)",
+    miss:    "rgba(239,68,68,0.55)",
+    empty:   "rgba(150,163,144,0.15)",
+  };
+
+  return (
+    <article className="panel adherence-panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Constancia</p>
+          <h2>Adherencia a macros</h2>
+        </div>
+        {streak >= 3 && (
+          <span className="badge green">🔥 Racha {streak} días</span>
+        )}
+      </div>
+
+      <div className="adherence-body">
+        {/* Racha + stats */}
+        <div className="adherence-stats">
+          <div className="adherence-streak-block">
+            <span className="adherence-streak-num">{streak}</span>
+            <span className="adherence-streak-label">días de racha</span>
+          </div>
+          <div className="adherence-week-stats">
+            <div className="adherence-stat">
+              <span>{hitDays}/7</span>
+              <small>días objetivo esta semana</small>
+            </div>
+            <div className="adherence-stat">
+              <span>{avgKcal} kcal</span>
+              <small>promedio vs {state.nutrition.kcal} objetivo</small>
+            </div>
+            <div className="adherence-stat">
+              <span>{avgProt}g</span>
+              <small>proteína promedio vs {state.nutrition.protein}g</small>
+            </div>
+          </div>
+        </div>
+
+        {/* Heatmap 28 días: 4 filas × 7 cols */}
+        <div className="adherence-heatmap">
+          {["L", "M", "X", "J", "V", "S", "D"].map((d) => (
+            <span key={d} className="adherence-heatmap-header">{d}</span>
+          ))}
+          {history.map((day) => (
+            <div
+              key={day.date}
+              className="adherence-cell"
+              title={`${day.date}: ${day.status === "hit" ? "objetivo cumplido" : day.status === "partial" ? "parcial" : day.status === "miss" ? "no cumplido" : "sin datos"}`}
+              style={{ background: statusColor[day.status] }}
+            />
+          ))}
+        </div>
+
+        <div className="adherence-legend">
+          <span style={{ color: "var(--green)" }}>■ Cumplido</span>
+          <span style={{ color: "var(--amber)" }}>■ Parcial (proteína O kcal)</span>
+          <span style={{ color: "rgba(239,68,68,0.75)" }}>■ No cumplido</span>
+          <span style={{ color: "rgba(150,163,144,0.5)" }}>■ Sin datos</span>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 // ---------- Optimizador proteína/€ (§9.8) ----------
 
 function ProteinOptimizerPanel() {
@@ -618,7 +586,7 @@ function ProteinOptimizerPanel() {
     <article className="panel">
       <div className="panel-head">
         <div>
-          <p className="eyebrow">§9.8 Eficiencia</p>
+          <p className="eyebrow">Eficiencia</p>
           <h2>Optimizador proteína/€</h2>
         </div>
         {lowDays >= 2 && (
@@ -745,6 +713,76 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           ))}
         </div>
       )}
+    </article>
+  );
+}
+
+// ---------- Anillo de kcal + barras de macros (Resumen de hoy) ----------
+
+function TodayRingPanel() {
+  const { state } = useFoodOS();
+  const consumed = getConsumedToday(state);
+  const targets  = state.nutrition;
+  const profile  = state.profile;
+  const gymToday = profile ? isGymDay(profile) : false;
+
+  const clamp = (v: number) => Math.min(100, Math.max(0, v));
+  const kcalPct = targets.kcal   > 0 ? clamp(Math.round((consumed.kcal    / targets.kcal)    * 100)) : 0;
+  const protPct = targets.protein > 0 ? clamp(Math.round((consumed.protein / targets.protein) * 100)) : 0;
+  const carbPct = targets.carbs   > 0 ? clamp(Math.round((consumed.carbs   / targets.carbs)   * 100)) : 0;
+  const fatPct  = targets.fat     > 0 ? clamp(Math.round((consumed.fat     / targets.fat)     * 100)) : 0;
+
+  const ringColor = kcalPct >= 90 ? "var(--amber)" : "var(--green)";
+  const ringBg    = `conic-gradient(${ringColor} 0deg ${kcalPct * 3.6}deg, rgba(240,244,238,0.1) ${kcalPct * 3.6}deg 360deg)`;
+
+  const MACROS = [
+    { key: "prot",    label: "Proteína", consumed: consumed.protein, target: targets.protein, unit: "g", pct: protPct },
+    { key: "carbs",   label: "Carbos",   consumed: consumed.carbs,   target: targets.carbs,   unit: "g", pct: carbPct },
+    { key: "fat",     label: "Grasas",   consumed: consumed.fat,     target: targets.fat,     unit: "g", pct: fatPct  },
+  ];
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <h2>Resumen de hoy</h2>
+        {profile && (
+          <span className={`badge ${gymToday ? "green" : "blue"}`}>
+            {gymToday ? "Gym 💪" : "Descanso 😴"}
+          </span>
+        )}
+      </div>
+      <div className="today-ring-layout">
+        <div
+          className="kcal-ring-wrap"
+          style={{ background: ringBg }}
+          role="img"
+          aria-label={`${kcalPct}% de las calorías del día consumidas`}
+        >
+          <div className="kcal-ring-center">
+            <strong>{kcalPct}%</strong>
+            <span>{Math.round(consumed.kcal)}</span>
+            <small>/ {targets.kcal} kcal</small>
+          </div>
+        </div>
+        <div className="macro-bars">
+          {MACROS.map(({ key, label, consumed: c, target: t, unit, pct }) => (
+            <div key={key} className="macro-bar-row">
+              <div className="macro-bar-label">
+                <span>{label}</span>
+                <span>
+                  {Math.round(c)}{unit} <em>/ {t}{unit}</em> · <b>{pct}%</b>
+                </span>
+              </div>
+              <div className="macro-bar-track">
+                <div className={`macro-bar-fill macro-bar-${key}`} style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+          ))}
+          <p className="today-ring-hint">
+            Detalle de comidas en <strong>Registro</strong>
+          </p>
+        </div>
+      </div>
     </article>
   );
 }

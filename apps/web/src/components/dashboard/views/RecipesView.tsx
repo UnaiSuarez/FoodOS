@@ -9,6 +9,7 @@ import { AiRecipeModal } from "../AiRecipeModal";
 import { CookModal } from "../CookModal";
 import { CreateRecipeModal } from "../CreateRecipeModal";
 import { EditRecipeModal } from "../EditRecipeModal";
+import { ImportRecipeModal } from "../ImportRecipeModal";
 
 type Mode = "all" | "available" | "budget" | "protein";
 
@@ -18,6 +19,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
   const [aiDraft, setAiDraft] = useState<Recipe | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editRecipe, setEditRecipe] = useState<Recipe | null>(null);
 
   // Filtros avanzados (estado local, no persisten)
@@ -77,7 +79,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
 
   return (
     <section className="view">
-      <div className="panel">
+      <div className="panel" data-tour="recipes-panel">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Búsqueda por ingredientes</p>
@@ -94,6 +96,9 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
               <option value="budget">Más económicas primero</option>
               <option value="protein">Más proteína primero</option>
             </select>
+            <button className="secondary-button" onClick={() => setImportOpen(true)}>
+              ↓ Importar
+            </button>
             <button className="secondary-button" onClick={() => setCreateOpen(true)}>
               + Crear receta
             </button>
@@ -233,12 +238,18 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                   <button className="recipe-open" onClick={() => openRecipe(recipe.id)} aria-label={`Abrir ${recipe.title}`}>
                     <span className="recipe-image">
                       <Image src={recipe.image} alt="" width={420} height={280} />
+                      <span className="recipe-avail-bar" aria-hidden="true">
+                        <span className={`recipe-avail-fill ${cls}`} style={{ width: `${match.pct}%` }} />
+                      </span>
                     </span>
-                    <span className={`badge ${cls}`}>{match.pct}% disponible</span>
+                    <span className={`badge ${cls} recipe-avail-badge`}>{match.pct}% ingredientes</span>
                     <h3>{recipe.title}</h3>
-                    <p>
-                      {recipe.kcal} kcal · {recipe.protein} g proteína · {recipe.time} min · {eur(recipe.cost)}
-                    </p>
+                    <div className="recipe-macro-row">
+                      <span className="recipe-macro-chip kcal">{recipe.kcal} kcal</span>
+                      <span className="recipe-macro-chip prot">{recipe.protein}g P</span>
+                      <span className="recipe-macro-chip time">{recipe.time} min</span>
+                      <span className="recipe-macro-chip cost">{eur(recipe.cost)}</span>
+                    </div>
                     <span className="meta-row">
                       {recipe.tags.map((tag) => (
                         <span key={tag} className="badge">{tag}</span>
@@ -297,6 +308,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
       {aiDraft && <AiRecipeModal draft={aiDraft} onClose={() => setAiDraft(null)} />}
       {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
       {createOpen && <CreateRecipeModal onClose={() => setCreateOpen(false)} />}
+      {importOpen && <ImportRecipeModal onClose={() => setImportOpen(false)} />}
       {editRecipe && <EditRecipeModal recipe={editRecipe} onClose={() => setEditRecipe(null)} />}
     </section>
   );

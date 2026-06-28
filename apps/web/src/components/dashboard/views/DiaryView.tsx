@@ -52,7 +52,7 @@ export function DiaryView() {
       </div>
 
       {/* Agua de hoy */}
-      <article className="panel water-panel">
+      <article className="panel water-panel" data-tour="diary-log">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Hidratación</p>
