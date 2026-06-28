@@ -5,6 +5,7 @@ import { useRef, useState } from "react";
 import type { MealPlanDay, MealType, QuickMeal, Recipe } from "@foodos/types";
 import { allRecipes, getMealPlanShoppingList, useFoodOS } from "@/lib/state";
 import { CookModal } from "../CookModal";
+import { PlannerAddMealModal } from "../PlannerAddMealModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIWeeklyPlan } from "@/lib/ai-provider";
 import { eur } from "@/lib/utils";
@@ -33,7 +34,6 @@ type PlanEntry = {
   isQuick: boolean;
 };
 
-const EMPTY_FORM = { name: "", kcal: "", protein: "", carbs: "", fat: "", cost: "" };
 
 function getMondayOfWeek(d: Date): Date {
   const day = d.getDay();
@@ -70,7 +70,6 @@ export function PlannerView() {
 
   /* Quick-add modal */
   const [quickAdd, setQuickAdd] = useState<{ dateKey: string; slot: MealSlot } | null>(null);
-  const [quickForm, setQuickForm] = useState(EMPTY_FORM);
 
   /* CookModal para recetas del planificador */
   const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
@@ -99,29 +98,6 @@ export function PlannerView() {
         draft.mealPlan[dateKey][slot] = id;
       }
     });
-  }
-
-  function saveQuickMeal() {
-    if (!quickAdd || !quickForm.name.trim()) return;
-    const meal: QuickMeal = {
-      id: crypto.randomUUID(),
-      name: quickForm.name.trim(),
-      kcal: Number(quickForm.kcal) || 0,
-      protein: Number(quickForm.protein) || 0,
-      carbs: Number(quickForm.carbs) || 0,
-      fat: Number(quickForm.fat) || 0,
-      cost: Number(quickForm.cost) || 0,
-    };
-    mutate((draft) => {
-      draft.plannerQuickMeals ||= [];
-      draft.plannerQuickMeals.push(meal);
-      draft.mealPlan ||= {};
-      draft.mealPlan[quickAdd.dateKey] ||= {};
-      draft.mealPlan[quickAdd.dateKey][quickAdd.slot] = meal.id;
-    });
-    setQuickAdd(null);
-    setQuickForm(EMPTY_FORM);
-    showToast(`"${meal.name}" añadido`);
   }
 
   function logEntry(dateKey: string, mealType: MealType, entry: PlanEntry) {
@@ -358,7 +334,7 @@ export function PlannerView() {
                         ) : (
                           <button
                             className="planner-cell-plus"
-                            onClick={() => { setQuickAdd({ dateKey, slot: key }); setQuickForm(EMPTY_FORM); }}
+                            onClick={() => setQuickAdd({ dateKey, slot: key })}
                             title="Añadir plato"
                           >
                             +
@@ -474,60 +450,12 @@ export function PlannerView() {
         <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />
       )}
 
-      {/* ── Modal de plato rápido ── */}
       {quickAdd && (
-        <div className="planner-quickadd-overlay" onClick={() => setQuickAdd(null)}>
-          <div className="planner-quickadd-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="planner-quickadd-head">
-              <h3>Añadir plato</h3>
-              <button className="planner-quickadd-close" onClick={() => setQuickAdd(null)}>×</button>
-            </div>
-
-            <div className="planner-quickadd-body">
-              <input
-                className="planner-quickadd-name"
-                placeholder="Nombre del plato (ej. Tortilla de atún)"
-                value={quickForm.name}
-                onChange={(e) => setQuickForm((f) => ({ ...f, name: e.target.value }))}
-                autoFocus
-                onKeyDown={(e) => e.key === "Enter" && saveQuickMeal()}
-              />
-
-              <div className="planner-quickadd-macros">
-                {([
-                  { field: "kcal",    label: "kcal"     },
-                  { field: "protein", label: "Proteína (g)" },
-                  { field: "carbs",   label: "HC (g)"   },
-                  { field: "fat",     label: "Grasas (g)" },
-                  { field: "cost",    label: "Coste (€)", step: "0.10" },
-                ] as { field: keyof typeof quickForm; label: string; step?: string }[]).map(({ field, label, step }) => (
-                  <label key={field} className="planner-quickadd-field">
-                    <span>{label}</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={step ?? "1"}
-                      placeholder="0"
-                      value={quickForm[field]}
-                      onChange={(e) => setQuickForm((f) => ({ ...f, [field]: e.target.value }))}
-                    />
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="planner-quickadd-foot">
-              <button className="secondary-button" onClick={() => setQuickAdd(null)}>Cancelar</button>
-              <button
-                className="primary-button"
-                onClick={saveQuickMeal}
-                disabled={!quickForm.name.trim()}
-              >
-                Guardar
-              </button>
-            </div>
-          </div>
-        </div>
+        <PlannerAddMealModal
+          dateKey={quickAdd.dateKey}
+          slot={quickAdd.slot}
+          onClose={() => setQuickAdd(null)}
+        />
       )}
     </section>
   );
