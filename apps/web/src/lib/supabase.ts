@@ -16,7 +16,9 @@ export function hasSupabaseConfig(): boolean {
 export function getSupabase(): SupabaseClient | null {
   if (!hasSupabaseConfig()) return null;
   if (!client) client = createClient(url!, anonKey!, {
-    auth: { flowType: "pkce" },
+    // detectSessionInUrl:false evita que el cliente auto-consuma el ?code= de PKCE
+    // antes de que /auth/callback lo intercambie manualmente.
+    auth: { flowType: "pkce", detectSessionInUrl: false },
   });
   return client;
 }
