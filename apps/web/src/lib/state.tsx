@@ -291,7 +291,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const addWater = useCallback((ml: number) => {
-    const date = todayPlus(0);
+    // Respeta la fecha simulada (debugDate) en vez de asumir siempre "hoy" real.
+    const date = state.debugDate ?? todayPlus(0);
     // Actualiza local de forma optimista para respuesta inmediata en la UI.
     setState((current) => {
       const draft = structuredClone(current);
@@ -301,7 +302,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     });
     // RPC atómica: el servidor aplica el delta, sin sobreescribir entre tabs.
     void remote.incrementWater(date, ml).catch((e) => console.warn("FoodOS: incrementWater falló", e));
-  }, []);
+  }, [state.debugDate]);
 
   const resetAll = useCallback(() => {
     clearLocalState();
