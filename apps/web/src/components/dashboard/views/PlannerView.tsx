@@ -67,6 +67,8 @@ export function PlannerView() {
   const [weekStart, setWeekStart] = useState(() => getMondayOfWeek(new Date()));
   const draggingId = useRef<string | null>(null);
   const [, forceRender] = useState(0);
+  const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
+  const selectedRecipe = selectedRecipeId ? recipes.find((r) => r.id === selectedRecipeId) ?? null : null;
 
   /* Quick-add modal */
   const [quickAdd, setQuickAdd] = useState<{ dateKey: string; slot: MealSlot } | null>(null);
@@ -259,7 +261,7 @@ export function PlannerView() {
             <span className="planner-summary-chip"><b>{Math.round(weekKcal)}</b> kcal</span>
             <span className="planner-summary-chip"><b>{Math.round(weekProt)}g</b> proteína</span>
             <span className="planner-summary-chip cost"><b>{eur(weekCost)}</b> coste</span>
-            <span className="planner-drag-hint">Arrastra recetas o pulsa + para añadir un plato rápido</span>
+            <span className="planner-drag-hint">Arrastra recetas (escritorio) o tócalas para seleccionarlas (móvil)</span>
           </div>
 
           {/* Grid */}
@@ -292,13 +294,22 @@ export function PlannerView() {
                     return (
                       <div
                         key={di}
-                        className={`planner-cell ${entry ? "has-recipe" : "empty"}`}
+                        className={`planner-cell ${entry ? "has-recipe" : "empty"} ${selectedRecipe ? "select-mode" : ""}`}
                         onDragOver={handleDragOver}
                         onDragLeave={handleDragLeave}
                         onDrop={(e) => handleDrop(e, dateKey, key)}
                       >
                         {entry ? (
-                          <div className="planner-cell-content">
+                          <div
+                            className="planner-cell-content"
+                            onClick={() => {
+                              if (selectedRecipe) {
+                                setMeal(dateKey, key, selectedRecipe.id);
+                                setSelectedRecipeId(null);
+                              }
+                            }}
+                            style={selectedRecipe ? { cursor: "pointer" } : undefined}
+                          >
                             {entry.image ? (
                               <Image
                                 src={entry.image}
@@ -314,30 +325,42 @@ export function PlannerView() {
                               <span className="planner-cell-name">{entry.title}</span>
                               <span className="planner-cell-meta">{entry.kcal} kcal</span>
                             </div>
-                            <div className="planner-cell-actions">
-                              <button
-                                className="planner-cell-log"
-                                title="Registrar en el diario"
-                                onClick={() => logEntry(dateKey, mealType, entry)}
-                              >
-                                ✓
-                              </button>
-                              <button
-                                className="planner-cell-remove"
-                                title="Quitar"
-                                onClick={() => setMeal(dateKey, key, null)}
-                              >
-                                ×
-                              </button>
-                            </div>
+                            {!selectedRecipe && (
+                              <div className="planner-cell-actions">
+                                <button
+                                  className="planner-cell-log"
+                                  title="Registrar en el diario"
+                                  onClick={(e) => { e.stopPropagation(); logEntry(dateKey, mealType, entry); }}
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  className="planner-cell-remove"
+                                  title="Quitar"
+                                  onClick={(e) => { e.stopPropagation(); setMeal(dateKey, key, null); }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            )}
+                            {selectedRecipe && (
+                              <div className="planner-cell-replace-hint">↩ Reemplazar</div>
+                            )}
                           </div>
                         ) : (
                           <button
-                            className="planner-cell-plus"
-                            onClick={() => setQuickAdd({ dateKey, slot: key })}
-                            title="Añadir plato"
+                            className={`planner-cell-plus ${selectedRecipe ? "tap-ready" : ""}`}
+                            onClick={() => {
+                              if (selectedRecipe) {
+                                setMeal(dateKey, key, selectedRecipe.id);
+                                setSelectedRecipeId(null);
+                              } else {
+                                setQuickAdd({ dateKey, slot: key });
+                              }
+                            }}
+                            title={selectedRecipe ? `Colocar ${selectedRecipe.title}` : "Añadir plato"}
                           >
-                            +
+                            {selectedRecipe ? "✓" : "+"}
                           </button>
                         )}
                       </div>
@@ -412,12 +435,13 @@ export function PlannerView() {
             {filteredRecipes.map((recipe) => (
               <div
                 key={recipe.id}
-                className="planner-recipe-card"
+                className={`planner-recipe-card ${selectedRecipeId === recipe.id ? "selected" : ""}`}
                 draggable
+                onClick={() => setSelectedRecipeId((prev) => (prev === recipe.id ? null : recipe.id))}
                 onDragStart={(e) => {
                   e.dataTransfer.setData("recipeId", recipe.id);
                   draggingId.current = recipe.id;
-                  // Ghost personalizado para evitar el rectángulo blanco del navegador
+                  setSelectedRecipeId(null);
                   const ghost = document.createElement("div");
                   ghost.className = "planner-drag-ghost";
                   ghost.textContent = recipe.title;
@@ -445,6 +469,13 @@ export function PlannerView() {
         </div>
 
       </div>
+
+      {selectedRecipe && (
+        <div className="planner-selection-banner">
+          <span>Colocando: <strong>{selectedRecipe.title}</strong> — toca una celda del grid</span>
+          <button onClick={() => setSelectedRecipeId(null)} aria-label="Cancelar selección">✕</button>
+        </div>
+      )}
 
       {cookingRecipe && (
         <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />

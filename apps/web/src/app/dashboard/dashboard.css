@@ -7380,3 +7380,101 @@ button.secondary-button.small {
     margin-bottom: 0;
   }
 }
+
+/* ============================================
+   PLANIFICADOR — tap-to-select (mobile)
+   ============================================ */
+
+/* Receta seleccionada en la lista lateral */
+.planner-recipe-card.selected {
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+/* Celda vacía lista para recibir la receta */
+.planner-cell-plus.tap-ready {
+  background: rgba(74, 222, 128, 0.18);
+  border-color: var(--green);
+  color: var(--green);
+  font-size: 18px;
+  animation: tap-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tap-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+/* Celda con receta en modo reemplazo */
+.planner-cell.select-mode .planner-cell-content {
+  outline: 2px dashed var(--green);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+
+.planner-cell-replace-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.planner-cell-content {
+  position: relative;
+}
+
+/* Banner flotante de selección activa */
+.planner-selection-banner {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--green);
+  color: #000;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-radius: 40px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 300;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: banner-in 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes banner-in {
+  from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+  to   { transform: translateX(-50%) translateY(0);   opacity: 1; }
+}
+
+.planner-selection-banner button {
+  background: rgba(0, 0, 0, 0.15);
+  border: none;
+  color: #000;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.planner-selection-banner button:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
