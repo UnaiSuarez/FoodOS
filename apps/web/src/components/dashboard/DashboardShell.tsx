@@ -37,10 +37,9 @@ const VIEWS = [
   { id: "nutrition",  icon: "%", label: "Nutrición",     title: "Nutrición" },
   { id: "assistant",  icon: "✦", label: "Asistente",     title: "Asistente FoodOS" },
   { id: "planner",    icon: "⊞", label: "Planificador",  title: "Planificador semanal" },
-  { id: "settings",   icon: "⚙", label: "Ajustes",      title: "Ajustes de la app" },
 ] as const;
 
-export type ViewId = (typeof VIEWS)[number]["id"];
+export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
 
 export function DashboardShell() {
   return (
@@ -87,7 +86,9 @@ function DashboardInner() {
   }, [needsAuth, remoteReady, authUser, router]);
 
   const mascot = getMascot(state.mascotId);
-  const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
+  const currentTitle = view === "settings"
+    ? "Ajustes de la app"
+    : VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
 
   function exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
