@@ -142,10 +142,14 @@ interface FoodOSContextValue {
   mascotState: MascotState;
   remoteReady: boolean;
   authUser: User | null;
+  /** true cuando el canal de Supabase Realtime está SUBSCRIBED */
+  realtimeConnected: boolean;
   showToast: (message: string) => void;
   setMascotMessage: (message: string) => void;
   triggerMascot: (anim: MascotState, message?: string) => void;
   mutate: (fn: (draft: FoodOSState) => void) => void;
+  /** Incrementa/decrementa el agua del día de forma atómica (sin conflictos entre tabs). */
+  addWater: (ml: number) => void;
   resetAll: () => void;
   seedDemo: () => void;
 }
@@ -161,6 +165,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const mascotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeUnsubRef = useRef<(() => void) | null>(null);
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -188,12 +193,39 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
 
     function setupRealtime() {
       realtimeUnsubRef.current?.();
-      realtimeUnsubRef.current = remote.subscribeRealtime(() => {
-        if (cancelled) return;
-        // Debounce: evita re-hidrataciones en cascada cuando llegan varios eventos seguidos.
-        if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
-        realtimeDebounceRef.current = setTimeout(() => void hydrateRemote(), 1500);
-      });
+      realtimeUnsubRef.current = remote.subscribeRealtime(
+        () => {
+          if (cancelled) return;
+          // Debounce: evita re-hidrataciones en cascada cuando llegan varios eventos seguidos.
+          if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+          realtimeDebounceRef.current = setTimeout(() => void hydrateRemote(), 300);
+        },
+        (table, newRow) => {
+          if (cancelled) return;
+          // Parche directo: no requiere ida a Supabase → prácticamente instantáneo.
+          if (table === "water_log") {
+            const { log_date, ml } = newRow as { log_date: string; ml: number };
+            setState((cur) => {
+              const next = { ...cur, waterLog: { ...cur.waterLog, [log_date]: Number(ml) } };
+              saveLocalState(next);
+              return next;
+            });
+          } else if (table === "weight_log") {
+            const { log_date, kg } = newRow as { log_date: string; kg: number };
+            setState((cur) => {
+              const entries = cur.weightLog.filter((e) => e.date !== log_date);
+              entries.push({ date: log_date, kg: Number(kg) });
+              entries.sort((a, b) => a.date.localeCompare(b.date));
+              const next = { ...cur, weightLog: entries };
+              saveLocalState(next);
+              return next;
+            });
+          }
+        },
+        (connected) => {
+          if (!cancelled) setRealtimeConnected(connected);
+        },
+      );
     }
 
     void remote.init().then((ok) => {
@@ -213,6 +245,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           // Logout: limpiar todo.
           clearLocalState();
           setState(structuredClone(defaultState));
+          setRealtimeConnected(false);
         }
       });
       if (remote.user) {
@@ -255,6 +288,19 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       remote.schedulePush(draft);
       return draft;
     });
+  }, []);
+
+  const addWater = useCallback((ml: number) => {
+    const date = todayPlus(0);
+    // Actualiza local de forma optimista para respuesta inmediata en la UI.
+    setState((current) => {
+      const draft = structuredClone(current);
+      draft.waterLog[date] = Math.max(0, (draft.waterLog[date] ?? 0) + ml);
+      saveLocalState(draft);
+      return draft;
+    });
+    // RPC atómica: el servidor aplica el delta, sin sobreescribir entre tabs.
+    void remote.incrementWater(date, ml).catch((e) => console.warn("FoodOS: incrementWater falló", e));
   }, []);
 
   const resetAll = useCallback(() => {
@@ -331,10 +377,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         mascotState,
         remoteReady,
         authUser,
+        realtimeConnected,
         showToast,
         setMascotMessage,
         triggerMascot,
         mutate,
+        addWater,
         resetAll,
         seedDemo,
       }}

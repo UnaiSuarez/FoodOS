@@ -201,6 +201,21 @@
   line-height: 0.95;
 }
 
+.topbar-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.realtime-badge {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--green);
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
 .top-actions {
   display: flex;
   align-items: center;
@@ -2232,6 +2247,17 @@ select:focus {
   margin: 12px 0 0;
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.nutrition-warn-banner {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--amber, #f59e0b);
+  line-height: 1.5;
 }
 
 /* ---------- Escalado de recetas ---------- */

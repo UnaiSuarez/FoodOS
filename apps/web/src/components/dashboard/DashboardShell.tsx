@@ -53,7 +53,7 @@ export function DashboardShell() {
 }
 
 function DashboardInner() {
-  const { state, hydrated, toast, mascotMessage, remoteReady, authUser, seedDemo, resetAll, showToast, mutate } =
+  const { state, hydrated, toast, mascotMessage, remoteReady, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
     useFoodOS();
   const router = useRouter();
   const needsAuth = hasSupabaseConfig();

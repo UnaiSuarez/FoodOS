@@ -19,7 +19,7 @@ import { ensureUuid, mealTypeFromTime } from "./utils";
 //   un usuario. Para multiusuario: pasar a mutaciones por accion.
 
 const LOCAL_KEY = "foodos-appweb-state-v1";
-const PUSH_DEBOUNCE_MS = 1800;
+const PUSH_DEBOUNCE_MS = 400;
 
 const STORAGE_TYPE_BY_NAME: Record<StorageName, string> = {
   Nevera: "fridge",
@@ -131,19 +131,52 @@ class RemoteAdapter {
     return { error: null };
   }
 
-  subscribeRealtime(onRefresh: () => void): () => void {
+  /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
+  async incrementWater(date: string, deltaMl: number): Promise<number> {
+    if (!this.client || !this.user) return 0;
+    const { data, error } = await this.client.rpc("fn_water_increment", {
+      p_date: date,
+      p_delta: deltaMl,
+    });
+    if (error) throw error;
+    return data as number;
+  }
+
+  /**
+   * Suscripción Realtime con dos niveles de respuesta:
+   * - onPatch: cambio puntual en water_log o weight_log → aplica el dato del payload
+   *   directamente en estado, sin re-fetch. Latencia ≈ solo el WebSocket (~50-200ms).
+   * - onRefresh: resto de tablas → re-fetch completo con debounce breve.
+   */
+  subscribeRealtime(
+    onRefresh: () => void,
+    onPatch: (table: string, newRow: Record<string, unknown>) => void,
+    onStatus?: (connected: boolean) => void,
+  ): () => void {
     if (!this.client || !this.user) return () => {};
     const userId = this.user.id;
+    const patch = (table: string) =>
+      (payload: { new: Record<string, unknown> }) => {
+        if (payload.new && Object.keys(payload.new).length > 0) {
+          onPatch(table, payload.new);
+        } else {
+          onRefresh();
+        }
+      };
     const channel = this.client
       .channel(`foodos-${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items", filter: `owner_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "gastos", filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "shopping_items", filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "food_log", filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles", filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "nutrition_goals", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items",  filter: `owner_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "gastos",           filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shopping_items",   filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "food_log",         filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles",    filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "nutrition_goals",  filter: `user_id=eq.${userId}` }, onRefresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "ingresos_fuentes", filter: `user_id=eq.${userId}` }, onRefresh)
-      .subscribe();
+      .on("postgres_changes", { event: "*", schema: "public", table: "water_log",        filter: `user_id=eq.${userId}` }, patch("water_log"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "weight_log",       filter: `user_id=eq.${userId}` }, patch("weight_log"))
+      .subscribe((status) => {
+        onStatus?.(status === "SUBSCRIBED");
+      });
     return () => { void this.client?.removeChannel(channel); };
   }
 
@@ -200,11 +233,11 @@ class RemoteAdapter {
     const userId = this.user!.id;
     const state = structuredClone(defaults);
 
-    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes] = await Promise.all([
+    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes, waterRes, weightRes] = await Promise.all([
       client
         .from("user_profiles")
         .select(
-          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods"
+          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, extra_state"
         )
         .eq("user_id", userId)
         .maybeSingle(),
@@ -236,6 +269,15 @@ class RemoteAdapter {
         .select("id, title, body, recipe_id, likes_count, user_id, feed_comments(body, user_id)")
         .eq("visibility", "public")
         .order("created_at", { ascending: true }),
+      client
+        .from("water_log")
+        .select("log_date, ml")
+        .eq("user_id", userId),
+      client
+        .from("weight_log")
+        .select("log_date, kg")
+        .eq("user_id", userId)
+        .order("log_date", { ascending: true }),
     ]);
 
     const almacenNameById = Object.fromEntries(
@@ -259,8 +301,33 @@ class RemoteAdapter {
           gymDays: p.gym_days ?? [],
           allergies: p.allergies ?? [],
           excludedFoods: p.excluded_foods ?? [],
+          targetWeightKg: p.target_weight_kg != null ? Number(p.target_weight_kg) : undefined,
         };
       }
+      // extra_state: campos de app no tabulados (routines, workoutLog, etc.)
+      const extra = p.extra_state as Record<string, unknown> | null;
+      if (extra) {
+        if (Array.isArray(extra.routines))         state.routines         = extra.routines;
+        if (Array.isArray(extra.workoutLog))       state.workoutLog       = extra.workoutLog;
+        if (Array.isArray(extra.customRecipes))    state.customRecipes    = extra.customRecipes;
+        if (extra.mealPlan && typeof extra.mealPlan === "object") state.mealPlan = extra.mealPlan as typeof state.mealPlan;
+        if (Array.isArray(extra.plannerQuickMeals)) state.plannerQuickMeals = extra.plannerQuickMeals;
+        if (extra.categoryBudgets && typeof extra.categoryBudgets === "object") state.categoryBudgets = extra.categoryBudgets as typeof state.categoryBudgets;
+        if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
+      }
+    }
+
+    // water_log: Record<date, ml>
+    state.waterLog = Object.fromEntries(
+      (waterRes.data ?? []).map((row) => [row.log_date as string, Number(row.ml)])
+    );
+
+    // weight_log: serie temporal ordenada
+    if ((weightRes.data ?? []).length > 0) {
+      state.weightLog = (weightRes.data ?? []).map((row) => ({
+        date: row.log_date as string,
+        kg:   Number(row.kg),
+      }));
     }
 
     state.inventory = (inventoryRes.data ?? []).map((row) => ({
@@ -391,6 +458,15 @@ class RemoteAdapter {
       .update({
         mascot_id: state.mascotId,
         weekly_food_budget: state.weeklyBudget,
+        extra_state: {
+          routines:          state.routines          ?? [],
+          workoutLog:        state.workoutLog        ?? [],
+          customRecipes:     state.customRecipes     ?? [],
+          mealPlan:          state.mealPlan          ?? {},
+          plannerQuickMeals: state.plannerQuickMeals ?? [],
+          categoryBudgets:   state.categoryBudgets   ?? {},
+          savingsGoalPct:    state.savingsGoalPct    ?? 20,
+        },
         ...(state.profile
           ? {
               age: state.profile.age,
@@ -403,11 +479,28 @@ class RemoteAdapter {
               gym_days: state.profile.gymDays,
               allergies: state.profile.allergies,
               excluded_foods: state.profile.excludedFoods,
+              target_weight_kg: state.profile.targetWeightKg ?? null,
               onboarding_completed: true,
             }
           : {}),
       })
       .eq("user_id", userId);
+
+    // water_log: se gestiona exclusivamente via fn_water_increment (RPC atómica).
+    // No se incluye en el push completo para evitar conflictos de concurrencia entre tabs.
+
+    // weight_log: upsert + delete de entradas borradas
+    if ((state.weightLog ?? []).length > 0) {
+      const weightRows = state.weightLog.map((e) => ({ user_id: userId, log_date: e.date, kg: e.kg }));
+      await client.from("weight_log").upsert(weightRows, { onConflict: "user_id,log_date" });
+      // Borrar entradas que ya no están en el estado
+      const { data: existingWeights } = await client.from("weight_log").select("log_date").eq("user_id", userId);
+      const keepDates = new Set(state.weightLog.map((e) => e.date));
+      const toDeleteDates = (existingWeights ?? []).map((r) => r.log_date).filter((d) => !keepDates.has(d as string));
+      if (toDeleteDates.length) {
+        await client.from("weight_log").delete().eq("user_id", userId).in("log_date", toDeleteDates);
+      }
+    }
 
     await client.from("nutrition_goals").upsert(
       {

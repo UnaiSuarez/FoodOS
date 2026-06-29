@@ -21,8 +21,10 @@ import {
   GOAL_DESCRIPTIONS,
   GOAL_LABELS,
   calcDailyTargets,
+  calcProteinRange,
   calcSummary,
   isGymDay,
+  shouldWarnMuscleGain,
   weeklyCycle,
 } from "@/lib/nutrition";
 import { todayMinus, todayPlus } from "@/lib/utils";
@@ -635,6 +637,8 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const gymToday = isGymDay(profile);
   const today = calcDailyTargets(profile, gymToday);
   const cycle = weeklyCycle(profile);
+  const protRange = calcProteinRange(profile);
+  const warnMuscle = shouldWarnMuscleGain(profile);
 
   return (
     <article className="panel form-panel">
@@ -677,10 +681,20 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           <span>Proteína</span>
           <strong>{today.protein}g</strong>
           <small>
-            {profile.bodyFatPct != null ? "afinada con masa magra" : `${(today.protein / profile.weightKg).toFixed(1)} g/kg`}
+            {profile.bodyFatPct != null
+              ? "afinada con masa magra"
+              : `rango ${protRange.recommendedMin}–${protRange.recommendedMax} g`}
           </small>
         </div>
       </div>
+
+      {warnMuscle && (
+        <div className="nutrition-warn-banner">
+          Tu IMC actual es superior a 27. En este punto, el superávit calórico favorece la
+          acumulación de grasa más que el músculo. Te recomendamos{" "}
+          <strong>Recomposición</strong> o <strong>Pérdida de grasa</strong> primero.
+        </div>
+      )}
 
       <div className="cycle-card">
         <h3>Tu semana ({profile.gymDays.length} días de gym)</h3>
@@ -795,6 +809,7 @@ function WeightProjectionPanel() {
   const { state } = useFoodOS();
   const profile = state.profile!;
   const { tdee } = calcSummary(profile);
+  const protRange = calcProteinRange(profile);
   const latest = getLatestWeight(state);
   const currentKg = latest?.kg ?? profile.weightKg;
   const targetKg = profile.targetWeightKg;
@@ -991,7 +1006,12 @@ function WeightProjectionPanel() {
             <li>Ritmo saludable. Mantén la constancia y los resultados llegarán.</li>
           )}
           <li>
-            Proteína objetivo: <strong>{Math.round(currentKg * 2)} g/día</strong> (2 g/kg) para preservar masa muscular durante el déficit.
+            Proteína recomendada:{" "}
+            <strong>{protRange.recommendedMin}–{protRange.target} g/día</strong> para preservar masa muscular
+            {profile.weightKg > 25 * Math.pow(profile.heightCm / 100, 2) * 1.25
+              ? " (peso ajustado ESPEN)"
+              : ` (${(protRange.target / currentKg).toFixed(1)} g/kg)`}
+            .
           </li>
           <li>
             Agua recomendada: <strong>{Math.round(currentKg * 35)} ml/día</strong> ({(currentKg * 35 / 1000).toFixed(1)} L).

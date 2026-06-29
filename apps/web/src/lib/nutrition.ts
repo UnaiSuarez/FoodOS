@@ -64,32 +64,31 @@ export function imcLabel(imc: number): string {
 // ─── Peso base para proteína (ESPEN + ISSN) ──────────────────────────────────
 
 /**
- * Calcula el peso de referencia para proteína:
- * - Con % grasa conocido: masa magra (Katch-McArdle style)
- * - Con obesidad (peso > IMC 25 × 1.25): peso ajustado ESPEN
- *   adjusted = peso_ideal + (peso_actual - peso_ideal) × 0.33
- * - En los demás casos: peso actual
+ * Peso de referencia para calcular proteína (ESPEN + ISSN).
  *
- * Si hay peso objetivo sensato, se usa el mínimo entre ajustado y objetivo.
+ * Prioridad:
+ * 1. Con % grasa conocido → masa magra (más preciso)
+ * 2. Obesidad (peso > IMC-25 × 1.25) → peso ajustado ESPEN:
+ *      adjusted = ideal_IMC25 + (actual − ideal) × 0.33
+ *    NO usamos targetWeightKg aquí: el objetivo es para calorías y
+ *    proyecciones, no para proteína. El peso ajustado ya es conservador.
+ * 3. En los demás casos → peso actual
+ *
+ * Ejemplo: 120 kg, 177 cm
+ *   ideal = 25 × 1.77² = 78.3 kg
+ *   adjusted = 78.3 + (120 − 78.3) × 0.33 = 92.1 kg  ← base proteína
+ *   protein (fat_loss 2.0 g/kg) = 92.1 × 2.0 = 184 g  ✓ rango 180-200 g
  */
 export function calcProteinBase(profile: PhysicalProfile): number {
   if (profile.bodyFatPct != null) {
     return profile.weightKg * (1 - profile.bodyFatPct / 100);
   }
 
-  const heightM = profile.heightCm / 100;
+  const heightM     = profile.heightCm / 100;
   const idealWeight = 25 * heightM * heightM; // IMC 25
 
   if (profile.weightKg > idealWeight * 1.25) {
-    const adjusted = idealWeight + (profile.weightKg - idealWeight) * 0.33;
-    if (
-      profile.targetWeightKg &&
-      profile.targetWeightKg >= idealWeight * 0.85 &&
-      profile.targetWeightKg < profile.weightKg
-    ) {
-      return Math.min(profile.targetWeightKg, adjusted);
-    }
-    return adjusted;
+    return idealWeight + (profile.weightKg - idealWeight) * 0.33;
   }
 
   return profile.weightKg;
@@ -105,37 +104,50 @@ export const GOAL_LABELS: Record<GoalMode, string> = {
 };
 
 export const GOAL_DESCRIPTIONS: Record<GoalMode, string> = {
-  fat_loss:    "−20% kcal · proteína alta · ~−0,5–1 kg/semana",
-  muscle_gain: "+8% kcal · proteína alta · ~+0,25 kg/semana",
-  recomp:      "−10% días gym / −20% descanso · proteína muy alta",
-  maintain:    "Kcal de mantenimiento · sin cambio esperado",
+  fat_loss:    "−20% kcal · proteína 2.0 g/kg · ~−0,5–1 kg/semana",
+  muscle_gain: "+5% kcal (solo si IMC<27) · proteína 1.8 g/kg",
+  recomp:      "IMC≥30: −17-20% · IMC<30: −10-17% · proteína 2.0 g/kg",
+  maintain:    "100% kcal mantenimiento · proteína 1.8 g/kg",
 };
 
 interface GoalConfig {
-  /** Multiplicador sobre el TDEE. Sustituye al delta fijo anterior. */
-  kcalFactor: (isGymDay: boolean) => number;
-  /** g/kg aplicado sobre calcProteinBase(). */
+  /** g/kg sobre calcProteinBase() — ver comentario en calcDailyTargets. */
   proteinPerKg: number;
-  /** Fracción de kcal totales destinada a grasa (20–30%). */
+  /** Fracción de kcal para grasa. */
   fatPct: number;
 }
 
-/**
- * Configuración por objetivo.
- *
- * fat_loss:    80% TDEE  → déficit ~20% → ~0.5–1 kg/semana
- * muscle_gain: 108% TDEE → superávit ~8%
- * recomp:      ciclado: 90% días gym / 80% descanso
- * maintain:    100% TDEE
- *
- * Proteína sobre peso AJUSTADO para obesidad (calcProteinBase).
- */
 const GOAL_CONFIG: Record<GoalMode, GoalConfig> = {
-  fat_loss:    { kcalFactor: ()      => 0.80,       proteinPerKg: 2.2, fatPct: 0.25 },
-  muscle_gain: { kcalFactor: ()      => 1.08,       proteinPerKg: 2.0, fatPct: 0.25 },
-  recomp:      { kcalFactor: (gym)   => gym ? 0.90 : 0.80, proteinPerKg: 2.2, fatPct: 0.25 },
-  maintain:    { kcalFactor: ()      => 1.0,        proteinPerKg: 1.8, fatPct: 0.28 },
+  fat_loss:    { proteinPerKg: 2.0, fatPct: 0.25 },
+  muscle_gain: { proteinPerKg: 1.8, fatPct: 0.25 },
+  recomp:      { proteinPerKg: 2.0, fatPct: 0.25 },
+  maintain:    { proteinPerKg: 1.8, fatPct: 0.28 },
 };
+
+/**
+ * Factor kcal según objetivo, IMC y tipo de día.
+ *
+ * fat_loss:    0.80 siempre (−20%)
+ * muscle_gain: 1.05 si IMC<27 / 0.90 si IMC≥27 (no superávit en obesidad)
+ * recomp:      IMC≥30 → 0.83 gym / 0.80 descanso
+ *              IMC<30  → 0.90 gym / 0.83 descanso
+ * maintain:    1.0
+ */
+function kcalFactor(goal: GoalMode, gymDay: boolean, imc: number): number {
+  switch (goal) {
+    case "fat_loss":
+      return 0.80;
+    case "muscle_gain":
+      return imc >= 27 ? 0.90 : 1.05;
+    case "recomp":
+      return imc >= 30
+        ? (gymDay ? 0.83 : 0.80)
+        : (gymDay ? 0.90 : 0.83);
+    case "maintain":
+    default:
+      return 1.0;
+  }
+}
 
 /** ¿Es hoy (o la fecha dada) día de gym según el perfil? 0=Dom … 6=Sáb. */
 export function isGymDay(profile: PhysicalProfile, date: Date = new Date()): boolean {
@@ -145,22 +157,21 @@ export function isGymDay(profile: PhysicalProfile, date: Date = new Date()): boo
 /**
  * Objetivos diarios según perfil y tipo de día.
  *
- * Orden de prioridad:
- *   1. Calorías = TDEE × kcalFactor (% del mantenimiento)
- *   2. Proteína = calcProteinBase × proteinPerKg (ESPEN para obesidad)
- *   3. Grasa    = kcal × fatPct
- *   4. Carbos   = resto (calorías - proteína kcal - grasa kcal)
+ * 1. Calorías = TDEE × kcalFactor(goal, gymDay, IMC)
+ * 2. Proteína = calcProteinBase × proteinPerKg
+ *    - En obesidad: adjusted_ESPEN = ideal_IMC25 + (actual − ideal) × 0.33
+ *    - Multiplier: 2.0 fat_loss/recomp · 1.8 maintain/muscle_gain
+ * 3. Grasa = kcal × fatPct
+ * 4. Carbos = resto
  */
 export function calcDailyTargets(profile: PhysicalProfile, gymDay: boolean): DailyTargets {
   const config = GOAL_CONFIG[profile.goal];
   const tmb  = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
   const tdee = calcTDEE(tmb, profile.activityLevel);
-  const kcal = Math.max(1200, Math.round(tdee * config.kcalFactor(gymDay)));
+  const imc  = calcIMC(profile.weightKg, profile.heightCm);
+  const kcal = Math.max(1200, Math.round(tdee * kcalFactor(profile.goal, gymDay, imc)));
 
-  // Peso de referencia para proteína (masa magra o peso ajustado en obesidad)
   const protBase = calcProteinBase(profile);
-  // Si la base es lean mass (bodyFatPct conocido), el g/kg efectivo es mayor
-  // porque lean mass es menor que el peso total.
   const proteinG = Math.round(config.proteinPerKg * protBase);
 
   const proteinKcal = proteinG * 4;
@@ -178,11 +189,49 @@ export function calcDailyTargets(profile: PhysicalProfile, gymDay: boolean): Dai
 
 /** Resumen de cálculo para mostrar en la UI. */
 export function calcSummary(profile: PhysicalProfile) {
-  const tmb  = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
-  const tdee = calcTDEE(tmb, profile.activityLevel);
-  const imc  = calcIMC(profile.weightKg, profile.heightCm);
+  const tmb      = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+  const tdee     = calcTDEE(tmb, profile.activityLevel);
+  const imc      = calcIMC(profile.weightKg, profile.heightCm);
   const protBase = calcProteinBase(profile);
   return { tmb, tdee, imc, protBase };
+}
+
+/**
+ * Rango de proteína en 5 puntos.
+ *
+ * broadMin / broadMax (×1.6 / ×2.4): rango amplio de seguridad — útil para
+ * validaciones, sliders, alertas de adherencia semanal. No mostrar en UI principal.
+ *
+ * recommendedMin / recommendedMax (×1.8 / ×2.2): rango clínico recomendado —
+ * este es el que el usuario ve. Está dentro del óptimo para fat_loss / recomp.
+ *
+ * target (×2.0): objetivo diario de la app.
+ *
+ * Ejemplo: base ESPEN 92.1 kg
+ *   broad:       147–221 g  (interno)
+ *   recommended: 166–203 g  (UI)
+ *   target:      184 g      (UI, número principal)
+ */
+export function calcProteinRange(profile: PhysicalProfile): {
+  broadMin:       number;
+  recommendedMin: number;
+  target:         number;
+  recommendedMax: number;
+  broadMax:       number;
+} {
+  const base = calcProteinBase(profile);
+  return {
+    broadMin:       Math.round(base * 1.6),
+    recommendedMin: Math.round(base * 1.8),
+    target:         Math.round(base * 2.0),
+    recommendedMax: Math.round(base * 2.2),
+    broadMax:       Math.round(base * 2.4),
+  };
+}
+
+/** ¿Debería la app avisar de que el objetivo muscle_gain no es óptimo? */
+export function shouldWarnMuscleGain(profile: PhysicalProfile): boolean {
+  return profile.goal === "muscle_gain" && calcIMC(profile.weightKg, profile.heightCm) >= 27;
 }
 
 /** Vista previa del ciclo semanal (7 días empezando en lunes). */

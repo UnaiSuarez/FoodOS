@@ -33,7 +33,7 @@ export function HomeView({
   goTo: (view: ViewId) => void;
   openRecipe: (id: string) => void;
 }) {
-  const { state, mutate, showToast, setMascotMessage, triggerMascot } = useFoodOS();
+  const { state, mutate, addWater, showToast, setMascotMessage, triggerMascot } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
   const [whatToEatOpen, setWhatToEatOpen] = useState(false);
@@ -247,7 +247,7 @@ export function HomeView({
                 <button
                   key={ml}
                   className="bento-water-btn"
-                  onClick={() => mutate(draft => actions.addWater(draft, ml))}
+                  onClick={() => addWater(ml)}
                 >
                   +{ml < 1000 ? `${ml}ml` : `${ml / 1000}L`}
                 </button>
@@ -255,7 +255,7 @@ export function HomeView({
               {waterMl > 0 && (
                 <button
                   className="bento-water-btn dim"
-                  onClick={() => mutate(draft => { draft.waterLog[todayKey] = Math.max(0, waterMl - 250); })}
+                  onClick={() => addWater(-250)}
                 >
                   −250ml
                 </button>
