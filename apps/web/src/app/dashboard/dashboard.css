@@ -7575,3 +7575,87 @@ button.secondary-button.small {
 [data-theme="light"] .delete-confirm-input {
   background: #fff;
 }
+
+/* ── Error Boundary ── */
+.view-error-fallback {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+}
+
+.view-error-panel {
+  max-width: 520px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.view-error-details {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.view-error-details summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.view-error-details pre {
+  background: rgba(0,0,0,0.2);
+  padding: 10px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+}
+
+/* ── Cuenta: eliminar cuenta ── */
+.settings-cuenta-danger {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(239, 68, 68, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-cuenta-danger-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(239, 68, 68, 0.7);
+  margin: 0;
+}
+
+.danger-button--small {
+  padding: 8px 16px;
+  font-size: 13px;
+  align-self: flex-start;
+}
+
+/* ── AccountModal: reenvío de email ── */
+.account-resend-btn {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.account-resend-btn:hover {
+  background: rgba(139, 188, 90, 0.1);
+}
+
+.account-resend-ok {
+  font-size: 13px;
+  color: var(--accent);
+  margin: 0;
+  padding: 8px 0;
+}

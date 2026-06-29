@@ -24,6 +24,7 @@ import { OnboardingFlow } from "./OnboardingFlow";
 import { AppTour } from "./AppTour";
 import { MascotWidget } from "./MascotWidget";
 import { StatsView } from "./views/StatsView";
+import { ViewErrorBoundary } from "./ViewErrorBoundary";
 
 const VIEWS = [
   { id: "dashboard",  icon: "⌂", label: "Panel",        title: "Panel diario" },
@@ -243,7 +244,7 @@ function DashboardInner() {
         </header>
 
         {hydrated ? (
-          <>
+          <ViewErrorBoundary key={view}>
             {view === "dashboard" && <HomeView goTo={setView} openRecipe={setOpenRecipeId} />}
             {view === "diary" && <DiaryView />}
             {view === "inventory" && <InventoryView />}
@@ -266,7 +267,7 @@ function DashboardInner() {
                 onStartTour={startTour}
               />
             )}
-          </>
+          </ViewErrorBoundary>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>
         )}

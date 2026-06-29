@@ -158,6 +158,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [remoteReady, setRemoteReady] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeUnsubRef = useRef<(() => void) | null>(null);
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Hidratacion: primero localStorage, despues Supabase si hay sesion.
   useEffect(() => {
@@ -180,16 +182,29 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    function setupRealtime() {
+      realtimeUnsubRef.current?.();
+      realtimeUnsubRef.current = remote.subscribeRealtime(() => {
+        if (cancelled) return;
+        // Debounce: evita re-hidrataciones en cascada cuando llegan varios eventos seguidos.
+        if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+        realtimeDebounceRef.current = setTimeout(() => void hydrateRemote(), 1500);
+      });
+    }
+
     void remote.init().then((ok) => {
       if (cancelled || !ok) return;
       setRemoteReady(true);
       remote.onAuthChange((user) => {
         setAuthUser(user);
+        // Limpia suscripcion anterior antes de cualquier cambio de sesion.
+        realtimeUnsubRef.current?.();
+        realtimeUnsubRef.current = null;
         if (user) {
           // Nuevo usuario: limpiar estado local para evitar mezcla entre cuentas.
           clearLocalState();
           setState(structuredClone(defaultState));
-          void hydrateRemote();
+          void hydrateRemote().then(() => { if (!cancelled) setupRealtime(); });
         } else {
           // Logout: limpiar todo.
           clearLocalState();
@@ -198,12 +213,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       });
       if (remote.user) {
         setAuthUser(remote.user);
-        void hydrateRemote();
+        void hydrateRemote().then(() => { if (!cancelled) setupRealtime(); });
       }
     });
 
     return () => {
       cancelled = true;
+      realtimeUnsubRef.current?.();
+      realtimeUnsubRef.current = null;
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
     };
   }, []);
 

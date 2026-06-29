@@ -15,10 +15,14 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
+  const [showResend, setShowResend] = useState(false);
+  const [resendSent, setResendSent] = useState(false);
 
   function reset() {
     setError("");
     setSent(false);
+    setShowResend(false);
+    setResendSent(false);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -38,6 +42,7 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
       const { error: err } = await remote.signInWithPassword(email, password);
       if (err) {
         setError(translateError(err.message));
+        if (err.message.includes("Email not confirmed")) setShowResend(true);
       } else {
         showToast("Sesión iniciada.");
         onClose();
@@ -185,6 +190,21 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
         </label>
 
         {error && <p className="form-error">{error}</p>}
+        {showResend && !resendSent && (
+          <button
+            type="button"
+            className="account-resend-btn"
+            onClick={async () => {
+              const { error: err } = await remote.resendConfirmation(email);
+              if (!err) setResendSent(true);
+            }}
+          >
+            Reenviar email de confirmación
+          </button>
+        )}
+        {resendSent && (
+          <p className="account-resend-ok">Email reenviado. Revisa tu bandeja.</p>
+        )}
 
         <button className="primary-button" type="submit" disabled={loading}>
           {loading ? "Cargando…" : isRegister ? "Crear cuenta" : "Entrar"}

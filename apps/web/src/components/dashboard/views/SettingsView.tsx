@@ -18,6 +18,7 @@ interface Props {
 }
 
 const DELETE_WORD = "BORRAR";
+const DELETE_ACCOUNT_WORD = "ELIMINAR";
 
 export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfigured, onShowOnboarding, onStartTour }: Props) {
   const { state, mutate, showToast, authUser, resetAll } = useFoodOS();
@@ -28,6 +29,9 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
   const [exportMonth, setExportMonth] = useState(now.getMonth() + 1);
   const [showDeleteZone, setShowDeleteZone] = useState(false);
   const [deleteWord, setDeleteWord] = useState("");
+  const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [deleteAccountWord, setDeleteAccountWord] = useState("");
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   function set<K extends keyof typeof s>(key: K, value: (typeof s)[K]) {
     mutate((draft) => { draft.settings[key] = value; });
@@ -45,6 +49,19 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     setShowDeleteZone(false);
     setDeleteWord("");
     showToast("Todos los datos han sido eliminados.");
+  }
+
+  async function handleDeleteAccount() {
+    if (deleteAccountWord !== DELETE_ACCOUNT_WORD) return;
+    setDeletingAccount(true);
+    const { error } = await remote.deleteAccount();
+    setDeletingAccount(false);
+    if (error) {
+      showToast(`Error al eliminar la cuenta: ${error}`);
+      return;
+    }
+    resetAll();
+    showToast("Cuenta eliminada permanentemente.");
   }
 
   return (
@@ -65,6 +82,47 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
             >
               Cerrar sesión
             </button>
+
+            <div className="settings-cuenta-danger">
+              <p className="settings-cuenta-danger-label">Zona de eliminación permanente</p>
+              {!showDeleteAccount ? (
+                <button className="danger-button danger-button--small" onClick={() => setShowDeleteAccount(true)}>
+                  Eliminar cuenta permanentemente
+                </button>
+              ) : (
+                <div className="delete-confirm-zone">
+                  <p className="delete-confirm-label">
+                    Esto borrará tu cuenta y todos tus datos de forma irreversible.<br />
+                    Escribe <strong>{DELETE_ACCOUNT_WORD}</strong> para confirmar:
+                  </p>
+                  <input
+                    type="text"
+                    className="delete-confirm-input"
+                    value={deleteAccountWord}
+                    onChange={(e) => setDeleteAccountWord(e.target.value.toUpperCase())}
+                    placeholder={DELETE_ACCOUNT_WORD}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <div className="delete-confirm-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={() => { setShowDeleteAccount(false); setDeleteAccountWord(""); }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      className="danger-button"
+                      disabled={deleteAccountWord !== DELETE_ACCOUNT_WORD || deletingAccount}
+                      onClick={handleDeleteAccount}
+                    >
+                      {deletingAccount ? "Eliminando…" : "Confirmar eliminación"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <p className="form-intro">No hay sesión activa. Los datos se guardan solo en este navegador.</p>

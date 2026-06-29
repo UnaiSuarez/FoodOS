@@ -116,6 +116,37 @@ class RemoteAdapter {
     return this.client!.auth.signOut();
   }
 
+  resendConfirmation(email: string) {
+    return this.client!.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: `${window.location.origin}/dashboard` },
+    });
+  }
+
+  async deleteAccount(): Promise<{ error: string | null }> {
+    if (!this.client || !this.user) return { error: "No hay sesión activa" };
+    const { error } = await this.client.functions.invoke("delete-account");
+    if (error) return { error: error.message };
+    return { error: null };
+  }
+
+  subscribeRealtime(onRefresh: () => void): () => void {
+    if (!this.client || !this.user) return () => {};
+    const userId = this.user.id;
+    const channel = this.client
+      .channel(`foodos-${userId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items", filter: `owner_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "gastos", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "shopping_items", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "food_log", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "nutrition_goals", filter: `user_id=eq.${userId}` }, onRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "ingresos_fuentes", filter: `user_id=eq.${userId}` }, onRefresh)
+      .subscribe();
+    return () => { void this.client?.removeChannel(channel); };
+  }
+
   // Crea (si faltan) perfil, almacenes base y lista de compra, y cachea ids.
   async ensureBaseRows(): Promise<void> {
     const client = this.client!;
