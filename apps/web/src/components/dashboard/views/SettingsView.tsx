@@ -17,13 +17,17 @@ interface Props {
   onStartTour?: () => void;
 }
 
+const DELETE_WORD = "BORRAR";
+
 export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfigured, onShowOnboarding, onStartTour }: Props) {
-  const { state, mutate, showToast, authUser } = useFoodOS();
+  const { state, mutate, showToast, authUser, resetAll } = useFoodOS();
   const s = state.settings;
 
   const now = new Date();
   const [exportYear, setExportYear] = useState(now.getFullYear());
   const [exportMonth, setExportMonth] = useState(now.getMonth() + 1);
+  const [showDeleteZone, setShowDeleteZone] = useState(false);
+  const [deleteWord, setDeleteWord] = useState("");
 
   function set<K extends keyof typeof s>(key: K, value: (typeof s)[K]) {
     mutate((draft) => { draft.settings[key] = value; });
@@ -35,9 +39,12 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     });
   }
 
-  function resetDefaults() {
-    mutate((draft) => { draft.settings = { ...DEFAULT_SETTINGS }; });
-    showToast("Ajustes restaurados a valores por defecto");
+  function handleDeleteAll() {
+    if (deleteWord !== DELETE_WORD) return;
+    resetAll();
+    setShowDeleteZone(false);
+    setDeleteWord("");
+    showToast("Todos los datos han sido eliminados.");
   }
 
   return (
@@ -272,27 +279,50 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
         </p>
       </article>
 
-      <div className="settings-footer">
-        {onShowOnboarding && (
-          <button className="secondary-button" onClick={() => {
-            localStorage.removeItem("foodos-ob-done");
-            onShowOnboarding();
-          }}>
-            ▶ Ver onboarding de nuevo
+      {/* Zona de peligro */}
+      <article className="panel settings-section settings-danger-zone">
+        <h2>Zona de peligro</h2>
+        <p className="form-intro">
+          Elimina permanentemente todos tus datos de FoodOS: inventario, recetas, registro de comidas,
+          finanzas, planificador y ajustes. Esta acción no se puede deshacer.
+        </p>
+        {!showDeleteZone ? (
+          <button className="danger-button" onClick={() => setShowDeleteZone(true)}>
+            Borrar todos los datos
           </button>
+        ) : (
+          <div className="delete-confirm-zone">
+            <p className="delete-confirm-label">
+              Escribe <strong>{DELETE_WORD}</strong> para confirmar el borrado:
+            </p>
+            <input
+              type="text"
+              className="delete-confirm-input"
+              value={deleteWord}
+              onChange={(e) => setDeleteWord(e.target.value.toUpperCase())}
+              placeholder={DELETE_WORD}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            <div className="delete-confirm-actions">
+              <button
+                className="secondary-button"
+                onClick={() => { setShowDeleteZone(false); setDeleteWord(""); }}
+              >
+                Cancelar
+              </button>
+              <button
+                className="danger-button"
+                disabled={deleteWord !== DELETE_WORD}
+                onClick={handleDeleteAll}
+              >
+                Confirmar borrado
+              </button>
+            </div>
+          </div>
         )}
-        {onStartTour && (
-          <button className="secondary-button" onClick={() => {
-            localStorage.removeItem("foodos-tour-done");
-            onStartTour();
-          }}>
-            ◎ Tour por la app
-          </button>
-        )}
-        <button className="secondary-button" onClick={resetDefaults}>
-          Restaurar valores por defecto
-        </button>
-      </div>
+      </article>
 
       {/* Solo admin */}
       {isAdmin && (
@@ -300,7 +330,31 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
           <p className="eyebrow">Admin</p>
           <h2>Herramientas de desarrollo</h2>
           <p className="form-intro">Visibles solo para usuarios administradores.</p>
-          <div className="settings-grid">
+          <div className="settings-footer">
+            {onShowOnboarding && (
+              <button className="secondary-button" onClick={() => {
+                localStorage.removeItem("foodos-ob-done");
+                onShowOnboarding();
+              }}>
+                ▶ Ver onboarding
+              </button>
+            )}
+            {onStartTour && (
+              <button className="secondary-button" onClick={() => {
+                localStorage.removeItem("foodos-tour-done");
+                onStartTour();
+              }}>
+                ◎ Tour por la app
+              </button>
+            )}
+            <button className="secondary-button" onClick={() => {
+              mutate((draft) => { draft.settings = { ...DEFAULT_SETTINGS }; });
+              showToast("Ajustes restaurados a valores por defecto");
+            }}>
+              Restaurar ajustes
+            </button>
+          </div>
+          <div className="settings-grid" style={{ marginTop: 16 }}>
             <label className="settings-field">
               <span>Fecha simulada</span>
               <input

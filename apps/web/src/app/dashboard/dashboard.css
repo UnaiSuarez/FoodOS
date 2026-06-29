@@ -7478,3 +7478,100 @@ button.secondary-button.small {
 .planner-selection-banner button:hover {
   background: rgba(0, 0, 0, 0.25);
 }
+
+/* ============================================
+   SETTINGS — zona de peligro
+   ============================================ */
+
+.settings-danger-zone {
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 12px;
+}
+
+.settings-danger-zone h2 {
+  color: #ef4444;
+}
+
+.danger-button {
+  padding: 10px 20px;
+  border: 1px solid #ef4444;
+  border-radius: 8px;
+  background: transparent;
+  color: #ef4444;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  width: fit-content;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: #ef4444;
+  color: #fff;
+}
+
+.danger-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.delete-confirm-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px dashed rgba(239, 68, 68, 0.35);
+  border-radius: 10px;
+}
+
+.delete-confirm-label {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+}
+
+.delete-confirm-label strong {
+  color: #ef4444;
+  font-family: monospace;
+  letter-spacing: 0.05em;
+}
+
+.delete-confirm-input {
+  padding: 10px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.05);
+  color: #ef4444;
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-align: center;
+  outline: none;
+  width: 100%;
+}
+
+.delete-confirm-input:focus {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
+.delete-confirm-input::placeholder {
+  color: rgba(239, 68, 68, 0.35);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 10px;
+}
+
+[data-theme="light"] .delete-confirm-zone {
+  background: rgba(239, 68, 68, 0.04);
+}
+
+[data-theme="light"] .delete-confirm-input {
+  background: #fff;
+}
