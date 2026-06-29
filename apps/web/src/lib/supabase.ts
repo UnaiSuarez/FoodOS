@@ -15,6 +15,8 @@ export function hasSupabaseConfig(): boolean {
 
 export function getSupabase(): SupabaseClient | null {
   if (!hasSupabaseConfig()) return null;
-  if (!client) client = createClient(url!, anonKey!);
+  if (!client) client = createClient(url!, anonKey!, {
+    auth: { flowType: "pkce" },
+  });
   return client;
 }

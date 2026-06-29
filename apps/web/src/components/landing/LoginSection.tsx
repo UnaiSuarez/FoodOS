@@ -23,7 +23,7 @@ export function LoginSection() {
     const sb = getSupabase()!;
     await sb.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: `${window.location.origin}/dashboard` },
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
   }
 
