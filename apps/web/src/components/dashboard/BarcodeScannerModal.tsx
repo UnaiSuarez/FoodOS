@@ -37,7 +37,9 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
   const scanningRef = useRef(false);
 
   useEffect(() => {
+    void startCamera();
     return () => stopCamera();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function startCamera() {
