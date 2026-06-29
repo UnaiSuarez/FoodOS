@@ -6785,7 +6785,7 @@ button.secondary-button.small {
 }
 .cat-budget-name {
   font-size: 0.69rem;
-  color: var(--fg-muted);
+  color: var(--muted);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -6841,4 +6841,234 @@ button.secondary-button.small {
   text-align: right;
 }
 .cat-budget-rem.neg { color: #f87171; }
+
+/* ── StatsView ──────────────────────────────────────────────────── */
+.stats-two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.stats-cat-list {
+  display: grid;
+  gap: 9px;
+}
+
+.stats-cat-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 64px;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.stats-cat-name {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stats-cat-bar-wrap {
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(240, 244, 238, 0.09);
+  overflow: hidden;
+}
+
+.stats-cat-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 0.35s ease;
+}
+
+.stats-cat-amt {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* ── modal-card / modal-head (BarcodeScannerModal & outros) ─────── */
+.modal-card {
+  width: min(480px, calc(100vw - 32px));
+  max-height: min(88vh, 860px);
+  overflow: auto;
+  border: 1px solid rgba(240, 244, 238, 0.14);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+  box-shadow: 0 28px 120px rgba(0, 0, 0, 0.6);
+  padding: 20px;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: clamp(22px, 4vw, 34px);
+}
+
+/* ── Modo claro — overrides estructurales ───────────────────────── */
+[data-theme="light"] .sidebar {
+  background: rgba(228, 243, 220, 0.94);
+  border-right-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .nav-item {
+  color: var(--muted);
+}
+
+[data-theme="light"] .nav-item.active,
+[data-theme="light"] .nav-item:hover {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.07);
+}
+
+[data-theme="light"] .nav-item span {
+  background: rgba(21, 128, 61, 0.12);
+}
+
+[data-theme="light"] .mascot-panel {
+  background: rgba(200, 230, 195, 0.82);
+  border-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .metric-card,
+[data-theme="light"] .panel {
+  background: rgba(250, 255, 248, 0.88);
+}
+
+[data-theme="light"] .hero-panel {
+  background:
+    linear-gradient(90deg, rgba(244, 248, 242, 0.96), rgba(244, 248, 242, 0.74)),
+    url("/images/foodos-hero.webp") center/cover;
+}
+
+[data-theme="light"] .card,
+[data-theme="light"] .cart-summary div,
+[data-theme="light"] .finance-stats div,
+[data-theme="light"] .chart-card,
+[data-theme="light"] .category-breakdown,
+[data-theme="light"] .budget-card,
+[data-theme="light"] .macro-item,
+[data-theme="light"] .recipe-section,
+[data-theme="light"] .nutrition-totals div {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="light"] .feed-card,
+[data-theme="light"] .feed-comments {
+  background: rgba(255, 255, 255, 0.60);
+}
+
+[data-theme="light"] .recipe-card {
+  background: linear-gradient(180deg, rgba(21, 128, 61, 0.05), rgba(255, 255, 255, 0.55));
+}
+
+[data-theme="light"] .icon-button {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.07);
+}
+
+[data-theme="light"] .icon-button:hover {
+  background: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .secondary-button {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.08);
+}
+
+[data-theme="light"] .secondary-button:hover {
+  background: rgba(14, 24, 11, 0.14);
+}
+
+[data-theme="light"] .small-action {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.06);
+  border-color: rgba(14, 24, 11, 0.12);
+}
+
+[data-theme="light"] .small-action.good {
+  color: #fff;
+  background: var(--green);
+}
+
+[data-theme="light"] .filter {
+  color: var(--muted);
+  background: rgba(14, 24, 11, 0.06);
+}
+
+[data-theme="light"] .filter.active {
+  color: #fff;
+  background: var(--green);
+}
+
+[data-theme="light"] input,
+[data-theme="light"] select {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.80);
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .empty {
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .modal,
+[data-theme="light"] .modal-card {
+  background: var(--bg);
+  border-color: rgba(14, 24, 11, 0.15);
+}
+
+[data-theme="light"] .modal-header,
+[data-theme="light"] .modal-head {
+  background: rgba(244, 248, 242, 0.97);
+  border-bottom-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .bars i,
+[data-theme="light"] .category-track,
+[data-theme="light"] .macro-bar-track,
+[data-theme="light"] .stats-cat-bar-wrap,
+[data-theme="light"] .cat-budget-bar-wrap {
+  background: rgba(14, 24, 11, 0.10);
+}
+
+[data-theme="light"] .plan-day {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="light"] .plan-day.gym {
+  background: rgba(21, 128, 61, 0.05);
+}
+
+[data-theme="light"] .consume-controls {
+  background: rgba(21, 128, 61, 0.06);
+}
+
+[data-theme="light"] .profile-banner {
+  background: linear-gradient(90deg, rgba(21, 128, 61, 0.10), rgba(240, 250, 238, 0.65));
+}
+
+[data-theme="light"] .rule-bucket-card {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="light"] .cat-budget-input {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .barcode-input-row input {
+  background: rgba(255, 255, 255, 0.80);
+  border-color: rgba(14, 24, 11, 0.18);
+}
 

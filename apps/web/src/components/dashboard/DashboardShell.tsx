@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FoodOSProvider, useFoodOS, getMascot } from "@/lib/state";
 import { HomeView } from "./views/HomeView";
 import { DiaryView } from "./views/DiaryView";
@@ -22,19 +22,21 @@ import { loadAIConfig } from "@/lib/ai-config";
 import { OnboardingFlow } from "./OnboardingFlow";
 import { AppTour } from "./AppTour";
 import { MascotWidget } from "./MascotWidget";
+import { StatsView } from "./views/StatsView";
 
 const VIEWS = [
-  { id: "dashboard", icon: "⌂", label: "Panel", title: "Panel diario" },
-  { id: "diary", icon: "≣", label: "Registro", title: "Registro diario" },
-  { id: "inventory", icon: "□", label: "Inventario", title: "Inventario" },
-  { id: "recipes", icon: "◌", label: "Recetas", title: "Recetas" },
-  { id: "feed", icon: "▶", label: "Feed", title: "Feed social" },
-  { id: "cart", icon: "✓", label: "Carrito", title: "Carrito de compra" },
-  { id: "finance", icon: "€", label: "Finanzas", title: "Finanzas" },
-  { id: "nutrition", icon: "%", label: "Nutrición", title: "Nutrición" },
-  { id: "assistant", icon: "✦", label: "Asistente", title: "Asistente FoodOS" },
-  { id: "planner",   icon: "⊞", label: "Planificador", title: "Planificador semanal" },
-  { id: "settings",  icon: "⚙", label: "Ajustes",   title: "Ajustes de la app" },
+  { id: "dashboard",  icon: "⌂", label: "Panel",        title: "Panel diario" },
+  { id: "diary",      icon: "≣", label: "Registro",      title: "Registro diario" },
+  { id: "inventory",  icon: "□", label: "Inventario",    title: "Inventario" },
+  { id: "recipes",    icon: "◌", label: "Recetas",       title: "Recetas" },
+  { id: "feed",       icon: "▶", label: "Feed",          title: "Feed social" },
+  { id: "cart",       icon: "✓", label: "Carrito",       title: "Carrito de compra" },
+  { id: "finance",    icon: "€", label: "Finanzas",      title: "Finanzas" },
+  { id: "stats",      icon: "↗", label: "Estadísticas",  title: "Estadísticas" },
+  { id: "nutrition",  icon: "%", label: "Nutrición",     title: "Nutrición" },
+  { id: "assistant",  icon: "✦", label: "Asistente",     title: "Asistente FoodOS" },
+  { id: "planner",    icon: "⊞", label: "Planificador",  title: "Planificador semanal" },
+  { id: "settings",   icon: "⚙", label: "Ajustes",      title: "Ajustes de la app" },
 ] as const;
 
 export type ViewId = (typeof VIEWS)[number]["id"];
@@ -60,6 +62,17 @@ function DashboardInner() {
     return !localStorage.getItem("foodos-ob-done") && !state.profile;
   });
   const [tourActive, setTourActive] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  useEffect(() => {
+    const stored = localStorage.getItem("foodos-theme") as "dark" | "light" | null;
+    if (stored === "light") setTheme("light");
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("foodos-theme", theme);
+  }, [theme]);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -150,6 +163,14 @@ function DashboardInner() {
           </div>
           <div className="top-actions">
             <button
+              className="icon-button"
+              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+              aria-label={theme === "dark" ? "Modo claro" : "Modo oscuro"}
+            >
+              {theme === "dark" ? "☀" : "☽"}
+            </button>
+            <button
               className={`secondary-button ai-btn ${aiConfigured ? "configured" : ""}`}
               onClick={() => setAiConfigOpen(true)}
               title={aiConfigured ? "IA personal configurada" : "Conectar IA personal (gratis para ti)"}
@@ -199,6 +220,7 @@ function DashboardInner() {
             {view === "feed" && <FeedView openRecipe={setOpenRecipeId} />}
             {view === "cart" && <CartView />}
             {view === "finance" && <FinanceView />}
+            {view === "stats" && <StatsView />}
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
             {view === "planner"   && <PlannerView />}

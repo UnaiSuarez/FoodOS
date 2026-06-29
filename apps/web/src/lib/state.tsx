@@ -814,6 +814,32 @@ export function countLowProteinDays(state: FoodOSState): number {
   return count;
 }
 
+/** Movimientos agrupados por mes (últimos N meses) — solo registros explícitos en expenses. */
+export function getMonthlyFinanceHistory(
+  state: FoodOSState,
+  months = 6
+): Array<{ month: string; label: string; expenses: number; income: number; savings: number }> {
+  const MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+  const now = new Date();
+  return Array.from({ length: months }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (months - 1 - i), 1);
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const monthExpenses = state.expenses
+      .filter((e) => e.type === "expense" && e.date.startsWith(monthKey))
+      .reduce((s, e) => s + Number(e.amount), 0);
+    const monthIncome = state.expenses
+      .filter((e) => e.type === "income" && e.date.startsWith(monthKey))
+      .reduce((s, e) => s + Number(e.amount), 0);
+    return {
+      month: monthKey,
+      label: MONTH_LABELS[d.getMonth()],
+      expenses: Math.round(monthExpenses),
+      income: Math.round(monthIncome),
+      savings: Math.round(monthIncome - monthExpenses),
+    };
+  });
+}
+
 /** Totales de macros por día en los últimos N días (para gráficas). */
 export function getWeeklyMacroHistory(
   state: FoodOSState,
