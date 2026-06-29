@@ -56,6 +56,8 @@ export const defaultState: FoodOSState = {
   plannerQuickMeals: [],
   debugDate: null,
   categoryBudgets: {},
+  routines: [],
+  workoutLog: [],
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -80,6 +82,8 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.mealPlan ||= {};
   next.plannerQuickMeals ||= [];
   next.categoryBudgets ||= {};
+  next.routines ||= [];
+  next.workoutLog ||= [];
   next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };

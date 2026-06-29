@@ -16,6 +16,7 @@ import { NutritionView } from "./views/NutritionView";
 import { AssistantView } from "./views/AssistantView";
 import { SettingsView } from "./views/SettingsView";
 import { PlannerView } from "./views/PlannerView";
+import { ExercisesView } from "./views/ExercisesView";
 import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
@@ -38,6 +39,7 @@ const VIEWS = [
   { id: "nutrition",  icon: "%", label: "Nutrición",     title: "Nutrición" },
   { id: "assistant",  icon: "✦", label: "Asistente",     title: "Asistente FoodOS" },
   { id: "planner",    icon: "⊞", label: "Planificador",  title: "Planificador semanal" },
+  { id: "ejercicios", icon: "⊙", label: "Ejercicios",    title: "Ejercicios" },
 ] as const;
 
 export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
@@ -255,7 +257,8 @@ function DashboardInner() {
             {view === "stats" && <StatsView />}
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
-            {view === "planner"   && <PlannerView />}
+            {view === "planner"    && <PlannerView />}
+            {view === "ejercicios" && <ExercisesView />}
             {view === "settings"  && (
               <SettingsView
                 isAdmin={isAdmin}

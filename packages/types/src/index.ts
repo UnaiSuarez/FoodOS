@@ -243,6 +243,41 @@ export interface QuickMeal {
   cost: number;
 }
 
+// ---------- Ejercicios y rutinas ----------
+
+export interface ExerciseSet {
+  reps: number;
+  weight?: number | null; // kg, null para ejercicios de peso corporal
+  rest?: number; // segundos de descanso entre series
+}
+
+export interface RoutineExercise {
+  exerciseId: string; // ID de wger o "custom-N" / "ai-N"
+  name: string;
+  sets: ExerciseSet[];
+  notes?: string;
+}
+
+export interface Routine {
+  id: string;
+  name: string;
+  goal: string; // fat_loss | muscle_gain | recomp | maintain | general
+  exercises: RoutineExercise[];
+  estimatedMinutes: number;
+  aiGenerated?: boolean;
+  createdAt: string; // ISO
+}
+
+export interface WorkoutSession {
+  id: string;
+  routineId?: string;
+  routineName: string;
+  date: string; // ISO yyyy-mm-dd
+  durationMin: number;
+  kcalBurned?: number;
+  notes?: string;
+}
+
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */
 export interface FoodOSState {
   inventory: InventoryItem[];
@@ -281,4 +316,8 @@ export interface FoodOSState {
   debugDate?: string | null;
   /** Presupuesto mensual por categoría (€), editable por el usuario. Clave = nombre de categoría. */
   categoryBudgets: Record<string, number>;
+  /** Rutinas de entrenamiento guardadas. */
+  routines: Routine[];
+  /** Historial de sesiones de entrenamiento. */
+  workoutLog: WorkoutSession[];
 }

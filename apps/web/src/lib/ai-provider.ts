@@ -1,4 +1,4 @@
-import type { FoodOSState, Recipe } from "@foodos/types";
+import type { FoodOSState, Recipe, Routine, GoalMode } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
 import { daysUntil, uid } from "./utils";
@@ -580,6 +580,71 @@ export async function importRecipeFromImage(config: AIConfig, base64: string, mi
   const json = JSON.parse(extractJSON(raw)) as Record<string, unknown>;
   if (json.error) throw new Error("No se detectó ninguna receta en la imagen.");
   return parseRecipe(raw);
+}
+
+const GOAL_LABELS: Record<GoalMode, string> = {
+  fat_loss: "Pérdida de grasa",
+  muscle_gain: "Ganancia muscular",
+  recomp: "Recomposición corporal",
+  maintain: "Mantenimiento",
+};
+
+export async function generateAIRoutine(
+  config: AIConfig,
+  goal: GoalMode,
+  weightKg: number,
+  gymDays: number,
+): Promise<Routine> {
+  checkRateLimit();
+  const goalLabel = GOAL_LABELS[goal] ?? goal;
+  const prompt = `Eres entrenador personal experto. Crea una rutina de entrenamiento. Responde SOLO con JSON válido, sin texto extra ni markdown.
+
+Objetivo: ${goalLabel}
+Peso corporal: ${weightKg} kg
+Días de gym/semana: ${gymDays}
+
+JSON requerido (exactamente este formato):
+{"name":"nombre descriptivo de la rutina","estimatedMinutes":45,"exercises":[{"name":"nombre en español","exerciseId":"ai-1","notes":"consejo breve","sets":[{"reps":10,"weight":null,"rest":60}]}]}
+
+Incluye 5-7 ejercicios. Pérdida de grasa: cardio + compuestos alta repetición (12-15). Ganancia muscular: compuestos pesados (5-8) + aislamiento. Recomposición: mix equilibrado (8-12). Peso null para ejercicios de peso corporal, número (kg) para cargas.`;
+
+  let text: string;
+  switch (config.provider) {
+    case "gemini":    text = await callGemini(config, prompt);    break;
+    case "openai":    text = await callOpenAI(config, prompt);    break;
+    case "anthropic": text = await callAnthropic(config, prompt); break;
+    case "ollama":    text = await callOllama(config, prompt);    break;
+  }
+
+  const json = JSON.parse(extractJSON(text!)) as {
+    name: string;
+    estimatedMinutes: number;
+    exercises: Array<{
+      name: string;
+      exerciseId?: string;
+      notes?: string;
+      sets: Array<{ reps: number; weight?: number | null; rest?: number }>;
+    }>;
+  };
+
+  return {
+    id: uid(),
+    name: String(json.name ?? "Rutina IA"),
+    goal,
+    estimatedMinutes: Number(json.estimatedMinutes) || 45,
+    exercises: (json.exercises ?? []).map((ex, i) => ({
+      exerciseId: ex.exerciseId ?? `ai-${i + 1}`,
+      name: String(ex.name ?? ""),
+      notes: ex.notes,
+      sets: (ex.sets ?? []).map((s) => ({
+        reps: Number(s.reps) || 10,
+        weight: s.weight ?? null,
+        rest: Number(s.rest) || 60,
+      })),
+    })),
+    aiGenerated: true,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 export async function testAIConnection(config: AIConfig): Promise<void> {
