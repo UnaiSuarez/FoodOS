@@ -9,15 +9,23 @@ function CallbackHandler() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    const code = searchParams.get("code");
     const supabase = getSupabase();
-    if (!code || !supabase) {
-      router.replace("/");
-      return;
+    if (!supabase) { router.replace("/"); return; }
+
+    const code = searchParams.get("code");
+
+    if (code) {
+      // PKCE flow: intercambia el código por sesión, luego redirige al dashboard.
+      supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
+        router.replace(error ? "/?error=auth" : "/dashboard");
+      });
+    } else {
+      // Implicit flow (hash tokens): el cliente Supabase los procesa automáticamente
+      // con detectSessionInUrl. Esperamos un tick para que termine y comprobamos sesión.
+      supabase.auth.getSession().then(({ data }) => {
+        router.replace(data.session ? "/dashboard" : "/");
+      });
     }
-    supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
-      router.replace(error ? "/?error=auth" : "/dashboard");
-    });
   }, [router, searchParams]);
 
   return (
