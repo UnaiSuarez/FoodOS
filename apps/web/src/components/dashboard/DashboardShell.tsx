@@ -56,6 +56,8 @@ function DashboardInner() {
     useFoodOS();
   const router = useRouter();
   const needsAuth = hasSupabaseConfig();
+  const adminEmails = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "").split(",").map((e) => e.trim()).filter(Boolean);
+  const isAdmin = authUser ? adminEmails.includes(authUser.email ?? "") : !needsAuth;
   const [view, setView] = useState<ViewId>("dashboard");
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -204,33 +206,37 @@ function DashboardInner() {
             <button className="secondary-button" onClick={() => setAccountOpen(true)} title="Cuenta FoodOS">
               Cuenta
             </button>
-            <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
-              ⇩
-            </button>
-            <label className="icon-button file-button" title="Importar datos desde JSON">
-              ⇧
-              <input
-                type="file"
-                accept="application/json,.json"
-                hidden
-                onChange={(event) => {
-                  void importData(event.target.files?.[0]);
-                  event.target.value = "";
-                }}
-              />
-            </label>
-            <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
-              ↻
-            </button>
-            <button
-              className="icon-button danger"
-              title="Borrar datos locales"
-              onClick={() => {
-                if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
-              }}
-            >
-              ×
-            </button>
+            {isAdmin && (
+              <>
+                <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
+                  ⇩
+                </button>
+                <label className="icon-button file-button" title="Importar datos desde JSON">
+                  ⇧
+                  <input
+                    type="file"
+                    accept="application/json,.json"
+                    hidden
+                    onChange={(event) => {
+                      void importData(event.target.files?.[0]);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+                <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
+                  ↻
+                </button>
+                <button
+                  className="icon-button danger"
+                  title="Borrar datos locales"
+                  onClick={() => {
+                    if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
+                  }}
+                >
+                  ×
+                </button>
+              </>
+            )}
           </div>
         </header>
 

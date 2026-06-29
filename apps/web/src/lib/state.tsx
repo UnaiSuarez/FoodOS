@@ -185,7 +185,16 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       setRemoteReady(true);
       remote.onAuthChange((user) => {
         setAuthUser(user);
-        if (user) void hydrateRemote();
+        if (user) {
+          // Nuevo usuario: limpiar estado local para evitar mezcla entre cuentas.
+          clearLocalState();
+          setState(structuredClone(defaultState));
+          void hydrateRemote();
+        } else {
+          // Logout: limpiar todo.
+          clearLocalState();
+          setState(structuredClone(defaultState));
+        }
       });
       if (remote.user) {
         setAuthUser(remote.user);
