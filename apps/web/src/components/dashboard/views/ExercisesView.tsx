@@ -87,6 +87,7 @@ function RoutinesTab() {
 
   const aiConfig = loadAIConfig();
   const profile  = state.profile;
+  const routines = state.routines ?? [];
 
   async function handleGenerateAI() {
     if (!aiConfig) { showToast("Configura la IA primero en Ajustes"); return; }
@@ -97,7 +98,7 @@ function RoutinesTab() {
         aiConfig,
         profile.goal,
         profile.weightKg,
-        profile.gymDays.length,
+        (profile.gymDays ?? []).length,
       );
       setAiPreview(routine);
       setShowAI(false);
@@ -153,7 +154,7 @@ function RoutinesTab() {
         <div className="routine-ai-card">
           <p className="routine-ai-desc">
             La IA generará una rutina basada en tu objetivo
-            {profile ? ` (${GOAL_LABELS[profile.goal]}, ${profile.gymDays.length} días/semana)` : ""}.
+            {profile ? ` (${GOAL_LABELS[profile.goal]}, ${(profile.gymDays ?? []).length} días/semana)` : ""}.
           </p>
           <div className="routine-ai-actions">
             <button className="primary-button" onClick={handleGenerateAI}>
@@ -178,7 +179,7 @@ function RoutinesTab() {
       )}
 
       {/* Routine list */}
-      {state.routines.length === 0 && !showCreate && !showAI && !aiPreview && (
+      {routines.length === 0 && !showCreate && !showAI && !aiPreview && (
         <div className="exercises-empty">
           <p className="exercises-empty-icon">⊙</p>
           <p className="exercises-empty-title">Sin rutinas todavía</p>
@@ -189,7 +190,7 @@ function RoutinesTab() {
       )}
 
       <div className="routines-list">
-        {state.routines.map((r) => (
+        {routines.map((r) => (
           <RoutineCard
             key={r.id}
             routine={r}
@@ -204,7 +205,7 @@ function RoutinesTab() {
           routine={logRoutine}
           onClose={() => setLogRoutine(null)}
           onSave={(session) => {
-            mutate((d) => { d.workoutLog.push(session); });
+            mutate((d) => { (d.workoutLog ??= []).push(session); });
             setLogRoutine(null);
             showToast("Sesión registrada");
           }}
@@ -591,9 +592,10 @@ function ExploreTab() {
   }, [categoryId]);
 
   function getExName(ex: WgerExerciseInfo): string {
+    const trans = ex.translations ?? [];
     return (
-      ex.translations.find((t) => t.language.short_name === "en")?.name ??
-      ex.translations[0]?.name ??
+      trans.find((t) => t.language?.short_name === "en")?.name ??
+      trans[0]?.name ??
       `Ejercicio ${ex.id}`
     );
   }
@@ -637,8 +639,8 @@ function ExploreTab() {
       <div className="explore-list">
         {exercises.map((ex) => {
           const name = getExName(ex);
-          const muscles = ex.muscles.map((m) => m.name_en).join(", ");
-          const equipment = ex.equipment.map((e) => e.name).join(", ");
+          const muscles = (ex.muscles ?? []).map((m) => m.name_en).join(", ");
+          const equipment = (ex.equipment ?? []).map((e) => e.name).join(", ");
           const isAdding = addTarget === ex.id;
 
           return (
@@ -699,7 +701,7 @@ function ExploreTab() {
 function HistoryTab() {
   const { state, mutate, showToast } = useFoodOS();
 
-  const sessions = [...state.workoutLog].sort((a, b) => b.date.localeCompare(a.date));
+  const sessions = [...(state.workoutLog ?? [])].sort((a, b) => b.date.localeCompare(a.date));
 
   // Weekly summary
   const today = new Date();
