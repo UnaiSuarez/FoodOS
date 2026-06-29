@@ -9,16 +9,14 @@ import type { Routine, RoutineExercise, WorkoutSession, GoalMode } from "@foodos
 
 // ─── wger API types ─────────────────────────────────────────────────────────
 interface WgerTranslation {
-  language: { id: number; short_name: string };
+  language: { id: number; short_name: string } | null;
   name: string;
-  description: string;
 }
 interface WgerExerciseInfo {
   id: number;
-  category: { id: number; name: string };
-  equipment: Array<{ id: number; name: string }>;
-  muscles: Array<{ id: number; name_en: string }>;
-  translations: WgerTranslation[];
+  equipment: Array<{ id: number; name: string }> | null;
+  muscles: Array<{ id: number; name_en: string }> | null;
+  translations: WgerTranslation[] | null;
 }
 interface WgerResponse {
   count: number;
@@ -35,10 +33,10 @@ const WGER_CATEGORIES = [
 ] as const;
 
 const GOAL_LABELS: Record<GoalMode, string> = {
-  fat_loss:     "Pérdida de grasa",
-  muscle_gain:  "Ganancia muscular",
-  recomp:       "Recomposición",
-  maintain:     "Mantenimiento",
+  fat_loss:    "Pérdida de grasa",
+  muscle_gain: "Ganancia muscular",
+  recomp:      "Recomposición",
+  maintain:    "Mantenimiento",
 };
 
 // ─── Main view ───────────────────────────────────────────────────────────────
@@ -87,6 +85,7 @@ function RoutinesTab() {
 
   const aiConfig = loadAIConfig();
   const profile  = state.profile;
+  // Defensive: routines may be undefined if stored state predates this field
   const routines = state.routines ?? [];
 
   async function handleGenerateAI() {
@@ -111,20 +110,19 @@ function RoutinesTab() {
 
   function savePreview() {
     if (!aiPreview) return;
-    mutate((d) => { d.routines.push(aiPreview); });
+    mutate((d) => { (d.routines ??= []).push(aiPreview); });
     setAiPreview(null);
     showToast("Rutina guardada");
   }
 
   function deleteRoutine(id: string) {
     if (!confirm("¿Eliminar esta rutina?")) return;
-    mutate((d) => { d.routines = d.routines.filter((r) => r.id !== id); });
+    mutate((d) => { d.routines = (d.routines ?? []).filter((r) => r.id !== id); });
     showToast("Rutina eliminada");
   }
 
   return (
     <div className="exercises-body">
-      {/* AI preview */}
       {aiPreview && (
         <RoutinePreviewCard
           routine={aiPreview}
@@ -133,7 +131,6 @@ function RoutinesTab() {
         />
       )}
 
-      {/* Action bar */}
       <div className="exercises-actions">
         <button
           className="primary-button"
@@ -154,7 +151,9 @@ function RoutinesTab() {
         <div className="routine-ai-card">
           <p className="routine-ai-desc">
             La IA generará una rutina basada en tu objetivo
-            {profile ? ` (${GOAL_LABELS[profile.goal]}, ${(profile.gymDays ?? []).length} días/semana)` : ""}.
+            {profile
+              ? ` (${GOAL_LABELS[profile.goal]}, ${(profile.gymDays ?? []).length} días/semana)`
+              : ""}.
           </p>
           <div className="routine-ai-actions">
             <button className="primary-button" onClick={handleGenerateAI}>
@@ -170,7 +169,7 @@ function RoutinesTab() {
       {showCreate && (
         <CreateRoutineForm
           onSave={(r) => {
-            mutate((d) => { d.routines.push(r); });
+            mutate((d) => { (d.routines ??= []).push(r); });
             setShowCreate(false);
             showToast("Rutina creada");
           }}
@@ -178,7 +177,6 @@ function RoutinesTab() {
         />
       )}
 
-      {/* Routine list */}
       {routines.length === 0 && !showCreate && !showAI && !aiPreview && (
         <div className="exercises-empty">
           <p className="exercises-empty-icon">⊙</p>
@@ -215,7 +213,7 @@ function RoutinesTab() {
   );
 }
 
-// ─── Routine card (collapsed by default) ────────────────────────────────────
+// ─── Routine card ────────────────────────────────────────────────────────────
 function RoutineCard({
   routine,
   onDelete,
@@ -227,6 +225,7 @@ function RoutineCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const label = GOAL_LABELS[routine.goal as GoalMode] ?? routine.goal;
+  const exercises = routine.exercises ?? [];
 
   return (
     <div className="routine-card">
@@ -245,11 +244,11 @@ function RoutineCard({
       {expanded && (
         <div className="routine-card-body">
           <ul className="routine-exercises-list">
-            {routine.exercises.map((ex, i) => (
+            {exercises.map((ex, i) => (
               <li key={i} className="routine-exercise-item">
                 <span className="routine-exercise-name">{ex.name}</span>
                 <div className="routine-exercise-sets">
-                  {ex.sets.map((s, j) => (
+                  {(ex.sets ?? []).map((s, j) => (
                     <span key={j} className="set-badge">
                       {s.reps} rep{s.reps !== 1 ? "s" : ""}
                       {s.weight != null ? ` · ${s.weight} kg` : ""}
@@ -276,7 +275,7 @@ function RoutineCard({
   );
 }
 
-// ─── Preview card for AI-generated routine ──────────────────────────────────
+// ─── AI routine preview ──────────────────────────────────────────────────────
 function RoutinePreviewCard({
   routine,
   onSave,
@@ -286,6 +285,7 @@ function RoutinePreviewCard({
   onSave: () => void;
   onDiscard: () => void;
 }) {
+  const exercises = routine.exercises ?? [];
   return (
     <div className="routine-preview-card">
       <p className="eyebrow">Vista previa de rutina IA</p>
@@ -294,15 +294,18 @@ function RoutinePreviewCard({
         {GOAL_LABELS[routine.goal as GoalMode] ?? routine.goal} · {routine.estimatedMinutes} min estimados
       </p>
       <ul className="routine-preview-list">
-        {routine.exercises.map((ex, i) => (
-          <li key={i} className="routine-preview-item">
-            <strong>{ex.name}</strong>
-            {" — "}
-            {ex.sets.length} series × {ex.sets[0]?.reps ?? "?"} reps
-            {ex.sets[0]?.weight != null ? ` · ${ex.sets[0].weight} kg` : ""}
-            {ex.notes ? <em> ({ex.notes})</em> : null}
-          </li>
-        ))}
+        {exercises.map((ex, i) => {
+          const sets = ex.sets ?? [];
+          return (
+            <li key={i} className="routine-preview-item">
+              <strong>{ex.name}</strong>
+              {" — "}
+              {sets.length} series × {sets[0]?.reps ?? "?"} reps
+              {sets[0]?.weight != null ? ` · ${sets[0].weight} kg` : ""}
+              {ex.notes ? <em> ({ex.notes})</em> : null}
+            </li>
+          );
+        })}
       </ul>
       <div className="routine-preview-actions">
         <button className="primary-button" onClick={onSave}>
@@ -324,14 +327,14 @@ function CreateRoutineForm({
   onSave: (r: Routine) => void;
   onCancel: () => void;
 }) {
-  const [name, setName]     = useState("");
-  const [goal, setGoal]     = useState<GoalMode>("fat_loss");
-  const [mins, setMins]     = useState(45);
+  const [name, setName]           = useState("");
+  const [goal, setGoal]           = useState<GoalMode>("fat_loss");
+  const [mins, setMins]           = useState(45);
   const [exercises, setExercises] = useState<RoutineExercise[]>([]);
-  const [exName, setExName] = useState("");
-  const [sets, setSets]     = useState(3);
-  const [reps, setReps]     = useState(10);
-  const [rest, setRest]     = useState(60);
+  const [exName, setExName]       = useState("");
+  const [sets, setSets]           = useState(3);
+  const [reps, setReps]           = useState(10);
+  const [rest, setRest]           = useState(60);
 
   function addExercise() {
     if (!exName.trim()) return;
@@ -434,7 +437,7 @@ function CreateRoutineForm({
           {exercises.map((ex, i) => (
             <li key={i} className="create-exercise-item">
               <span>
-                {ex.name} — {ex.sets.length}×{ex.sets[0]?.reps}
+                {ex.name} — {(ex.sets ?? []).length}×{ex.sets?.[0]?.reps}
               </span>
               <button
                 type="button"
@@ -475,10 +478,10 @@ function LogSessionModal({
   onSave: (s: WorkoutSession) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
-  const [date, setDate]     = useState(today);
-  const [duration, setDur]  = useState(routine.estimatedMinutes);
-  const [kcal, setKcal]     = useState<number | "">(0);
-  const [notes, setNotes]   = useState("");
+  const [date, setDate]    = useState(today);
+  const [duration, setDur] = useState(routine.estimatedMinutes ?? 45);
+  const [kcal, setKcal]    = useState<number | "">(0);
+  const [notes, setNotes]  = useState("");
 
   function handleSave() {
     onSave({
@@ -559,12 +562,15 @@ function LogSessionModal({
 // ─── Explore tab ─────────────────────────────────────────────────────────────
 function ExploreTab() {
   const { state, mutate, showToast } = useFoodOS();
-  const [categoryId, setCategoryId] = useState<number>(12); // Espalda por defecto
+  const [categoryId, setCategoryId] = useState<number>(12);
   const [exercises, setExercises]   = useState<WgerExerciseInfo[]>([]);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState<string | null>(null);
-  const [addTarget, setAddTarget]   = useState<number | null>(null); // wger id
+  const [addTarget, setAddTarget]   = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Defensive read — same as RoutinesTab
+  const routines = state.routines ?? [];
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -605,11 +611,15 @@ function ExploreTab() {
     const newEx: RoutineExercise = {
       exerciseId: String(ex.id),
       name,
-      sets: [{ reps: 10, weight: null, rest: 60 }, { reps: 10, weight: null, rest: 60 }, { reps: 10, weight: null, rest: 60 }],
+      sets: [
+        { reps: 10, weight: null, rest: 60 },
+        { reps: 10, weight: null, rest: 60 },
+        { reps: 10, weight: null, rest: 60 },
+      ],
     };
     mutate((d) => {
-      const r = d.routines.find((r) => r.id === routineId);
-      if (r) r.exercises.push(newEx);
+      const r = (d.routines ?? []).find((r) => r.id === routineId);
+      if (r) (r.exercises ??= []).push(newEx);
     });
     setAddTarget(null);
     showToast(`"${name}" añadido a la rutina`);
@@ -638,10 +648,10 @@ function ExploreTab() {
 
       <div className="explore-list">
         {exercises.map((ex) => {
-          const name = getExName(ex);
-          const muscles = (ex.muscles ?? []).map((m) => m.name_en).join(", ");
+          const name      = getExName(ex);
+          const muscles   = (ex.muscles   ?? []).map((m) => m.name_en).join(", ");
           const equipment = (ex.equipment ?? []).map((e) => e.name).join(", ");
-          const isAdding = addTarget === ex.id;
+          const isAdding  = addTarget === ex.id;
 
           return (
             <div key={ex.id} className="exercise-card">
@@ -651,10 +661,10 @@ function ExploreTab() {
                   <button
                     className="secondary-button exercise-card-add"
                     onClick={() => {
-                      if (state.routines.length === 0) {
+                      if (routines.length === 0) {
                         showToast("Crea una rutina primero en 'Mis rutinas'");
-                      } else if (state.routines.length === 1) {
-                        addToRoutine(ex, state.routines[0].id);
+                      } else if (routines.length === 1) {
+                        addToRoutine(ex, routines[0].id);
                       } else {
                         setAddTarget(ex.id);
                       }
@@ -672,7 +682,7 @@ function ExploreTab() {
                       }}
                     >
                       <option value="" disabled>Elige rutina…</option>
-                      {state.routines.map((r) => (
+                      {routines.map((r) => (
                         <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
@@ -686,7 +696,7 @@ function ExploreTab() {
                 )}
               </div>
               <div className="exercise-card-meta">
-                {muscles && <span>Músculo: {muscles}</span>}
+                {muscles   && <span>Músculo: {muscles}</span>}
                 {equipment && <span>Equipo: {equipment}</span>}
               </div>
             </div>
@@ -701,9 +711,10 @@ function ExploreTab() {
 function HistoryTab() {
   const { state, mutate, showToast } = useFoodOS();
 
-  const sessions = [...(state.workoutLog ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+  const sessions = [...(state.workoutLog ?? [])].sort((a, b) =>
+    b.date.localeCompare(a.date),
+  );
 
-  // Weekly summary
   const today = new Date();
   const weekStart = new Date(today);
   weekStart.setDate(today.getDate() - today.getDay());
@@ -713,7 +724,9 @@ function HistoryTab() {
   const weekMins = thisWeek.reduce((sum, s) => sum + s.durationMin, 0);
 
   function deleteSession(id: string) {
-    mutate((d) => { d.workoutLog = d.workoutLog.filter((s) => s.id !== id); });
+    mutate((d) => {
+      d.workoutLog = (d.workoutLog ?? []).filter((s) => s.id !== id);
+    });
     showToast("Sesión eliminada");
   }
 
