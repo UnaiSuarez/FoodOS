@@ -268,6 +268,13 @@ export interface Routine {
   createdAt: string; // ISO
 }
 
+export interface CompletedExercise {
+  exerciseId: string;
+  name: string;
+  setsCompleted: number;
+  totalSets: number;
+}
+
 export interface WorkoutSession {
   id: string;
   routineId?: string;
@@ -276,6 +283,7 @@ export interface WorkoutSession {
   durationMin: number;
   kcalBurned?: number;
   notes?: string;
+  completedExercises?: CompletedExercise[];
 }
 
 /** Estado completo de la app. Se persiste en localStorage y se sincroniza con Supabase. */

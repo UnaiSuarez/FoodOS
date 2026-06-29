@@ -5,7 +5,8 @@ import { useFoodOS } from "@/lib/state";
 import { uid } from "@/lib/utils";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIRoutine } from "@/lib/ai-provider";
-import type { Routine, RoutineExercise, WorkoutSession, GoalMode } from "@foodos/types";
+import type { Routine, RoutineExercise, WorkoutSession, CompletedExercise, GoalMode } from "@foodos/types";
+import { estimateWorkoutKcal } from "@/lib/nutrition";
 
 // ─── wger API types ─────────────────────────────────────────────────────────
 interface WgerTranslation {
@@ -477,11 +478,46 @@ function LogSessionModal({
   onClose: () => void;
   onSave: (s: WorkoutSession) => void;
 }) {
+  const { state } = useFoodOS();
   const today = new Date().toISOString().slice(0, 10);
-  const [date, setDate]    = useState(today);
-  const [duration, setDur] = useState(routine.estimatedMinutes ?? 45);
-  const [kcal, setKcal]    = useState<number | "">(0);
-  const [notes, setNotes]  = useState("");
+  const defaultDur = routine.estimatedMinutes ?? 45;
+
+  // Auto-estimate kcal using MET 5.0 (fuerza moderada) + peso del perfil
+  const weightKg = state.profile?.weightKg ?? 75;
+  const defaultKcal = estimateWorkoutKcal(weightKg, defaultDur);
+
+  const [date, setDate]       = useState(today);
+  const [duration, setDur]    = useState(defaultDur);
+  const [kcal, setKcal]       = useState<number | "">(defaultKcal);
+  const [kcalEdited, setKcalEdited] = useState(false);
+  const [notes, setNotes]     = useState("");
+
+  // Exercise completion: starts all sets as "todo completado"
+  const exercises = routine.exercises ?? [];
+  const [completed, setCompleted] = useState<CompletedExercise[]>(() =>
+    exercises.map((ex) => ({
+      exerciseId: ex.exerciseId,
+      name: ex.name,
+      setsCompleted: (ex.sets ?? []).length,
+      totalSets: (ex.sets ?? []).length,
+    })),
+  );
+
+  // Re-estimate kcal when duration changes (unless user overrode it manually)
+  function handleDurChange(val: number) {
+    setDur(val);
+    if (!kcalEdited) {
+      setKcal(estimateWorkoutKcal(weightKg, val));
+    }
+  }
+
+  function setSetsCompleted(idx: number, val: number) {
+    setCompleted((prev) =>
+      prev.map((ex, i) =>
+        i === idx ? { ...ex, setsCompleted: Math.max(0, Math.min(val, ex.totalSets)) } : ex,
+      ),
+    );
+  }
 
   function handleSave() {
     onSave({
@@ -492,12 +528,13 @@ function LogSessionModal({
       durationMin: duration,
       kcalBurned: kcal === "" ? undefined : Number(kcal),
       notes: notes.trim() || undefined,
+      completedExercises: completed.length > 0 ? completed : undefined,
     });
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-panel log-session-panel" onClick={(e) => e.stopPropagation()}>
         <p className="eyebrow">Registrar sesión</p>
         <h3>{routine.name}</h3>
 
@@ -520,21 +557,64 @@ function LogSessionModal({
               className="form-input"
               value={duration}
               min={1}
-              onChange={(e) => setDur(Number(e.target.value))}
+              onChange={(e) => handleDurChange(Number(e.target.value))}
             />
           </label>
           <label className="form-label">
-            Kcal quemadas
+            <span>
+              Kcal quemadas
+              {!kcalEdited && (
+                <span className="log-kcal-hint"> (estimado)</span>
+              )}
+            </span>
             <input
               type="number"
               className="form-input"
               value={kcal}
               min={0}
-              placeholder="Opcional"
-              onChange={(e) => setKcal(e.target.value === "" ? "" : Number(e.target.value))}
+              onChange={(e) => {
+                setKcalEdited(true);
+                setKcal(e.target.value === "" ? "" : Number(e.target.value));
+              }}
             />
           </label>
         </div>
+
+        {/* Exercise completion checklist */}
+        {completed.length > 0 && (
+          <div className="log-exercises-section">
+            <p className="log-exercises-title">Ejercicios realizados</p>
+            <ul className="log-exercises-list">
+              {completed.map((ex, i) => (
+                <li key={i} className="log-exercise-row">
+                  <span className="log-exercise-name">{ex.name}</span>
+                  <div className="log-sets-control">
+                    <button
+                      type="button"
+                      className="log-sets-btn"
+                      onClick={() => setSetsCompleted(i, ex.setsCompleted - 1)}
+                      disabled={ex.setsCompleted === 0}
+                    >
+                      −
+                    </button>
+                    <span className={`log-sets-count ${ex.setsCompleted === ex.totalSets ? "done" : ex.setsCompleted === 0 ? "zero" : "partial"}`}>
+                      {ex.setsCompleted}/{ex.totalSets}
+                    </span>
+                    <button
+                      type="button"
+                      className="log-sets-btn"
+                      onClick={() => setSetsCompleted(i, ex.setsCompleted + 1)}
+                      disabled={ex.setsCompleted >= ex.totalSets}
+                    >
+                      +
+                    </button>
+                    <span className="log-sets-label">series</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <label className="form-label">
           Notas
@@ -548,7 +628,7 @@ function LogSessionModal({
 
         <div className="modal-actions">
           <button className="primary-button" onClick={handleSave}>
-            Guardar
+            Guardar sesión
           </button>
           <button className="secondary-button" onClick={onClose}>
             Cancelar
