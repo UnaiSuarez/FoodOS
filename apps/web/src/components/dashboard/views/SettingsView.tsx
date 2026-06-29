@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { DEFAULT_SETTINGS, useFoodOS } from "@/lib/state";
+import { DEFAULT_SETTINGS, getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
+import { uid } from "@/lib/utils";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
@@ -32,6 +33,7 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [deleteAccountWord, setDeleteAccountWord] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
+  const [showStateJson, setShowStateJson] = useState(false);
 
   function set<K extends keyof typeof s>(key: K, value: (typeof s)[K]) {
     mutate((draft) => { draft.settings[key] = value; });
@@ -49,6 +51,77 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     setShowDeleteZone(false);
     setDeleteWord("");
     showToast("Todos los datos han sido eliminados.");
+  }
+
+  function shiftDebugDate(deltaDays: number) {
+    const base = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
+    base.setDate(base.getDate() + deltaDays);
+    mutate((draft) => { draft.debugDate = base.toISOString().slice(0, 10); });
+  }
+
+  function clearDebugDate() {
+    mutate((draft) => { draft.debugDate = null; });
+  }
+
+  /** Borra comidas, agua y entrenamiento del día actual (o simulado) sin tocar inventario/recetas. */
+  function clearToday() {
+    const today = getToday(state);
+    mutate((draft) => {
+      draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
+      draft.waterLog[today] = 0;
+      draft.workoutLog = (draft.workoutLog ?? []).filter((session) => session.date !== today);
+    });
+    showToast(`Registro de ${today} borrado`);
+  }
+
+  /** Rellena los últimos 7 días con comidas, agua, peso y entrenamiento de ejemplo para probar Estadísticas. */
+  function seedHistorico() {
+    const meals = [
+      { name: "Avena con proteína", kcal: 380, protein: 28, carbs: 52, fat: 8, mealType: "breakfast" as const },
+      { name: "Pechuga de pollo con arroz", kcal: 520, protein: 42, carbs: 65, fat: 9, mealType: "lunch" as const },
+      { name: "Salmón con verduras", kcal: 440, protein: 38, carbs: 18, fat: 22, mealType: "dinner" as const },
+    ];
+    const todayBase = new Date(getToday(state));
+    mutate((draft) => {
+      for (let i = 1; i <= 7; i++) {
+        const d = new Date(todayBase);
+        d.setDate(d.getDate() - i);
+        const date = d.toISOString().slice(0, 10);
+
+        meals.forEach((meal, idx) => {
+          if (draft.foodLog.some((entry) => entry.date === date && entry.name === meal.name)) return;
+          draft.foodLog.push({
+            id: uid(),
+            date,
+            time: ["08:30", "13:30", "20:30"][idx],
+            qty: null,
+            unit: null,
+            source: "manual",
+            ...meal,
+          });
+        });
+
+        draft.waterLog[date] = 1600 + ((i * 137) % 1400);
+
+        if (!draft.weightLog.some((w) => w.date === date)) {
+          const base = state.profile?.weightKg ?? 75;
+          draft.weightLog.push({ date, kg: Math.round((base + (i % 3 === 0 ? -0.2 : 0.1) * i) * 10) / 10 });
+        }
+
+        if (i % 2 === 0) {
+          draft.workoutLog = draft.workoutLog ?? [];
+          draft.workoutLog.push({
+            id: uid(),
+            date,
+            routineName: "Sesión de ejemplo",
+            kcalBurned: 280 + (i * 17),
+            durationMin: 45,
+          });
+        }
+      }
+      draft.weightLog.sort((a, b) => a.date.localeCompare(b.date));
+    });
+    showToast("7 días de historial de ejemplo añadidos");
   }
 
   async function handleDeleteAccount() {
@@ -415,21 +488,61 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
           <div className="settings-grid" style={{ marginTop: 16 }}>
             <label className="settings-field">
               <span>Fecha simulada</span>
-              <input
-                type="date"
-                value={state.debugDate ?? ""}
-                onChange={(e) => {
-                  const val = e.target.value || null;
-                  mutate((draft) => { draft.debugDate = val; });
-                }}
-              />
+              <div className="settings-toggle-row">
+                <button className="secondary-button" onClick={() => shiftDebugDate(-1)} title="Día anterior" type="button">
+                  ←
+                </button>
+                <input
+                  type="date"
+                  value={state.debugDate ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value || null;
+                    mutate((draft) => { draft.debugDate = val; });
+                  }}
+                />
+                <button className="secondary-button" onClick={() => shiftDebugDate(1)} title="Día siguiente" type="button">
+                  →
+                </button>
+                {state.debugDate && (
+                  <button className="secondary-button" onClick={clearDebugDate} type="button">
+                    Volver a hoy real
+                  </button>
+                )}
+              </div>
               {state.debugDate && (
                 <small style={{ color: "var(--amber)" }}>
-                  ⚠ Fecha simulada activa: {state.debugDate}
+                  ⚠ Fecha simulada activa: {state.debugDate} — afecta a diario, agua y ejercicios.
                 </small>
               )}
             </label>
           </div>
+
+          <div className="settings-footer" style={{ marginTop: 16 }}>
+            <button className="secondary-button" onClick={seedHistorico}>
+              📊 Sembrar 7 días de historial
+            </button>
+            <button className="secondary-button" onClick={clearToday}>
+              🧹 Limpiar registro del día actual
+            </button>
+            <button className="secondary-button" onClick={() => setShowStateJson((v) => !v)}>
+              {showStateJson ? "Ocultar estado JSON" : "🔍 Ver estado JSON"}
+            </button>
+          </div>
+          {showStateJson && (
+            <pre
+              style={{
+                marginTop: 12,
+                maxHeight: 320,
+                overflow: "auto",
+                fontSize: 12,
+                background: "var(--bg-soft, #111)",
+                padding: 12,
+                borderRadius: 8,
+              }}
+            >
+              {JSON.stringify(state, null, 2)}
+            </pre>
+          )}
         </article>
       )}
     </section>

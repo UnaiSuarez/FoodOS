@@ -84,9 +84,12 @@ class RemoteAdapter {
   }
 
   signInWithGoogle() {
+    // El código PKCE se intercambia en /auth/callback antes de entrar al dashboard.
+    // Si se redirige directamente a la página actual, el guard de auth puede
+    // disparar antes de que termine el intercambio y devolver al landing.
     return this.client!.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: window.location.href },
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
   }
 
@@ -101,7 +104,7 @@ class RemoteAdapter {
   signInWithMagicLink(email: string) {
     return this.client!.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: window.location.href },
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
     });
   }
 
@@ -314,6 +317,7 @@ class RemoteAdapter {
         if (Array.isArray(extra.plannerQuickMeals)) state.plannerQuickMeals = extra.plannerQuickMeals;
         if (extra.categoryBudgets && typeof extra.categoryBudgets === "object") state.categoryBudgets = extra.categoryBudgets as typeof state.categoryBudgets;
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
+        if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
       }
     }
 
@@ -466,6 +470,7 @@ class RemoteAdapter {
           plannerQuickMeals: state.plannerQuickMeals ?? [],
           categoryBudgets:   state.categoryBudgets   ?? {},
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
+          debugDate:         state.debugDate         ?? null,
         },
         ...(state.profile
           ? {
