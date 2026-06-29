@@ -1,7 +1,6 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FoodOSProvider, useFoodOS, getMascot } from "@/lib/state";
@@ -90,12 +89,6 @@ function DashboardInner() {
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
 
-  const dataModeText = authUser
-    ? `Conectado a Supabase · ${authUser.email ?? "sesión activa"}`
-    : remoteReady
-      ? "Supabase configurado · inicia sesión para sincronizar"
-      : "Datos locales · Supabase sin conectar";
-
   function exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
@@ -154,9 +147,13 @@ function DashboardInner() {
       {/* Overlay para cerrar el menú en móvil */}
       <div className="menu-overlay" onClick={() => setMenuOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="Volver a la portada">
+        <button
+          className="brand"
+          onClick={() => { setView("dashboard"); setMenuOpen(false); }}
+          aria-label="Ir al panel principal"
+        >
           <span>Food</span>OS
-        </Link>
+        </button>
         <nav className="app-nav" aria-label="Navegación de la app">
           {VIEWS.map((entry) => (
             <button
@@ -178,9 +175,22 @@ function DashboardInner() {
             <p>{mascotMessage}</p>
           </div>
         </div>
-        <Link className="back-link" href="/">
-          &larr; Volver a la portada
-        </Link>
+        <button
+          className="sidebar-user"
+          onClick={() => { setView("settings"); setMenuOpen(false); }}
+          title="Ir a Ajustes"
+        >
+          <div className="sidebar-avatar">
+            {authUser?.email?.[0]?.toUpperCase() ?? "?"}
+          </div>
+          <div className="sidebar-user-info">
+            <span className="sidebar-user-email">
+              {authUser?.email ?? "Sin sesión"}
+            </span>
+            <span className="sidebar-user-action">Ajustes</span>
+          </div>
+          <span className="sidebar-user-caret" aria-hidden="true">→</span>
+        </button>
       </aside>
 
       <main className="app-main">
@@ -194,10 +204,7 @@ function DashboardInner() {
             >
               {menuOpen ? "✕" : "☰"}
             </button>
-            <div>
-              <p className="eyebrow">{dataModeText}</p>
-              <h1>{currentTitle}</h1>
-            </div>
+            <h1>{currentTitle}</h1>
           </div>
           <div className="top-actions">
             {isAdmin && (
