@@ -934,6 +934,38 @@ h1.hero-anim { animation-delay: 240ms; }
   text-align: center;
 }
 
+.login-error {
+  margin: 0;
+  color: var(--red);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.login-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(240, 244, 238, 0.12);
+  margin-bottom: 4px;
+}
+
+.login-tab {
+  flex: 1;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(240, 244, 238, 0.45);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.login-tab.active {
+  color: var(--green);
+  border-bottom-color: var(--green);
+}
+
+
 /* ---------- Footer ---------- */
 
 .site-footer {

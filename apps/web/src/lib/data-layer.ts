@@ -90,10 +90,24 @@ class RemoteAdapter {
     });
   }
 
+  signUpWithPassword(email: string, password: string) {
+    return this.client!.auth.signUp({ email, password });
+  }
+
+  signInWithPassword(email: string, password: string) {
+    return this.client!.auth.signInWithPassword({ email, password });
+  }
+
   signInWithMagicLink(email: string) {
     return this.client!.auth.signInWithOtp({
       email,
       options: { emailRedirectTo: window.location.href },
+    });
+  }
+
+  resetPassword(email: string) {
+    return this.client!.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/dashboard`,
     });
   }
 

@@ -3,7 +3,9 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { FoodOSProvider, useFoodOS, getMascot } from "@/lib/state";
+import { hasSupabaseConfig } from "@/lib/supabase";
 import { HomeView } from "./views/HomeView";
 import { DiaryView } from "./views/DiaryView";
 import { InventoryView } from "./views/InventoryView";
@@ -52,6 +54,8 @@ export function DashboardShell() {
 function DashboardInner() {
   const { state, hydrated, toast, mascotMessage, remoteReady, authUser, seedDemo, resetAll, showToast, mutate } =
     useFoodOS();
+  const router = useRouter();
+  const needsAuth = hasSupabaseConfig();
   const [view, setView] = useState<ViewId>("dashboard");
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -73,6 +77,12 @@ function DashboardInner() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("foodos-theme", theme);
   }, [theme]);
+
+  // Auth guard: si Supabase está configurado y no hay sesión, volver al landing.
+  useEffect(() => {
+    if (!needsAuth) return;
+    if (remoteReady && !authUser) void router.replace("/");
+  }, [needsAuth, remoteReady, authUser, router]);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
@@ -118,6 +128,19 @@ function DashboardInner() {
   function startTour() {
     setTourActive(true);
   }
+
+  // Pantalla de carga mientras Supabase comprueba la sesión
+  if (needsAuth && !remoteReady) {
+    return (
+      <div className="auth-checking">
+        <p className="eyebrow">FoodOS</p>
+        <p>Comprobando sesión…</p>
+      </div>
+    );
+  }
+
+  // Supabase listo pero sin sesión — la redirección está en vuelo
+  if (needsAuth && remoteReady && !authUser) return null;
 
   return (
     <>
