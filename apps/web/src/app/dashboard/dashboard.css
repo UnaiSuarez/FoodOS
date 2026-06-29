@@ -2420,6 +2420,23 @@ select:focus {
   font-size: 11.5px;
 }
 
+/* ---------- Offline banner ---------- */
+
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1a1a1a;
+  background: var(--amber, #f59e0b);
+  letter-spacing: 0.01em;
+}
+
 /* ---------- Toast ---------- */
 
 .toast {

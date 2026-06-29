@@ -505,6 +505,14 @@ export function getWaterToday(state: FoodOSState): number {
   return state.waterLog[getToday(state)] ?? 0;
 }
 
+/** kcal quemadas en sesiones de entrenamiento registradas hoy. */
+export function getKcalBurnedToday(state: FoodOSState): number {
+  const today = getToday(state);
+  return (state.workoutLog ?? [])
+    .filter((s) => s.date === today && (s.kcalBurned ?? 0) > 0)
+    .reduce((sum, s) => sum + (s.kcalBurned ?? 0), 0);
+}
+
 /** Diario agrupado por dia (mas reciente primero), con totales. */
 export function getLogByDay(state: FoodOSState): Array<{
   date: string;
@@ -539,11 +547,14 @@ export function getLogByDay(state: FoodOSState): Array<{
     }));
 }
 
-/** Macros que quedan por consumir hoy. */
+/** Macros que quedan por consumir hoy.
+ *  Las kcal quemadas en el entrenamiento amplían el presupuesto calórico del día:
+ *  déficit real = TDEE + ejercicio − ingeridas → el usuario puede comer más sin salir del plan. */
 export function getPendingMacros(state: FoodOSState): MacroTotals {
   const consumed = getConsumedToday(state);
+  const burnedToday = getKcalBurnedToday(state);
   return {
-    kcal: Math.max(0, state.nutrition.kcal - consumed.kcal),
+    kcal: Math.max(0, state.nutrition.kcal + burnedToday - consumed.kcal),
     protein: Math.max(0, state.nutrition.protein - consumed.protein),
     carbs: Math.max(0, state.nutrition.carbs - consumed.carbs),
     fat: Math.max(0, state.nutrition.fat - consumed.fat),

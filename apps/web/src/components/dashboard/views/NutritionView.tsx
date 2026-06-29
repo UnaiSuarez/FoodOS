@@ -9,6 +9,7 @@ import {
   findRecipe,
   getAdherenceStreak,
   getConsumedToday,
+  getKcalBurnedToday,
   getLatestWeight,
   getMacroAdherenceHistory,
   getProteinRanking,
@@ -737,13 +738,17 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
 
 function TodayRingPanel() {
   const { state } = useFoodOS();
-  const consumed = getConsumedToday(state);
-  const targets  = state.nutrition;
-  const profile  = state.profile;
-  const gymToday = profile ? isGymDay(profile) : false;
+  const consumed    = getConsumedToday(state);
+  const burnedToday = getKcalBurnedToday(state);
+  const targets     = state.nutrition;
+  const profile     = state.profile;
+  const gymToday    = profile ? isGymDay(profile) : false;
+
+  // Las kcal quemadas amplían el presupuesto del día (déficit = TDEE + ejercicio − ingeridas).
+  const effectiveKcal = targets.kcal + burnedToday;
 
   const clamp = (v: number) => Math.min(100, Math.max(0, v));
-  const kcalPct = targets.kcal   > 0 ? clamp(Math.round((consumed.kcal    / targets.kcal)    * 100)) : 0;
+  const kcalPct = effectiveKcal > 0 ? clamp(Math.round((consumed.kcal    / effectiveKcal)   * 100)) : 0;
   const protPct = targets.protein > 0 ? clamp(Math.round((consumed.protein / targets.protein) * 100)) : 0;
   const carbPct = targets.carbs   > 0 ? clamp(Math.round((consumed.carbs   / targets.carbs)   * 100)) : 0;
   const fatPct  = targets.fat     > 0 ? clamp(Math.round((consumed.fat     / targets.fat)     * 100)) : 0;
@@ -761,11 +766,18 @@ function TodayRingPanel() {
     <article className="panel">
       <div className="panel-head">
         <h2>Resumen de hoy</h2>
-        {profile && (
-          <span className={`badge ${gymToday ? "green" : "blue"}`}>
-            {gymToday ? "Gym 💪" : "Descanso 😴"}
-          </span>
-        )}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {burnedToday > 0 && (
+            <span className="badge green" title="Calorías quemadas en entrenamiento hoy">
+              🔥 +{burnedToday} kcal
+            </span>
+          )}
+          {profile && (
+            <span className={`badge ${gymToday ? "green" : "blue"}`}>
+              {gymToday ? "Gym 💪" : "Descanso 😴"}
+            </span>
+          )}
+        </div>
       </div>
       <div className="today-ring-layout">
         <div
@@ -777,7 +789,7 @@ function TodayRingPanel() {
           <div className="kcal-ring-center">
             <strong>{kcalPct}%</strong>
             <span>{Math.round(consumed.kcal)}</span>
-            <small>/ {targets.kcal} kcal</small>
+            <small>/ {effectiveKcal} kcal</small>
           </div>
         </div>
         <div className="macro-bars">

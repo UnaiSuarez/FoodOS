@@ -71,10 +71,20 @@ function DashboardInner() {
   const [tourActive, setTourActive] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
 
   useEffect(() => {
     const stored = localStorage.getItem("foodos-theme") as "dark" | "light" | null;
     if (stored === "light") setTheme("light");
+  }, []);
+
+  useEffect(() => {
+    setIsOnline(navigator.onLine);
+    const up   = () => setIsOnline(true);
+    const down = () => setIsOnline(false);
+    window.addEventListener("online",  up);
+    window.addEventListener("offline", down);
+    return () => { window.removeEventListener("online", up); window.removeEventListener("offline", down); };
   }, []);
 
   useEffect(() => {
@@ -292,6 +302,12 @@ function DashboardInner() {
       )}
 
       <MascotWidget />
+
+      {!isOnline && (
+        <div className="offline-banner" role="status" aria-live="polite">
+          Sin conexión — mostrando datos guardados
+        </div>
+      )}
 
       <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
         {toast}

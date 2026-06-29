@@ -30,7 +30,7 @@ function formatDay(date: string): string {
 }
 
 export function DiaryView() {
-  const { state, mutate, showToast } = useFoodOS();
+  const { state, mutate, addWater, showToast } = useFoodOS();
   const WATER_GOAL_ML = state.settings?.waterGoalMl ?? WATER_GOAL_DEFAULT;
   const waterToday = getWaterToday(state);
   const waterPct = Math.min(100, Math.round((waterToday / WATER_GOAL_ML) * 100));
@@ -62,16 +62,16 @@ export function DiaryView() {
             </h2>
           </div>
           <div className="water-actions">
-            <button className="secondary-button" onClick={() => { mutate((draft) => actions.addWater(draft, 250)); showToast("+250 ml de agua"); }}>
+            <button className="secondary-button" onClick={() => { addWater(250); showToast("+250 ml de agua"); }}>
               + Vaso (250 ml)
             </button>
-            <button className="secondary-button" onClick={() => { mutate((draft) => actions.addWater(draft, 500)); showToast("+500 ml de agua"); }}>
+            <button className="secondary-button" onClick={() => { addWater(500); showToast("+500 ml de agua"); }}>
               + Botella (500 ml)
             </button>
             <button
               className="text-button"
               disabled={waterToday <= 0}
-              onClick={() => { mutate((draft) => actions.addWater(draft, -250)); showToast("-250 ml"); }}
+              onClick={() => { addWater(-250); showToast("-250 ml"); }}
             >
               Deshacer
             </button>
