@@ -2,17 +2,23 @@
 
 import { useState } from "react";
 import { DEFAULT_SETTINGS, useFoodOS } from "@/lib/state";
+import { remote } from "@/lib/data-layer";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
 interface Props {
+  isAdmin: boolean;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+  onOpenAI: () => void;
+  aiConfigured: boolean;
   onShowOnboarding?: () => void;
   onStartTour?: () => void;
 }
 
-export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
-  const { state, mutate, showToast } = useFoodOS();
+export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfigured, onShowOnboarding, onStartTour }: Props) {
+  const { state, mutate, showToast, authUser } = useFoodOS();
   const s = state.settings;
 
   const now = new Date();
@@ -36,17 +42,72 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
 
   return (
     <section className="view">
+
+      {/* Cuenta */}
+      <article className="panel settings-section">
+        <h2>Cuenta</h2>
+        {authUser ? (
+          <>
+            <p className="form-intro">Conectado como <strong>{authUser.email}</strong>. Tus datos se sincronizan automáticamente.</p>
+            <button
+              className="secondary-button"
+              onClick={async () => {
+                await remote.signOut();
+                showToast("Sesión cerrada.");
+              }}
+            >
+              Cerrar sesión
+            </button>
+          </>
+        ) : (
+          <p className="form-intro">No hay sesión activa. Los datos se guardan solo en este navegador.</p>
+        )}
+      </article>
+
+      {/* Apariencia */}
+      <article className="panel settings-section">
+        <h2>Apariencia</h2>
+        <div className="settings-grid">
+          <div className="settings-field">
+            <span>Tema</span>
+            <div className="settings-toggle-row">
+              <button
+                className={`settings-theme-btn ${theme === "dark" ? "active" : ""}`}
+                onClick={() => theme !== "dark" && onToggleTheme()}
+              >
+                ☽ Oscuro
+              </button>
+              <button
+                className={`settings-theme-btn ${theme === "light" ? "active" : ""}`}
+                onClick={() => theme !== "light" && onToggleTheme()}
+              >
+                ☀ Claro
+              </button>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      {/* IA personal */}
+      <article className="panel settings-section">
+        <h2>Asistente IA</h2>
+        <p className="form-intro">
+          Conecta tu propia clave de API para recetas personalizadas con tus macros, inventario y presupuesto.
+        </p>
+        <button className={`secondary-button ${aiConfigured ? "good" : ""}`} onClick={onOpenAI}>
+          {aiConfigured ? "✓ IA configurada — cambiar clave" : "Conectar IA personal"}
+        </button>
+      </article>
+
       {/* Avisos y caducidades */}
       <article className="panel settings-section">
         <h2>Avisos y caducidades</h2>
         <p className="form-intro">Controla cuándo y con qué agresividad FoodOS te avisa.</p>
-
         <div className="settings-grid">
           <label className="settings-field">
             <span>Días de antelación para avisar de caducidad</span>
             <div className="settings-range-row">
-              <input
-                type="range" min={1} max={7} step={1}
+              <input type="range" min={1} max={7} step={1}
                 value={s.expiryWarnDays}
                 onChange={(e) => set("expiryWarnDays", Number(e.target.value))}
               />
@@ -54,31 +115,26 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
             </div>
             <small>Los items que caduquen en los próximos {s.expiryWarnDays} días aparecerán en el Panel.</small>
           </label>
-
           <label className="settings-field">
             <span>% de presupuesto para activar aviso</span>
             <div className="settings-range-row">
-              <input
-                type="range" min={50} max={95} step={5}
+              <input type="range" min={50} max={95} step={5}
                 value={s.budgetWarnPct}
                 onChange={(e) => set("budgetWarnPct", Number(e.target.value))}
               />
               <b>{s.budgetWarnPct}%</b>
             </div>
-            <small>La barra de presupuesto cambia a ámbar cuando superas el {s.budgetWarnPct}% gastado.</small>
+            <small>La barra cambia a ámbar cuando superas el {s.budgetWarnPct}% del presupuesto.</small>
           </label>
-
           <label className="settings-field">
             <span>Hora de inicio de sugerencia de cena</span>
             <div className="settings-range-row">
-              <input
-                type="range" min={15} max={21} step={1}
+              <input type="range" min={15} max={21} step={1}
                 value={s.dinnerSuggestionHour}
                 onChange={(e) => set("dinnerSuggestionHour", Number(e.target.value))}
               />
               <b>{s.dinnerSuggestionHour}:30 h</b>
             </div>
-            <small>La sugerencia de cena para cerrar macros se activa a partir de las {s.dinnerSuggestionHour}:30 h.</small>
           </label>
         </div>
       </article>
@@ -86,19 +142,16 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
       {/* Nutrición e hidratación */}
       <article className="panel settings-section">
         <h2>Nutrición e hidratación</h2>
-
         <div className="settings-grid">
           <label className="settings-field">
             <span>Meta diaria de agua (ml)</span>
             <div className="settings-range-row">
-              <input
-                type="range" min={1000} max={5000} step={250}
+              <input type="range" min={1000} max={5000} step={250}
                 value={s.waterGoalMl}
                 onChange={(e) => set("waterGoalMl", Number(e.target.value))}
               />
               <b>{(s.waterGoalMl / 1000).toFixed(2).replace(".", ",")} L</b>
             </div>
-            <small>La barra de hidratación del Registro se ajustará a esta meta.</small>
           </label>
         </div>
       </article>
@@ -106,30 +159,23 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
       {/* Umbrales de stock bajo */}
       <article className="panel settings-section">
         <h2>Umbrales de stock bajo</h2>
-        <p className="form-intro">
-          Cuando un alimento del inventario cae por debajo de estos valores, aparece en las sugerencias del carrito.
-        </p>
-
+        <p className="form-intro">Cuando un alimento cae por debajo de este nivel, aparece en las sugerencias del carrito.</p>
         <div className="settings-grid">
           {([
-            { unit: "g",  label: "Gramos (g)",       min: 50,  max: 1000, step: 50 },
-            { unit: "ml", label: "Mililitros (ml)",   min: 50,  max: 1000, step: 50 },
-            { unit: "L",  label: "Litros (L)",        min: 0.25, max: 3,  step: 0.25 },
-            { unit: "kg", label: "Kilogramos (kg)",   min: 0.1, max: 2,   step: 0.1 },
-            { unit: "ud", label: "Unidades (ud)",     min: 1,   max: 10,  step: 1 },
+            { unit: "g",  label: "Gramos (g)",      min: 50,   max: 1000, step: 50 },
+            { unit: "ml", label: "Mililitros (ml)",  min: 50,   max: 1000, step: 50 },
+            { unit: "L",  label: "Litros (L)",       min: 0.25, max: 3,    step: 0.25 },
+            { unit: "kg", label: "Kilogramos (kg)",  min: 0.1,  max: 2,    step: 0.1 },
+            { unit: "ud", label: "Unidades (ud)",    min: 1,    max: 10,   step: 1 },
           ] as const).map(({ unit, label, min, max, step }) => (
             <label key={unit} className="settings-field">
               <span>{label}</span>
               <div className="settings-range-row">
-                <input
-                  type="range"
-                  min={min} max={max} step={step}
+                <input type="range" min={min} max={max} step={step}
                   value={(s.lowStockThresholds as Record<string, number>)[unit] ?? min}
                   onChange={(e) => setThreshold(unit, Number(e.target.value))}
                 />
-                <b>
-                  {(s.lowStockThresholds as Record<string, number>)[unit]} {unit}
-                </b>
+                <b>{(s.lowStockThresholds as Record<string, number>)[unit]} {unit}</b>
               </div>
             </label>
           ))}
@@ -139,17 +185,11 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
       {/* Compras */}
       <article className="panel settings-section">
         <h2>Compras</h2>
-
         <div className="settings-grid">
           <label className="settings-field">
             <span>Tienda por defecto en el carrito</span>
-            <select
-              value={s.defaultStore}
-              onChange={(e) => set("defaultStore", e.target.value)}
-            >
-              {STORES.map((store) => (
-                <option key={store} value={store}>{store}</option>
-              ))}
+            <select value={s.defaultStore} onChange={(e) => set("defaultStore", e.target.value)}>
+              {STORES.map((store) => <option key={store} value={store}>{store}</option>)}
             </select>
           </label>
         </div>
@@ -158,38 +198,26 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
       {/* Categorías de gasto */}
       <article className="panel settings-section">
         <h2>Categorías de gasto adicionales</h2>
-        <p className="form-intro">
-          Además de las categorías por defecto (Comida, Ocio, Transporte…), puedes añadir las tuyas.
-        </p>
-
         <div className="extra-cats">
           {s.extraExpenseCategories.map((cat, i) => (
             <span key={i} className="cat-chip">
               {cat}
-              <button
-                className="cat-chip-remove"
-                onClick={() =>
-                  mutate((draft) => {
-                    draft.settings.extraExpenseCategories = draft.settings.extraExpenseCategories.filter((_, j) => j !== i);
-                  })
-                }
+              <button className="cat-chip-remove"
+                onClick={() => mutate((draft) => {
+                  draft.settings.extraExpenseCategories = draft.settings.extraExpenseCategories.filter((_, j) => j !== i);
+                })}
                 aria-label={`Eliminar ${cat}`}
-              >
-                ×
-              </button>
+              >×</button>
             </span>
           ))}
-          <form
-            className="cat-add-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const input = (e.currentTarget.elements.namedItem("cat") as HTMLInputElement);
-              const val = input.value.trim();
-              if (!val || s.extraExpenseCategories.includes(val)) return;
-              mutate((draft) => { draft.settings.extraExpenseCategories.push(val); });
-              input.value = "";
-            }}
-          >
+          <form className="cat-add-form" onSubmit={(e) => {
+            e.preventDefault();
+            const input = (e.currentTarget.elements.namedItem("cat") as HTMLInputElement);
+            const val = input.value.trim();
+            if (!val || s.extraExpenseCategories.includes(val)) return;
+            mutate((draft) => { draft.settings.extraExpenseCategories.push(val); });
+            input.value = "";
+          }}>
             <input name="cat" placeholder="Nueva categoría…" />
             <button className="secondary-button" type="submit">Añadir</button>
           </form>
@@ -199,10 +227,7 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
       {/* Exportar datos */}
       <article className="panel settings-section">
         <h2>Exportar datos</h2>
-        <p className="form-intro">
-          Descarga tus datos en formato CSV para abrirlos en Excel, Google Sheets o cualquier hoja de cálculo.
-        </p>
-
+        <p className="form-intro">Descarga tus datos en CSV para Excel o Google Sheets.</p>
         <div className="export-month-row">
           <label>
             Mes:
@@ -214,101 +239,53 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
           <label>
             Año:
             <select value={exportYear} onChange={(e) => setExportYear(Number(e.target.value))}>
-              {[now.getFullYear() - 1, now.getFullYear()].map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
+              {[now.getFullYear() - 1, now.getFullYear()].map((y) => <option key={y} value={y}>{y}</option>)}
             </select>
           </label>
         </div>
-
         <div className="export-grid">
-          <button
-            className="export-btn"
-            onClick={() => { exportFoodDiaryCSV(state, exportYear, exportMonth); showToast("Diario exportado"); }}
-          >
+          <button className="export-btn" onClick={() => { exportFoodDiaryCSV(state, exportYear, exportMonth); showToast("Diario exportado"); }}>
             <span className="export-btn-icon">🥗</span>
             <span className="export-btn-label">Diario de comidas</span>
-            <span className="export-btn-desc">Todas las entradas del mes seleccionado</span>
+            <span className="export-btn-desc">Entradas del mes seleccionado</span>
           </button>
-          <button
-            className="export-btn"
-            onClick={() => { exportFinancesCSV(state, exportYear, exportMonth); showToast("Finanzas exportadas"); }}
-          >
+          <button className="export-btn" onClick={() => { exportFinancesCSV(state, exportYear, exportMonth); showToast("Finanzas exportadas"); }}>
             <span className="export-btn-icon">💶</span>
             <span className="export-btn-label">Gastos del mes</span>
-            <span className="export-btn-desc">Todos los gastos del mes seleccionado</span>
+            <span className="export-btn-desc">Gastos del mes seleccionado</span>
           </button>
-          <button
-            className="export-btn"
-            onClick={() => { exportWeightCSV(state); showToast("Peso exportado"); }}
-          >
+          <button className="export-btn" onClick={() => { exportWeightCSV(state); showToast("Peso exportado"); }}>
             <span className="export-btn-icon">⚖️</span>
             <span className="export-btn-label">Registro de peso</span>
-            <span className="export-btn-desc">Historial completo de peso</span>
+            <span className="export-btn-desc">Historial completo</span>
           </button>
         </div>
       </article>
 
-      {/* PWA info */}
+      {/* Instalar */}
       <article className="panel settings-section">
         <h2>Instalar FoodOS</h2>
-        <p className="form-intro">
-          FoodOS es una Progressive Web App (PWA). Puedes instalarla en tu móvil o escritorio
-          para usarla sin conexión y tener un icono propio.
-        </p>
+        <p className="form-intro">FoodOS es una PWA. Instálala en tu móvil o escritorio para usarla sin conexión.</p>
         <p className="pwa-hint">
           En Chrome/Edge: menú ⋮ → <strong>Instalar aplicación</strong>.
           En Safari iOS: compartir → <strong>Añadir a pantalla de inicio</strong>.
         </p>
       </article>
 
-      {/* Herramientas de prueba */}
-      <article className="panel settings-section">
-        <h2>Herramientas de prueba</h2>
-        <p className="form-intro">
-          Fuerza una fecha concreta para simular diferentes días sin esperar que pase el tiempo real.
-          Vacía el campo para volver al día actual.
-        </p>
-        <div className="settings-grid">
-          <label className="settings-field">
-            <span>Fecha simulada</span>
-            <input
-              type="date"
-              value={state.debugDate ?? ""}
-              onChange={(e) => {
-                const val = e.target.value || null;
-                mutate((draft) => { draft.debugDate = val; });
-              }}
-            />
-            {state.debugDate && (
-              <small style={{ color: "#fbbf24" }}>
-                ⚠ Fecha simulada activa: {state.debugDate}. El panel, registro y planificador muestran ese día.
-              </small>
-            )}
-          </label>
-        </div>
-      </article>
-
       <div className="settings-footer">
         {onShowOnboarding && (
-          <button
-            className="secondary-button"
-            onClick={() => {
-              localStorage.removeItem("foodos-ob-done");
-              onShowOnboarding();
-            }}
-          >
+          <button className="secondary-button" onClick={() => {
+            localStorage.removeItem("foodos-ob-done");
+            onShowOnboarding();
+          }}>
             ▶ Ver onboarding de nuevo
           </button>
         )}
         {onStartTour && (
-          <button
-            className="secondary-button"
-            onClick={() => {
-              localStorage.removeItem("foodos-tour-done");
-              onStartTour();
-            }}
-          >
+          <button className="secondary-button" onClick={() => {
+            localStorage.removeItem("foodos-tour-done");
+            onStartTour();
+          }}>
             ◎ Tour por la app
           </button>
         )}
@@ -316,6 +293,33 @@ export function SettingsView({ onShowOnboarding, onStartTour }: Props) {
           Restaurar valores por defecto
         </button>
       </div>
+
+      {/* Solo admin */}
+      {isAdmin && (
+        <article className="panel settings-section settings-admin">
+          <p className="eyebrow">Admin</p>
+          <h2>Herramientas de desarrollo</h2>
+          <p className="form-intro">Visibles solo para usuarios administradores.</p>
+          <div className="settings-grid">
+            <label className="settings-field">
+              <span>Fecha simulada</span>
+              <input
+                type="date"
+                value={state.debugDate ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value || null;
+                  mutate((draft) => { draft.debugDate = val; });
+                }}
+              />
+              {state.debugDate && (
+                <small style={{ color: "var(--amber)" }}>
+                  ⚠ Fecha simulada activa: {state.debugDate}
+                </small>
+              )}
+            </label>
+          </div>
+        </article>
+      )}
     </section>
   );
 }

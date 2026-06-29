@@ -69,6 +69,7 @@ function DashboardInner() {
   });
   const [tourActive, setTourActive] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("foodos-theme") as "dark" | "light" | null;
@@ -149,7 +150,9 @@ function DashboardInner() {
     {hydrated && showOnboarding && (
       <OnboardingFlow onDone={handleOnboardingDone} />
     )}
-    <div className="app-shell">
+    <div className={`app-shell ${menuOpen ? "menu-open" : ""}`}>
+      {/* Overlay para cerrar el menú en móvil */}
+      <div className="menu-overlay" onClick={() => setMenuOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
         <Link className="brand" href="/" aria-label="Volver a la portada">
           <span>Food</span>OS
@@ -159,7 +162,7 @@ function DashboardInner() {
             <button
               key={entry.id}
               className={`nav-item ${view === entry.id ? "active" : ""}`}
-              onClick={() => setView(entry.id)}
+              onClick={() => { setView(entry.id); setMenuOpen(false); }}
             >
               <span>{entry.icon}</span>
               {entry.label}
@@ -182,30 +185,21 @@ function DashboardInner() {
 
       <main className="app-main">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">{dataModeText}</p>
-            <h1>{currentTitle}</h1>
+          <div className="topbar-left">
+            <button
+              className="hamburger-btn"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
+              aria-expanded={menuOpen}
+            >
+              {menuOpen ? "✕" : "☰"}
+            </button>
+            <div>
+              <p className="eyebrow">{dataModeText}</p>
+              <h1>{currentTitle}</h1>
+            </div>
           </div>
           <div className="top-actions">
-            <button
-              className="icon-button"
-              onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-              title={theme === "dark" ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
-              aria-label={theme === "dark" ? "Modo claro" : "Modo oscuro"}
-            >
-              {theme === "dark" ? "☀" : "☽"}
-            </button>
-            <button
-              className={`secondary-button ai-btn ${aiConfigured ? "configured" : ""}`}
-              onClick={() => setAiConfigOpen(true)}
-              title={aiConfigured ? "IA personal configurada" : "Conectar IA personal (gratis para ti)"}
-            >
-              ✦ IA
-              {aiConfigured && <span className="ai-dot" aria-hidden="true" />}
-            </button>
-            <button className="secondary-button" onClick={() => setAccountOpen(true)} title="Cuenta FoodOS">
-              Cuenta
-            </button>
             {isAdmin && (
               <>
                 <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
@@ -253,7 +247,17 @@ function DashboardInner() {
             {view === "nutrition" && <NutritionView />}
             {view === "assistant" && <AssistantView />}
             {view === "planner"   && <PlannerView />}
-            {view === "settings"  && <SettingsView onShowOnboarding={() => setShowOnboarding(true)} onStartTour={startTour} />}
+            {view === "settings"  && (
+              <SettingsView
+                isAdmin={isAdmin}
+                theme={theme}
+                onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+                onOpenAI={() => setAiConfigOpen(true)}
+                aiConfigured={aiConfigured}
+                onShowOnboarding={() => setShowOnboarding(true)}
+                onStartTour={startTour}
+              />
+            )}
           </>
         ) : (
           <p className="loading-hint">Cargando tus datos…</p>
