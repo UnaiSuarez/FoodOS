@@ -25,7 +25,7 @@ import {
   isGymDay,
   weeklyCycle,
 } from "@/lib/nutrition";
-import { todayPlus } from "@/lib/utils";
+import { todayMinus, todayPlus } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 1, label: "L" },
@@ -68,6 +68,8 @@ export function NutritionView() {
       {state.profile && <ProteinOptimizerPanel />}
 
       {state.profile && <WeightPanel />}
+
+      {state.profile && <WeightProjectionPanel />}
     </section>
   );
 }
@@ -782,6 +784,222 @@ function TodayRingPanel() {
             Detalle de comidas en <strong>Registro</strong>
           </p>
         </div>
+      </div>
+    </article>
+  );
+}
+
+// ---------- Proyección de peso a futuro ----------
+
+function WeightProjectionPanel() {
+  const { state } = useFoodOS();
+  const profile = state.profile!;
+  const { tdee } = calcSummary(profile);
+  const latest = getLatestWeight(state);
+  const currentKg = latest?.kg ?? profile.weightKg;
+  const targetKg = profile.targetWeightKg;
+
+  // Promedio de kcal ingeridas en los últimos 14 días (solo días con ≥500 kcal registradas)
+  const daysWithData = Array.from({ length: 14 }, (_, i) => todayMinus(i))
+    .map((date) => ({
+      date,
+      kcal: state.foodLog.filter((e) => e.date === date).reduce((s, e) => s + e.kcal, 0),
+    }))
+    .filter((d) => d.kcal >= 500);
+
+  const minDays = 3;
+  if (daysWithData.length < minDays) {
+    return (
+      <article className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">Proyección</p>
+            <h2>Peso a futuro</h2>
+          </div>
+        </div>
+        <p className="empty">
+          Registra al menos {minDays} días de comidas en <strong>Registro</strong> para ver tu
+          proyección de peso ({daysWithData.length}/{minDays} días disponibles).
+        </p>
+      </article>
+    );
+  }
+
+  const avgKcal = Math.round(daysWithData.reduce((s, d) => s + d.kcal, 0) / daysWithData.length);
+  const dailyDelta = tdee - avgKcal; // positivo = déficit, negativo = superávit
+  const weeklyKg = (dailyDelta * 7) / 7700;
+
+  const projectKg = (days: number) =>
+    Math.round((currentKg - (dailyDelta * days) / 7700) * 10) / 10;
+
+  const kg30  = projectKg(30);
+  const kg90  = projectKg(90);
+  const kg180 = projectKg(180);
+
+  const daysToTarget =
+    targetKg && dailyDelta > 0 && currentKg > targetKg
+      ? Math.ceil(((currentKg - targetKg) * 7700) / dailyDelta)
+      : null;
+
+  // Estado del ritmo
+  const absWeekly = Math.abs(weeklyKg);
+  const isSurplus  = dailyDelta < 0;
+  const isAggressive = absWeekly > 0.75;
+  const isSlow       = absWeekly < 0.2 && profile.goal !== "maintain" && profile.goal !== "recomp";
+  const isHealthy    = !isAggressive && !isSlow;
+
+  const rateColor = isAggressive ? "red" : isSlow ? "amber" : isSurplus ? "blue" : "green";
+  const rateLabel = isSurplus
+    ? `+${Math.abs(weeklyKg).toFixed(2)} kg/semana`
+    : `−${Math.abs(weeklyKg).toFixed(2)} kg/semana`;
+
+  // SVG proyección (0 → 180 días)
+  const W = 520, H = 80;
+  const minW = Math.min(currentKg, kg180, targetKg ?? Infinity) - 1.5;
+  const maxW = Math.max(currentKg, kg180, targetKg ?? -Infinity) + 1.5;
+  const rangeW = maxW - minW || 2;
+  const xOf = (day: number) => (day / 180) * W;
+  const yOf = (kg: number)  => H - ((kg - minW) / rangeW) * H;
+
+  const projLine = `M${xOf(0).toFixed(1)},${yOf(currentKg).toFixed(1)} L${xOf(180).toFixed(1)},${yOf(kg180).toFixed(1)}`;
+  const markers  = [30, 90, 180];
+
+  return (
+    <article className="panel weight-projection-panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Proyección</p>
+          <h2>Peso a futuro</h2>
+        </div>
+        <span className={`badge ${rateColor}`}>{rateLabel}</span>
+      </div>
+
+      <p className="projection-intro">
+        Basado en tu ingesta media de los últimos{" "}
+        <strong>{daysWithData.length} días</strong> ({avgKcal} kcal/día vs {tdee} kcal TDEE).
+        Déficit diario: <strong>{dailyDelta > 0 ? `−${dailyDelta}` : `+${Math.abs(dailyDelta)}`} kcal</strong>.
+      </p>
+
+      {/* Tarjetas de proyección */}
+      <div className="projection-cards">
+        {[
+          { label: "En 30 días", kg: kg30, days: 30 },
+          { label: "En 90 días", kg: kg90, days: 90 },
+          { label: "En 180 días", kg: kg180, days: 180 },
+        ].map(({ label, kg, days }) => {
+          const diff = Math.round((currentKg - kg) * 10) / 10;
+          const isLoss = diff > 0;
+          return (
+            <div key={days} className="projection-card">
+              <span className="projection-card-label">{label}</span>
+              <span className="projection-card-kg">{kg} kg</span>
+              <span className={`projection-card-diff ${isLoss ? "loss" : "gain"}`}>
+                {isLoss ? `−${diff}` : `+${Math.abs(diff)}`} kg
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* SVG línea de proyección */}
+      <svg viewBox={`0 0 ${W} ${H + 24}`} className="projection-chart" aria-hidden="true">
+        {/* Línea objetivo */}
+        {targetKg && targetKg >= minW && targetKg <= maxW && (
+          <line
+            x1={0} y1={yOf(targetKg)} x2={W} y2={yOf(targetKg)}
+            stroke="var(--amber)" strokeWidth="1" strokeDasharray="5 3"
+          />
+        )}
+        {/* Área bajo la proyección */}
+        <path
+          d={`${projLine} L${xOf(180)},${H} L${xOf(0)},${H} Z`}
+          fill={dailyDelta > 0 ? "rgba(74,222,128,0.07)" : "rgba(59,130,246,0.07)"}
+        />
+        {/* Línea de proyección */}
+        <path d={projLine} fill="none" stroke={dailyDelta > 0 ? "var(--green)" : "var(--blue, #3b82f6)"} strokeWidth="2" strokeDasharray="8 4" />
+        {/* Punto actual */}
+        <circle cx={xOf(0)} cy={yOf(currentKg)} r="4" fill="var(--green)" />
+        <text x={xOf(0) + 6} y={yOf(currentKg) - 6} fill="var(--green)" fontSize="10" fontWeight="600">
+          {currentKg} kg
+        </text>
+        {/* Marcadores en 30/90/180 días */}
+        {markers.map((d) => (
+          <g key={d}>
+            <line x1={xOf(d)} y1={0} x2={xOf(d)} y2={H} stroke="rgba(150,163,144,0.2)" strokeWidth="1" strokeDasharray="3 3" />
+            <text x={xOf(d)} y={H + 17} textAnchor="middle" fill="rgba(150,163,144,0.7)" fontSize="10">
+              {d}d
+            </text>
+          </g>
+        ))}
+        {/* Etiqueta objetivo */}
+        {targetKg && targetKg >= minW && targetKg <= maxW && (
+          <text x={W - 2} y={yOf(targetKg) - 4} textAnchor="end" fill="var(--amber)" fontSize="9">
+            objetivo {targetKg} kg
+          </text>
+        )}
+      </svg>
+
+      {/* Progreso hacia objetivo */}
+      {targetKg && currentKg > targetKg && (
+        <div className="projection-target">
+          <div className="projection-target-row">
+            <span>Objetivo: <strong>{targetKg} kg</strong></span>
+            <span>Faltan <strong>{Math.round((currentKg - targetKg) * 10) / 10} kg</strong></span>
+            {daysToTarget && (
+              <span className="badge amber">
+                ~{daysToTarget < 365
+                  ? `${Math.round(daysToTarget / 7)} semanas`
+                  : `${(daysToTarget / 365).toFixed(1)} años`}
+              </span>
+            )}
+          </div>
+          <div className="projection-progress-bar">
+            <div
+              className="projection-progress-fill"
+              style={{
+                width: `${Math.min(100, Math.max(0, ((profile.weightKg - currentKg) / (profile.weightKg - targetKg)) * 100))}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Alertas */}
+      {isAggressive && (
+        <div className="projection-alert projection-alert--danger">
+          ⚠ Ritmo agresivo ({Math.abs(weeklyKg).toFixed(2)} kg/semana). Riesgo de pérdida muscular. Lo
+          recomendado es ≤ 0,5 kg/semana.
+        </div>
+      )}
+      {isSurplus && profile.goal === "fat_loss" && (
+        <div className="projection-alert projection-alert--warning">
+          Estás en superávit calórico pero tu objetivo es pérdida de grasa. Ajusta la ingesta.
+        </div>
+      )}
+
+      {/* Recomendaciones */}
+      <div className="projection-recommendations">
+        <p className="projection-rec-title">Recomendaciones</p>
+        <ul>
+          {isSlow && profile.goal === "fat_loss" && (
+            <li>Tu déficit es pequeño. Prueba reducir 150–200 kcal más al día o añadir 20 min de cardio.</li>
+          )}
+          {isAggressive && (
+            <li>Aumenta 200–300 kcal/día para proteger el músculo. La pérdida de grasa seguirá siendo efectiva.</li>
+          )}
+          {isHealthy && dailyDelta > 0 && (
+            <li>Ritmo saludable. Mantén la constancia y los resultados llegarán.</li>
+          )}
+          <li>
+            Proteína objetivo: <strong>{Math.round(currentKg * 2)} g/día</strong> (2 g/kg) para preservar masa muscular durante el déficit.
+          </li>
+          <li>
+            Agua recomendada: <strong>{Math.round(currentKg * 35)} ml/día</strong> ({(currentKg * 35 / 1000).toFixed(1)} L).
+          </li>
+          {profile.gymDays.length < 3 && profile.goal !== "maintain" && (
+            <li>Añadir 1–2 días de entrenamiento de fuerza aceleraría la recomposición.</li>
+          )}
+        </ul>
       </div>
     </article>
   );
