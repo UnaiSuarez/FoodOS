@@ -196,7 +196,7 @@ function DashboardInner() {
 
       <main className="app-main">
         <header className="topbar">
-          <div className="topbar-left">
+          <div className="topbar-controls">
             <button
               className="hamburger-btn"
               onClick={() => setMenuOpen((o) => !o)}
@@ -205,41 +205,41 @@ function DashboardInner() {
             >
               {menuOpen ? "✕" : "☰"}
             </button>
-            <h1>{currentTitle}</h1>
-          </div>
-          <div className="top-actions">
-            {isAdmin && (
-              <>
-                <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
-                  ⇩
-                </button>
-                <label className="icon-button file-button" title="Importar datos desde JSON">
-                  ⇧
-                  <input
-                    type="file"
-                    accept="application/json,.json"
-                    hidden
-                    onChange={(event) => {
-                      void importData(event.target.files?.[0]);
-                      event.target.value = "";
+            <div className="top-actions">
+              {isAdmin && (
+                <>
+                  <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
+                    ⇩
+                  </button>
+                  <label className="icon-button file-button" title="Importar datos desde JSON">
+                    ⇧
+                    <input
+                      type="file"
+                      accept="application/json,.json"
+                      hidden
+                      onChange={(event) => {
+                        void importData(event.target.files?.[0]);
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
+                    ↻
+                  </button>
+                  <button
+                    className="icon-button danger"
+                    title="Borrar datos locales"
+                    onClick={() => {
+                      if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
                     }}
-                  />
-                </label>
-                <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
-                  ↻
-                </button>
-                <button
-                  className="icon-button danger"
-                  title="Borrar datos locales"
-                  onClick={() => {
-                    if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
-                  }}
-                >
-                  ×
-                </button>
-              </>
-            )}
+                  >
+                    ×
+                  </button>
+                </>
+              )}
+            </div>
           </div>
+          <h1>{currentTitle}</h1>
         </header>
 
         {hydrated ? (

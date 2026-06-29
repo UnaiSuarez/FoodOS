@@ -190,9 +190,8 @@
 
 .topbar {
   display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: center;
+  flex-direction: column;
+  gap: 4px;
   margin-bottom: 22px;
 }
 
@@ -202,14 +201,25 @@
   line-height: 0.95;
 }
 
-.topbar .eyebrow {
-  margin-bottom: 8px;
-}
-
 .top-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+@media (min-width: 1081px) {
+  .topbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+  }
+  .topbar-controls {
+    order: 2;
+  }
+  .topbar h1 {
+    order: 1;
+  }
 }
 
 .icon-button {
@@ -7260,15 +7270,12 @@ button.secondary-button.small {
   backdrop-filter: blur(2px);
 }
 
-/* Topbar left: hamburger + title together */
-.topbar-left {
+/* Topbar controls row: hamburger + admin buttons */
+.topbar-controls {
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-.topbar-left h1 {
-  margin-bottom: 0;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 /* Settings: new sections */
@@ -7359,19 +7366,17 @@ button.secondary-button.small {
     display: flex;
   }
 
-  /* Topbar: tighten up */
+  /* Topbar: hamburger row encima, h1 grande debajo */
   .topbar {
-    flex-direction: row;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
     margin-bottom: 18px;
   }
 
   .topbar h1 {
-    font-size: clamp(24px, 7vw, 42px);
-    line-height: 1;
-  }
-
-  .topbar .eyebrow {
-    display: none;
+    font-size: clamp(38px, 9vw, 56px);
+    line-height: 0.95;
+    margin-bottom: 0;
   }
 }
