@@ -11,7 +11,7 @@ interface Props {
   onClose: () => void;
 }
 
-function toGrams(qty: number, unit: string): number {
+function toGrams(qty: number, unit: string, unitSize = 60): number {
   switch (unit) {
     case "kg": return qty * 1000;
     case "L":  return qty * 1000;
@@ -19,7 +19,7 @@ function toGrams(qty: number, unit: string): number {
     case "lb": return qty * 453.6;
     case "cucharada": return qty * 15;
     case "pizca":     return qty * 0.5;
-    case "ud": return qty * 100;
+    case "ud": return qty * unitSize;
     default:   return qty;
   }
 }
@@ -42,7 +42,7 @@ export function CookModal({ recipe, onClose }: Props) {
     for (const ing of ings) {
       const scaledQty = ing.quantity * ratio;
       const actual = qtyOverrides[ing.name] ?? scaledQty;
-      const g = toGrams(actual, ing.unit);
+      const g = toGrams(actual, ing.unit, ing.unitSize);
       k += ((ing.kcalPer100 ?? 0) * g) / 100;
       p += ((ing.proteinPer100 ?? 0) * g) / 100;
       c += ((ing.carbsPer100 ?? 0) * g) / 100;

@@ -17,6 +17,7 @@ import {
   getMascot,
   getPendingMacros,
   getRecipeMatch,
+  getStepsToday,
   getWaterToday,
   useFoodOS,
 } from "@/lib/state";
@@ -37,6 +38,7 @@ export function HomeView({
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
   const [whatToEatOpen, setWhatToEatOpen] = useState(false);
+  const [stepsInput, setStepsInput] = useState("");
 
   const consumed = getConsumedToday(state);
   const pending = getPendingMacros(state);
@@ -51,6 +53,11 @@ export function HomeView({
   const waterMl = getWaterToday(state);
   const waterGoalMl = state.settings?.waterGoalMl ?? 2500;
   const waterPct = Math.min(100, Math.round((waterMl / waterGoalMl) * 100));
+
+  /* Pasos (registro manual) */
+  const stepsToday = getStepsToday(state);
+  const stepsGoal = state.settings?.stepsGoal ?? 8000;
+  const stepsPct = Math.min(100, Math.round((stepsToday / stepsGoal) * 100));
 
   /* Racha de adherencia */
   const streak = getAdherenceStreak(state);
@@ -260,6 +267,41 @@ export function HomeView({
                   −250ml
                 </button>
               )}
+            </div>
+          </div>
+
+          {/* Pasos */}
+          <div className="bento-water bento-steps">
+            <div className="bento-water-head">
+              <span className="bento-water-label">👟 Pasos</span>
+              <span className="bento-water-value">
+                {stepsToday.toLocaleString("es-ES")}
+                <em> / {stepsGoal.toLocaleString("es-ES")}</em>
+              </span>
+            </div>
+            <div className="bento-water-track">
+              <div className="bento-water-fill" style={{ width: `${stepsPct}%` }} />
+            </div>
+            <div className="bento-water-btns">
+              <input
+                type="number"
+                min="0"
+                className="bento-steps-input"
+                placeholder="Pasos de hoy"
+                value={stepsInput}
+                onChange={(e) => setStepsInput(e.target.value)}
+              />
+              <button
+                className="bento-water-btn"
+                onClick={() => {
+                  const steps = parseInt(stepsInput, 10);
+                  if (!Number.isFinite(steps) || steps < 0) return;
+                  mutate((draft) => actions.logSteps(draft, steps));
+                  setStepsInput("");
+                }}
+              >
+                Guardar
+              </button>
             </div>
           </div>
         </article>

@@ -27,6 +27,14 @@ export interface InventoryItem {
   fiber?: number;
   /** Azúcares por 100 g en g (de OFF) */
   sugars?: number;
+  /** Gramos/ml que representa 1 unidad cuando unit==="ud" (ej. una lata de 250 ml). Si no se indica, se asume 60. */
+  unitSize?: number;
+  /** Marca del producto (de OFF), si está disponible. */
+  brand?: string;
+  /** URL de la foto del producto (de OFF) — solo se enlaza, no se descarga ni se aloja. */
+  imageUrl?: string;
+  /** Tags de alérgenos de Open Food Facts (ej. "en:gluten", "en:milk"), sin traducir. */
+  allergenTags?: string[];
 }
 
 export interface CartItem {
@@ -86,6 +94,8 @@ export interface RecipeIngredient {
   proteinPer100?: number;
   carbsPer100?: number;
   fatPer100?: number;
+  /** Gramos/ml por unidad cuando unit==="ud" (ej. 1 huevo = 60g). Si no se indica, se asume 60. */
+  unitSize?: number;
 }
 
 export interface Recipe {
@@ -135,6 +145,23 @@ export type FoodLogSource = "recipe" | "inventory" | "manual";
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 
+/** Snapshot de un item de inventario en el momento de consumirlo: permite
+    recrearlo si fue eliminado por completo (qty llegó a 0) y luego se
+    borra/edita la entrada del diario que lo consumió. */
+export interface InventorySnapshot {
+  storage: StorageName;
+  expires: string;
+  price: number;
+  kcal: number;
+  protein: number;
+  carbs?: number;
+  fat?: number;
+  salt?: number;
+  fiber?: number;
+  sugars?: number;
+  unitSize?: number;
+}
+
 /** Entrada del diario de comidas (espejo de la tabla food_log). */
 export interface FoodLogEntry extends MacroTotals {
   id: string;
@@ -149,6 +176,19 @@ export interface FoodLogEntry extends MacroTotals {
   source: FoodLogSource;
   /** Tipo de comida: se infiere de la hora al registrar (PDF §9.5). */
   mealType: MealType;
+  /** Id del item de inventario consumido, para poder localizarlo al editar/borrar. */
+  inventoryItemId?: string;
+  inventorySnapshot?: InventorySnapshot;
+  /** Para recetas cocinadas o platos elaborados que descontaron de varios
+      items de inventario: uno por ingrediente, para poder devolverlos todos
+      si se borra esta entrada. */
+  consumedIngredients?: Array<{
+    inventoryItemId?: string;
+    name: string;
+    qty: number;
+    unit: string;
+    snapshot?: InventorySnapshot;
+  }>;
 }
 
 // ---------- Perfil fisico y objetivos (PDF §9) ----------
@@ -182,7 +222,18 @@ export interface PhysicalProfile {
   excludedFoods: string[];
   /** Peso objetivo en kg, para la grafica de progreso. */
   targetWeightKg?: number;
+  /** Nivel de experiencia entrenando — afina el volumen/complejidad que sugiere la IA. */
+  experienceLevel?: ExperienceLevel;
+  /** Material disponible — afina qué ejercicios puede sugerir la IA. */
+  equipmentAccess?: EquipmentAccess;
 }
+
+export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
+
+export type EquipmentAccess = "full_gym" | "home_dumbbells" | "bodyweight";
+
+/** Plantilla de reparto de grupos musculares por día, elegible en el asistente de IA. */
+export type SplitTemplate = "push_pull_legs" | "upper_lower" | "full_body" | "bro_split" | "ai_decide";
 
 /** Objetivo diario de macros. Si hay perfil, se calcula automaticamente. */
 export interface NutritionGoal extends MacroTotals {
@@ -221,6 +272,8 @@ export interface AppSettings {
   lowStockThresholds: { g: number; ml: number; L: number; kg: number; ud: number };
   /** Categorías de gasto adicionales (además de las predefinidas). */
   extraExpenseCategories: string[];
+  /** Meta diaria de pasos (default 8000). */
+  stepsGoal: number;
 }
 
 /** Una comida planificada en el planificador semanal. */
@@ -258,11 +311,22 @@ export interface RoutineExercise {
   notes?: string;
 }
 
+/** Un día de entrenamiento dentro de una rutina con split (ej. "Día 1 · Pecho y tríceps"). */
+export interface RoutineDay {
+  label: string;
+  muscleGroups: string[];
+  exercises: RoutineExercise[];
+}
+
 export interface Routine {
   id: string;
   name: string;
   goal: string; // fat_loss | muscle_gain | recomp | maintain | general
+  /** Lista plana de ejercicios — usada por rutinas de un solo día (manuales o legacy). */
   exercises: RoutineExercise[];
+  /** Si la rutina tiene split por días, los ejercicios viven aquí en vez de en `exercises`. */
+  days?: RoutineDay[];
+  splitTemplate?: SplitTemplate;
   estimatedMinutes: number;
   aiGenerated?: boolean;
   createdAt: string; // ISO
@@ -279,6 +343,8 @@ export interface WorkoutSession {
   id: string;
   routineId?: string;
   routineName: string;
+  /** Qué día de una rutina con split se entrenó (ej. "Día 1 · Pecho y tríceps"), si aplica. */
+  dayLabel?: string;
   date: string; // ISO yyyy-mm-dd
   durationMin: number;
   kcalBurned?: number;
@@ -328,4 +394,6 @@ export interface FoodOSState {
   routines: Routine[];
   /** Historial de sesiones de entrenamiento. */
   workoutLog: WorkoutSession[];
+  /** Pasos registrados por dia (manual): { "2026-07-01": 6500 }. */
+  stepsLog: Record<string, number>;
 }

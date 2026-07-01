@@ -1,6 +1,8 @@
 import type {
   ActivityLevel,
   DailyTargets,
+  EquipmentAccess,
+  ExperienceLevel,
   GoalMode,
   MacroTotals,
   PhysicalProfile,
@@ -44,6 +46,20 @@ export const ACTIVITY_LABELS: Record<ActivityLevel, string> = {
 export function calcTDEE(tmb: number, activityLevel: ActivityLevel): number {
   return Math.round(tmb * ACTIVITY_FACTORS[activityLevel]);
 }
+
+// ─── Nivel de experiencia / material (perfil, asistente de rutinas IA) ──────
+
+export const EXPERIENCE_LABELS: Record<ExperienceLevel, string> = {
+  beginner:     "Principiante",
+  intermediate: "Intermedio",
+  advanced:     "Avanzado",
+};
+
+export const EQUIPMENT_LABELS: Record<EquipmentAccess, string> = {
+  full_gym:       "Gimnasio completo",
+  home_dumbbells: "Casa (mancuernas)",
+  bodyweight:     "Sin material",
+};
 
 // ─── IMC ─────────────────────────────────────────────────────────────────────
 

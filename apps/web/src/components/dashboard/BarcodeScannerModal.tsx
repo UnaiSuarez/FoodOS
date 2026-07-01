@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { parseQuantityString } from "@/lib/food-lookup";
 
 export interface ProductData {
   name: string;
@@ -11,6 +12,14 @@ export interface ProductData {
   salt?: number;
   fiber?: number;
   sugars?: number;
+  /** Tamaño del envase en g/ml (campo product_quantity de OFF), si está disponible. */
+  packageSize?: number;
+  /** Marca del producto (campo brands de OFF), si está disponible. */
+  brand?: string;
+  /** URL de la foto del producto — solo se enlaza, no se descarga ni se aloja. */
+  imageUrl?: string;
+  /** Tags de alérgenos sin traducir (ej. "en:gluten"), de OFF. */
+  allergenTags?: string[];
 }
 
 interface Props {
@@ -110,6 +119,13 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
       }
       const p = json.product;
       const n = p.nutriments ?? {};
+      const numericQty = Number(p.product_quantity);
+      const packageSize = Number.isFinite(numericQty) && numericQty > 0
+        ? Math.round(numericQty)
+        : parseQuantityString(p.quantity);
+      const rawBrand = Array.isArray(p.brands) ? p.brands[0] : typeof p.brands === "string" ? p.brands.split(",")[0] : "";
+      const brand = rawBrand?.trim() ?? "";
+      const imageUrl = p.image_front_url || p.image_small_url || "";
       onFill({
         name: (p.product_name_es || p.product_name || code).slice(0, 80),
         kcal: Math.round(n["energy-kcal_100g"] ?? (n["energy_100g"] != null ? n["energy_100g"] / 4.184 : 0)),
@@ -119,6 +135,10 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
         ...(n.salt_100g != null && { salt: Math.round(n.salt_100g * 100) / 100 }),
         ...(n.fiber_100g != null && { fiber: Math.round(n.fiber_100g * 10) / 10 }),
         ...(n.sugars_100g != null && { sugars: Math.round(n.sugars_100g * 10) / 10 }),
+        ...(packageSize != null && { packageSize }),
+        ...(brand && { brand }),
+        ...(imageUrl && { imageUrl }),
+        ...(Array.isArray(p.allergens_tags) && p.allergens_tags.length > 0 && { allergenTags: p.allergens_tags }),
       });
     } catch {
       setError("Error de red. Comprueba tu conexión o introduce el código manualmente.");

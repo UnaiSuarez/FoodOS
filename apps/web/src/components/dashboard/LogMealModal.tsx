@@ -21,6 +21,8 @@ interface DishIngredient {
   carbsPer100: number;
   fatPer100: number;
   fromInventoryId?: string;
+  /** Gramos/ml por unidad cuando unit==="ud", heredado del item de inventario. */
+  unitSize?: number;
 }
 
 interface DishSuggestion {
@@ -33,16 +35,17 @@ interface DishSuggestion {
   carbsPer100: number;
   fatPer100: number;
   invId?: string;
+  unitSize?: number;
 }
 
-function toGrams(qty: number, unit: string): number {
+function toGrams(qty: number, unit: string, unitSize?: number): number {
   if (unit === "kg" || unit === "L") return qty * 1000;
-  if (unit === "ud") return qty * 60;
+  if (unit === "ud") return qty * (unitSize ?? 60);
   return qty;
 }
 
 function calcIngMacros(ing: DishIngredient): MacroTotals {
-  const g = toGrams(ing.qty, ing.unit);
+  const g = toGrams(ing.qty, ing.unit, ing.unitSize);
   return {
     kcal: Math.round((ing.kcalPer100 * g) / 100),
     protein: Math.round((ing.proteinPer100 * g) / 100 * 10) / 10,
@@ -212,6 +215,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         carbsPer100: item.carbs ?? 0,
         fatPer100: item.fat ?? 0,
         invId: item.id,
+        unitSize: item.unitSize,
       }));
 
     setDishSuggestions(invResults);
@@ -253,6 +257,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         carbsPer100: s.carbsPer100,
         fatPer100: s.fatPer100,
         fromInventoryId: s.invId,
+        unitSize: s.unitSize,
       },
     ]);
     setDishSearch("");
@@ -275,9 +280,33 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     const t = nowTime();
 
     mutate(draft => {
+      const consumedIngredients: NonNullable<(typeof draft.foodLog)[number]["consumedIngredients"]> = [];
+
+      if (deductFromInv) {
+        for (const ing of dishIngredients) {
+          if (!ing.fromInventoryId) continue;
+          const item = draft.inventory.find(i => i.id === ing.fromInventoryId);
+          if (!item) continue;
+          const take = Math.min(item.qty, ing.qty);
+          item.qty = Math.max(0, Math.round((item.qty - take) * 100) / 100);
+          consumedIngredients.push({
+            inventoryItemId: item.id,
+            name: item.name,
+            qty: take,
+            unit: item.unit,
+            snapshot: {
+              storage: item.storage, expires: item.expires, price: item.price,
+              kcal: item.kcal, protein: item.protein, carbs: item.carbs, fat: item.fat,
+              salt: item.salt, fiber: item.fiber, sugars: item.sugars, unitSize: item.unitSize,
+            },
+          });
+        }
+        draft.inventory = draft.inventory.filter(i => i.qty > 0);
+      }
+
       draft.foodLog.push({
         id: uid(),
-        date: todayPlus(0),
+        date: draft.debugDate ?? todayPlus(0),
         time: t,
         name,
         qty: null,
@@ -288,17 +317,8 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         fat: Math.round(macros.fat * 10) / 10,
         source: "manual",
         mealType,
+        ...(consumedIngredients.length > 0 && { consumedIngredients }),
       });
-
-      if (deductFromInv) {
-        for (const ing of dishIngredients) {
-          if (!ing.fromInventoryId) continue;
-          const item = draft.inventory.find(i => i.id === ing.fromInventoryId);
-          if (!item) continue;
-          item.qty = Math.max(0, Math.round((item.qty - ing.qty) * 100) / 100);
-        }
-        draft.inventory = draft.inventory.filter(i => i.qty > 0);
-      }
 
       if (saveDishAsRecipe) {
         draft.customRecipes.push({
@@ -353,9 +373,10 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     if (!extMacros || !extDesc.trim()) return;
     const t = nowTime();
     mutate(draft => {
+      const today = draft.debugDate ?? todayPlus(0);
       draft.foodLog.push({
         id: uid(),
-        date: todayPlus(0),
+        date: today,
         time: t,
         name: extDesc.trim(),
         qty: null,
@@ -374,7 +395,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           amount: extPrice,
           category: "Comida",
           description: extDesc.trim().slice(0, 60),
-          date: todayPlus(0),
+          date: today,
         });
       }
     });

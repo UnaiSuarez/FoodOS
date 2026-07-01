@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { DEFAULT_SETTINGS, getToday, useFoodOS } from "@/lib/state";
+import { actions, DEFAULT_SETTINGS, getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { uid } from "@/lib/utils";
@@ -63,10 +63,14 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     mutate((draft) => { draft.debugDate = null; });
   }
 
-  /** Borra comidas, agua y entrenamiento del día actual (o simulado) sin tocar inventario/recetas. */
+  /** Borra comidas, agua y entrenamiento del día actual (o simulado); devuelve al inventario
+      lo que se consumió de ahí, igual que al borrar una entrada individual. */
   function clearToday() {
     const today = getToday(state);
     mutate((draft) => {
+      for (const entry of draft.foodLog) {
+        if (entry.date === today) actions.returnEntryToInventory(draft, entry);
+      }
       draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
       draft.waterLog[today] = 0;
       draft.workoutLog = (draft.workoutLog ?? []).filter((session) => session.date !== today);

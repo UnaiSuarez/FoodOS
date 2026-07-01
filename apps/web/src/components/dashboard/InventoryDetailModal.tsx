@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import type { InventoryItem } from "@foodos/types";
-import { expiryBadge } from "@/lib/state";
+import { expiryBadge, matchAllergens, useFoodOS } from "@/lib/state";
 import { daysUntil, eur } from "@/lib/utils";
+import { Modal } from "./Modal";
 
 interface Props {
   item: InventoryItem;
@@ -22,9 +24,12 @@ function NutrRow({ label, value, unit }: { label: string; value?: number; unit: 
 }
 
 export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props) {
+  const { state } = useFoodOS();
+  const [zoom, setZoom] = useState(false);
   const badge = expiryBadge(item.expires);
   const days = daysUntil(item.expires);
   const isWeightUnit = item.unit === "g" || item.unit === "ml";
+  const allergenWarnings = matchAllergens(state, item.allergenTags);
 
   const totalKcal = isWeightUnit ? Math.round(item.kcal * item.qty / 100) : null;
   const totalProtein = isWeightUnit ? Math.round(item.protein * item.qty / 100 * 10) / 10 : null;
@@ -42,6 +47,36 @@ export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props
           <h2 className="detail-name">{item.name}</h2>
           <button className="icon-button" onClick={onClose} aria-label="Cerrar">×</button>
         </div>
+
+        <div className="form-product-preview">
+          <button
+            type="button"
+            className="image-picker-thumb"
+            onClick={() => item.imageUrl && setZoom(true)}
+            aria-label={item.imageUrl ? "Ver imagen más grande" : "Sin imagen"}
+          >
+            {item.imageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={item.imageUrl} alt="" />
+            ) : (
+              <span className="image-picker-placeholder" aria-hidden="true">🍽️</span>
+            )}
+          </button>
+          {item.brand && <span className="form-product-brand">{item.brand}</span>}
+        </div>
+
+        {zoom && item.imageUrl && (
+          <Modal title="Imagen del producto" onClose={() => setZoom(false)}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={item.imageUrl} alt="" className="image-lightbox-full" />
+          </Modal>
+        )}
+
+        {allergenWarnings.length > 0 && (
+          <p className="allergen-warning" role="alert">
+            ⚠ Contiene {allergenWarnings.join(", ")} — lo tienes marcado como alergia en tu perfil.
+          </p>
+        )}
 
         {/* Lote */}
         <section className="detail-section">

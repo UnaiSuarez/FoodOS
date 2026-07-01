@@ -358,7 +358,7 @@ export function CartView() {
             <div className="history-list">
               {purchaseHistory.map((expense) => (
                 <div key={expense.id} className="history-row">
-                  <span className="history-date">{expense.date === todayPlus(0) ? "Hoy" : expense.date}</span>
+                  <span className="history-date">{expense.date === (state.debugDate ?? todayPlus(0)) ? "Hoy" : expense.date}</span>
                   <span className="history-desc">{expense.description}</span>
                   <span className="history-amount">{eur(expense.amount)}</span>
                   <button

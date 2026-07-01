@@ -73,7 +73,7 @@ export function FinanceView() {
   const [showAllMovements, setShowAllMovements] = useState(false);
 
   // ── Cálculos base ────────────────────────────────────────────
-  const now = new Date();
+  const now = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30);
   const sixtyDaysAgo  = new Date(now); sixtyDaysAgo.setDate(now.getDate() - 60);
 
@@ -172,7 +172,7 @@ export function FinanceView() {
         amount: Number(data.get("amount")),
         category: String(data.get("category")),
         description: String(data.get("description")).trim(),
-        date: todayPlus(0),
+        date: draft.debugDate ?? todayPlus(0),
       });
     });
     showToast(formType === "income" ? "Ingreso registrado" : "Gasto guardado");
@@ -742,9 +742,10 @@ function FinanceChart() {
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
+    const todayBase = state.debugDate ?? new Date().toISOString().slice(0, 10);
     const weeks = [3, 2, 1, 0].map((offset) => {
-      const start = new Date(); start.setDate(start.getDate() - (offset + 1) * 7);
-      const end   = new Date(); end.setDate(end.getDate() - offset * 7);
+      const start = new Date(todayBase); start.setDate(start.getDate() - (offset + 1) * 7);
+      const end   = new Date(todayBase); end.setDate(end.getDate() - offset * 7);
       return state.expenses
         .filter((e) => e.type === "expense")
         .filter((e) => { const d = new Date(e.date); return d > start && d <= end; })
@@ -767,7 +768,7 @@ function FinanceChart() {
       ctx.fillStyle = "rgba(150,163,144,0.9)";
       ctx.fillText(["-4s", "-3s", "-2s", "Esta"][i], x + barWidth / 2, height - 8);
     });
-  }, [state.expenses]);
+  }, [state.expenses, state.debugDate]);
 
   return <canvas ref={canvasRef} className="finance-chart" height={220} />;
 }

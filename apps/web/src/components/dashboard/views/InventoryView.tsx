@@ -2,13 +2,14 @@
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { expiryBadge, useFoodOS } from "@/lib/state";
+import { expiryBadge, findRememberedUnitSize, matchAllergens, useFoodOS } from "@/lib/state";
 import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
 import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
 import { loadAIConfig } from "@/lib/ai-config";
 import { searchOFFSuggestions, type ExternalFoodSuggestion } from "@/lib/food-lookup";
 import { ConsumeModal } from "../ConsumeModal";
+import { ImagePickerField } from "../ImagePickerField";
 import { BarcodeScannerModal, type ProductData } from "../BarcodeScannerModal";
 import { BulkImportModal } from "../BulkImportModal";
 import { EditInventoryModal } from "../EditInventoryModal";
@@ -25,6 +26,8 @@ type FormState = {
   price: number;
   kcal: number;
   protein: number;
+  /** Gramos/ml que representa 1 unidad, solo aplica cuando unit==="ud" (ej. lata de 250 ml). */
+  unitSize: number;
 };
 
 const DEFAULT_FORM: FormState = {
@@ -36,6 +39,7 @@ const DEFAULT_FORM: FormState = {
   price: 2.8,
   kcal: 120,
   protein: 23,
+  unitSize: 60,
 };
 
 export function InventoryView() {
@@ -53,8 +57,14 @@ export function InventoryView() {
   const [filling, setFilling] = useState(false);
   const [scanLoading, setScanLoading] = useState(false);
   const [bulkItems, setBulkItems] = useState<import("@/lib/ai-inventory").ScannedItem[] | null>(null);
-  // Nutrientes extra de escaneo/OFF (carbs, fat, salt, fiber, sugars) — se guardan con el item
-  const [itemExtras, setItemExtras] = useState<Pick<InventoryItem, "carbs" | "fat" | "salt" | "fiber" | "sugars">>({});
+  // Datos extra de escaneo/OFF (nutrientes, marca, foto, alérgenos) — se guardan con el item
+  const [itemExtras, setItemExtras] = useState<
+    Pick<InventoryItem, "carbs" | "fat" | "salt" | "fiber" | "sugars" | "brand" | "imageUrl" | "allergenTags">
+  >({});
+  const allergenWarnings = useMemo(
+    () => matchAllergens(state, itemExtras.allergenTags),
+    [state, itemExtras.allergenTags]
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
   // Para la regla de 3: cantidad de referencia cuando se cambia la qty
@@ -73,6 +83,9 @@ export function InventoryView() {
     const hits = searchFoodDB(value, 5);
     setSuggestions(hits);
     setOffSuggestions([]);
+
+    const remembered = findRememberedUnitSize(state, value);
+    if (remembered != null) setField("unitSize", remembered);
 
     const trimmed = value.trim();
     if (trimmed.length > 0) {
@@ -100,6 +113,7 @@ export function InventoryView() {
 
   function applySuggestion(entry: FoodEntry) {
     prevQtyRef.current = entry.defaultQty;
+    const remembered = entry.unit === "ud" ? findRememberedUnitSize(state, entry.name) : undefined;
     setForm((prev) => ({
       ...prev,
       name: entry.name,
@@ -109,6 +123,7 @@ export function InventoryView() {
       expires: todayPlus(entry.expiryDays),
       kcal: entry.kcal,
       protein: entry.protein,
+      unitSize: remembered ?? prev.unitSize,
     }));
     setItemExtras({ carbs: entry.carbs, fat: entry.fat });
     setSuggestions([]);
@@ -118,16 +133,24 @@ export function InventoryView() {
   }
 
   function applyOFFSuggestion(s: ExternalFoodSuggestion) {
-    prevQtyRef.current = 100;
+    const remembered = findRememberedUnitSize(state, s.name);
+    const unitSize = remembered ?? s.packageSize;
+    // Si conocemos el tamaño del envase, lo tratamos como "1 ud" (ej. 1 lata) en vez de 100 g/ml sueltos.
+    const useUnits = unitSize != null;
+    prevQtyRef.current = useUnits ? 1 : 100;
     setForm((prev) => ({
       ...prev,
       name: s.name,
-      unit: "g",
-      qty: 100,
+      unit: useUnits ? "ud" : "g",
+      qty: useUnits ? 1 : 100,
       kcal: s.kcal,
       protein: s.protein,
+      unitSize: unitSize ?? prev.unitSize,
     }));
-    setItemExtras({ carbs: s.carbs, fat: s.fat, salt: s.salt, fiber: s.fiber, sugars: s.sugars });
+    setItemExtras({
+      carbs: s.carbs, fat: s.fat, salt: s.salt, fiber: s.fiber, sugars: s.sugars,
+      brand: s.brand, imageUrl: s.imageUrl, allergenTags: s.allergenTags,
+    });
     setSuggestions([]);
     setOffSuggestions([]);
     setShowSuggestions(false);
@@ -198,11 +221,17 @@ export function InventoryView() {
   }
 
   function handleScanFill(data: ProductData) {
+    const remembered = findRememberedUnitSize(state, data.name);
+    const unitSize = remembered ?? data.packageSize;
+    const useUnits = unitSize != null;
+    if (useUnits) prevQtyRef.current = 1;
     setForm((prev) => ({
       ...prev,
       name: data.name,
       kcal: data.kcal ?? prev.kcal,
       protein: data.protein ?? prev.protein,
+      ...(useUnits && { unit: "ud", qty: 1 }),
+      unitSize: unitSize ?? prev.unitSize,
     }));
     setItemExtras({
       carbs: data.carbs,
@@ -210,6 +239,9 @@ export function InventoryView() {
       salt: data.salt,
       fiber: data.fiber,
       sugars: data.sugars,
+      brand: data.brand,
+      imageUrl: data.imageUrl,
+      allergenTags: data.allergenTags,
     });
     setScannerOpen(false);
     showToast(`Producto encontrado: ${data.name}`);
@@ -266,6 +298,7 @@ export function InventoryView() {
         price: form.price,
         kcal: form.kcal,
         protein: form.protein,
+        unitSize: form.unit === "ud" ? form.unitSize : undefined,
         ...itemExtras,
       });
     });
@@ -275,10 +308,11 @@ export function InventoryView() {
     showToast("Alimento añadido al inventario");
   }
 
-  const totalKcal = useMemo(
-    () => form.unit === "g" || form.unit === "ml" ? Math.round(form.kcal * form.qty / 100) : null,
-    [form.kcal, form.qty, form.unit]
-  );
+  const totalKcal = useMemo(() => {
+    if (form.unit === "g" || form.unit === "ml") return Math.round(form.kcal * form.qty / 100);
+    if (form.unit === "ud") return Math.round(form.kcal * form.qty * form.unitSize / 100);
+    return null;
+  }, [form.kcal, form.qty, form.unit, form.unitSize]);
 
   const query = search.toLowerCase().trim();
   let items = state.activeStorage === "Todos"
@@ -441,6 +475,20 @@ export function InventoryView() {
               </select>
             </label>
 
+            {form.unit === "ud" && (
+              <label>
+                Tamaño por unidad (g/ml)
+                <input
+                  name="unitSize"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={form.unitSize}
+                  onChange={(e) => setField("unitSize", Number(e.target.value))}
+                />
+              </label>
+            )}
+
             <label>
               Almacén
               <select
@@ -502,9 +550,25 @@ export function InventoryView() {
             </label>
           </div>
 
+          <ImagePickerField
+            imageUrl={itemExtras.imageUrl}
+            brand={itemExtras.brand}
+            onChange={(url) => setItemExtras((prev) => ({ ...prev, imageUrl: url }))}
+          />
+
+          {allergenWarnings.length > 0 && (
+            <p className="allergen-warning" role="alert">
+              ⚠ Contiene {allergenWarnings.join(", ")} — lo tienes marcado como alergia en tu perfil.
+            </p>
+          )}
+
           {totalKcal !== null && (
             <p className="form-total-hint">
-              Total lote: <strong>{totalKcal} kcal</strong> · <strong>{Math.round(form.protein * form.qty / 100)}g prot</strong> · <strong>{eur(form.price)}</strong>
+              Total lote: <strong>{totalKcal} kcal</strong> ·{" "}
+              <strong>
+                {Math.round(form.protein * (form.unit === "ud" ? form.qty * form.unitSize : form.qty) / 100)}g prot
+              </strong>{" "}
+              · <strong>{eur(form.price)}</strong>
             </p>
           )}
 
@@ -562,16 +626,26 @@ export function InventoryView() {
                       onKeyDown={(e) => e.key === "Enter" && setDetailItem(item)}
                       aria-label={`Ver detalles de ${item.name}`}
                     >
-                      <h3>{item.name}</h3>
-                      <small>
-                        {item.qty}{item.unit} · {item.storage} · {item.kcal} kcal/100g · {item.protein}g prot
-                      </small>
-                      <div className="meta-row">
-                        <span className={`badge ${badge.cls}`}>{badge.label}</span>
-                        <span className="badge blue">{eur(item.price)}</span>
-                        {(item.carbs != null || item.fat != null) && (
-                          <span className="badge green-soft" title="Datos nutricionales completos">+info</span>
+                      <div className="card-info-row">
+                        {item.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={item.imageUrl} alt="" className="card-thumb" />
+                        ) : (
+                          <span className="card-thumb card-thumb-placeholder" aria-hidden="true">🍽️</span>
                         )}
+                        <div className="card-info-text">
+                          <h3>{item.name}{item.brand && <span className="card-brand"> · {item.brand}</span>}</h3>
+                          <small>
+                            {item.qty}{item.unit} · {item.storage} · {item.kcal} kcal/100g · {item.protein}g prot
+                          </small>
+                          <div className="meta-row">
+                            <span className={`badge ${badge.cls}`}>{badge.label}</span>
+                            <span className="badge blue">{eur(item.price)}</span>
+                            {(item.carbs != null || item.fat != null) && (
+                              <span className="badge green-soft" title="Datos nutricionales completos">+info</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <div className="card-actions">
