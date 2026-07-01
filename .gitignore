@@ -4,3 +4,5 @@ node_modules/
 *.tsbuildinfo
 .env*.local
 supabase-config.js
+output/
+apps/web/browser-check-*.png
