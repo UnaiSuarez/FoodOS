@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { getMascot, useFoodOS, getAdherenceStreak } from "@/lib/state";
+import { getMascot, useFoodOS, getAdherenceStreak, getToday } from "@/lib/state";
 import type { MascotState } from "@/lib/state";
 
 const LAST_VISIT_KEY = "foodos-mascot-last-visit";
@@ -17,19 +17,19 @@ export function MascotWidget() {
 
   // First visit of day → wave
   useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getToday(state);
     const last = localStorage.getItem(LAST_VISIT_KEY);
     if (last !== today) {
       localStorage.setItem(LAST_VISIT_KEY, today);
       setTimeout(() => triggerMascot("wave", `¡Buenos días! ${mascot.tagline}.`), 800);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mascot.tagline, state.debugDate, triggerMascot]);
 
   // Streak celebration: ≥7 days → streak anim once per day
   useEffect(() => {
     const streak = getAdherenceStreak(state);
     if (streak >= 7) {
-      const key = `foodos-streak-celebrated-${new Date().toISOString().slice(0, 10)}`;
+      const key = `foodos-streak-celebrated-${getToday(state)}`;
       if (!sessionStorage.getItem(key)) {
         sessionStorage.setItem(key, "1");
         setTimeout(() => triggerMascot("streak", `¡${streak} días consecutivos cumpliendo macros! 🔥`), 1200);

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { actions, DEFAULT_SETTINGS, getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
-import { uid } from "@/lib/utils";
+import { addDaysToDateKey, uid } from "@/lib/utils";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
@@ -54,9 +54,7 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
   }
 
   function shiftDebugDate(deltaDays: number) {
-    const base = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
-    base.setDate(base.getDate() + deltaDays);
-    mutate((draft) => { draft.debugDate = base.toISOString().slice(0, 10); });
+    mutate((draft) => { draft.debugDate = addDaysToDateKey(getToday(state), deltaDays); });
   }
 
   function clearDebugDate() {
@@ -85,12 +83,10 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
       { name: "Pechuga de pollo con arroz", kcal: 520, protein: 42, carbs: 65, fat: 9, mealType: "lunch" as const },
       { name: "Salmón con verduras", kcal: 440, protein: 38, carbs: 18, fat: 22, mealType: "dinner" as const },
     ];
-    const todayBase = new Date(getToday(state));
+    const todayBase = getToday(state);
     mutate((draft) => {
       for (let i = 1; i <= 7; i++) {
-        const d = new Date(todayBase);
-        d.setDate(d.getDate() - i);
-        const date = d.toISOString().slice(0, 10);
+        const date = addDaysToDateKey(todayBase, -i);
 
         meals.forEach((meal, idx) => {
           if (draft.foodLog.some((entry) => entry.date === date && entry.name === meal.name)) return;

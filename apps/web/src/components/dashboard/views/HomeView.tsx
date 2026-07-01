@@ -18,11 +18,12 @@ import {
   getPendingMacros,
   getRecipeMatch,
   getStepsToday,
+  getToday,
   getWaterToday,
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
-import { clampPct, daysUntil, eur } from "@/lib/utils";
+import { clampPct, dateFromKey, daysUntil, eur } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
 import { CookModal } from "../CookModal";
 import type { ViewId } from "../DashboardShell";
@@ -81,7 +82,8 @@ export function HomeView({
   }, [consumed.kcal, consumed.protein, state.nutrition.kcal, state.nutrition.protein, triggerMascot]);
 
   /* Plan de hoy */
-  const todayKey = state.debugDate ?? new Date().toISOString().slice(0, 10);
+  const todayKey = getToday(state);
+  const todayDate = dateFromKey(todayKey);
   const todayPlan: MealPlanDay = state.mealPlan?.[todayKey] ?? {};
   const TODAY_SLOTS = [
     { key: "breakfast" as keyof MealPlanDay, label: "Desayuno",  icon: "☀", mealType: "breakfast" as const },
@@ -198,8 +200,8 @@ export function HomeView({
             <div className="bento-day-badges">
               {state.profile && (
                 <>
-                  <span className={`badge ${isGymDay(state.profile) ? "green" : "blue"}`}>
-                    {isGymDay(state.profile) ? "💪 Gym" : "Descanso"}
+                  <span className={`badge ${isGymDay(state.profile, todayDate) ? "green" : "blue"}`}>
+                    {isGymDay(state.profile, todayDate) ? "💪 Gym" : "Descanso"}
                   </span>
                   <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
                 </>
@@ -516,7 +518,7 @@ export function HomeView({
         <div className="panel-head">
           <div>
             <p className="eyebrow">
-              {new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+              {todayDate.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
             </p>
             <h3>Tu plan de hoy</h3>
           </div>

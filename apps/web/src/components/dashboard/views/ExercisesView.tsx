@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useFoodOS } from "@/lib/state";
-import { uid } from "@/lib/utils";
+import { getToday, useFoodOS } from "@/lib/state";
+import { dateFromKey, dateKeyFromDate, uid } from "@/lib/utils";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIRoutine } from "@/lib/ai-provider";
 import type {
@@ -707,7 +707,7 @@ function LogSessionModal({
   onSave: (s: WorkoutSession) => void;
 }) {
   const { state } = useFoodOS();
-  const today = state.debugDate ?? new Date().toISOString().slice(0, 10);
+  const today = getToday(state);
   const defaultDur = routine.estimatedMinutes ?? 45;
 
   // Auto-estimate kcal using MET 5.0 (fuerza moderada) + peso del perfil
@@ -1057,10 +1057,10 @@ function HistoryTab() {
     b.date.localeCompare(a.date),
   );
 
-  const today = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
+  const today = dateFromKey(getToday(state));
   const weekStart = new Date(today);
   weekStart.setDate(today.getDate() - today.getDay());
-  const weekStartStr = weekStart.toISOString().slice(0, 10);
+  const weekStartStr = dateKeyFromDate(weekStart);
   const thisWeek = sessions.filter((s) => s.date >= weekStartStr);
   const weekKcal = thisWeek.reduce((sum, s) => sum + (s.kcalBurned ?? 0), 0);
   const weekMins = thisWeek.reduce((sum, s) => sum + s.durationMin, 0);

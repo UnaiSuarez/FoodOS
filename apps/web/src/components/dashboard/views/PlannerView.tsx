@@ -3,12 +3,12 @@
 import Image from "next/image";
 import { useRef, useState } from "react";
 import type { MealPlanDay, MealType, QuickMeal, Recipe } from "@foodos/types";
-import { allRecipes, getMealPlanShoppingList, useFoodOS } from "@/lib/state";
+import { allRecipes, getMealPlanShoppingList, getToday, useFoodOS } from "@/lib/state";
 import { CookModal } from "../CookModal";
 import { PlannerAddMealModal } from "../PlannerAddMealModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIWeeklyPlan } from "@/lib/ai-provider";
-import { eur } from "@/lib/utils";
+import { dateKeyFromDate, eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
 
@@ -51,7 +51,7 @@ function addDays(d: Date, n: number): Date {
 }
 
 function toKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  return dateKeyFromDate(d);
 }
 
 function fmtDay(d: Date): string {
@@ -63,8 +63,9 @@ export function PlannerView() {
   const recipes = allRecipes(state);
   const quickMeals: QuickMeal[] = state.plannerQuickMeals ?? [];
   const plan = state.mealPlan ?? {};
+  const today = getToday(state);
 
-  const [weekStart, setWeekStart] = useState(() => getMondayOfWeek(new Date()));
+  const [weekStart, setWeekStart] = useState(() => getMondayOfWeek(new Date(`${today}T12:00:00`)));
   const draggingId = useRef<string | null>(null);
   const [, forceRender] = useState(0);
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
@@ -74,13 +75,12 @@ export function PlannerView() {
   const [quickAdd, setQuickAdd] = useState<{ dateKey: string; slot: MealSlot } | null>(null);
 
   /* CookModal para recetas del planificador */
-  const [cookingRecipe, setCookingRecipe] = useState<Recipe | null>(null);
+  const [cookingRecipe, setCookingRecipe] = useState<{ recipe: Recipe; dateKey: string; mealType: MealType } | null>(null);
 
   /* Plan IA */
   const [aiLoading, setAiLoading] = useState(false);
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-  const today = state.debugDate ?? toKey(new Date());
 
   function findEntry(id: string): PlanEntry | null {
     const r = recipes.find((x) => x.id === id);
@@ -106,7 +106,7 @@ export function PlannerView() {
     if (!entry.isQuick) {
       // Receta real → abre CookModal para descuento de inventario
       const recipe = recipes.find((r) => r.id === entry.id);
-      if (recipe) { setCookingRecipe(recipe); return; }
+      if (recipe) { setCookingRecipe({ recipe, dateKey, mealType }); return; }
     }
     // Plato rápido → registro directo (sin ingredientes que descontar)
     mutate((draft) => {
@@ -239,7 +239,7 @@ export function PlannerView() {
               <button className="secondary-button" onClick={() => setWeekStart(addDays(weekStart, 7))}>
                 Siguiente →
               </button>
-              <button className="secondary-button" onClick={() => setWeekStart(getMondayOfWeek(new Date()))}>
+              <button className="secondary-button" onClick={() => setWeekStart(getMondayOfWeek(new Date(`${today}T12:00:00`)))}>
                 Hoy
               </button>
               <button
@@ -478,7 +478,12 @@ export function PlannerView() {
       )}
 
       {cookingRecipe && (
-        <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />
+        <CookModal
+          recipe={cookingRecipe.recipe}
+          logDate={cookingRecipe.dateKey}
+          mealType={cookingRecipe.mealType}
+          onClose={() => setCookingRecipe(null)}
+        />
       )}
 
       {quickAdd && (

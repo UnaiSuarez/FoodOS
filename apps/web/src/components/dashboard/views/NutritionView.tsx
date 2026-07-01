@@ -13,6 +13,7 @@ import {
   getLatestWeight,
   getMacroAdherenceHistory,
   getProteinRanking,
+  getToday,
   getTodayLog,
   getWeeklyMacroHistory,
   useFoodOS,
@@ -30,7 +31,7 @@ import {
   shouldWarnMuscleGain,
   weeklyCycle,
 } from "@/lib/nutrition";
-import { dateOffset, todayPlus } from "@/lib/utils";
+import { dateFromKey, dateOffset } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 1, label: "L" },
@@ -147,7 +148,7 @@ function NutritionToday() {
         className="secondary-button"
         onClick={() => {
           mutate((draft) => {
-            const today = draft.debugDate ?? new Date().toISOString().slice(0, 10);
+            const today = getToday(draft);
             for (const entry of draft.foodLog) {
               if (entry.date === today) actions.returnEntryToInventory(draft, entry);
             }
@@ -330,6 +331,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
 function WeightPanel() {
   const { state, mutate, showToast } = useFoodOS();
   const latest = getLatestWeight(state);
+  const today = getToday(state);
   const target = state.profile?.targetWeightKg;
   const [inputKg, setInputKg] = useState(String(latest?.kg ?? state.profile?.weightKg ?? ""));
 
@@ -376,7 +378,7 @@ function WeightPanel() {
       {latest && (
         <div className="meta-row" style={{ marginTop: 10 }}>
           <span className="badge green">
-            Último: {latest.kg} kg ({latest.date === (state.debugDate ?? todayPlus(0)) ? "hoy" : latest.date})
+            Último: {latest.kg} kg ({latest.date === today ? "hoy" : latest.date})
           </span>
           {target && (
             <span className="badge amber">
@@ -665,7 +667,8 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const { state } = useFoodOS();
   const profile = state.profile!;
   const { tmb, tdee } = calcSummary(profile);
-  const gymToday = isGymDay(profile);
+  const activeDate = dateFromKey(getToday(state));
+  const gymToday = isGymDay(profile, activeDate);
   const today = calcDailyTargets(profile, gymToday);
   const cycle = weeklyCycle(profile);
   const protRange = calcProteinRange(profile);
@@ -772,7 +775,7 @@ function TodayRingPanel() {
   const burnedToday = getKcalBurnedToday(state);
   const targets     = state.nutrition;
   const profile     = state.profile;
-  const gymToday    = profile ? isGymDay(profile) : false;
+  const gymToday    = profile ? isGymDay(profile, dateFromKey(getToday(state))) : false;
 
   // Las kcal quemadas amplían el presupuesto del día (déficit = TDEE + ejercicio − ingeridas).
   const effectiveKcal = targets.kcal + burnedToday;
@@ -857,8 +860,8 @@ function WeightProjectionPanel() {
   const targetKg = profile.targetWeightKg;
 
   // Promedio de kcal ingeridas en los últimos 14 días (solo días con ≥500 kcal registradas)
-  const weightProjBase = state.debugDate ?? todayPlus(0);
-  const daysWithData = Array.from({ length: 14 }, (_, i) => dateOffset(weightProjBase, -i))
+  const today = getToday(state);
+  const daysWithData = Array.from({ length: 14 }, (_, i) => dateOffset(today, -i))
     .map((date) => ({
       date,
       kcal: state.foodLog.filter((e) => e.date === date).reduce((s, e) => s + e.kcal, 0),

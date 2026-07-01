@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MacroTotals, MealType, Recipe } from "@foodos/types";
-import { actions, allRecipes, macrosForQuantity, useFoodOS } from "@/lib/state";
+import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealMacros } from "@/lib/ai-inventory";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
-import { mealTypeFromTime, todayPlus, uid } from "@/lib/utils";
+import { mealTypeFromTime, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type Tab = "inventory" | "recipe" | "dish" | "external";
@@ -306,7 +306,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
 
       draft.foodLog.push({
         id: uid(),
-        date: draft.debugDate ?? todayPlus(0),
+        date: getToday(draft),
         time: t,
         name,
         qty: null,
@@ -373,10 +373,9 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     if (!extMacros || !extDesc.trim()) return;
     const t = nowTime();
     mutate(draft => {
-      const today = draft.debugDate ?? todayPlus(0);
       draft.foodLog.push({
         id: uid(),
-        date: today,
+        date: getToday(draft),
         time: t,
         name: extDesc.trim(),
         qty: null,
@@ -395,7 +394,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           amount: extPrice,
           category: "Comida",
           description: extDesc.trim().slice(0, 60),
-          date: today,
+          date: getToday(draft),
         });
       }
     });

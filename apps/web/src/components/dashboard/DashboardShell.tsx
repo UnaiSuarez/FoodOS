@@ -21,6 +21,7 @@ import { RecipeDetailModal } from "./RecipeDetailModal";
 import { AccountModal } from "./AccountModal";
 import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
+import { todayPlus } from "@/lib/utils";
 import { OnboardingFlow } from "./OnboardingFlow";
 import { AppTour } from "./AppTour";
 import { MascotWidget } from "./MascotWidget";
@@ -107,7 +108,7 @@ function DashboardInner() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `foodos-datos-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `foodos-datos-${todayPlus(0)}.json`;
     link.click();
     URL.revokeObjectURL(link.href);
     showToast("Datos exportados a JSON");

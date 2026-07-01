@@ -5,10 +5,11 @@ import {
   getAdherenceStreak,
   getLatestWeight,
   getMonthlyFinanceHistory,
+  getToday,
   getWeeklyMacroHistory,
   useFoodOS,
 } from "@/lib/state";
-import { eur } from "@/lib/utils";
+import { dateFromKey, eur } from "@/lib/utils";
 
 export function StatsView() {
   const { state } = useFoodOS();
@@ -32,11 +33,11 @@ export function StatsView() {
       monthsWithIncome.length
     : null;
 
-  const thirtyDaysAgo = new Date();
+  const thirtyDaysAgo = dateFromKey(getToday(state));
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   const byCat: Record<string, number> = {};
   state.expenses
-    .filter((e) => e.type === "expense" && new Date(e.date) >= thirtyDaysAgo)
+    .filter((e) => e.type === "expense" && dateFromKey(e.date) >= thirtyDaysAgo)
     .forEach((e) => {
       byCat[e.category] = (byCat[e.category] ?? 0) + Number(e.amount);
     });

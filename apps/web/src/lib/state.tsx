@@ -17,7 +17,7 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { dateOffset, daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
+import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -94,7 +94,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     legacy.consumedMeals.forEach((meal) => {
       next.foodLog.push({
         id: meal.id || uid(),
-        date: todayPlus(0),
+        date: getToday(next),
         time: "12:00",
         name: meal.name,
         qty: null,
@@ -122,7 +122,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     ),
   }));
   if (next.profile) {
-    const targets = calcDailyTargets(next.profile, isGymDay(next.profile));
+    const targets = calcDailyTargets(next.profile, isGymDay(next.profile, stateDate(next)));
     next.nutrition = {
       kcal: targets.kcal,
       protein: targets.protein,
@@ -132,6 +132,14 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     };
   }
   return next;
+}
+
+function stateDate(state: Pick<FoodOSState, "debugDate">): Date {
+  return dateFromKey(state.debugDate ?? todayPlus(0));
+}
+
+function relativeDate(state: Pick<FoodOSState, "debugDate">, days: number): string {
+  return state.debugDate ? addDaysToDateKey(state.debugDate, days) : todayPlus(days);
 }
 
 export type MascotState = "idle" | "wave" | "thinking" | "celebrate" | "alert" | "suggest" | "sleep" | "success_buy" | "streak";
@@ -278,7 +286,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       fn(draft);
       // Si hay perfil, los objetivos del dia siempre derivan de el.
       if (draft.profile) {
-        const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile));
+        const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile, stateDate(draft)));
         draft.nutrition = {
           kcal: targets.kcal,
           protein: targets.protein,
@@ -772,12 +780,12 @@ export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
 
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
 export function getFoodSpend(state: FoodOSState): number {
-  const weekAgo = new Date();
+  const weekAgo = dateFromKey(getToday(state));
   weekAgo.setDate(weekAgo.getDate() - 7);
   weekAgo.setHours(0, 0, 0, 0);
   return state.expenses
     .filter((expense) => expense.type === "expense" && expense.category === "Comida")
-    .filter((expense) => new Date(expense.date || Date.now()) >= weekAgo)
+    .filter((expense) => dateFromKey(expense.date || getToday(state)) >= weekAgo)
     .reduce((sum, expense) => sum + Number(expense.amount), 0);
 }
 
@@ -977,7 +985,7 @@ export function getMonthlyFinanceHistory(
   months = 6
 ): Array<{ month: string; label: string; expenses: number; income: number; savings: number }> {
   const MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-  const now = new Date((state.debugDate ?? todayPlus(0)) + "T12:00:00");
+  const now = dateFromKey(getToday(state));
   return Array.from({ length: months }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (months - 1 - i), 1);
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -1191,7 +1199,7 @@ export const actions = {
   },
 
   /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
-  cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1, opts?: { deductIngredients?: boolean; mealType?: MealType; qtyOverrides?: Record<string, number> }) {
+  cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1, opts?: { deductIngredients?: boolean; mealType?: MealType; qtyOverrides?: Record<string, number>; date?: string }) {
     const t = nowTime();
     const consumedIngredients: NonNullable<FoodLogEntry["consumedIngredients"]> = [];
 
@@ -1229,7 +1237,7 @@ export const actions = {
 
     draft.foodLog.push({
       id: uid(),
-      date: draft.debugDate ?? todayPlus(0),
+      date: opts?.date ?? getToday(draft),
       time: t,
       name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
       qty: null,
@@ -1254,7 +1262,7 @@ export const actions = {
     const t = nowTime();
     draft.foodLog.push({
       id: uid(),
-      date: draft.debugDate ?? todayPlus(0),
+      date: getToday(draft),
       time: t,
       name: item.name,
       qty: consumed,
@@ -1331,13 +1339,13 @@ export const actions = {
   },
 
   addWater(draft: FoodOSState, ml: number) {
-    const today = draft.debugDate ?? todayPlus(0);
+    const today = getToday(draft);
     draft.waterLog[today] = Math.max(0, (draft.waterLog[today] ?? 0) + ml);
   },
 
   /** Registra el peso corporal de hoy (reemplaza si ya hay una entrada para hoy). */
   logWeight(draft: FoodOSState, kg: number) {
-    const today = draft.debugDate ?? todayPlus(0);
+    const today = getToday(draft);
     const idx = draft.weightLog.findIndex((e) => e.date === today);
     if (idx >= 0) {
       draft.weightLog[idx].kg = kg;
@@ -1348,7 +1356,7 @@ export const actions = {
 
   /** Registra el total de pasos de hoy (reemplaza si ya había un valor para hoy). */
   logSteps(draft: FoodOSState, steps: number) {
-    const today = draft.debugDate ?? todayPlus(0);
+    const today = getToday(draft);
     draft.stepsLog ??= {};
     draft.stepsLog[today] = Math.max(0, Math.round(steps));
   },
@@ -1384,7 +1392,7 @@ export const actions = {
       amount: total,
       category: "Comida",
       description: "Compra completada desde carrito",
-      date: draft.debugDate ?? todayPlus(0),
+      date: getToday(draft),
     });
     checked.forEach((item) => {
       const foodData = findExactFood(item.name);
@@ -1395,7 +1403,7 @@ export const actions = {
         qty: item.qty,
         unit: item.unit || existing?.unit || foodData?.unit || "g",
         storage: existing?.storage ?? foodData?.storage ?? "Despensa",
-        expires: todayPlus(existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
+        expires: addDaysToDateKey(getToday(draft), existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
         price: item.price,
         kcal: existing?.kcal ?? foodData?.kcal ?? 100,
         protein: existing?.protein ?? foodData?.protein ?? 5,
@@ -1418,7 +1426,7 @@ export const actions = {
         qty: item.qty,
         unit: item.unit || existing?.unit || foodData?.unit || "g",
         storage: existing?.storage ?? foodData?.storage ?? "Despensa",
-        expires: todayPlus(existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
+        expires: addDaysToDateKey(getToday(draft), existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
         price: item.price,
         kcal: existing?.kcal ?? foodData?.kcal ?? 100,
         protein: existing?.protein ?? foodData?.protein ?? 5,

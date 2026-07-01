@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { IncomeFrequency } from "@foodos/types";
-import { getFoodSpend, useFoodOS } from "@/lib/state";
+import { getFoodSpend, getToday, useFoodOS } from "@/lib/state";
 import { monthlyAmountOf, projectSavings } from "@/lib/nutrition";
-import { eur, todayPlus, uid } from "@/lib/utils";
+import { dateFromKey, eur, uid } from "@/lib/utils";
 
 const FREQUENCY_LABELS: Record<IncomeFrequency, string> = {
   weekly: "Semanal",
@@ -73,7 +73,8 @@ export function FinanceView() {
   const [showAllMovements, setShowAllMovements] = useState(false);
 
   // ── Cálculos base ────────────────────────────────────────────
-  const now = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
+  const activeToday = getToday(state);
+  const now = dateFromKey(activeToday);
   const thirtyDaysAgo = new Date(now); thirtyDaysAgo.setDate(now.getDate() - 30);
   const sixtyDaysAgo  = new Date(now); sixtyDaysAgo.setDate(now.getDate() - 60);
 
@@ -83,7 +84,7 @@ export function FinanceView() {
     .reduce((sum, s) => sum + monthlyAmountOf(s.frequency, s.amount), 0);
 
   const oneTimeIncome = state.expenses
-    .filter((e) => e.type === "income" && new Date(e.date) >= thirtyDaysAgo)
+    .filter((e) => e.type === "income" && dateFromKey(e.date) >= thirtyDaysAgo)
     .reduce((sum, e) => sum + Number(e.amount), 0);
 
   const totalMonthlyIncome = recurringIncome + oneTimeIncome;
@@ -94,12 +95,12 @@ export function FinanceView() {
     .reduce((sum, r) => sum + monthlyAmountOf(r.frequency, r.amount), 0);
 
   const variableExpenses = state.expenses.filter(
-    (e) => e.type === "expense" && new Date(e.date) >= thirtyDaysAgo
+    (e) => e.type === "expense" && dateFromKey(e.date) >= thirtyDaysAgo
   );
   const monthlyVariable = variableExpenses.reduce((sum, e) => sum + Number(e.amount), 0);
 
   const prevMonthVariable = state.expenses
-    .filter((e) => e.type === "expense" && new Date(e.date) >= sixtyDaysAgo && new Date(e.date) < thirtyDaysAgo)
+    .filter((e) => e.type === "expense" && dateFromKey(e.date) >= sixtyDaysAgo && dateFromKey(e.date) < thirtyDaysAgo)
     .reduce((sum, e) => sum + Number(e.amount), 0);
 
   const totalMonthlyExpenses = monthlyFixed + monthlyVariable;
@@ -172,7 +173,7 @@ export function FinanceView() {
         amount: Number(data.get("amount")),
         category: String(data.get("category")),
         description: String(data.get("description")).trim(),
-        date: draft.debugDate ?? todayPlus(0),
+        date: getToday(draft),
       });
     });
     showToast(formType === "income" ? "Ingreso registrado" : "Gasto guardado");
@@ -742,13 +743,13 @@ function FinanceChart() {
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
-    const todayBase = state.debugDate ?? new Date().toISOString().slice(0, 10);
+    const activeToday = dateFromKey(getToday(state));
     const weeks = [3, 2, 1, 0].map((offset) => {
-      const start = new Date(todayBase); start.setDate(start.getDate() - (offset + 1) * 7);
-      const end   = new Date(todayBase); end.setDate(end.getDate() - offset * 7);
+      const start = new Date(activeToday); start.setDate(activeToday.getDate() - (offset + 1) * 7);
+      const end   = new Date(activeToday); end.setDate(activeToday.getDate() - offset * 7);
       return state.expenses
         .filter((e) => e.type === "expense")
-        .filter((e) => { const d = new Date(e.date); return d > start && d <= end; })
+        .filter((e) => { const d = dateFromKey(e.date); return d > start && d <= end; })
         .reduce((sum, e) => sum + Number(e.amount || 0), 0);
     });
     const max = Math.max(...weeks, 10);

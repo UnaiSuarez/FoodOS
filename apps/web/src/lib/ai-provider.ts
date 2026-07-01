@@ -11,7 +11,7 @@ import type {
 } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
-import { daysUntil, uid } from "./utils";
+import { addDaysToDateKey, dateFromKey, dateKeyFromDate, daysUntil, todayPlus, uid } from "./utils";
 import { canMakeRequest, recordRequest, getWaitMs } from "./ai-rate-limiter";
 
 function checkRateLimit() {
@@ -23,7 +23,7 @@ function checkRateLimit() {
 }
 
 function buildPrompt(state: FoodOSState): string {
-  const todayDate = state.debugDate ?? new Date().toISOString().slice(0, 10);
+  const todayDate = state.debugDate ?? todayPlus(0);
   const todayLog = state.foodLog.filter((e) => e.date === todayDate);
   const consumed = todayLog.reduce(
     (acc, e) => ({
@@ -41,9 +41,9 @@ function buildPrompt(state: FoodOSState): string {
     fat: Math.round(Math.max(0, state.nutrition.fat - consumed.fat)),
   };
 
-  const weekStart = new Date();
+  const weekStart = dateFromKey(todayDate);
   weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-  const weekStartStr = weekStart.toISOString().slice(0, 10);
+  const weekStartStr = dateKeyFromDate(weekStart);
   const spent = state.foodLog
     .filter((e) => e.date >= weekStartStr)
     .reduce((sum, e) => sum + ((e as typeof e & { cost?: number }).cost ?? 0), 0);
@@ -232,7 +232,7 @@ export async function generateAIRecipe(config: AIConfig, state: FoodOSState): Pr
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 function buildAssistantSystemPrompt(state: FoodOSState): string {
-  const todayDate = state.debugDate ?? new Date().toISOString().slice(0, 10);
+  const todayDate = state.debugDate ?? todayPlus(0);
   const todayLog = state.foodLog.filter((e) => e.date === todayDate);
   const consumed = todayLog.reduce(
     (acc, e) => ({ kcal: acc.kcal + e.kcal, protein: acc.protein + e.protein }),
@@ -242,7 +242,7 @@ function buildAssistantSystemPrompt(state: FoodOSState): string {
     kcal: Math.round(Math.max(0, state.nutrition.kcal - consumed.kcal)),
     protein: Math.round(Math.max(0, state.nutrition.protein - consumed.protein)),
   };
-  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+  const weekAgo = addDaysToDateKey(todayDate, -7);
   const budgetLeft = Math.max(
     0,
     state.weeklyBudget -

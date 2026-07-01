@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Recipe } from "@foodos/types";
+import type { MealType, Recipe } from "@foodos/types";
 import { actions, getPendingMacros, useFoodOS } from "@/lib/state";
 import { eur, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
@@ -9,6 +9,8 @@ import { Modal } from "./Modal";
 interface Props {
   recipe: Recipe;
   onClose: () => void;
+  logDate?: string;
+  mealType?: MealType;
 }
 
 function toGrams(qty: number, unit: string, unitSize = 60): number {
@@ -24,7 +26,7 @@ function toGrams(qty: number, unit: string, unitSize = 60): number {
   }
 }
 
-export function CookModal({ recipe, onClose }: Props) {
+export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [servings, setServings] = useState(recipe.servings || 1);
   const [deduct, setDeduct] = useState(true);
@@ -123,7 +125,7 @@ export function CookModal({ recipe, onClose }: Props) {
 
   function cook() {
     const overrides = Object.keys(qtyOverrides).length > 0 ? qtyOverrides : undefined;
-    mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides }));
+    mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType }));
     const lines: string[] = [];
     if (exceedKcal) lines.push("Atención: superas el objetivo de calorías de hoy.");
     if (coversProtein) lines.push("Proteína del día cubierta ✓");

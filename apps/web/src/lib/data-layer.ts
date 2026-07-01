@@ -11,7 +11,7 @@ import type {
 } from "@foodos/types";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { getSupabase } from "./supabase";
-import { ensureUuid, mealTypeFromTime } from "./utils";
+import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 
 // Capa de persistencia de FoodOS.
 // - Local: localStorage, siempre activa.
@@ -32,7 +32,7 @@ const STORAGE_TYPE_BY_NAME: Record<StorageName, string> = {
 const GOAL_MODES: GoalMode[] = ["fat_loss", "muscle_gain", "recomp", "maintain"];
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayPlus(0);
 }
 
 // ---------- Local ----------
@@ -316,11 +316,18 @@ class RemoteAdapter {
       if (extra) {
         if (Array.isArray(extra.routines))         state.routines         = extra.routines;
         if (Array.isArray(extra.workoutLog))       state.workoutLog       = extra.workoutLog;
+        if (Array.isArray(extra.recurringExpenses)) state.recurringExpenses = extra.recurringExpenses;
         if (Array.isArray(extra.customRecipes))    state.customRecipes    = extra.customRecipes;
+        if (Array.isArray(extra.savedRecipeIds))    state.savedRecipeIds    = extra.savedRecipeIds;
+        if (Array.isArray(extra.dismissedSuggestions)) state.dismissedSuggestions = extra.dismissedSuggestions;
         if (extra.mealPlan && typeof extra.mealPlan === "object") state.mealPlan = extra.mealPlan as typeof state.mealPlan;
         if (Array.isArray(extra.plannerQuickMeals)) state.plannerQuickMeals = extra.plannerQuickMeals;
         if (extra.categoryBudgets && typeof extra.categoryBudgets === "object") state.categoryBudgets = extra.categoryBudgets as typeof state.categoryBudgets;
+        if (extra.settings && typeof extra.settings === "object") state.settings = { ...state.settings, ...(extra.settings as typeof state.settings) };
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
+        if (typeof extra.bankSynced === "boolean") state.bankSynced = extra.bankSynced;
+        if (typeof extra.recipeTag === "string") state.recipeTag = extra.recipeTag;
+        if (typeof extra.activeStorage === "string") state.activeStorage = extra.activeStorage as typeof state.activeStorage;
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
         if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
       }
@@ -372,8 +379,8 @@ class RemoteAdapter {
 
     state.expenses = (gastosRes.data ?? []).map((row) => ({
       id: row.id,
-      type: "expense" as const,
-      amount: Number(row.amount),
+      type: Number(row.amount) < 0 ? "income" as const : "expense" as const,
+      amount: Math.abs(Number(row.amount)),
       category: row.category,
       description: row.description ?? "",
       date: row.txn_date,
@@ -487,11 +494,18 @@ class RemoteAdapter {
         extra_state: {
           routines:          state.routines          ?? [],
           workoutLog:        state.workoutLog        ?? [],
+          recurringExpenses: state.recurringExpenses ?? [],
           customRecipes:     state.customRecipes     ?? [],
+          savedRecipeIds:    state.savedRecipeIds    ?? [],
+          dismissedSuggestions: state.dismissedSuggestions ?? [],
           mealPlan:          state.mealPlan          ?? {},
           plannerQuickMeals: state.plannerQuickMeals ?? [],
           categoryBudgets:   state.categoryBudgets   ?? {},
+          settings:          state.settings,
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
+          bankSynced:        state.bankSynced        ?? false,
+          recipeTag:         state.recipeTag         ?? "todos",
+          activeStorage:     state.activeStorage     ?? "Todos",
           debugDate:         state.debugDate         ?? null,
           stepsLog:          state.stepsLog          ?? {},
         },
@@ -535,7 +549,7 @@ class RemoteAdapter {
     await client.from("nutrition_goals").upsert(
       {
         user_id: userId,
-        goal_date: today(),
+        goal_date: state.debugDate ?? today(),
         kcal_target: state.nutrition.kcal,
         protein_target_g: state.nutrition.protein,
         carbs_target_g: state.nutrition.carbs,
@@ -591,11 +605,11 @@ class RemoteAdapter {
 
     await this.syncTable(
       "gastos",
-      state.expenses.filter((entry) => entry.type === "expense"),
+      state.expenses,
       (entry) => ({
         id: ensureUuid(entry.id),
         user_id: userId,
-        amount: entry.amount,
+        amount: entry.type === "income" ? -Math.abs(entry.amount) : Math.abs(entry.amount),
         description: entry.description || null,
         category: entry.category,
         txn_date: entry.date || today(),
