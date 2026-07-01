@@ -10,14 +10,14 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
 import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
+import { dateOffset, daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultStore: "Mercadona",
   lowStockThresholds: { g: 200, ml: 300, L: 0.5, kg: 0.3, ud: 2 },
   extraExpenseCategories: [],
+  stepsGoal: 8000,
 };
 
 export const defaultState: FoodOSState = {
@@ -58,6 +59,7 @@ export const defaultState: FoodOSState = {
   categoryBudgets: {},
   routines: [],
   workoutLog: [],
+  stepsLog: {},
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,
@@ -84,6 +86,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.categoryBudgets ||= {};
   next.routines ||= [];
   next.workoutLog ||= [];
+  next.stepsLog ||= {};
   next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
@@ -316,8 +319,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), name: "Pechuga de pollo", qty: 260, unit: "g", storage: "Nevera", expires: todayPlus(1), price: 2.8, kcal: 165, protein: 31 },
       { id: uid(), name: "Arroz integral", qty: 500, unit: "g", storage: "Despensa", expires: todayPlus(60), price: 1.7, kcal: 360, protein: 8 },
       { id: uid(), name: "Tomate cherry", qty: 180, unit: "g", storage: "Nevera", expires: todayPlus(3), price: 1.4, kcal: 18, protein: 1 },
-      { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
-      { id: uid(), name: "Huevos", qty: 6, unit: "ud", storage: "Nevera", expires: todayPlus(12), price: 1.8, kcal: 155, protein: 13 },
+      { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", unitSize: 125, storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
+      { id: uid(), name: "Huevos", qty: 6, unit: "ud", unitSize: 60, storage: "Nevera", expires: todayPlus(12), price: 1.8, kcal: 155, protein: 13 },
     ];
     demo.cart = [{ id: uid(), name: "Avena", qty: 1, unit: "ud", price: 1.4, store: "Mercadona", checked: false }];
     demo.incomeSources = [
@@ -506,6 +509,10 @@ export function getWaterToday(state: FoodOSState): number {
   return state.waterLog[getToday(state)] ?? 0;
 }
 
+export function getStepsToday(state: FoodOSState): number {
+  return state.stepsLog?.[getToday(state)] ?? 0;
+}
+
 /** kcal quemadas en sesiones de entrenamiento registradas hoy. */
 export function getKcalBurnedToday(state: FoodOSState): number {
   const today = getToday(state);
@@ -565,7 +572,7 @@ export function getPendingMacros(state: FoodOSState): MacroTotals {
 /** Macros de una cantidad concreta de un alimento del inventario.
     Carbos y grasas se estiman (el inventario solo guarda kcal y proteina por 100). */
 export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals {
-  const grams = item.unit === "kg" || item.unit === "L" ? qty * 1000 : item.unit === "ud" ? qty * 60 : qty;
+  const grams = item.unit === "kg" || item.unit === "L" ? qty * 1000 : item.unit === "ud" ? qty * (item.unitSize ?? 60) : qty;
   const kcal = (item.kcal * grams) / 100;
   const protein = (item.protein * grams) / 100;
   const fat = item.fat != null
@@ -580,6 +587,63 @@ export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals
     carbs: Math.round(carbs * 10) / 10,
     fat: Math.round(fat * 10) / 10,
   };
+}
+
+/** Busca el tamaño por unidad ("ud") que el usuario ya indicó para un producto con
+    este nombre: primero en el inventario actual, si no en el historial del diario
+    (snapshot guardado al consumir). Evita tener que reintroducirlo cada vez que se
+    vuelve a comprar el mismo producto (ej. una lata de Monster). */
+export function findRememberedUnitSize(state: FoodOSState, name: string): number | undefined {
+  const key = name.toLowerCase().trim();
+  if (!key) return undefined;
+  const fromInventory = state.inventory.find(
+    (item) => item.name.toLowerCase().trim() === key && item.unitSize != null
+  );
+  if (fromInventory) return fromInventory.unitSize;
+  for (let i = state.foodLog.length - 1; i >= 0; i--) {
+    const entry = state.foodLog[i];
+    if (entry.name.toLowerCase().trim() === key && entry.inventorySnapshot?.unitSize != null) {
+      return entry.inventorySnapshot.unitSize;
+    }
+  }
+  return undefined;
+}
+
+// Traduce los tags de alérgenos de Open Food Facts (taxonomía en inglés, prefijo "en:")
+// a términos en español para poder cruzarlos con profile.allergies (texto libre del usuario).
+const OFF_ALLERGEN_TERMS: Record<string, string[]> = {
+  "en:gluten":      ["gluten", "trigo", "cebada", "centeno"],
+  "en:milk":        ["leche", "lactosa", "lácteos", "lacteos"],
+  "en:eggs":        ["huevo", "huevos"],
+  "en:nuts":        ["frutos secos", "almendra", "nuez", "nueces", "avellana", "anacardo", "pistacho"],
+  "en:peanuts":     ["cacahuete", "cacahuetes", "maní", "mani"],
+  "en:soybeans":    ["soja"],
+  "en:fish":        ["pescado"],
+  "en:crustaceans": ["crustáceo", "crustaceo", "marisco", "gamba", "langostino"],
+  "en:molluscs":    ["molusco", "mejillón", "mejillon", "calamar", "pulpo"],
+  "en:sesame-seeds":["sésamo", "sesamo"],
+  "en:celery":      ["apio"],
+  "en:mustard":     ["mostaza"],
+  "en:sulphur-dioxide-and-sulphites": ["sulfito", "sulfitos"],
+  "en:lupin":       ["altramuz", "altramuces"],
+};
+
+/** Cruza los alérgenos de un producto (tags OFF) con las alergias declaradas por el
+    usuario (texto libre). Devuelve las alergias del usuario que coinciden, para avisar
+    antes de guardar el producto en el inventario. */
+export function matchAllergens(state: FoodOSState, allergenTags?: string[]): string[] {
+  const allergies = state.profile?.allergies ?? [];
+  if (!allergenTags?.length || !allergies.length) return [];
+  const productTerms = allergenTags.flatMap((tag) => OFF_ALLERGEN_TERMS[tag] ?? [tag.replace(/^en:/, "")]);
+  const matched = new Set<string>();
+  for (const allergy of allergies) {
+    const a = allergy.toLowerCase().trim();
+    if (!a) continue;
+    if (productTerms.some((term) => a.includes(term) || term.includes(a))) {
+      matched.add(allergy);
+    }
+  }
+  return [...matched];
 }
 
 /**
@@ -687,8 +751,9 @@ export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
     return sorted[dayIndex % sorted.length] ?? sorted[0];
   };
 
+  const planBase = state.debugDate ?? todayPlus(0);
   return Array.from({ length: 7 }, (_, i) => {
-    const date = todayPlus(i);
+    const date = dateOffset(planBase, i);
     const dayOfWeek = new Date(date + "T12:00:00").getDay();
     const isGym = state.profile!.gymDays.includes(dayOfWeek);
     const targets = calcDailyTargets(state.profile!, isGym);
@@ -895,8 +960,9 @@ export function countLowProteinDays(state: FoodOSState): number {
   const target = state.nutrition.protein;
   if (!target) return 0;
   let count = 0;
+  const base = state.debugDate ?? todayPlus(0);
   for (let i = 1; i <= 3; i++) {
-    const date = todayPlus(-i);
+    const date = dateOffset(base, -i);
     const dayTotal = state.foodLog
       .filter((e) => e.date === date)
       .reduce((sum, e) => sum + e.protein, 0);
@@ -911,7 +977,7 @@ export function getMonthlyFinanceHistory(
   months = 6
 ): Array<{ month: string; label: string; expenses: number; income: number; savings: number }> {
   const MONTH_LABELS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-  const now = new Date();
+  const now = new Date((state.debugDate ?? todayPlus(0)) + "T12:00:00");
   return Array.from({ length: months }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (months - 1 - i), 1);
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -936,8 +1002,9 @@ export function getWeeklyMacroHistory(
   state: FoodOSState,
   days = 7
 ): Array<{ date: string; kcal: number; protein: number; carbs: number; fat: number }> {
+  const base = state.debugDate ?? todayPlus(0);
   return Array.from({ length: days }, (_, i) => {
-    const date = todayPlus(-(days - 1 - i));
+    const date = dateOffset(base, -(days - 1 - i));
     const entries = state.foodLog.filter((e) => e.date === date);
     return {
       date,
@@ -959,8 +1026,9 @@ export function getMacroAdherenceHistory(
 ): Array<{ date: string; status: "hit" | "partial" | "miss" | "empty" }> {
   const targetKcal = state.nutrition.kcal;
   const targetProtein = state.nutrition.protein;
+  const base = state.debugDate ?? todayPlus(0);
   return Array.from({ length: days }, (_, i) => {
-    const date = todayPlus(-(days - 1 - i));
+    const date = dateOffset(base, -(days - 1 - i));
     const entries = state.foodLog.filter((e) => e.date === date);
     if (!entries.length) return { date, status: "empty" };
     const kcal = entries.reduce((s, e) => s + e.kcal, 0);
@@ -1043,7 +1111,7 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
   let kcal = macrosOf(proteinSource, proteinGrams).kcal;
   let protein = macrosOf(proteinSource, proteinGrams).protein;
   sides.forEach((item) => {
-    const grams = item.unit === "ud" ? 60 : Math.min(150, item.qty);
+    const grams = item.unit === "ud" ? (item.unitSize ?? 60) : Math.min(150, item.qty);
     kcal += (item.kcal * grams) / 100;
     protein += (item.protein * grams) / 100;
   });
@@ -1086,6 +1154,32 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
 
 // ---------- Acciones de dominio (operan sobre el draft de mutate) ----------
 
+/** Núcleo compartido de returnQtyToInventory/returnIngredientsToInventory: busca
+    el item por id (si se indica) o por nombre, le suma qty, o lo recrea desde
+    el snapshot si ya no existe. */
+function restoreInventoryQty(
+  draft: FoodOSState,
+  params: { inventoryItemId?: string; name: string; qty: number; unit: string; snapshot?: InventorySnapshot }
+): boolean {
+  const { inventoryItemId, name, qty, unit, snapshot } = params;
+  if (qty <= 0) return false;
+  const byId = inventoryItemId ? draft.inventory.find((item) => item.id === inventoryItemId) : undefined;
+  const target = byId ?? draft.inventory.find((item) => {
+    const n = item.name.toLowerCase();
+    const en = name.toLowerCase();
+    return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
+  });
+  if (target) {
+    target.qty = Math.round((target.qty + qty) * 100) / 100;
+    return true;
+  }
+  if (snapshot) {
+    draft.inventory.push({ id: uid(), name, qty, unit, ...snapshot });
+    return true;
+  }
+  return false;
+}
+
 export const actions = {
   /** Descarta una sugerencia de stock bajo; desaparece hasta que se re-añade al inventario. */
   dismissSuggestion(draft: FoodOSState, name: string) {
@@ -1099,20 +1193,7 @@ export const actions = {
   /** Registra una receta cocinada; ratio = escala de la porcion (1 = racion base). */
   cookRecipe(draft: FoodOSState, recipe: Recipe, ratio = 1, opts?: { deductIngredients?: boolean; mealType?: MealType; qtyOverrides?: Record<string, number> }) {
     const t = nowTime();
-    draft.foodLog.push({
-      id: uid(),
-      date: todayPlus(0),
-      time: t,
-      name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
-      qty: null,
-      unit: null,
-      kcal: Math.round(recipe.kcal * ratio),
-      protein: Math.round(recipe.protein * ratio * 10) / 10,
-      carbs: Math.round(recipe.carbs * ratio * 10) / 10,
-      fat: Math.round(recipe.fat * ratio * 10) / 10,
-      source: "recipe",
-      mealType: opts?.mealType ?? mealTypeFromTime(t),
-    });
+    const consumedIngredients: NonNullable<FoodLogEntry["consumedIngredients"]> = [];
 
     if (opts?.deductIngredients) {
       for (const ing of recipe.ingredients) {
@@ -1130,10 +1211,37 @@ export const actions = {
           const take = Math.min(match.qty, remaining);
           match.qty = Math.round((match.qty - take) * 100) / 100;
           remaining -= take;
+          consumedIngredients.push({
+            inventoryItemId: match.id,
+            name: match.name,
+            qty: take,
+            unit: match.unit,
+            snapshot: {
+              storage: match.storage, expires: match.expires, price: match.price,
+              kcal: match.kcal, protein: match.protein, carbs: match.carbs, fat: match.fat,
+              salt: match.salt, fiber: match.fiber, sugars: match.sugars, unitSize: match.unitSize,
+            },
+          });
         }
       }
       draft.inventory = draft.inventory.filter((item) => item.qty > 0);
     }
+
+    draft.foodLog.push({
+      id: uid(),
+      date: draft.debugDate ?? todayPlus(0),
+      time: t,
+      name: ratio === 1 ? recipe.title : `${recipe.title} (×${Math.round(ratio * 100) / 100})`,
+      qty: null,
+      unit: null,
+      kcal: Math.round(recipe.kcal * ratio),
+      protein: Math.round(recipe.protein * ratio * 10) / 10,
+      carbs: Math.round(recipe.carbs * ratio * 10) / 10,
+      fat: Math.round(recipe.fat * ratio * 10) / 10,
+      source: "recipe",
+      mealType: opts?.mealType ?? mealTypeFromTime(t),
+      ...(consumedIngredients.length > 0 && { consumedIngredients }),
+    });
   },
 
   /** Consume una cantidad PARCIAL de un alimento: registra en el diario y
@@ -1146,7 +1254,7 @@ export const actions = {
     const t = nowTime();
     draft.foodLog.push({
       id: uid(),
-      date: todayPlus(0),
+      date: draft.debugDate ?? todayPlus(0),
       time: t,
       name: item.name,
       qty: consumed,
@@ -1154,6 +1262,20 @@ export const actions = {
       ...macros,
       source: "inventory",
       mealType: overrideMealType ?? mealTypeFromTime(t),
+      inventoryItemId: item.id,
+      inventorySnapshot: {
+        storage: item.storage,
+        expires: item.expires,
+        price: item.price,
+        kcal: item.kcal,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat,
+        salt: item.salt,
+        fiber: item.fiber,
+        sugars: item.sugars,
+        unitSize: item.unitSize,
+      },
     });
     item.qty = Math.round((item.qty - consumed) * 100) / 100;
     if (item.qty <= 0) {
@@ -1161,20 +1283,74 @@ export const actions = {
     }
   },
 
+  /** Devuelve `qty` de una entrada del diario al inventario: si el item original
+      sigue existiendo se le suma; si fue eliminado por completo, se recrea desde
+      el snapshot guardado al consumir. Devuelve true si pudo devolver algo. */
+  returnQtyToInventory(draft: FoodOSState, entry: FoodLogEntry, qty: number): boolean {
+    if (qty <= 0) return false;
+    return restoreInventoryQty(draft, {
+      inventoryItemId: entry.inventoryItemId,
+      name: entry.name,
+      qty,
+      unit: entry.unit ?? "g",
+      snapshot: entry.inventorySnapshot,
+    });
+  },
+
+  /** Igual que returnQtyToInventory pero para una receta cocinada o un plato
+      elaborado que descontó de varios items de inventario a la vez (uno por
+      ingrediente). Devuelve true si pudo devolver al menos uno. */
+  returnIngredientsToInventory(draft: FoodOSState, entry: FoodLogEntry): boolean {
+    if (!entry.consumedIngredients?.length) return false;
+    let any = false;
+    for (const ing of entry.consumedIngredients) {
+      const restored = restoreInventoryQty(draft, {
+        inventoryItemId: ing.inventoryItemId,
+        name: ing.name,
+        qty: ing.qty,
+        unit: ing.unit,
+        snapshot: ing.snapshot,
+      });
+      any = any || restored;
+    }
+    return any;
+  },
+
+  /** Punto único usado al borrar/limpiar una entrada del diario: devuelve al
+      inventario lo que corresponda según el tipo de entrada (consumo directo
+      de un item, o receta/plato que descontó de varios). Devuelve true si
+      devolvió algo. */
+  returnEntryToInventory(draft: FoodOSState, entry: FoodLogEntry): boolean {
+    if (entry.source === "inventory" && (entry.qty ?? 0) > 0) {
+      return actions.returnQtyToInventory(draft, entry, entry.qty ?? 0);
+    }
+    if (entry.consumedIngredients?.length) {
+      return actions.returnIngredientsToInventory(draft, entry);
+    }
+    return false;
+  },
+
   addWater(draft: FoodOSState, ml: number) {
-    const today = todayPlus(0);
+    const today = draft.debugDate ?? todayPlus(0);
     draft.waterLog[today] = Math.max(0, (draft.waterLog[today] ?? 0) + ml);
   },
 
   /** Registra el peso corporal de hoy (reemplaza si ya hay una entrada para hoy). */
   logWeight(draft: FoodOSState, kg: number) {
-    const today = todayPlus(0);
+    const today = draft.debugDate ?? todayPlus(0);
     const idx = draft.weightLog.findIndex((e) => e.date === today);
     if (idx >= 0) {
       draft.weightLog[idx].kg = kg;
     } else {
       draft.weightLog.push({ date: today, kg });
     }
+  },
+
+  /** Registra el total de pasos de hoy (reemplaza si ya había un valor para hoy). */
+  logSteps(draft: FoodOSState, steps: number) {
+    const today = draft.debugDate ?? todayPlus(0);
+    draft.stepsLog ??= {};
+    draft.stepsLog[today] = Math.max(0, Math.round(steps));
   },
 
   addRecipeToCart(draft: FoodOSState, recipe: Recipe) {
@@ -1208,7 +1384,7 @@ export const actions = {
       amount: total,
       category: "Comida",
       description: "Compra completada desde carrito",
-      date: todayPlus(0),
+      date: draft.debugDate ?? todayPlus(0),
     });
     checked.forEach((item) => {
       const foodData = findExactFood(item.name);

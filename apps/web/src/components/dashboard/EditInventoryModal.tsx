@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { Modal } from "./Modal";
+import { ImagePickerField } from "./ImagePickerField";
 
 export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
   const { mutate, showToast } = useFoodOS();
@@ -16,6 +17,8 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
     price: item.price,
     kcal: item.kcal,
     protein: item.protein,
+    unitSize: item.unitSize ?? 60,
+    imageUrl: item.imageUrl as string | undefined,
   });
 
   function setField<K extends keyof typeof form>(key: K, val: typeof form[K]) {
@@ -35,6 +38,8 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       it.price = form.price;
       it.kcal = form.kcal;
       it.protein = form.protein;
+      it.unitSize = form.unit === "ud" ? form.unitSize : undefined;
+      it.imageUrl = form.imageUrl?.trim() || undefined;
     });
     showToast("Alimento actualizado");
     onClose();
@@ -60,6 +65,15 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
             <option>g</option><option>ml</option><option>ud</option><option>kg</option><option>L</option>
           </select>
         </label>
+        {form.unit === "ud" && (
+          <label>
+            Tamaño por unidad (g/ml)
+            <input
+              type="number" min="1" step="1" value={form.unitSize}
+              onChange={(e) => setField("unitSize", Number(e.target.value))}
+            />
+          </label>
+        )}
         <label>
           Almacén
           <select value={form.storage} onChange={(e) => setField("storage", e.target.value as StorageName)}>
@@ -83,6 +97,8 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
           <input type="number" min="0" step="0.1" value={form.protein} onChange={(e) => setField("protein", Number(e.target.value))} />
         </label>
       </div>
+
+      <ImagePickerField imageUrl={form.imageUrl} onChange={(url) => setField("imageUrl", url)} />
       <div className="recipe-detail-actions">
         <button className="secondary-button" onClick={onClose}>Cancelar</button>
         <button className="primary-button" onClick={save}>Guardar cambios</button>

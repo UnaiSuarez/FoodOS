@@ -17,6 +17,8 @@ type IngDraft = {
   carbsPer100: number;
   fatPer100: number;
   status: IngStatus;
+  /** Gramos/ml por unidad cuando unit==="ud" (ej. 1 huevo = 60g). */
+  unitSize: number;
 };
 
 function recipeIngToIng(ri: RecipeIngredient): IngDraft {
@@ -30,20 +32,22 @@ function recipeIngToIng(ri: RecipeIngredient): IngDraft {
     carbsPer100:   ri.carbsPer100   ?? 0,
     fatPer100:     ri.fatPer100     ?? 0,
     status: hasMacros ? "found" : "idle",
+    unitSize: ri.unitSize ?? 60,
   };
 }
 
 function ingToRecord(ing: IngDraft): RecipeIngredient {
-  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status } = ing;
+  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status, unitSize } = ing;
   return {
     name, quantity, unit,
+    ...(unit === "ud" ? { unitSize } : {}),
     ...(status === "found" || status === "manual"
       ? { kcalPer100, proteinPer100, carbsPer100, fatPer100 }
       : {}),
   };
 }
 
-function toGrams(qty: number, unit: string): number {
+function toGrams(qty: number, unit: string, unitSize = 60): number {
   switch (unit) {
     case "kg": return qty * 1000;
     case "L":  return qty * 1000;
@@ -51,7 +55,7 @@ function toGrams(qty: number, unit: string): number {
     case "lb": return qty * 453.6;
     case "cucharada": return qty * 15;
     case "pizca":     return qty * 0.5;
-    case "ud": return qty * 100;
+    case "ud": return qty * unitSize;
     default:   return qty;
   }
 }
@@ -67,7 +71,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
   const [ingredients, setIngredients] = useState<IngDraft[]>(
     recipe.ingredients.length
       ? recipe.ingredients.map(recipeIngToIng)
-      : [{ name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle" }]
+      : [{ name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle", unitSize: 60 }]
   );
   const [steps, setSteps] = useState(recipe.steps.length ? [...recipe.steps] : [""]);
   // Start with the stored recipe macros as override so editing doesn't lose them
@@ -80,7 +84,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
     let k = 0, p = 0, c = 0, f = 0;
     for (const ing of ingredients) {
       if (!ing.name.trim() || (ing.status !== "found" && ing.status !== "manual")) continue;
-      const g = toGrams(ing.quantity, ing.unit);
+      const g = toGrams(ing.quantity, ing.unit, ing.unitSize);
       k += (ing.kcalPer100 * g) / 100;
       p += (ing.proteinPer100 * g) / 100;
       c += (ing.carbsPer100 * g) / 100;
@@ -121,7 +125,12 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
       return n === q || n.includes(q.split(" ")[0]) || q.includes(n.split(" ")[0]);
     });
     if (invMatch) {
-      setIng(i, { kcalPer100: invMatch.kcal, proteinPer100: invMatch.protein, carbsPer100: invMatch.carbs ?? 0, fatPer100: invMatch.fat ?? 0, status: "found" });
+      setIng(i, {
+        kcalPer100: invMatch.kcal, proteinPer100: invMatch.protein,
+        carbsPer100: invMatch.carbs ?? 0, fatPer100: invMatch.fat ?? 0,
+        ...(invMatch.unit === "ud" ? { unit: "ud", unitSize: invMatch.unitSize ?? 60 } : {}),
+        status: "found",
+      });
       return;
     }
 
@@ -253,6 +262,15 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
                   <option>g</option><option>ml</option><option>ud</option>
                   <option>kg</option><option>L</option><option>cucharada</option><option>pizca</option>
                 </select>
+                {ing.unit === "ud" && (
+                  <input
+                    type="number" min="1" step="1"
+                    className="create-ing-qty"
+                    title="Gramos/ml por unidad"
+                    value={ing.unitSize}
+                    onChange={(e) => setIng(i, { unitSize: Number(e.target.value) })}
+                  />
+                )}
                 <span className={`ing-status ing-status--${ing.status}`}>
                   {ing.status === "loading" ? "…" : ing.status === "found" ? "✓" : ing.status === "manual" ? "?" : ""}
                 </span>
@@ -280,7 +298,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
             </div>
           ))}
 
-          <button type="button" className="secondary-button" onClick={() => setIngredients((prev) => [...prev, { name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle" }])}>
+          <button type="button" className="secondary-button" onClick={() => setIngredients((prev) => [...prev, { name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle", unitSize: 60 }])}>
             + Añadir ingrediente
           </button>
         </div>

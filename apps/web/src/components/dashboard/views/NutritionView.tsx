@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, GoalMode, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, EquipmentAccess, ExperienceLevel, GoalMode, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
 import {
   actions,
   bestRecipe,
@@ -19,6 +19,8 @@ import {
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
+  EQUIPMENT_LABELS,
+  EXPERIENCE_LABELS,
   GOAL_DESCRIPTIONS,
   GOAL_LABELS,
   calcDailyTargets,
@@ -28,7 +30,7 @@ import {
   shouldWarnMuscleGain,
   weeklyCycle,
 } from "@/lib/nutrition";
-import { todayMinus, todayPlus } from "@/lib/utils";
+import { dateOffset, todayPlus } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 1, label: "L" },
@@ -123,11 +125,14 @@ function NutritionToday() {
               </div>
               <button
                 className="small-action bad"
-                onClick={() =>
+                onClick={() => {
+                  let restored = false;
                   mutate((draft) => {
+                    restored = actions.returnEntryToInventory(draft, entry);
                     draft.foodLog = draft.foodLog.filter((candidate) => candidate.id !== entry.id);
-                  })
-                }
+                  });
+                  showToast(restored ? "Comida eliminada · cantidad devuelta al inventario" : "Comida eliminada");
+                }}
               >
                 Borrar
               </button>
@@ -142,7 +147,10 @@ function NutritionToday() {
         className="secondary-button"
         onClick={() => {
           mutate((draft) => {
-            const today = new Date().toISOString().slice(0, 10);
+            const today = draft.debugDate ?? new Date().toISOString().slice(0, 10);
+            for (const entry of draft.foodLog) {
+              if (entry.date === today) actions.returnEntryToInventory(draft, entry);
+            }
             draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
           });
           showToast("Día nutricional reiniciado");
@@ -184,6 +192,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       allergies: parseList(String(data.get("allergies"))),
       excludedFoods: parseList(String(data.get("excluded"))),
       targetWeightKg: targetWeightRaw ? Number(targetWeightRaw) : undefined,
+      experienceLevel: (data.get("experienceLevel") as ExperienceLevel) || undefined,
+      equipmentAccess: (data.get("equipmentAccess") as EquipmentAccess) || undefined,
     };
     mutate((draft) => {
       draft.profile = next;
@@ -233,6 +243,26 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
             {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
               <option key={level} value={level}>
                 {ACTIVITY_LABELS[level]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Experiencia entrenando <small>(para el asistente de rutinas IA)</small>
+          <select name="experienceLevel" defaultValue={profile?.experienceLevel ?? "intermediate"}>
+            {(Object.keys(EXPERIENCE_LABELS) as ExperienceLevel[]).map((level) => (
+              <option key={level} value={level}>
+                {EXPERIENCE_LABELS[level]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Material disponible <small>(para el asistente de rutinas IA)</small>
+          <select name="equipmentAccess" defaultValue={profile?.equipmentAccess ?? "full_gym"}>
+            {(Object.keys(EQUIPMENT_LABELS) as EquipmentAccess[]).map((level) => (
+              <option key={level} value={level}>
+                {EQUIPMENT_LABELS[level]}
               </option>
             ))}
           </select>
@@ -346,7 +376,7 @@ function WeightPanel() {
       {latest && (
         <div className="meta-row" style={{ marginTop: 10 }}>
           <span className="badge green">
-            Último: {latest.kg} kg ({latest.date === todayPlus(0) ? "hoy" : latest.date})
+            Último: {latest.kg} kg ({latest.date === (state.debugDate ?? todayPlus(0)) ? "hoy" : latest.date})
           </span>
           {target && (
             <span className="badge amber">
@@ -827,7 +857,8 @@ function WeightProjectionPanel() {
   const targetKg = profile.targetWeightKg;
 
   // Promedio de kcal ingeridas en los últimos 14 días (solo días con ≥500 kcal registradas)
-  const daysWithData = Array.from({ length: 14 }, (_, i) => todayMinus(i))
+  const weightProjBase = state.debugDate ?? todayPlus(0);
+  const daysWithData = Array.from({ length: 14 }, (_, i) => dateOffset(weightProjBase, -i))
     .map((date) => ({
       date,
       kcal: state.foodLog.filter((e) => e.date === date).reduce((s, e) => s + e.kcal, 0),

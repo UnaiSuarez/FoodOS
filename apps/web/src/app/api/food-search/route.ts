@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
       `https://search.openfoodfacts.org/search` +
       `?q=${encodeURIComponent(q)}` +
       `&page_size=20` +
-      `&fields=product_name,product_name_es,product_name_es_ES,nutriments`;
+      `&fields=product_name,product_name_es,product_name_es_ES,nutriments,quantity,brands,image_small_url,allergens_tags`;
 
     const res = await fetch(url, {
       headers: {

@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import type { FoodLogEntry, MealType } from "@foodos/types";
-import { actions, getLogByDay, getWaterToday, useFoodOS } from "@/lib/state";
-import { todayPlus } from "@/lib/utils";
+import { actions, getLogByDay, getToday, getWaterToday, useFoodOS } from "@/lib/state";
+import { dateOffset } from "@/lib/utils";
 import { DiaryEntryDetailModal } from "../DiaryEntryDetailModal";
 import { EditLogModal } from "../EditLogModal";
 import { LogMealModal } from "../LogMealModal";
@@ -19,9 +19,9 @@ const MEAL_CHIPS: Record<MealType, { label: string; cls: string }> = {
   dinner:    { label: "🌙 Cena",     cls: "dinner" },
 };
 
-function formatDay(date: string): string {
-  if (date === todayPlus(0)) return "Hoy";
-  if (date === todayPlus(-1)) return "Ayer";
+function formatDay(date: string, today: string): string {
+  if (date === today) return "Hoy";
+  if (date === dateOffset(today, -1)) return "Ayer";
   return new Date(`${date}T12:00:00`).toLocaleDateString("es-ES", {
     weekday: "long",
     day: "numeric",
@@ -35,7 +35,7 @@ export function DiaryView() {
   const waterToday = getWaterToday(state);
   const waterPct = Math.min(100, Math.round((waterToday / WATER_GOAL_ML) * 100));
   const days = getLogByDay(state);
-  const today = todayPlus(0);
+  const today = getToday(state);
   const hasToday = days.some((day) => day.date === today);
   const [editingMealTypeId, setEditingMealTypeId] = useState<string | null>(null);
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
@@ -112,7 +112,7 @@ export function DiaryView() {
       {days.map((day) => (
         <article key={day.date} className="panel diary-day">
           <div className="panel-head">
-            <h3 className="diary-date">{formatDay(day.date)}</h3>
+            <h3 className="diary-date">{formatDay(day.date, today)}</h3>
             <div className="diary-totals">
               <span className="badge green">{Math.round(day.totals.kcal)} kcal</span>
               <span className="badge">{Math.round(day.totals.protein)}g prot</span>
@@ -199,20 +199,12 @@ export function DiaryView() {
                               className="small-action bad"
                               aria-label={`Borrar ${entry.name}`}
                               onClick={() => {
+                                let restored = false;
                                 mutate((draft) => {
-                                  if (entry.source === "inventory" && (entry.qty ?? 0) > 0) {
-                                    const matches = draft.inventory.filter((item) => {
-                                      const n = item.name.toLowerCase();
-                                      const en = entry.name.toLowerCase();
-                                      return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
-                                    });
-                                    if (matches.length > 0) {
-                                      matches[0].qty = Math.round((matches[0].qty + (entry.qty ?? 0)) * 100) / 100;
-                                    }
-                                  }
+                                  restored = actions.returnEntryToInventory(draft, entry);
                                   draft.foodLog = draft.foodLog.filter((c) => c.id !== entry.id);
                                 });
-                                showToast("Comida eliminada · cantidad devuelta al inventario");
+                                showToast(restored ? "Comida eliminada · cantidad devuelta al inventario" : "Comida eliminada");
                               }}
                             >
                               ×

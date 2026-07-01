@@ -1,7 +1,7 @@
 "use client";
 
 import type { FoodLogEntry, MealType } from "@foodos/types";
-import { useFoodOS } from "@/lib/state";
+import { actions, useFoodOS } from "@/lib/state";
 import { Modal } from "./Modal";
 
 const MEAL_LABELS: Record<MealType, string> = {
@@ -37,24 +37,12 @@ export function DiaryEntryDetailModal({ entry, onClose, onEdit }: Props) {
   const fatPct   = cals > 0 ? Math.round((entry.fat    * 9 / cals) * 100) : 0;
 
   function handleDelete() {
+    let restored = false;
     mutate((draft) => {
-      if (entry.source === "inventory" && (entry.qty ?? 0) > 0) {
-        const matches = draft.inventory.filter((item) => {
-          const n = item.name.toLowerCase();
-          const en = entry.name.toLowerCase();
-          return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
-        });
-        if (matches.length > 0) {
-          matches[0].qty = Math.round((matches[0].qty + (entry.qty ?? 0)) * 100) / 100;
-        }
-      }
+      restored = actions.returnEntryToInventory(draft, entry);
       draft.foodLog = draft.foodLog.filter((x) => x.id !== entry.id);
     });
-    showToast(
-      entry.source === "inventory"
-        ? "Comida eliminada · cantidad devuelta al inventario"
-        : "Comida eliminada"
-    );
+    showToast(restored ? "Comida eliminada · cantidad devuelta al inventario" : "Comida eliminada");
     onClose();
   }
 

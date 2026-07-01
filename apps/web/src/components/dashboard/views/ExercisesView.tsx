@@ -5,8 +5,18 @@ import { useFoodOS } from "@/lib/state";
 import { uid } from "@/lib/utils";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIRoutine } from "@/lib/ai-provider";
-import type { Routine, RoutineExercise, WorkoutSession, CompletedExercise, GoalMode } from "@foodos/types";
-import { estimateWorkoutKcal } from "@/lib/nutrition";
+import type {
+  CompletedExercise,
+  EquipmentAccess,
+  ExperienceLevel,
+  GoalMode,
+  Routine,
+  RoutineDay,
+  RoutineExercise,
+  SplitTemplate,
+  WorkoutSession,
+} from "@foodos/types";
+import { estimateWorkoutKcal, EQUIPMENT_LABELS, EXPERIENCE_LABELS } from "@/lib/nutrition";
 
 // ─── wger API types ─────────────────────────────────────────────────────────
 interface WgerTranslation {
@@ -39,6 +49,20 @@ const GOAL_LABELS: Record<GoalMode, string> = {
   recomp:      "Recomposición",
   maintain:    "Mantenimiento",
 };
+
+const SPLIT_OPTIONS: Array<{ value: SplitTemplate; label: string; hint: string }> = [
+  { value: "ai_decide",      label: "Que decida la IA",   hint: "El entrenador elige el mejor split para tus días" },
+  { value: "push_pull_legs", label: "Push/Pull/Legs",     hint: "Empuje, tirón y pierna" },
+  { value: "upper_lower",    label: "Torso/Pierna",       hint: "Alterna tren superior e inferior" },
+  { value: "full_body",      label: "Full body",          hint: "Cuerpo completo cada sesión" },
+  { value: "bro_split",      label: "Por grupo muscular",  hint: "Un grupo protagonista por día" },
+];
+
+const EXPERIENCE_OPTIONS = (Object.entries(EXPERIENCE_LABELS) as [ExperienceLevel, string][])
+  .map(([value, label]) => ({ value, label }));
+
+const EQUIPMENT_OPTIONS = (Object.entries(EQUIPMENT_LABELS) as [EquipmentAccess, string][])
+  .map(([value, label]) => ({ value, label }));
 
 // ─── Main view ───────────────────────────────────────────────────────────────
 type Tab = "routines" | "explore" | "history";
@@ -89,19 +113,36 @@ function RoutinesTab() {
   // Defensive: routines may be undefined if stored state predates this field
   const routines = state.routines ?? [];
 
+  // ── Wizard de generación con IA ──
+  const [splitTemplate, setSplitTemplate] = useState<SplitTemplate>("ai_decide");
+  const [wizardDays, setWizardDays] = useState(Math.max(1, profile?.gymDays?.length || 3));
+  const [experienceLevel, setExperienceLevel] = useState<ExperienceLevel>(profile?.experienceLevel ?? "intermediate");
+  const [equipmentAccess, setEquipmentAccess] = useState<EquipmentAccess>(profile?.equipmentAccess ?? "full_gym");
+  const [sessionMinutes, setSessionMinutes] = useState(45);
+
   async function handleGenerateAI() {
     if (!aiConfig) { showToast("Configura la IA primero en Ajustes"); return; }
     if (!profile)  { showToast("Completa el perfil físico en Nutrición"); return; }
     setAiLoading(true);
     try {
-      const routine = await generateAIRoutine(
-        aiConfig,
-        profile.goal,
-        profile.weightKg,
-        (profile.gymDays ?? []).length,
-      );
+      const routine = await generateAIRoutine(aiConfig, {
+        goal: profile.goal,
+        weightKg: profile.weightKg,
+        gymDaysCount: wizardDays,
+        splitTemplate,
+        experienceLevel,
+        equipmentAccess,
+        sessionMinutes,
+      });
       setAiPreview(routine);
       setShowAI(false);
+      // Guarda nivel/material en el perfil para no volver a preguntarlo la próxima vez.
+      mutate((d) => {
+        if (d.profile) {
+          d.profile.experienceLevel = experienceLevel;
+          d.profile.equipmentAccess = equipmentAccess;
+        }
+      });
     } catch (err) {
       showToast((err as Error).message ?? "Error generando rutina");
     } finally {
@@ -151,11 +192,79 @@ function RoutinesTab() {
       {showAI && !aiLoading && (
         <div className="routine-ai-card">
           <p className="routine-ai-desc">
-            La IA generará una rutina basada en tu objetivo
-            {profile
-              ? ` (${GOAL_LABELS[profile.goal]}, ${(profile.gymDays ?? []).length} días/semana)`
-              : ""}.
+            La IA generará un programa de entrenamiento por días basado en tu objetivo
+            {profile ? ` (${GOAL_LABELS[profile.goal]})` : ""}. Configúralo abajo:
           </p>
+
+          <fieldset className="routine-wizard-section">
+            <legend>Tipo de split</legend>
+            <div className="routine-split-options">
+              {SPLIT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={`routine-split-option ${splitTemplate === opt.value ? "active" : ""}`}
+                  onClick={() => setSplitTemplate(opt.value)}
+                >
+                  <strong>{opt.label}</strong>
+                  <small>{opt.hint}</small>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="form-row">
+            <label className="form-label">
+              Días de entrenamiento/semana
+              <input
+                type="number"
+                className="form-input"
+                value={wizardDays}
+                min={1}
+                max={7}
+                onChange={(e) => setWizardDays(Math.max(1, Math.min(7, Number(e.target.value))))}
+              />
+            </label>
+            <label className="form-label">
+              Duración por sesión (min)
+              <input
+                type="number"
+                className="form-input"
+                value={sessionMinutes}
+                min={15}
+                max={180}
+                onChange={(e) => setSessionMinutes(Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="form-row">
+            <label className="form-label">
+              Nivel de experiencia
+              <select
+                className="form-input"
+                value={experienceLevel}
+                onChange={(e) => setExperienceLevel(e.target.value as ExperienceLevel)}
+              >
+                {EXPERIENCE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="form-label">
+              Material disponible
+              <select
+                className="form-input"
+                value={equipmentAccess}
+                onChange={(e) => setEquipmentAccess(e.target.value as EquipmentAccess)}
+              >
+                {EQUIPMENT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
           <div className="routine-ai-actions">
             <button className="primary-button" onClick={handleGenerateAI}>
               Generar ahora
@@ -214,6 +323,29 @@ function RoutinesTab() {
   );
 }
 
+// ─── Lista de ejercicios (compartida entre vista plana y por día) ───────────
+function ExerciseListView({ exercises }: { exercises: RoutineExercise[] }) {
+  return (
+    <ul className="routine-exercises-list">
+      {exercises.map((ex, i) => (
+        <li key={i} className="routine-exercise-item">
+          <span className="routine-exercise-name">{ex.name}</span>
+          <div className="routine-exercise-sets">
+            {(ex.sets ?? []).map((s, j) => (
+              <span key={j} className="set-badge">
+                {s.reps} rep{s.reps !== 1 ? "s" : ""}
+                {s.weight != null ? ` · ${s.weight} kg` : ""}
+                {s.rest ? ` · ${s.rest}s` : ""}
+              </span>
+            ))}
+          </div>
+          {ex.notes && <p className="routine-exercise-notes">{ex.notes}</p>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // ─── Routine card ────────────────────────────────────────────────────────────
 function RoutineCard({
   routine,
@@ -225,8 +357,11 @@ function RoutineCard({
   onLog: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [activeDay, setActiveDay] = useState(0);
   const label = GOAL_LABELS[routine.goal as GoalMode] ?? routine.goal;
-  const exercises = routine.exercises ?? [];
+  const days = routine.days ?? [];
+  const hasDays = days.length > 0;
+  const exercises = hasDays ? (days[activeDay]?.exercises ?? []) : (routine.exercises ?? []);
 
   return (
     <div className="routine-card">
@@ -236,6 +371,7 @@ function RoutineCard({
           <span className="routine-card-badges">
             <span className="routine-badge">{label}</span>
             <span className="routine-badge">{routine.estimatedMinutes} min</span>
+            {hasDays && <span className="routine-badge">{days.length} día{days.length !== 1 ? "s" : ""}</span>}
             {routine.aiGenerated && <span className="routine-badge ai">IA</span>}
           </span>
         </div>
@@ -244,23 +380,22 @@ function RoutineCard({
 
       {expanded && (
         <div className="routine-card-body">
-          <ul className="routine-exercises-list">
-            {exercises.map((ex, i) => (
-              <li key={i} className="routine-exercise-item">
-                <span className="routine-exercise-name">{ex.name}</span>
-                <div className="routine-exercise-sets">
-                  {(ex.sets ?? []).map((s, j) => (
-                    <span key={j} className="set-badge">
-                      {s.reps} rep{s.reps !== 1 ? "s" : ""}
-                      {s.weight != null ? ` · ${s.weight} kg` : ""}
-                      {s.rest ? ` · ${s.rest}s` : ""}
-                    </span>
-                  ))}
-                </div>
-                {ex.notes && <p className="routine-exercise-notes">{ex.notes}</p>}
-              </li>
-            ))}
-          </ul>
+          {hasDays && (
+            <div className="routine-day-tabs">
+              {days.map((day, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={`routine-day-tab ${activeDay === i ? "active" : ""}`}
+                  onClick={() => setActiveDay(i)}
+                >
+                  {day.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <ExerciseListView exercises={exercises} />
 
           <div className="routine-card-actions">
             <button className="primary-button" onClick={onLog}>
@@ -277,6 +412,25 @@ function RoutineCard({
 }
 
 // ─── AI routine preview ──────────────────────────────────────────────────────
+function RoutinePreviewExerciseList({ exercises }: { exercises: RoutineExercise[] }) {
+  return (
+    <ul className="routine-preview-list">
+      {exercises.map((ex, i) => {
+        const sets = ex.sets ?? [];
+        return (
+          <li key={i} className="routine-preview-item">
+            <strong>{ex.name}</strong>
+            {" — "}
+            {sets.length} series × {sets[0]?.reps ?? "?"} reps
+            {sets[0]?.weight != null ? ` · ${sets[0].weight} kg` : ""}
+            {ex.notes ? <em> ({ex.notes})</em> : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function RoutinePreviewCard({
   routine,
   onSave,
@@ -286,28 +440,25 @@ function RoutinePreviewCard({
   onSave: () => void;
   onDiscard: () => void;
 }) {
-  const exercises = routine.exercises ?? [];
+  const days = routine.days ?? [];
   return (
     <div className="routine-preview-card">
       <p className="eyebrow">Vista previa de rutina IA</p>
       <h3 className="routine-preview-name">{routine.name}</h3>
       <p className="routine-preview-meta">
         {GOAL_LABELS[routine.goal as GoalMode] ?? routine.goal} · {routine.estimatedMinutes} min estimados
+        {days.length > 0 && ` · ${days.length} día${days.length !== 1 ? "s" : ""}`}
       </p>
-      <ul className="routine-preview-list">
-        {exercises.map((ex, i) => {
-          const sets = ex.sets ?? [];
-          return (
-            <li key={i} className="routine-preview-item">
-              <strong>{ex.name}</strong>
-              {" — "}
-              {sets.length} series × {sets[0]?.reps ?? "?"} reps
-              {sets[0]?.weight != null ? ` · ${sets[0].weight} kg` : ""}
-              {ex.notes ? <em> ({ex.notes})</em> : null}
-            </li>
-          );
-        })}
-      </ul>
+      {days.length > 0 ? (
+        days.map((day, i) => (
+          <div key={i} className="routine-preview-day">
+            <p className="routine-preview-day-label">{day.label}</p>
+            <RoutinePreviewExerciseList exercises={day.exercises} />
+          </div>
+        ))
+      ) : (
+        <RoutinePreviewExerciseList exercises={routine.exercises ?? []} />
+      )}
       <div className="routine-preview-actions">
         <button className="primary-button" onClick={onSave}>
           Guardar rutina
@@ -331,11 +482,38 @@ function CreateRoutineForm({
   const [name, setName]           = useState("");
   const [goal, setGoal]           = useState<GoalMode>("fat_loss");
   const [mins, setMins]           = useState(45);
+  // Rutina de un solo día (sin split): ejercicios sueltos, comportamiento legacy.
   const [exercises, setExercises] = useState<RoutineExercise[]>([]);
+  // Rutina con split: uno o más días, cada uno con su propia lista de ejercicios.
+  const [days, setDays]           = useState<RoutineDay[]>([]);
+  const [activeDay, setActiveDay] = useState<number | null>(null);
+  const [dayLabel, setDayLabel]   = useState("");
   const [exName, setExName]       = useState("");
   const [sets, setSets]           = useState(3);
   const [reps, setReps]           = useState(10);
   const [rest, setRest]           = useState(60);
+
+  const hasDays = days.length > 0;
+
+  function addDay() {
+    if (!dayLabel.trim()) return;
+    setDays((prev) => [...prev, { label: dayLabel.trim(), muscleGroups: [], exercises: [] }]);
+    setActiveDay(days.length); // el que se acaba de añadir
+    setDayLabel("");
+  }
+
+  function removeDay(i: number) {
+    setDays((prev) => {
+      const next = prev.filter((_, idx) => idx !== i);
+      setActiveDay((current) => {
+        if (next.length === 0) return null;
+        if (current === i) return 0;
+        if (current !== null && current > i) return current - 1;
+        return current;
+      });
+      return next;
+    });
+  }
 
   function addExercise() {
     if (!exName.trim()) return;
@@ -344,12 +522,20 @@ function CreateRoutineForm({
       name: exName.trim(),
       sets: Array.from({ length: sets }, () => ({ reps, weight: null, rest })),
     };
-    setExercises((prev) => [...prev, ex]);
+    if (activeDay !== null) {
+      setDays((prev) => prev.map((d, i) => (i === activeDay ? { ...d, exercises: [...d.exercises, ex] } : d)));
+    } else {
+      setExercises((prev) => [...prev, ex]);
+    }
     setExName("");
   }
 
   function removeExercise(i: number) {
-    setExercises((prev) => prev.filter((_, idx) => idx !== i));
+    if (activeDay !== null) {
+      setDays((prev) => prev.map((d, idx) => (idx === activeDay ? { ...d, exercises: d.exercises.filter((_, j) => j !== i) } : d)));
+    } else {
+      setExercises((prev) => prev.filter((_, idx) => idx !== i));
+    }
   }
 
   function handleSave() {
@@ -359,10 +545,13 @@ function CreateRoutineForm({
       name: name.trim(),
       goal,
       estimatedMinutes: mins,
-      exercises,
+      exercises: hasDays ? days.flatMap((d) => d.exercises) : exercises,
+      ...(hasDays && { days }),
       createdAt: new Date().toISOString(),
     });
   }
+
+  const activeExercises = activeDay !== null ? (days[activeDay]?.exercises ?? []) : exercises;
 
   return (
     <div className="create-routine-form">
@@ -400,12 +589,51 @@ function CreateRoutineForm({
         </label>
       </div>
 
+      <fieldset className="routine-wizard-section">
+        <legend>Días (opcional — deja vacío para una rutina de un solo día)</legend>
+        {days.length > 0 && (
+          <div className="routine-day-tabs">
+            {days.map((day, i) => (
+              <span key={i} className="routine-day-tab-wrap">
+                <button
+                  type="button"
+                  className={`routine-day-tab ${activeDay === i ? "active" : ""}`}
+                  onClick={() => setActiveDay(i)}
+                >
+                  {day.label}
+                </button>
+                <button
+                  type="button"
+                  className="create-exercise-remove"
+                  onClick={() => removeDay(i)}
+                  title="Eliminar día"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="create-exercise-row">
+          <input
+            className="form-input"
+            value={dayLabel}
+            onChange={(e) => setDayLabel(e.target.value)}
+            placeholder="Ej. Día 1 · Pecho y tríceps"
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addDay(); } }}
+          />
+          <button type="button" className="secondary-button" onClick={addDay}>
+            + Añadir día
+          </button>
+        </div>
+      </fieldset>
+
       <div className="create-exercise-row">
         <input
           className="form-input"
           value={exName}
           onChange={(e) => setExName(e.target.value)}
-          placeholder="Nombre del ejercicio"
+          placeholder={activeDay !== null ? `Ejercicio para "${days[activeDay]?.label}"` : "Nombre del ejercicio"}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addExercise(); } }}
         />
         <input
@@ -433,9 +661,9 @@ function CreateRoutineForm({
         </button>
       </div>
 
-      {exercises.length > 0 && (
+      {activeExercises.length > 0 && (
         <ul className="create-exercises-preview">
-          {exercises.map((ex, i) => (
+          {activeExercises.map((ex, i) => (
             <li key={i} className="create-exercise-item">
               <span>
                 {ex.name} — {(ex.sets ?? []).length}×{ex.sets?.[0]?.reps}
@@ -479,12 +707,16 @@ function LogSessionModal({
   onSave: (s: WorkoutSession) => void;
 }) {
   const { state } = useFoodOS();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = state.debugDate ?? new Date().toISOString().slice(0, 10);
   const defaultDur = routine.estimatedMinutes ?? 45;
 
   // Auto-estimate kcal using MET 5.0 (fuerza moderada) + peso del perfil
   const weightKg = state.profile?.weightKg ?? 75;
   const defaultKcal = estimateWorkoutKcal(weightKg, defaultDur);
+
+  const days = routine.days ?? [];
+  const hasDays = days.length > 0;
+  const [selectedDay, setSelectedDay] = useState(0);
 
   const [date, setDate]       = useState(today);
   const [duration, setDur]    = useState(defaultDur);
@@ -492,8 +724,8 @@ function LogSessionModal({
   const [kcalEdited, setKcalEdited] = useState(false);
   const [notes, setNotes]     = useState("");
 
-  // Exercise completion: starts all sets as "todo completado"
-  const exercises = routine.exercises ?? [];
+  // Exercicios del día seleccionado (o de la rutina completa si no tiene split).
+  const exercises = hasDays ? (days[selectedDay]?.exercises ?? []) : (routine.exercises ?? []);
   const [completed, setCompleted] = useState<CompletedExercise[]>(() =>
     exercises.map((ex) => ({
       exerciseId: ex.exerciseId,
@@ -502,6 +734,20 @@ function LogSessionModal({
       totalSets: (ex.sets ?? []).length,
     })),
   );
+
+  // Al cambiar de día, la checklist de ejercicios completados se reinicia al nuevo día.
+  function handleSelectDay(idx: number) {
+    setSelectedDay(idx);
+    const dayExercises = days[idx]?.exercises ?? [];
+    setCompleted(
+      dayExercises.map((ex) => ({
+        exerciseId: ex.exerciseId,
+        name: ex.name,
+        setsCompleted: (ex.sets ?? []).length,
+        totalSets: (ex.sets ?? []).length,
+      })),
+    );
+  }
 
   // Re-estimate kcal when duration changes (unless user overrode it manually)
   function handleDurChange(val: number) {
@@ -524,6 +770,7 @@ function LogSessionModal({
       id: uid(),
       routineId: routine.id,
       routineName: routine.name,
+      dayLabel: hasDays ? days[selectedDay]?.label : undefined,
       date,
       durationMin: duration,
       kcalBurned: kcal === "" ? undefined : Number(kcal),
@@ -537,6 +784,21 @@ function LogSessionModal({
       <div className="modal-panel log-session-panel" onClick={(e) => e.stopPropagation()}>
         <p className="eyebrow">Registrar sesión</p>
         <h3>{routine.name}</h3>
+
+        {hasDays && (
+          <div className="routine-day-tabs">
+            {days.map((day, i) => (
+              <button
+                key={i}
+                type="button"
+                className={`routine-day-tab ${selectedDay === i ? "active" : ""}`}
+                onClick={() => handleSelectDay(i)}
+              >
+                {day.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <label className="form-label">
           Fecha
@@ -795,7 +1057,7 @@ function HistoryTab() {
     b.date.localeCompare(a.date),
   );
 
-  const today = new Date();
+  const today = new Date(state.debugDate ?? new Date().toISOString().slice(0, 10));
   const weekStart = new Date(today);
   weekStart.setDate(today.getDate() - today.getDay());
   const weekStartStr = weekStart.toISOString().slice(0, 10);
@@ -844,7 +1106,10 @@ function HistoryTab() {
           {sessions.map((s) => (
             <div key={s.id} className="session-item">
               <div className="session-item-main">
-                <span className="session-item-name">{s.routineName}</span>
+                <span className="session-item-name">
+                  {s.routineName}
+                  {s.dayLabel && <span className="session-item-day"> · {s.dayLabel}</span>}
+                </span>
                 <span className="session-item-date">
                   {new Date(s.date + "T12:00:00").toLocaleDateString("es-ES", {
                     weekday: "short",

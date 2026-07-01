@@ -1,4 +1,14 @@
-import type { FoodOSState, Recipe, Routine, GoalMode } from "@foodos/types";
+import type {
+  EquipmentAccess,
+  ExperienceLevel,
+  FoodOSState,
+  GoalMode,
+  Recipe,
+  Routine,
+  RoutineDay,
+  RoutineExercise,
+  SplitTemplate,
+} from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
 import { daysUntil, uid } from "./utils";
@@ -13,7 +23,7 @@ function checkRateLimit() {
 }
 
 function buildPrompt(state: FoodOSState): string {
-  const todayDate = new Date().toISOString().slice(0, 10);
+  const todayDate = state.debugDate ?? new Date().toISOString().slice(0, 10);
   const todayLog = state.foodLog.filter((e) => e.date === todayDate);
   const consumed = todayLog.reduce(
     (acc, e) => ({
@@ -222,7 +232,7 @@ export async function generateAIRecipe(config: AIConfig, state: FoodOSState): Pr
 export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 function buildAssistantSystemPrompt(state: FoodOSState): string {
-  const todayDate = new Date().toISOString().slice(0, 10);
+  const todayDate = state.debugDate ?? new Date().toISOString().slice(0, 10);
   const todayLog = state.foodLog.filter((e) => e.date === todayDate);
   const consumed = todayLog.reduce(
     (acc, e) => ({ kcal: acc.kcal + e.kcal, protein: acc.protein + e.protein }),
@@ -589,24 +599,64 @@ const GOAL_LABELS: Record<GoalMode, string> = {
   maintain: "Mantenimiento",
 };
 
-export async function generateAIRoutine(
-  config: AIConfig,
-  goal: GoalMode,
-  weightKg: number,
-  gymDays: number,
-): Promise<Routine> {
+const SPLIT_TEMPLATE_LABELS: Record<SplitTemplate, string> = {
+  push_pull_legs: "Push/Pull/Legs (empuje, tirón, pierna)",
+  upper_lower: "Torso/Pierna (upper/lower alternado)",
+  full_body: "Full body (cuerpo completo cada sesión)",
+  bro_split: "Split por grupo muscular (un grupo protagonista por día)",
+  ai_decide: "El propio entrenador decide el mejor split para estos días",
+};
+
+const EXPERIENCE_LABELS: Record<ExperienceLevel, string> = {
+  beginner: "Principiante (poca o ninguna experiencia entrenando con pesas)",
+  intermediate: "Intermedio (entrena de forma regular desde hace tiempo)",
+  advanced: "Avanzado (mucha experiencia, técnica sólida, alto volumen tolerado)",
+};
+
+const EQUIPMENT_LABELS: Record<EquipmentAccess, string> = {
+  full_gym: "Gimnasio completo (máquinas, barras, poleas, mancuernas)",
+  home_dumbbells: "Casa con mancuernas/bandas, sin máquinas",
+  bodyweight: "Sin material, solo peso corporal",
+};
+
+export interface RoutineGenerationParams {
+  goal: GoalMode;
+  weightKg: number;
+  /** Días de la semana en que se entrena (recuento, no importa cuáles). */
+  gymDaysCount: number;
+  splitTemplate: SplitTemplate;
+  experienceLevel?: ExperienceLevel;
+  equipmentAccess?: EquipmentAccess;
+  /** Minutos disponibles por sesión. */
+  sessionMinutes: number;
+}
+
+export async function generateAIRoutine(config: AIConfig, params: RoutineGenerationParams): Promise<Routine> {
   checkRateLimit();
+  const { goal, weightKg, gymDaysCount, splitTemplate, experienceLevel, equipmentAccess, sessionMinutes } = params;
   const goalLabel = GOAL_LABELS[goal] ?? goal;
-  const prompt = `Eres entrenador personal experto. Crea una rutina de entrenamiento. Responde SOLO con JSON válido, sin texto extra ni markdown.
+  const days = Math.max(1, gymDaysCount || 3);
+
+  const prompt = `Eres entrenador personal experto. Diseña un programa de entrenamiento de ${days} día(s) por semana, cada día con su propio foco muscular. Responde SOLO con JSON válido, sin texto extra ni markdown.
 
 Objetivo: ${goalLabel}
 Peso corporal: ${weightKg} kg
-Días de gym/semana: ${gymDays}
+Días de entrenamiento por semana: ${days}
+Split solicitado: ${SPLIT_TEMPLATE_LABELS[splitTemplate]}
+Nivel de experiencia: ${experienceLevel ? EXPERIENCE_LABELS[experienceLevel] : "No especificado, asume intermedio"}
+Material disponible: ${equipmentAccess ? EQUIPMENT_LABELS[equipmentAccess] : "No especificado, asume gimnasio completo"}
+Duración objetivo por sesión: ${sessionMinutes} minutos
 
-JSON requerido (exactamente este formato):
-{"name":"nombre descriptivo de la rutina","estimatedMinutes":45,"exercises":[{"name":"nombre en español","exerciseId":"ai-1","notes":"consejo breve","sets":[{"reps":10,"weight":null,"rest":60}]}]}
+JSON requerido (exactamente este formato, un objeto por cada día de entrenamiento):
+{"name":"nombre descriptivo del programa","estimatedMinutes":${sessionMinutes},"days":[{"label":"Día 1 · Pecho y tríceps","muscleGroups":["pecho","tríceps"],"exercises":[{"name":"nombre en español","exerciseId":"ai-1-1","notes":"consejo breve","sets":[{"reps":10,"weight":null,"rest":60}]}]}]}
 
-Incluye 5-7 ejercicios. Pérdida de grasa: cardio + compuestos alta repetición (12-15). Ganancia muscular: compuestos pesados (5-8) + aislamiento. Recomposición: mix equilibrado (8-12). Peso null para ejercicios de peso corporal, número (kg) para cargas.`;
+Reglas:
+- Genera exactamente ${days} día(s) dentro de "days", cada uno con una etiqueta clara del tipo "Día N · Grupos musculares".
+- Cada día debe tener 4-7 ejercicios, coherentes con el material disponible indicado.
+- Ajusta el volumen (series/repeticiones) al nivel de experiencia: principiante = menos series y técnica simple, avanzado = más volumen e intensidad.
+- Pérdida de grasa: prioriza compuestos con repetición alta (12-15) y densidad. Ganancia muscular: compuestos pesados (5-8) + aislamiento (8-12). Recomposición: mix equilibrado (8-12).
+- Peso null para ejercicios de peso corporal, número (kg) para cargas con material.
+- exerciseId único por ejercicio, formato "ai-{numDia}-{numEjercicio}".`;
 
   let text: string;
   switch (config.provider) {
@@ -616,32 +666,48 @@ Incluye 5-7 ejercicios. Pérdida de grasa: cardio + compuestos alta repetición 
     case "ollama":    text = await callOllama(config, prompt);    break;
   }
 
+  type RawExercise = {
+    name: string;
+    exerciseId?: string;
+    notes?: string;
+    sets: Array<{ reps: number; weight?: number | null; rest?: number }>;
+  };
   const json = JSON.parse(extractJSON(text!)) as {
     name: string;
     estimatedMinutes: number;
-    exercises: Array<{
-      name: string;
-      exerciseId?: string;
-      notes?: string;
-      sets: Array<{ reps: number; weight?: number | null; rest?: number }>;
-    }>;
+    days?: Array<{ label: string; muscleGroups?: string[]; exercises: RawExercise[] }>;
+    exercises?: RawExercise[];
   };
+
+  const toRoutineExercise = (ex: RawExercise, fallbackId: string): RoutineExercise => ({
+    exerciseId: ex.exerciseId ?? fallbackId,
+    name: String(ex.name ?? ""),
+    notes: ex.notes,
+    sets: (ex.sets ?? []).map((s) => ({
+      reps: Number(s.reps) || 10,
+      weight: s.weight ?? null,
+      rest: Number(s.rest) || 60,
+    })),
+  });
+
+  const routineDays: RoutineDay[] = (json.days ?? []).map((day, dayIdx) => ({
+    label: String(day.label ?? `Día ${dayIdx + 1}`),
+    muscleGroups: (day.muscleGroups ?? []).map(String),
+    exercises: (day.exercises ?? []).map((ex, i) => toRoutineExercise(ex, `ai-${dayIdx + 1}-${i + 1}`)),
+  }));
 
   return {
     id: uid(),
     name: String(json.name ?? "Rutina IA"),
     goal,
-    estimatedMinutes: Number(json.estimatedMinutes) || 45,
-    exercises: (json.exercises ?? []).map((ex, i) => ({
-      exerciseId: ex.exerciseId ?? `ai-${i + 1}`,
-      name: String(ex.name ?? ""),
-      notes: ex.notes,
-      sets: (ex.sets ?? []).map((s) => ({
-        reps: Number(s.reps) || 10,
-        weight: s.weight ?? null,
-        rest: Number(s.rest) || 60,
-      })),
-    })),
+    estimatedMinutes: Number(json.estimatedMinutes) || sessionMinutes || 45,
+    // Fallback plano: si la IA no devolvió days (o el proveedor no siguió el formato),
+    // usa exercises directo; si hay days, exercises queda como unión para compat legacy.
+    exercises: routineDays.length > 0
+      ? routineDays.flatMap((d) => d.exercises)
+      : (json.exercises ?? []).map((ex, i) => toRoutineExercise(ex, `ai-${i + 1}`)),
+    ...(routineDays.length > 0 && { days: routineDays }),
+    splitTemplate,
     aiGenerated: true,
     createdAt: new Date().toISOString(),
   };

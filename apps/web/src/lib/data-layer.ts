@@ -1,9 +1,11 @@
 import type {
   ActivityLevel,
+  FoodLogEntry,
   FoodOSState,
   GoalMode,
   IncomeFrequency,
   MealType,
+  PhysicalProfile,
   Sex,
   StorageName,
 } from "@foodos/types";
@@ -240,13 +242,13 @@ class RemoteAdapter {
       client
         .from("user_profiles")
         .select(
-          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, extra_state"
+          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, experience_level, equipment_access, extra_state"
         )
         .eq("user_id", userId)
         .maybeSingle(),
       client
         .from("inventory_items")
-        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, almacen_id")
+        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, carbs_per_100, fat_per_100, salt_per_100, fiber_per_100, sugars_per_100, unit_size, brand, image_url, allergen_tags, almacen_id")
         .eq("owner_id", userId),
       client
         .from("shopping_items")
@@ -263,7 +265,7 @@ class RemoteAdapter {
         .limit(1),
       client
         .from("food_log")
-        .select("id, log_date, created_at, item_name, quantity_g, kcal, protein_g, carbs_g, fat_g, source")
+        .select("id, log_date, created_at, item_name, quantity_g, kcal, protein_g, carbs_g, fat_g, source, client_meta")
         .eq("user_id", userId)
         .order("log_date", { ascending: false })
         .limit(500),
@@ -305,6 +307,8 @@ class RemoteAdapter {
           allergies: p.allergies ?? [],
           excludedFoods: p.excluded_foods ?? [],
           targetWeightKg: p.target_weight_kg != null ? Number(p.target_weight_kg) : undefined,
+          experienceLevel: (p.experience_level as PhysicalProfile["experienceLevel"]) ?? undefined,
+          equipmentAccess: (p.equipment_access as PhysicalProfile["equipmentAccess"]) ?? undefined,
         };
       }
       // extra_state: campos de app no tabulados (routines, workoutLog, etc.)
@@ -318,6 +322,7 @@ class RemoteAdapter {
         if (extra.categoryBudgets && typeof extra.categoryBudgets === "object") state.categoryBudgets = extra.categoryBudgets as typeof state.categoryBudgets;
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
+        if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
       }
     }
 
@@ -344,6 +349,15 @@ class RemoteAdapter {
       price: Number(row.price_estimate) || 0,
       kcal: Number(row.kcal_per_100) || 0,
       protein: Number(row.protein_per_100) || 0,
+      carbs: row.carbs_per_100 != null ? Number(row.carbs_per_100) : undefined,
+      fat: row.fat_per_100 != null ? Number(row.fat_per_100) : undefined,
+      salt: row.salt_per_100 != null ? Number(row.salt_per_100) : undefined,
+      fiber: row.fiber_per_100 != null ? Number(row.fiber_per_100) : undefined,
+      sugars: row.sugars_per_100 != null ? Number(row.sugars_per_100) : undefined,
+      unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
+      brand: row.brand ?? undefined,
+      imageUrl: row.image_url ?? undefined,
+      allergenTags: row.allergen_tags ?? undefined,
     }));
 
     state.cart = (cartRes.data ?? []).map((row) => ({
@@ -386,16 +400,21 @@ class RemoteAdapter {
     }
 
     state.foodLog = (logRes.data ?? []).map((row) => {
-      const time = row.created_at ? new Date(row.created_at).toTimeString().slice(0, 5) : "12:00";
-      // meal_type columna pendiente de añadir al schema; mientras, se infiere de la hora.
-      const mealType: MealType = mealTypeFromTime(time);
+      // client_meta trae qty/unit reales y los datos de devolución al inventario.
+      // Fallback a las columnas tabulares para entradas antiguas sin client_meta.
+      const meta = (row.client_meta ?? {}) as Partial<FoodLogEntry> & { qty?: number | null; unit?: string | null };
+      const fallbackTime = row.created_at ? new Date(row.created_at).toTimeString().slice(0, 5) : "12:00";
+      const time = meta.time ?? fallbackTime;
+      const mealType: MealType = meta.mealType ?? mealTypeFromTime(time);
+      const qty = meta.qty !== undefined ? meta.qty : (row.quantity_g != null ? Number(row.quantity_g) : null);
+      const unit = meta.unit !== undefined ? meta.unit : (row.quantity_g != null ? "g" : null);
       return {
         id: row.id,
         date: row.log_date,
         time,
         name: row.item_name,
-        qty: row.quantity_g != null ? Number(row.quantity_g) : null,
-        unit: row.quantity_g != null ? "g" : null,
+        qty,
+        unit,
         kcal: Number(row.kcal) || 0,
         protein: Number(row.protein_g) || 0,
         carbs: Number(row.carbs_g) || 0,
@@ -405,6 +424,9 @@ class RemoteAdapter {
           | "inventory"
           | "manual",
         mealType,
+        ...(meta.inventoryItemId != null && { inventoryItemId: meta.inventoryItemId }),
+        ...(meta.inventorySnapshot != null && { inventorySnapshot: meta.inventorySnapshot }),
+        ...(meta.consumedIngredients != null && { consumedIngredients: meta.consumedIngredients }),
       };
     });
     // TODO water_log: ejecutar supabase/schema.sql actualizado (tabla water_log)
@@ -471,6 +493,7 @@ class RemoteAdapter {
           categoryBudgets:   state.categoryBudgets   ?? {},
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
           debugDate:         state.debugDate         ?? null,
+          stepsLog:          state.stepsLog          ?? {},
         },
         ...(state.profile
           ? {
@@ -485,6 +508,8 @@ class RemoteAdapter {
               allergies: state.profile.allergies,
               excluded_foods: state.profile.excludedFoods,
               target_weight_kg: state.profile.targetWeightKg ?? null,
+              experience_level: state.profile.experienceLevel ?? null,
+              equipment_access: state.profile.equipmentAccess ?? null,
               onboarding_completed: true,
             }
           : {}),
@@ -534,6 +559,15 @@ class RemoteAdapter {
         price_estimate: item.price || null,
         kcal_per_100: item.kcal || null,
         protein_per_100: item.protein || null,
+        carbs_per_100: item.carbs ?? null,
+        fat_per_100: item.fat ?? null,
+        salt_per_100: item.salt ?? null,
+        fiber_per_100: item.fiber ?? null,
+        sugars_per_100: item.sugars ?? null,
+        unit_size: item.unitSize ?? null,
+        brand: item.brand ?? null,
+        image_url: item.imageUrl ?? null,
+        allergen_tags: item.allergenTags ?? null,
       }),
       { owner_id: userId }
     );
@@ -598,6 +632,17 @@ class RemoteAdapter {
         carbs_g: entry.carbs,
         fat_g: entry.fat,
         source: entry.source,
+        // Metadata no tabular: qty/unit reales (para "ud"), hora, y los datos que
+        // permiten devolver al inventario al borrar (item origen o ingredientes).
+        client_meta: {
+          qty: entry.qty,
+          unit: entry.unit,
+          time: entry.time,
+          mealType: entry.mealType,
+          ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
+          ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
+          ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
+        },
       }),
       { user_id: userId }
     );

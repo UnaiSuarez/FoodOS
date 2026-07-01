@@ -264,6 +264,48 @@ export interface ExternalFoodSuggestion {
   salt?: number;
   fiber?: number;
   sugars?: number;
+  /** Tamaño del envase en g/ml (campo product_quantity de OFF), si está disponible. */
+  packageSize?: number;
+  /** Marca del producto (campo brands de OFF), si está disponible. */
+  brand?: string;
+  /** URL de la foto del producto (campo image_small_url de OFF) — solo se enlaza. */
+  imageUrl?: string;
+  /** Tags de alérgenos sin traducir (ej. "en:gluten"), de OFF. */
+  allergenTags?: string[];
+}
+
+/** Extrae el primer número+unidad de un string de cantidad de OFF (ej. "500ml",
+    "473 ml, 16 fl oz", "120 g") y lo normaliza a gramos/ml. */
+export function parseQuantityString(q: unknown): number | undefined {
+  if (typeof q !== "string") return undefined;
+  const match = q.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|cl)\b/i);
+  if (!match) return undefined;
+  let value = parseFloat(match[1].replace(",", "."));
+  const unit = match[2].toLowerCase();
+  if (unit === "kg" || unit === "l") value *= 1000;
+  if (unit === "cl") value *= 10;
+  return value > 0 ? Math.round(value) : undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parsePackageSize(p: any): number | undefined {
+  // El índice de búsqueda de OFF no tiene product_quantity (numérico): solo
+  // quantity (texto libre, ej. "500ml"). La API de producto por código de
+  // barras sí trae product_quantity ya numérico — se usa si está disponible.
+  const numeric = Number(p.product_quantity);
+  if (Number.isFinite(numeric) && numeric > 0) return Math.round(numeric);
+  return parseQuantityString(p.quantity);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseBrand(p: any): string | undefined {
+  const raw = Array.isArray(p.brands) ? p.brands[0] : typeof p.brands === "string" ? p.brands.split(",")[0] : "";
+  return raw?.trim() || undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseAllergenTags(p: any): string[] | undefined {
+  return Array.isArray(p.allergens_tags) && p.allergens_tags.length > 0 ? p.allergens_tags : undefined;
 }
 
 /**
@@ -289,7 +331,18 @@ export async function searchOFFSuggestions(
     seen.add(rawName.toLowerCase());
 
     const macros = parseOFFProduct(p);
-    results.push({ name: rawName.slice(0, 70), ...macros });
+    const packageSize = parsePackageSize(p);
+    const brand = parseBrand(p);
+    const imageUrl = typeof p.image_small_url === "string" ? p.image_small_url : undefined;
+    const allergenTags = parseAllergenTags(p);
+    results.push({
+      name: rawName.slice(0, 70),
+      ...macros,
+      ...(packageSize != null && { packageSize }),
+      ...(brand && { brand }),
+      ...(imageUrl && { imageUrl }),
+      ...(allergenTags && { allergenTags }),
+    });
 
     if (results.length >= limit) break;
   }

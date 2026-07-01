@@ -20,6 +20,8 @@ interface DishIngredient {
   fatPer100: number;
   fromInventoryId?: string;
   pricePerUnit?: number;
+  /** Gramos/ml por unidad cuando unit==="ud", heredado del item de inventario. */
+  unitSize?: number;
 }
 
 interface Suggestion {
@@ -33,16 +35,17 @@ interface Suggestion {
   fatPer100: number;
   invId?: string;
   pricePerUnit?: number;
+  unitSize?: number;
 }
 
-function toGrams(qty: number, unit: string): number {
+function toGrams(qty: number, unit: string, unitSize?: number): number {
   if (unit === "kg" || unit === "L") return qty * 1000;
-  if (unit === "ud") return qty * 60;
+  if (unit === "ud") return qty * (unitSize ?? 60);
   return qty;
 }
 
 function calcIngMacros(ing: DishIngredient): MacroTotals {
-  const g = toGrams(ing.qty, ing.unit);
+  const g = toGrams(ing.qty, ing.unit, ing.unitSize);
   return {
     kcal:    Math.round((ing.kcalPer100    * g) / 100),
     protein: Math.round((ing.proteinPer100 * g) / 100 * 10) / 10,
@@ -84,7 +87,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
   const macros = useMemo(() => sumMacros(ingredients.map(calcIngMacros)), [ingredients]);
   const cost = ingredients.reduce((s, ing) => {
     if (!ing.pricePerUnit) return s;
-    const g = toGrams(ing.qty, ing.unit);
+    const g = toGrams(ing.qty, ing.unit, ing.unitSize);
     return s + (ing.pricePerUnit * g) / 1000;
   }, 0);
 
@@ -107,6 +110,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
         fatPer100: i.fat ?? 0,
         invId: i.id,
         pricePerUnit: i.price > 0 ? i.price : undefined,
+        unitSize: i.unitSize,
       }));
 
     setSuggestions(invHits);
@@ -147,6 +151,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
       fatPer100: s.fatPer100,
       fromInventoryId: s.invId,
       pricePerUnit: s.pricePerUnit,
+      unitSize: s.unitSize,
     }]);
     setSearch("");
     setSuggestions([]);

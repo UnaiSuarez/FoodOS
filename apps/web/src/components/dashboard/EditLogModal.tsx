@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { FoodLogEntry } from "@foodos/types";
-import { useFoodOS } from "@/lib/state";
+import { actions, useFoodOS } from "@/lib/state";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -81,10 +81,8 @@ export function EditLogModal({ entry, onClose }: Props) {
           }
           draft.inventory = draft.inventory.filter((i) => i.qty > 0);
         } else {
-          // Return to inventory: add back to the first matching lot
-          if (matches.length > 0) {
-            matches[0].qty = Math.round((matches[0].qty + Math.abs(delta)) * 100) / 100;
-          }
+          // Return to inventory: add back to matching lot, or recreate it if it was fully consumed
+          actions.returnQtyToInventory(draft, entry, Math.abs(delta));
         }
       }
     });
@@ -94,17 +92,7 @@ export function EditLogModal({ entry, onClose }: Props) {
 
   function deleteEntry() {
     mutate((draft) => {
-      // Return qty to inventory if it came from there
-      if (entry.source === "inventory" && (entry.qty ?? 0) > 0) {
-        const matches = draft.inventory.filter((item) => {
-          const n = item.name.toLowerCase();
-          const en = entry.name.toLowerCase();
-          return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
-        });
-        if (matches.length > 0) {
-          matches[0].qty = Math.round((matches[0].qty + (entry.qty ?? 0)) * 100) / 100;
-        }
-      }
+      actions.returnEntryToInventory(draft, entry);
       draft.foodLog = draft.foodLog.filter((x) => x.id !== entry.id);
     });
     showToast("Entrada eliminada");
