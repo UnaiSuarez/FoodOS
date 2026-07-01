@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { StorageName } from "@foodos/types";
 import type { ScannedItem } from "@/lib/ai-inventory";
-import { useFoodOS } from "@/lib/state";
+import { matchAllergens, useFoodOS } from "@/lib/state";
 import { uid, todayPlus } from "@/lib/utils";
+import { searchOFFSuggestions } from "@/lib/food-lookup";
 
 interface Props {
   items: ScannedItem[];
@@ -14,9 +15,38 @@ interface Props {
 const STORAGES: StorageName[] = ["Nevera", "Congelador", "Despensa"];
 
 export function BulkImportModal({ items, onClose }: Props) {
-  const { mutate, showToast } = useFoodOS();
+  const { state, mutate, showToast } = useFoodOS();
   const [selected, setSelected] = useState<Set<number>>(new Set(items.map((_, i) => i)));
   const [editedItems, setEditedItems] = useState<ScannedItem[]>(items);
+  // Alérgenos detectados por índice (cruzados con state.profile.allergies) — se
+  // rellena de forma asíncrona buscando cada producto en Open Food Facts, ya
+  // que el escaneo de ticket no trae por sí mismo datos de alérgenos.
+  const [allergenWarnings, setAllergenWarnings] = useState<Record<number, string[]>>({});
+
+  useEffect(() => {
+    if (!state.profile?.allergies?.length) return;
+    let cancelled = false;
+    void Promise.all(
+      items.map(async (item, i) => {
+        try {
+          const [hit] = await searchOFFSuggestions(item.name, 1);
+          if (cancelled || !hit?.allergenTags?.length) return;
+          const matched = matchAllergens(state, hit.allergenTags);
+          if (matched.length) return [i, matched] as const;
+        } catch {
+          // Búsqueda fallida (red/API) — no bloquea la importación, solo no se avisa.
+        }
+        return null;
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const next: Record<number, string[]> = {};
+      for (const r of results) if (r) next[r[0]] = r[1];
+      setAllergenWarnings(next);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   function toggleItem(index: number) {
     setSelected((prev) => {
@@ -89,6 +119,11 @@ export function BulkImportModal({ items, onClose }: Props) {
                       onChange={(e) => updateItem(i, "name", e.target.value)}
                       placeholder="Nombre del producto"
                     />
+                    {allergenWarnings[i]?.length > 0 && (
+                      <p className="allergen-warning" role="alert">
+                        ⚠ Contiene {allergenWarnings[i].join(", ")} — alergia declarada en tu perfil.
+                      </p>
+                    )}
                     <div className="bulk-row">
                       <input
                         type="number"

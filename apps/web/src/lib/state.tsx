@@ -202,6 +202,22 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // Si hay un guardado local pendiente (debounce, en curso, o en cola), un pull
+    // ahora mismo traería datos desactualizados y pisaría ese cambio antes de que
+    // llegue al servidor. Reintenta un rato en vez de hidratar a ciegas; si tras el
+    // margen sigue pendiente, hidrata igualmente (red de seguridad ante un guardado
+    // atascado) para no dejar de sincronizar nunca.
+    function scheduleHydrate(retriesLeft = 6) {
+      realtimeDebounceRef.current = setTimeout(() => {
+        if (cancelled) return;
+        if (remote.hasPendingPush() && retriesLeft > 0) {
+          scheduleHydrate(retriesLeft - 1);
+          return;
+        }
+        void hydrateRemote();
+      }, 300);
+    }
+
     function setupRealtime() {
       realtimeUnsubRef.current?.();
       realtimeUnsubRef.current = remote.subscribeRealtime(
@@ -209,7 +225,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           if (cancelled) return;
           // Debounce: evita re-hidrataciones en cascada cuando llegan varios eventos seguidos.
           if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
-          realtimeDebounceRef.current = setTimeout(() => void hydrateRemote(), 300);
+          scheduleHydrate();
         },
         (table, newRow) => {
           if (cancelled) return;
@@ -1409,6 +1425,15 @@ export const actions = {
         protein: existing?.protein ?? foodData?.protein ?? 5,
         carbs: existing?.carbs ?? foodData?.carbs,
         fat: existing?.fat ?? foodData?.fat,
+        // Sin esto, un item "ud" (ej. lata de 250ml) restockeado vía carrito
+        // perdía su tamaño real y volvía a caer en el default de 60.
+        unitSize: item.unitSize ?? existing?.unitSize,
+        salt: existing?.salt,
+        fiber: existing?.fiber,
+        sugars: existing?.sugars,
+        brand: existing?.brand,
+        imageUrl: existing?.imageUrl,
+        allergenTags: existing?.allergenTags,
       });
     });
     draft.cart = draft.cart.filter((item) => !item.checked);
@@ -1432,6 +1457,13 @@ export const actions = {
         protein: existing?.protein ?? foodData?.protein ?? 5,
         carbs: existing?.carbs ?? foodData?.carbs,
         fat: existing?.fat ?? foodData?.fat,
+        unitSize: item.unitSize ?? existing?.unitSize,
+        salt: existing?.salt,
+        fiber: existing?.fiber,
+        sugars: existing?.sugars,
+        brand: existing?.brand,
+        imageUrl: existing?.imageUrl,
+        allergenTags: existing?.allergenTags,
       });
     });
     draft.cart = draft.cart.filter((item) => !item.checked);

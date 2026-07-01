@@ -70,6 +70,13 @@ class RemoteAdapter {
     return this.client !== null;
   }
 
+  /** true si hay un guardado local programado, en curso, o en cola de reintento.
+      Se usa para que un refresco en tiempo real no pise con datos desactualizados
+      un cambio local que aún no ha llegado al servidor (condición de carrera). */
+  hasPendingPush(): boolean {
+    return this.pushTimer !== null || this.pushing || this.pushQueued !== null;
+  }
+
   async init(): Promise<boolean> {
     this.client = getSupabase();
     if (!this.client) return false;
@@ -238,6 +245,14 @@ class RemoteAdapter {
     const userId = this.user!.id;
     const state = structuredClone(defaults);
 
+    // Defensivo: si ensureBaseRows() no llegó a fijar shoppingListId (no debería
+    // pasar si no lanzó, pero evita una consulta con list_id=null que "tendría
+    // éxito" devolviendo 0 filas — preferimos fallar alto y mantener el estado
+    // local anterior a mostrar un carrito vacío falso).
+    if (!this.shoppingListId) {
+      throw new Error("pullState: shoppingListId no está listo (ensureBaseRows no se completó)");
+    }
+
     const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes, waterRes, weightRes] = await Promise.all([
       client
         .from("user_profiles")
@@ -252,7 +267,7 @@ class RemoteAdapter {
         .eq("owner_id", userId),
       client
         .from("shopping_items")
-        .select("id, name, quantity, unit, estimated_price, store, checked")
+        .select("id, name, quantity, unit, estimated_price, store, checked, unit_size")
         .eq("user_id", userId)
         .eq("list_id", this.shoppingListId),
       client.from("gastos").select("id, amount, description, category, txn_date").eq("user_id", userId),
@@ -284,6 +299,29 @@ class RemoteAdapter {
         .eq("user_id", userId)
         .order("log_date", { ascending: true }),
     ]);
+
+    // Supabase-js NO lanza excepción en fallos de consulta (400, RLS, etc.):
+    // devuelve {data: null, error}. Sin esta comprobación, cualquier consulta
+    // fallida se traduciría en "no hay datos" y borraría silenciosamente esa
+    // parte del estado en el próximo hydrateRemote(). Preferimos lanzar y que
+    // el catch de hydrateRemote() conserve el estado local anterior.
+    const namedResults: Array<[string, { error: { message: string } | null }]> = [
+      ["perfil", profileRes],
+      ["inventario", inventoryRes],
+      ["carrito", cartRes],
+      ["gastos", gastosRes],
+      ["ingresos", ingresosRes],
+      ["objetivos nutricionales", goalRes],
+      ["diario", logRes],
+      ["feed", feedRes],
+      ["agua", waterRes],
+      ["peso", weightRes],
+    ];
+    const failed = namedResults.find(([, res]) => res.error);
+    if (failed) {
+      const [label, res] = failed;
+      throw new Error(`pullState: fallo consultando "${label}": ${res.error!.message}`);
+    }
 
     const almacenNameById = Object.fromEntries(
       Object.entries(this.almacenIdByName).map(([name, id]) => [id, name])
@@ -375,6 +413,7 @@ class RemoteAdapter {
       price: Number(row.estimated_price) || 0,
       store: row.store ?? "Mercadona",
       checked: row.checked,
+      unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
     }));
 
     state.expenses = (gastosRes.data ?? []).map((row) => ({
@@ -459,7 +498,10 @@ class RemoteAdapter {
   schedulePush(state: FoodOSState): void {
     if (!this.ready || !this.user) return;
     if (this.pushTimer) clearTimeout(this.pushTimer);
-    this.pushTimer = setTimeout(() => void this.runPush(state), PUSH_DEBOUNCE_MS);
+    this.pushTimer = setTimeout(() => {
+      this.pushTimer = null;
+      void this.runPush(state);
+    }, PUSH_DEBOUNCE_MS);
   }
 
   private async runPush(state: FoodOSState): Promise<void> {
@@ -599,6 +641,7 @@ class RemoteAdapter {
         estimated_price: item.price || null,
         store: item.store || null,
         checked: Boolean(item.checked),
+        unit_size: item.unitSize ?? null,
       }),
       { user_id: userId, list_id: this.shoppingListId! }
     );
