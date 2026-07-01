@@ -662,6 +662,7 @@ export function InventoryView() {
                             draft.cart.push({
                               id: uid(), name: item.name, qty: item.qty, unit: item.unit,
                               price: item.price, store: "Mercadona", checked: false,
+                              unitSize: item.unitSize,
                             });
                           });
                           showToast("Producto enviado al carrito");

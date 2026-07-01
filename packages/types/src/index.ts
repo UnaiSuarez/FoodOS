@@ -47,6 +47,8 @@ export interface CartItem {
   checked: boolean;
   /** Origen del item para mostrar badge contextual */
   source?: "manual" | "plan" | "lowstock";
+  /** Gramos/ml que representa 1 unidad cuando unit==="ud", heredado del item de inventario origen. */
+  unitSize?: number;
 }
 
 export type MovementType = "expense" | "income";
