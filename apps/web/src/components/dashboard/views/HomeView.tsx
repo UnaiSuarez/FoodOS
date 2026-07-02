@@ -23,7 +23,7 @@ import {
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
-import { clampPct, dateFromKey, daysUntil, eur } from "@/lib/utils";
+import { clampPct, dateFromKey, daysUntil, eur, namesMatch } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
 import { CookModal } from "../CookModal";
 import type { ViewId } from "../DashboardShell";
@@ -135,11 +135,7 @@ export function HomeView({
       .map((recipe) => ({
         recipe,
         usedItem: expiring.find((item) =>
-          recipe.ingredients.some(
-            (ing) =>
-              item.name.toLowerCase().includes(ing.name.split(" ")[0]) ||
-              ing.name.includes(item.name.toLowerCase().split(" ")[0])
-          )
+          recipe.ingredients.some((ing) => namesMatch(item.name, ing.name))
         ),
         match: getRecipeMatch(state, recipe).pct,
       }))

@@ -104,3 +104,36 @@ export function isUuid(value: string): boolean {
 export function ensureUuid(value: string): string {
   return isUuid(value) ? value : crypto.randomUUID();
 }
+
+/** Compara un nombre de producto/ingrediente con un nombre de item de inventario
+    de forma tolerante: coinciden si son iguales, o si la primera palabra de uno
+    aparece contenida en el otro (ej. "pollo" ↔ "pechuga de pollo"). No distingue
+    mayúsculas/minúsculas. Usado para casar ingredientes de receta con lotes de
+    inventario cuando no hay un ID exacto que los relacione — ver nota en
+    RoutineExercise/InventoryItem sobre por qué este matching es intencionalmente
+    laxo (nombres libres, sin catálogo cerrado de productos). */
+export function namesMatch(a: string, b: string): boolean {
+  const na = a.toLowerCase().trim();
+  const nb = b.toLowerCase().trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  return na.includes(nb.split(" ")[0]) || nb.includes(na.split(" ")[0]);
+}
+
+/** Convierte una cantidad a gramos/ml según la unidad, usando unitSize (o 60
+    por defecto) para unidades sueltas ("ud"). Única fuente de verdad para esta
+    conversión — antes había 5+ copias ligeramente distintas entre sí (algunas
+    sin soporte para oz/lb/cucharada/pizca, causando cálculos silenciosamente
+    incorrectos para esas unidades). */
+export function toGrams(qty: number, unit: string, unitSize = 60): number {
+  switch (unit) {
+    case "kg": return qty * 1000;
+    case "L":  return qty * 1000;
+    case "oz": return qty * 28.35;
+    case "lb": return qty * 453.6;
+    case "cucharada": return qty * 15;
+    case "pizca":     return qty * 0.5;
+    case "ud": return qty * unitSize;
+    default:   return qty; // g, ml
+  }
+}

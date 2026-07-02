@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { Recipe, RecipeIngredient } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { findExactFood } from "@/lib/food-db";
-import { uid } from "@/lib/utils";
+import { namesMatch, toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type IngStatus = "idle" | "loading" | "found" | "manual";
@@ -24,19 +24,6 @@ type IngDraft = {
 
 function blankIng(): IngDraft {
   return { name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle", unitSize: 60 };
-}
-
-function toGrams(qty: number, unit: string, unitSize = 60): number {
-  switch (unit) {
-    case "kg": return qty * 1000;
-    case "L":  return qty * 1000;
-    case "oz": return qty * 28.35;
-    case "lb": return qty * 453.6;
-    case "cucharada": return qty * 15;
-    case "pizca":     return qty * 0.5;
-    case "ud": return qty * unitSize;
-    default:   return qty; // g, ml
-  }
 }
 
 function ingToRecord(ing: IngDraft): RecipeIngredient {
@@ -129,11 +116,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
     }
 
     // 2. Inventory match
-    const invMatch = state.inventory.find((item) => {
-      const n = item.name.toLowerCase();
-      const q = name.toLowerCase().trim();
-      return n === q || n.includes(q.split(" ")[0]) || q.includes(n.split(" ")[0]);
-    });
+    const invMatch = state.inventory.find((item) => namesMatch(item.name, name));
     if (invMatch) {
       setIng(i, {
         kcalPer100: invMatch.kcal, proteinPer100: invMatch.protein,
