@@ -11,7 +11,8 @@ import type {
 } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
-import { addDaysToDateKey, dateFromKey, dateKeyFromDate, daysUntil, todayPlus, uid } from "./utils";
+import { getBudgetLeft } from "./state";
+import { addDaysToDateKey, daysUntil, todayPlus, uid } from "./utils";
 import { canMakeRequest, recordRequest, getWaitMs } from "./ai-rate-limiter";
 
 function checkRateLimit() {
@@ -41,13 +42,9 @@ function buildPrompt(state: FoodOSState): string {
     fat: Math.round(Math.max(0, state.nutrition.fat - consumed.fat)),
   };
 
-  const weekStart = dateFromKey(todayDate);
-  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-  const weekStartStr = dateKeyFromDate(weekStart);
-  const spent = state.foodLog
-    .filter((e) => e.date >= weekStartStr)
-    .reduce((sum, e) => sum + ((e as typeof e & { cost?: number }).cost ?? 0), 0);
-  const budgetLeft = Math.max(0, state.weeklyBudget - spent);
+  // FoodLogEntry no tiene campo "cost" — el gasto real vive en state.expenses
+  // (categoría "Comida"), igual que en buildAssistantSystemPrompt.
+  const budgetLeft = getBudgetLeft(state);
 
   const excluded = [
     ...(state.profile?.allergies ?? []),
