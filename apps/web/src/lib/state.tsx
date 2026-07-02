@@ -476,6 +476,18 @@ export function findPlanEntry(
   return null;
 }
 
+/** Quita de plannerQuickMeals los platos rápidos que ningún slot del
+    planificador referencia ya (se quitaron o se reemplazaron por otra cosa).
+    Sin esto, cada plato rápido creado se quedaba para siempre en el estado,
+    aunque se borrara del plan — llamar tras cualquier mutación de mealPlan. */
+export function pruneOrphanedQuickMeals(draft: FoodOSState): void {
+  if (!draft.plannerQuickMeals?.length) return;
+  const referencedIds = new Set(
+    Object.values(draft.mealPlan ?? {}).flatMap((day) => Object.values(day as Record<string, string>))
+  );
+  draft.plannerQuickMeals = draft.plannerQuickMeals.filter((qm) => referencedIds.has(qm.id));
+}
+
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
   const names = state.inventory.map((item) => item.name.toLowerCase());
   const matches = recipe.ingredients.filter((ingredient) =>

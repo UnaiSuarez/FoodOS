@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useRef, useState } from "react";
 import type { MealPlanDay, MealType, QuickMeal, Recipe } from "@foodos/types";
-import { allRecipes, getMealPlanShoppingList, getToday, useFoodOS } from "@/lib/state";
+import { allRecipes, getMealPlanShoppingList, getToday, pruneOrphanedQuickMeals, useFoodOS } from "@/lib/state";
 import { CookModal } from "../CookModal";
 import { PlannerAddMealModal } from "../PlannerAddMealModal";
 import { loadAIConfig } from "@/lib/ai-config";
@@ -99,6 +99,7 @@ export function PlannerView() {
       } else {
         draft.mealPlan[dateKey][slot] = id;
       }
+      pruneOrphanedQuickMeals(draft);
     });
   }
 
@@ -150,6 +151,7 @@ export function PlannerView() {
             if (id) (draft.mealPlan[dateKey] as Record<string, string>)[slot] = id;
           }
         }
+        pruneOrphanedQuickMeals(draft);
       });
       const filled = Object.values(weekPlan).reduce(
         (n, day) => n + Object.values(day).filter(Boolean).length, 0
