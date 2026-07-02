@@ -17,7 +17,7 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, todayMinus, todayPlus, uid } from "./utils";
+import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -477,22 +477,20 @@ export function findPlanEntry(
 }
 
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
-  const names = state.inventory.map((item) => item.name.toLowerCase());
+  const names = state.inventory.map((item) => item.name);
   const matches = recipe.ingredients.filter((ingredient) =>
-    names.some((name) => name.includes(ingredient.name.split(" ")[0]) || ingredient.name.includes(name.split(" ")[0]))
+    names.some((name) => namesMatch(name, ingredient.name))
   );
   return { matches, pct: Math.round((matches.length / Math.max(1, recipe.ingredients.length)) * 100) };
 }
 
 export function getIngredientStatus(state: FoodOSState, recipe: Recipe) {
-  const names = state.inventory.map((item) => item.name.toLowerCase());
+  const names = state.inventory.map((item) => item.name);
   return recipe.ingredients.map((ingredient) => ({
     name: ingredient.name,
     quantity: ingredient.quantity,
     unit: ingredient.unit,
-    has: names.some(
-      (name) => name.includes(ingredient.name.split(" ")[0]) || ingredient.name.includes(name.split(" ")[0])
-    ),
+    has: names.some((name) => namesMatch(name, ingredient.name)),
   }));
 }
 
@@ -596,7 +594,7 @@ export function getPendingMacros(state: FoodOSState): MacroTotals {
 /** Macros de una cantidad concreta de un alimento del inventario.
     Carbos y grasas se estiman (el inventario solo guarda kcal y proteina por 100). */
 export function macrosForQuantity(item: InventoryItem, qty: number): MacroTotals {
-  const grams = item.unit === "kg" || item.unit === "L" ? qty * 1000 : item.unit === "ud" ? qty * (item.unitSize ?? 60) : qty;
+  const grams = toGrams(qty, item.unit, item.unitSize);
   const kcal = (item.kcal * grams) / 100;
   const protein = (item.protein * grams) / 100;
   const fat = item.fat != null
@@ -699,11 +697,7 @@ export function getDinnerSuggestion(state: FoodOSState): {
     .filter((r) => r.cost <= Math.max(budgetLeft, 1.5))
     .map((r) => {
       const usedExpiringItem = expiringItems.find((item) =>
-        r.ingredients.some(
-          (ing) =>
-            item.name.toLowerCase().includes(ing.name.split(" ")[0]) ||
-            ing.name.includes(item.name.toLowerCase().split(" ")[0])
-        )
+        r.ingredients.some((ing) => namesMatch(item.name, ing.name))
       );
       const matchPct = getRecipeMatch(state, r).pct;
       // Penalidad: cuanto más se aleja del kcal pendiente, peor puntuacion.
@@ -869,10 +863,7 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
         if (inCart.has(key)) continue;
 
         const inStock = state.inventory
-          .filter((inv) => {
-            const n = inv.name.toLowerCase();
-            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
-          })
+          .filter((inv) => namesMatch(inv.name, key))
           .reduce((sum, inv) => sum + inv.qty, 0);
 
         const shortfall = Math.max(0, ing.quantity - inStock);
@@ -927,10 +918,7 @@ export function getMealPlanShoppingList(
         const key = ing.name.toLowerCase();
         if (inCart.has(key)) continue;
         const inStock = state.inventory
-          .filter((inv) => {
-            const n = inv.name.toLowerCase();
-            return n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0]);
-          })
+          .filter((inv) => namesMatch(inv.name, key))
           .reduce((sum, inv) => sum + inv.qty, 0);
         const shortfall = Math.max(0, ing.quantity - inStock);
         if (shortfall <= 0) continue;
@@ -1188,11 +1176,7 @@ function restoreInventoryQty(
   const { inventoryItemId, name, qty, unit, snapshot } = params;
   if (qty <= 0) return false;
   const byId = inventoryItemId ? draft.inventory.find((item) => item.id === inventoryItemId) : undefined;
-  const target = byId ?? draft.inventory.find((item) => {
-    const n = item.name.toLowerCase();
-    const en = name.toLowerCase();
-    return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
-  });
+  const target = byId ?? draft.inventory.find((item) => namesMatch(item.name, name));
   if (target) {
     target.qty = Math.round((target.qty + qty) * 100) / 100;
     return true;
@@ -1223,11 +1207,7 @@ export const actions = {
       for (const ing of recipe.ingredients) {
         const needed = opts?.qtyOverrides?.[ing.name] ?? ing.quantity * ratio;
         const matches = draft.inventory
-          .filter((item) => {
-            const n = item.name.toLowerCase();
-            const i = ing.name.toLowerCase();
-            return n.includes(i.split(" ")[0]) || i.includes(n.split(" ")[0]);
-          })
+          .filter((item) => namesMatch(item.name, ing.name))
           .sort((a, b) => a.expires.localeCompare(b.expires)); // FIFO: lotes más próximos a caducar primero
         let remaining = needed;
         for (const match of matches) {

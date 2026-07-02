@@ -6,7 +6,7 @@ import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/l
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealMacros } from "@/lib/ai-inventory";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
-import { mealTypeFromTime, uid } from "@/lib/utils";
+import { mealTypeFromTime, toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type Tab = "inventory" | "recipe" | "dish" | "external";
@@ -36,12 +36,6 @@ interface DishSuggestion {
   fatPer100: number;
   invId?: string;
   unitSize?: number;
-}
-
-function toGrams(qty: number, unit: string, unitSize?: number): number {
-  if (unit === "kg" || unit === "L") return qty * 1000;
-  if (unit === "ud") return qty * (unitSize ?? 60);
-  return qty;
 }
 
 function calcIngMacros(ing: DishIngredient): MacroTotals {

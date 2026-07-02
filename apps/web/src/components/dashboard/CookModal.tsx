@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { MealType, Recipe } from "@foodos/types";
 import { actions, getPendingMacros, useFoodOS } from "@/lib/state";
-import { eur, uid } from "@/lib/utils";
+import { eur, namesMatch, toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -11,19 +11,6 @@ interface Props {
   onClose: () => void;
   logDate?: string;
   mealType?: MealType;
-}
-
-function toGrams(qty: number, unit: string, unitSize = 60): number {
-  switch (unit) {
-    case "kg": return qty * 1000;
-    case "L":  return qty * 1000;
-    case "oz": return qty * 28.35;
-    case "lb": return qty * 453.6;
-    case "cucharada": return qty * 15;
-    case "pizca":     return qty * 0.5;
-    case "ud": return qty * unitSize;
-    default:   return qty;
-  }
 }
 
 export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
@@ -72,11 +59,7 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
       const scaledQty = Math.round(ing.quantity * ratio * 10) / 10;
       const needed = qtyOverrides[ing.name] ?? scaledQty;
       const available = state.inventory
-        .filter((item) => {
-          const n = item.name.toLowerCase();
-          const i = ing.name.toLowerCase();
-          return n.includes(i.split(" ")[0]) || i.includes(n.split(" ")[0]);
-        })
+        .filter((item) => namesMatch(item.name, ing.name))
         .reduce((sum, item) => sum + item.qty, 0);
       const status = available >= needed ? "ok" : available > 0 ? "partial" : "missing";
       return { name: ing.name, unit: ing.unit, needed, scaledQty, available: Math.round(available * 10) / 10, status };

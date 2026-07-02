@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { FoodLogEntry } from "@foodos/types";
 import { actions, useFoodOS } from "@/lib/state";
+import { namesMatch } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -23,11 +24,7 @@ export function EditLogModal({ entry, onClose }: Props) {
   const inventoryAvailable = useMemo(() => {
     if (entry.source !== "inventory") return Infinity;
     return state.inventory
-      .filter((item) => {
-        const n = item.name.toLowerCase();
-        const e = entry.name.toLowerCase();
-        return n === e || n.includes(e.split(" ")[0]) || e.includes(n.split(" ")[0]);
-      })
+      .filter((item) => namesMatch(item.name, entry.name))
       .reduce((sum, item) => sum + item.qty, 0);
   }, [entry, state.inventory]);
 
@@ -63,11 +60,7 @@ export function EditLogModal({ entry, onClose }: Props) {
       // Sync inventory if this entry came from inventory
       if (entry.source === "inventory" && delta !== 0) {
         const matches = draft.inventory
-          .filter((item) => {
-            const n = item.name.toLowerCase();
-            const en = entry.name.toLowerCase();
-            return n === en || n.includes(en.split(" ")[0]) || en.includes(n.split(" ")[0]);
-          })
+          .filter((item) => namesMatch(item.name, entry.name))
           .sort((a, b) => a.expires.localeCompare(b.expires));
 
         if (delta > 0) {

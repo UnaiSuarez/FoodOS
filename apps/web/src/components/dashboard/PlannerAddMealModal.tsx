@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import type { MacroTotals, MealPlanDay } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
-import { uid } from "@/lib/utils";
+import { toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type MealSlot = keyof MealPlanDay;
@@ -36,12 +36,6 @@ interface Suggestion {
   invId?: string;
   pricePerUnit?: number;
   unitSize?: number;
-}
-
-function toGrams(qty: number, unit: string, unitSize?: number): number {
-  if (unit === "kg" || unit === "L") return qty * 1000;
-  if (unit === "ud") return qty * (unitSize ?? 60);
-  return qty;
 }
 
 function calcIngMacros(ing: DishIngredient): MacroTotals {
