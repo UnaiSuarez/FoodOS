@@ -48,10 +48,51 @@ export function loadLocalState(defaults: FoodOSState): FoodOSState {
 }
 
 export function saveLocalState(state: FoodOSState): void {
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(state));
+  } catch (error) {
+    // Cuota de localStorage superada (~5MB, alcanzable con muchas fotos de
+    // producto en base64): sin este catch, el setItem lanzaba dentro del
+    // updater de React y rompía la mutación entera, no solo la persistencia.
+    console.warn("FoodOS: no se pudo guardar el estado en localStorage", error);
+  }
+}
+
+// Escritura diferida: serializar el estado completo (que puede superar 1MB con
+// fotos en base64) en cada tecleo/clic bloqueaba el hilo principal. El debounce
+// agrupa ráfagas de mutaciones en una sola escritura; flushLocalState() se
+// invoca en pagehide para no perder los últimos ~300ms al cerrar o recargar.
+const LOCAL_SAVE_DEBOUNCE_MS = 300;
+let localSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingLocalState: FoodOSState | null = null;
+
+export function saveLocalStateDebounced(state: FoodOSState): void {
+  pendingLocalState = state;
+  if (localSaveTimer) clearTimeout(localSaveTimer);
+  localSaveTimer = setTimeout(() => {
+    localSaveTimer = null;
+    if (pendingLocalState) {
+      saveLocalState(pendingLocalState);
+      pendingLocalState = null;
+    }
+  }, LOCAL_SAVE_DEBOUNCE_MS);
+}
+
+export function flushLocalState(): void {
+  if (localSaveTimer) {
+    clearTimeout(localSaveTimer);
+    localSaveTimer = null;
+  }
+  if (pendingLocalState) {
+    saveLocalState(pendingLocalState);
+    pendingLocalState = null;
+  }
 }
 
 export function clearLocalState(): void {
+  if (localSaveTimer) clearTimeout(localSaveTimer);
+  localSaveTimer = null;
+  pendingLocalState = null;
   localStorage.removeItem(LOCAL_KEY);
 }
 
@@ -365,7 +406,6 @@ class RemoteAdapter {
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
         if (typeof extra.bankSynced === "boolean") state.bankSynced = extra.bankSynced;
         if (typeof extra.recipeTag === "string") state.recipeTag = extra.recipeTag;
-        if (typeof extra.activeStorage === "string") state.activeStorage = extra.activeStorage as typeof state.activeStorage;
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
         if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
       }
@@ -547,7 +587,6 @@ class RemoteAdapter {
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
           bankSynced:        state.bankSynced        ?? false,
           recipeTag:         state.recipeTag         ?? "todos",
-          activeStorage:     state.activeStorage     ?? "Todos",
           debugDate:         state.debugDate         ?? null,
           stepsLog:          state.stepsLog          ?? {},
         },

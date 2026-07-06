@@ -1,32 +1,39 @@
 "use client";
 
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FoodOSProvider, useFoodOS, getMascot } from "@/lib/state";
+import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { HomeView } from "./views/HomeView";
-import { DiaryView } from "./views/DiaryView";
-import { InventoryView } from "./views/InventoryView";
-import { RecipesView } from "./views/RecipesView";
-import { FeedView } from "./views/FeedView";
-import { CartView } from "./views/CartView";
-import { FinanceView } from "./views/FinanceView";
-import { NutritionView } from "./views/NutritionView";
-import { AssistantView } from "./views/AssistantView";
-import { SettingsView } from "./views/SettingsView";
-import { PlannerView } from "./views/PlannerView";
-import { ExercisesView } from "./views/ExercisesView";
-import { RecipeDetailModal } from "./RecipeDetailModal";
-import { AccountModal } from "./AccountModal";
-import { AIConfigModal } from "./AIConfigModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { todayPlus } from "@/lib/utils";
-import { OnboardingFlow } from "./OnboardingFlow";
-import { AppTour } from "./AppTour";
 import { MascotWidget } from "./MascotWidget";
-import { StatsView } from "./views/StatsView";
 import { ViewErrorBoundary } from "./ViewErrorBoundary";
+
+// Vistas troceadas con next/dynamic: solo HomeView (la vista por defecto) va en
+// el bundle inicial; el resto se descarga al navegar a cada sección. Sin esto,
+// las 12 vistas (~7000 líneas) cargaban juntas en el primer paint del dashboard.
+const viewLoading = () => <p className="loading-hint">Cargando…</p>;
+const DiaryView     = dynamic(() => import("./views/DiaryView").then((m) => m.DiaryView),         { ssr: false, loading: viewLoading });
+const InventoryView = dynamic(() => import("./views/InventoryView").then((m) => m.InventoryView), { ssr: false, loading: viewLoading });
+const RecipesView   = dynamic(() => import("./views/RecipesView").then((m) => m.RecipesView),     { ssr: false, loading: viewLoading });
+const FeedView      = dynamic(() => import("./views/FeedView").then((m) => m.FeedView),           { ssr: false, loading: viewLoading });
+const CartView      = dynamic(() => import("./views/CartView").then((m) => m.CartView),           { ssr: false, loading: viewLoading });
+const FinanceView   = dynamic(() => import("./views/FinanceView").then((m) => m.FinanceView),     { ssr: false, loading: viewLoading });
+const StatsView     = dynamic(() => import("./views/StatsView").then((m) => m.StatsView),         { ssr: false, loading: viewLoading });
+const NutritionView = dynamic(() => import("./views/NutritionView").then((m) => m.NutritionView), { ssr: false, loading: viewLoading });
+const AssistantView = dynamic(() => import("./views/AssistantView").then((m) => m.AssistantView), { ssr: false, loading: viewLoading });
+const SettingsView  = dynamic(() => import("./views/SettingsView").then((m) => m.SettingsView),   { ssr: false, loading: viewLoading });
+const PlannerView   = dynamic(() => import("./views/PlannerView").then((m) => m.PlannerView),     { ssr: false, loading: viewLoading });
+const ExercisesView = dynamic(() => import("./views/ExercisesView").then((m) => m.ExercisesView), { ssr: false, loading: viewLoading });
+// Modales y overlays que solo se montan bajo demanda.
+const RecipeDetailModal = dynamic(() => import("./RecipeDetailModal").then((m) => m.RecipeDetailModal), { ssr: false });
+const AccountModal      = dynamic(() => import("./AccountModal").then((m) => m.AccountModal),           { ssr: false });
+const AIConfigModal     = dynamic(() => import("./AIConfigModal").then((m) => m.AIConfigModal),         { ssr: false });
+const OnboardingFlow    = dynamic(() => import("./OnboardingFlow").then((m) => m.OnboardingFlow),       { ssr: false });
+const AppTour           = dynamic(() => import("./AppTour").then((m) => m.AppTour),                     { ssr: false });
 
 const VIEWS = [
   { id: "dashboard",  icon: "⌂", label: "Panel",        title: "Panel diario" },
@@ -53,8 +60,24 @@ export function DashboardShell() {
   );
 }
 
+// Consumidores aislados del contexto de UI: así un toast o un cambio de humor
+// de la mascota solo re-renderiza estos nodos, no el shell con la vista activa.
+function ToastHost() {
+  const { toast } = useFoodOSUI();
+  return (
+    <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
+      {toast}
+    </div>
+  );
+}
+
+function SidebarMascotMessage() {
+  const { mascotMessage } = useFoodOSUI();
+  return <p>{mascotMessage}</p>;
+}
+
 function DashboardInner() {
-  const { state, hydrated, toast, mascotMessage, remoteReady, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
+  const { state, hydrated, remoteReady, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
     useFoodOS();
   const router = useRouter();
   const needsAuth = hasSupabaseConfig();
@@ -187,7 +210,7 @@ function DashboardInner() {
           </div>
           <div>
             <strong>{mascot.name}</strong>
-            <p>{mascotMessage}</p>
+            <SidebarMascotMessage />
           </div>
         </div>
         <button
@@ -310,9 +333,7 @@ function DashboardInner() {
         </div>
       )}
 
-      <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
-        {toast}
-      </div>
+      <ToastHost />
     </div>
     </>
   );
