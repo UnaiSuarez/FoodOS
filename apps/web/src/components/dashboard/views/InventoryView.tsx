@@ -44,7 +44,10 @@ const DEFAULT_FORM: FormState = {
 
 export function InventoryView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
-  const [search, setSearch] = useState(state.inventorySearch);
+  // Filtros puramente de UI: estado local, no del estado global persistido —
+  // antes cada clic de filtro pagaba clone completo + localStorage + push a Supabase.
+  const [search, setSearch] = useState("");
+  const [activeStorage, setActiveStorage] = useState<StorageName | "Todos">("Todos");
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
@@ -315,9 +318,9 @@ export function InventoryView() {
   }, [form.kcal, form.qty, form.unit, form.unitSize]);
 
   const query = search.toLowerCase().trim();
-  let items = state.activeStorage === "Todos"
+  let items = activeStorage === "Todos"
     ? state.inventory
-    : state.inventory.filter((item) => item.storage === state.activeStorage);
+    : state.inventory.filter((item) => item.storage === activeStorage);
   if (query) {
     items = items.filter(
       (item) => item.name.toLowerCase().includes(query) || item.storage.toLowerCase().includes(query)
@@ -595,8 +598,9 @@ export function InventoryView() {
               {STORAGES.map((storage) => (
                 <button
                   key={storage}
-                  className={`filter ${state.activeStorage === storage ? "active" : ""}`}
-                  onClick={() => mutate((draft) => void (draft.activeStorage = storage))}
+                  className={`filter ${activeStorage === storage ? "active" : ""}`}
+                  aria-pressed={activeStorage === storage}
+                  onClick={() => setActiveStorage(storage)}
                 >
                   {storage}
                 </button>

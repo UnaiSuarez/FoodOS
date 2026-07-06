@@ -5,13 +5,14 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
 import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
-import { clearLocalState, loadLocalState, remote, saveLocalState } from "./data-layer";
+import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
@@ -46,8 +47,6 @@ export const defaultState: FoodOSState = {
   profile: null,
   nutrition: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp" },
   weeklyBudget: 70,
-  activeStorage: "Todos",
-  inventorySearch: "",
   bankSynced: false,
   mascotId: "zana",
   recipeTag: "todos",
@@ -148,9 +147,6 @@ const LOOP_MASCOT_STATES: MascotState[] = ["idle", "thinking", "sleep"];
 interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
-  toast: string;
-  mascotMessage: string;
-  mascotState: MascotState;
   remoteReady: boolean;
   authUser: User | null;
   /** true cuando el canal de Supabase Realtime está SUBSCRIBED */
@@ -165,7 +161,19 @@ interface FoodOSContextValue {
   seedDemo: () => void;
 }
 
+/** Estado efímero de UI (toast + mascota) en un contexto aparte: cambia
+    constantemente (cada toast dispara mostrar+ocultar, la mascota reacciona a
+    actividad del ratón) y en el contexto principal re-renderizaba TODOS los
+    consumidores de useFoodOS() en cada parpadeo. Solo lo consumen el toast del
+    shell y el widget de la mascota. */
+interface FoodOSUIValue {
+  toast: string;
+  mascotMessage: string;
+  mascotState: MascotState;
+}
+
 const FoodOSContext = createContext<FoodOSContextValue | null>(null);
+const FoodOSUIContext = createContext<FoodOSUIValue | null>(null);
 
 export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FoodOSState>(defaultState);
@@ -180,6 +188,13 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeUnsubRef = useRef<(() => void) | null>(null);
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Con la escritura de localStorage diferida (debounce), al cerrar/recargar la
+  // pestaña hay que volcar lo pendiente o se perderían los últimos ~300ms.
+  useEffect(() => {
+    window.addEventListener("pagehide", flushLocalState);
+    return () => window.removeEventListener("pagehide", flushLocalState);
+  }, []);
 
   // Hidratacion: primero localStorage, despues Supabase si hay sesion.
   useEffect(() => {
@@ -234,7 +249,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
             const { log_date, ml } = newRow as { log_date: string; ml: number };
             setState((cur) => {
               const next = { ...cur, waterLog: { ...cur.waterLog, [log_date]: Number(ml) } };
-              saveLocalState(next);
+              saveLocalStateDebounced(next);
               return next;
             });
           } else if (table === "weight_log") {
@@ -244,7 +259,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
               entries.push({ date: log_date, kg: Number(kg) });
               entries.sort((a, b) => a.date.localeCompare(b.date));
               const next = { ...cur, weightLog: entries };
-              saveLocalState(next);
+              saveLocalStateDebounced(next);
               return next;
             });
           }
@@ -311,7 +326,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           mode: draft.profile.goal,
         };
       }
-      saveLocalState(draft);
+      saveLocalStateDebounced(draft);
       remote.schedulePush(draft);
       return draft;
     });
@@ -324,7 +339,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     setState((current) => {
       const draft = structuredClone(current);
       draft.waterLog[date] = Math.max(0, (draft.waterLog[date] ?? 0) + ml);
-      saveLocalState(draft);
+      saveLocalStateDebounced(draft);
       return draft;
     });
     // RPC atómica: el servidor aplica el delta, sin sobreescribir entre tabs.
@@ -395,27 +410,37 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Memoizado para que los cambios del contexto de UI (toast/mascota, muy
+  // frecuentes) no invaliden este valor y re-rendericen a los 30+ consumidores
+  // de useFoodOS(). Todos los callbacks son estables (useCallback).
+  const mainValue = useMemo<FoodOSContextValue>(
+    () => ({
+      state,
+      hydrated,
+      remoteReady,
+      authUser,
+      realtimeConnected,
+      showToast,
+      setMascotMessage,
+      triggerMascot,
+      mutate,
+      addWater,
+      resetAll,
+      seedDemo,
+    }),
+    [state, hydrated, remoteReady, authUser, realtimeConnected, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
+  );
+
+  const uiValue = useMemo<FoodOSUIValue>(
+    () => ({ toast, mascotMessage, mascotState }),
+    [toast, mascotMessage, mascotState]
+  );
+
   return (
-    <FoodOSContext.Provider
-      value={{
-        state,
-        hydrated,
-        toast,
-        mascotMessage,
-        mascotState,
-        remoteReady,
-        authUser,
-        realtimeConnected,
-        showToast,
-        setMascotMessage,
-        triggerMascot,
-        mutate,
-        addWater,
-        resetAll,
-        seedDemo,
-      }}
-    >
-      {children}
+    <FoodOSContext.Provider value={mainValue}>
+      <FoodOSUIContext.Provider value={uiValue}>
+        {children}
+      </FoodOSUIContext.Provider>
     </FoodOSContext.Provider>
   );
 }
@@ -423,6 +448,14 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
 export function useFoodOS(): FoodOSContextValue {
   const context = useContext(FoodOSContext);
   if (!context) throw new Error("useFoodOS debe usarse dentro de <FoodOSProvider>");
+  return context;
+}
+
+/** Estado efímero de UI (toast + mascota). Contexto aparte a propósito:
+    consumirlo desde useFoodOS() re-renderizaba toda la app en cada toast. */
+export function useFoodOSUI(): FoodOSUIValue {
+  const context = useContext(FoodOSUIContext);
+  if (!context) throw new Error("useFoodOSUI debe usarse dentro de <FoodOSProvider>");
   return context;
 }
 

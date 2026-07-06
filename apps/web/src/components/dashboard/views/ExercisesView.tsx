@@ -902,6 +902,10 @@ function LogSessionModal({
 }
 
 // ─── Explore tab ─────────────────────────────────────────────────────────────
+// El catálogo de wger es estático: cachear por categoría evita re-descargar
+// la misma lista en cada montaje de la pestaña o cambio de categoría ida-vuelta.
+const wgerCache = new Map<number, WgerExerciseInfo[]>();
+
 function ExploreTab() {
   const { state, mutate, showToast } = useFoodOS();
   const [categoryId, setCategoryId] = useState<number>(12);
@@ -915,6 +919,14 @@ function ExploreTab() {
   const routines = state.routines ?? [];
 
   useEffect(() => {
+    const cached = wgerCache.get(categoryId);
+    if (cached) {
+      setExercises(cached);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     setLoading(true);
@@ -927,7 +939,9 @@ function ExploreTab() {
     )
       .then((r) => r.json() as Promise<WgerResponse>)
       .then((data) => {
-        setExercises(data.results ?? []);
+        const results = data.results ?? [];
+        wgerCache.set(categoryId, results);
+        setExercises(results);
         setLoading(false);
       })
       .catch((err: unknown) => {

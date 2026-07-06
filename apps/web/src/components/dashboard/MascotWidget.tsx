@@ -2,13 +2,14 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { getMascot, useFoodOS, getAdherenceStreak, getToday } from "@/lib/state";
+import { getMascot, useFoodOS, useFoodOSUI, getAdherenceStreak, getToday } from "@/lib/state";
 import type { MascotState } from "@/lib/state";
 
 const LAST_VISIT_KEY = "foodos-mascot-last-visit";
 
 export function MascotWidget() {
-  const { state, mascotMessage, mascotState, triggerMascot } = useFoodOS();
+  const { state, triggerMascot } = useFoodOS();
+  const { mascotMessage, mascotState } = useFoodOSUI();
   const mascot = getMascot(state.mascotId);
   const [bubble, setBubble] = useState(false);
   const bubbleTimer = useRef<ReturnType<typeof setTimeout>>();

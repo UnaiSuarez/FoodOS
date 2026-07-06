@@ -25,6 +25,7 @@ const mono = DM_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://food-os-web.vercel.app"),
   title: {
     default: "FoodOS — Tu nevera, tus macros y tu dinero, conectados",
     template: "%s · FoodOS",

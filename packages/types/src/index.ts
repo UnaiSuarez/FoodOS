@@ -376,8 +376,6 @@ export interface FoodOSState {
   profile: PhysicalProfile | null;
   nutrition: NutritionGoal;
   weeklyBudget: number;
-  activeStorage: StorageName | "Todos";
-  inventorySearch: string;
   bankSynced: boolean;
   mascotId: string;
   recipeTag: string;
