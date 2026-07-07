@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { remote } from "@/lib/data-layer";
 import { resizeImageFile } from "@/lib/utils";
 import { Modal } from "./Modal";
 
@@ -18,17 +19,30 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
   const [urlMode, setUrlMode] = useState(false);
   const [zoom, setZoom] = useState(false);
   const [error, setError] = useState("");
+  const [uploading, setUploading] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
     setError("");
+    setUploading(true);
     try {
       const dataUrl = await resizeImageFile(file);
-      onChange(dataUrl);
+      // Con sesión, la foto va a Supabase Storage y el estado solo lleva la URL
+      // (el base64 pesaba 30-80KB por foto en cada localStorage/push). Sin
+      // sesión o si Storage falla, se degrada al base64 de siempre.
+      try {
+        const publicUrl = await remote.uploadProductImage(dataUrl);
+        onChange(publicUrl ?? dataUrl);
+      } catch (uploadError) {
+        console.warn("FoodOS: subida a Storage falló, usando imagen local", uploadError);
+        onChange(dataUrl);
+      }
     } catch {
       setError("No se pudo procesar la imagen. Prueba con una URL.");
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -38,9 +52,13 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
         type="button"
         className="image-picker-thumb"
         onClick={() => imageUrl && setZoom(true)}
-        aria-label={imageUrl ? "Ver imagen más grande" : "Sin imagen"}
+        aria-label={uploading ? "Subiendo imagen" : imageUrl ? "Ver imagen más grande" : "Sin imagen"}
+        aria-busy={uploading}
+        disabled={uploading}
       >
-        {imageUrl ? (
+        {uploading ? (
+          <span className="image-picker-placeholder" aria-hidden="true">⏳</span>
+        ) : imageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={imageUrl} alt="" />
         ) : (
