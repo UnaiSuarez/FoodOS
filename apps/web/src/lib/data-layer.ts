@@ -184,6 +184,21 @@ class RemoteAdapter {
     return { error: null };
   }
 
+  /** Sube una foto de producto (data-URL JPEG ya comprimida) a Storage y
+      devuelve su URL pública. null si no hay sesión — el caller decide el
+      fallback (guardar el base64 en el estado, modo local). Así el estado
+      solo lleva URLs y no ~30-80KB de base64 por foto en cada serialización. */
+  async uploadProductImage(dataUrl: string): Promise<string | null> {
+    if (!this.client || !this.user) return null;
+    const blob = await (await fetch(dataUrl)).blob();
+    const path = `${this.user.id}/${crypto.randomUUID()}.jpg`;
+    const { error } = await this.client.storage
+      .from("product-images")
+      .upload(path, blob, { contentType: "image/jpeg" });
+    if (error) throw error;
+    return this.client.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+  }
+
   /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
   async incrementWater(date: string, deltaMl: number): Promise<number> {
     if (!this.client || !this.user) return 0;
