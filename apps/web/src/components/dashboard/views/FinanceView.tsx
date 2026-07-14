@@ -680,6 +680,12 @@ export function FinanceView() {
               </span>
             </div>
             {budgetOverrun && <p className="budget-alert">⚠ Superado en {eur(foodSpendWeek - weeklyBudget)}</p>}
+            {budgetWarn && (
+              <p className="budget-alert warn">
+                ⚠ Llevas {eur(foodSpendWeek)} de {eur(weeklyBudget)} ({Math.round(budgetPct)}%) y aún es{" "}
+                {now.toLocaleDateString("es-ES", { weekday: "long" })}.
+              </p>
+            )}
           </div>
 
           {/* Últimos movimientos */}

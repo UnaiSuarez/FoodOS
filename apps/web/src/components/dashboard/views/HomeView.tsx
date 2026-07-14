@@ -376,6 +376,17 @@ export function HomeView({
           <div className={`budget-track ${budgetPct >= budgetWarnPct ? "warn" : ""}`}>
             <i style={{ width: `${budgetPct}%` }} />
           </div>
+          {state.weeklyBudget > 0 && budgetPct >= budgetWarnPct && (
+            <p className={`budget-alert ${budgetPct < 100 ? "warn" : ""}`} role="status">
+              {budgetPct >= 100
+                ? <>⚠ Presupuesto semanal agotado ({eur(foodSpend)} de {eur(state.weeklyBudget)}).</>
+                : <>⚠ Llevas {eur(foodSpend)} de {eur(state.weeklyBudget)} ({budgetPct}%) y aún es {dateFromKey(getToday(state)).toLocaleDateString("es-ES", { weekday: "long" })}.</>}
+              {" "}
+              <button className="text-button" onClick={() => goTo("recipes")}>
+                Ver recetas económicas
+              </button>
+            </p>
+          )}
         </article>
 
         {/* Accesos rapidos */}

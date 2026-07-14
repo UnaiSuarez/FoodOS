@@ -6818,6 +6818,15 @@ select:focus {
   margin: 0;
 }
 
+/* Aviso preventivo (≥80% del presupuesto, aún sin superarlo): ámbar, no rojo. */
+.budget-alert.warn {
+  color: #f59e0b;
+}
+
+.budget-alert .text-button {
+  font-size: inherit;
+}
+
 /* ── Expenses list section ────────────────────────────────────── */
 .expenses-list-section .panel-head {
   margin-bottom: 10px;
