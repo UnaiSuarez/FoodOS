@@ -45,8 +45,13 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const scanningRef = useRef(false);
 
+  // No arranca sola al montar: getUserMedia() en móvil (sobre todo iOS Safari)
+  // exige gesto de usuario directo y síncrono. Llamarla desde un efecto tras
+  // el render pierde a veces ese contexto y falla en silencio — de ahí el
+  // patrón "a veces no se abre / se abre a la segunda vez" (el segundo intento
+  // funciona porque el tap en "Activar cámara" SÍ es un gesto directo). Por
+  // eso el usuario siempre arranca la cámara con un tap explícito.
   useEffect(() => {
-    void startCamera();
     return () => stopCamera();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
