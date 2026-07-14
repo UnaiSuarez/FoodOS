@@ -12,7 +12,7 @@ import type {
 import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
 import { getBudgetLeft } from "./state";
-import { addDaysToDateKey, daysUntil, todayPlus, uid } from "./utils";
+import { daysUntil, todayPlus, uid } from "./utils";
 import { checkRateLimit } from "./ai-rate-limiter";
 
 function buildPrompt(state: FoodOSState): string {
@@ -231,14 +231,7 @@ function buildAssistantSystemPrompt(state: FoodOSState): string {
     kcal: Math.round(Math.max(0, state.nutrition.kcal - consumed.kcal)),
     protein: Math.round(Math.max(0, state.nutrition.protein - consumed.protein)),
   };
-  const weekAgo = addDaysToDateKey(todayDate, -7);
-  const budgetLeft = Math.max(
-    0,
-    state.weeklyBudget -
-      state.expenses
-        .filter((e) => e.type === "expense" && e.category === "Comida" && e.date >= weekAgo)
-        .reduce((s, e) => s + e.amount, 0)
-  );
+  const budgetLeft = getBudgetLeft(state);
   const expiringSoon = state.inventory
     .filter((item) => daysUntil(item.expires) <= 3 && item.qty > 0)
     .map((item) => item.name)
