@@ -541,9 +541,9 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
             <>
               <div className="lm-servings-row">
                 <span className="lm-servings-lbl">Raciones</span>
-                <button className="serving-btn" onClick={() => setServings(s => Math.max(0.5, Math.round((s - 0.5) * 10) / 10))}>−</button>
+                <button className="serving-btn" aria-label="Menos raciones" onClick={() => setServings(s => Math.max(0.5, Math.round((s - 0.5) * 10) / 10))}>−</button>
                 <strong className="servings-val">{servings}</strong>
-                <button className="serving-btn" onClick={() => setServings(s => Math.min(12, Math.round((s + 0.5) * 10) / 10))}>+</button>
+                <button className="serving-btn" aria-label="Más raciones" onClick={() => setServings(s => Math.min(12, Math.round((s + 0.5) * 10) / 10))}>+</button>
                 <small className="lm-servings-hint">base: {selectedRecipe.servings || 1}</small>
               </div>
               <MacroBar macros={recipeMacros} />
