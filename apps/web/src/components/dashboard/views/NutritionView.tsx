@@ -29,6 +29,7 @@ import {
   calcSummary,
   isGymDay,
   shouldWarnMuscleGain,
+  usesEspenAdjustedWeight,
   weeklyCycle,
 } from "@/lib/nutrition";
 import { dateFromKey, dateOffset } from "@/lib/utils";
@@ -1054,7 +1055,7 @@ function WeightProjectionPanel() {
           <li>
             Proteína recomendada:{" "}
             <strong>{protRange.recommendedMin}–{protRange.target} g/día</strong> para preservar masa muscular
-            {profile.weightKg > 25 * Math.pow(profile.heightCm / 100, 2) * 1.25
+            {usesEspenAdjustedWeight(profile)
               ? " (peso ajustado ESPEN)"
               : ` (${(protRange.target / currentKg).toFixed(1)} g/kg)`}
             .
