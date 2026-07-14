@@ -95,6 +95,19 @@ export function imcLabel(imc: number): string {
  *   adjusted = 78.3 + (120 − 78.3) × 0.33 = 92.1 kg  ← base proteína
  *   protein (fat_loss 2.0 g/kg) = 92.1 × 2.0 = 184 g  ✓ rango 180-200 g
  */
+/** ¿Se le aplica a este perfil el peso ajustado ESPEN para proteína (en vez
+    del peso real)? Se dispara cuando el peso supera en un 25% el peso ideal
+    a IMC 25 (~IMC 31.25). Extraído para que la UI (p.ej. la etiqueta "peso
+    ajustado ESPEN") no reimplemente el umbral por su cuenta y quede
+    desincronizada si este cambia. Solo aplica sin % graso conocido: con
+    bodyFatPct, calcProteinBase usa directamente la masa magra. */
+export function usesEspenAdjustedWeight(profile: PhysicalProfile): boolean {
+  if (profile.bodyFatPct != null) return false;
+  const heightM     = profile.heightCm / 100;
+  const idealWeight = 25 * heightM * heightM; // IMC 25
+  return profile.weightKg > idealWeight * 1.25;
+}
+
 export function calcProteinBase(profile: PhysicalProfile): number {
   if (profile.bodyFatPct != null) {
     return profile.weightKg * (1 - profile.bodyFatPct / 100);
@@ -103,7 +116,7 @@ export function calcProteinBase(profile: PhysicalProfile): number {
   const heightM     = profile.heightCm / 100;
   const idealWeight = 25 * heightM * heightM; // IMC 25
 
-  if (profile.weightKg > idealWeight * 1.25) {
+  if (usesEspenAdjustedWeight(profile)) {
     return idealWeight + (profile.weightKg - idealWeight) * 0.33;
   }
 
