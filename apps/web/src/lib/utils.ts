@@ -1,8 +1,16 @@
 import type { MealType } from "@foodos/types";
 
+const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB
+
 /** Redimensiona una imagen subida (cámara/galería) a un data URL JPEG comprimido,
-    para no disparar el tamaño de localStorage/la fila de Supabase. */
+    para no disparar el tamaño de localStorage/la fila de Supabase. Rechaza antes
+    de leer el archivo si es enorme (ej. RAW, TIFF, foto de decenas de MB): sin
+    este límite, un input type="file" acepta cualquier tamaño y FileReader lo
+    cargaría entero en memoria antes de comprimirlo. */
 export function resizeImageFile(file: File, maxDim = 480, quality = 0.75): Promise<string> {
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    return Promise.reject(new Error(`La imagen pesa demasiado (máx. ${MAX_IMAGE_UPLOAD_BYTES / 1024 / 1024}MB)`));
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error ?? new Error("No se pudo leer el archivo"));
@@ -27,6 +35,22 @@ export function resizeImageFile(file: File, maxDim = 480, quality = 0.75): Promi
     };
     reader.readAsDataURL(file);
   });
+}
+
+/** Convierte un File a base64 crudo (para las llamadas de visión de IA:
+    escaneo de ticket, identificación de alimento por foto). Antes esta
+    conversión estaba duplicada en dos sitios de InventoryView, ninguno con
+    límite de tamaño — igual que resizeImageFile, un archivo enorme se
+    cargaría entero en memoria antes de fallar en la propia llamada a la IA. */
+export async function fileToBase64(file: File, maxBytes = MAX_IMAGE_UPLOAD_BYTES): Promise<string> {
+  if (file.size > maxBytes) {
+    throw new Error(`El archivo pesa demasiado (máx. ${maxBytes / 1024 / 1024}MB)`);
+  }
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
 }
 
 /** Infiere el tipo de comida a partir de la hora HH:mm (PDF §9.5). */

@@ -4,7 +4,7 @@ import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
 import { expiryBadge, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
-import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
+import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
 import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
 import { loadAIConfig } from "@/lib/ai-config";
@@ -208,11 +208,7 @@ export function InventoryView() {
     }
     setScanLoading(true);
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-      const base64 = btoa(binary);
+      const base64 = await fileToBase64(file);
       const items = await scanTicketImage(config, base64, file.type || "image/jpeg");
       setBulkItems(items);
       if (items.length === 0) showToast("No se detectaron alimentos en la imagen");
@@ -257,11 +253,7 @@ export function InventoryView() {
     if (!config) { showToast("Configura la IA en Ajustes para usar esta función"); return; }
     setScanLoading(true);
     try {
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-      const base64 = btoa(binary);
+      const base64 = await fileToBase64(file);
       const result = await identifyFoodFromPhoto(config, base64, file.type || "image/jpeg");
       if (result) {
         prevQtyRef.current = result.defaultQty;
