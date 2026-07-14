@@ -310,6 +310,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     toastTimer.current = setTimeout(() => setToast(""), 2600);
   }, []);
 
+  // Avisa si un guardado no llegó a Supabase (queda solo en este dispositivo
+  // hasta que remote.schedulePush lo reintente).
+  useEffect(() => {
+    remote.onPushError = () => {
+      showToast("No se pudo sincronizar con el servidor, reintentando…");
+    };
+    return () => { remote.onPushError = null; };
+  }, [showToast]);
+
   // Toda mutacion pasa por aqui: clona, aplica, persiste (local + remoto).
   const mutate = useCallback((fn: (draft: FoodOSState) => void) => {
     setState((current) => {

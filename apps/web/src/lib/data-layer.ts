@@ -22,6 +22,8 @@ import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 
 const LOCAL_KEY = "foodos-appweb-state-v1";
 const PUSH_DEBOUNCE_MS = 400;
+const PUSH_RETRY_MS = 10_000;
+const PUSH_ERROR_NOTIFY_THROTTLE_MS = 30_000;
 
 const STORAGE_TYPE_BY_NAME: Record<StorageName, string> = {
   Nevera: "fridge",
@@ -104,8 +106,13 @@ class RemoteAdapter {
   private almacenIdByName: Record<string, string> = {};
   private shoppingListId: string | null = null;
   private pushTimer: ReturnType<typeof setTimeout> | null = null;
+  private pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private pushing = false;
   private pushQueued: FoodOSState | null = null;
+  private lastPushErrorNotifiedAt = 0;
+  /** La UI se engancha aquí para avisar al usuario de que un guardado no
+      llegó al servidor (queda solo en este dispositivo hasta reintentar). */
+  onPushError: ((error: unknown) => void) | null = null;
 
   get ready(): boolean {
     return this.client !== null;
@@ -569,6 +576,12 @@ class RemoteAdapter {
   schedulePush(state: FoodOSState): void {
     if (!this.ready || !this.user) return;
     if (this.pushTimer) clearTimeout(this.pushTimer);
+    // Una edición nueva ya incluye (por ser snapshot completo) lo que un
+    // reintento pendiente iba a reenviar — cancelarlo evita un push duplicado.
+    if (this.pushRetryTimer) {
+      clearTimeout(this.pushRetryTimer);
+      this.pushRetryTimer = null;
+    }
     this.pushTimer = setTimeout(() => {
       this.pushTimer = null;
       void this.runPush(state);
@@ -585,6 +598,13 @@ class RemoteAdapter {
       await this.pushState(state);
     } catch (error) {
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
+      this.notifyPushError(error);
+      // Reintenta este mismo guardado tras una pausa, salvo que ya haya una
+      // edición más reciente en camino (esa ya lo incluye, al ser snapshot completo).
+      this.pushRetryTimer = setTimeout(() => {
+        this.pushRetryTimer = null;
+        if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
+      }, PUSH_RETRY_MS);
     } finally {
       this.pushing = false;
       if (this.pushQueued) {
@@ -593,6 +613,16 @@ class RemoteAdapter {
         this.schedulePush(queued);
       }
     }
+  }
+
+  /** Throttlea los avisos de error de sync: en una caída prolongada, los
+      reintentos no deben generar un toast nuevo cada vez. */
+  private notifyPushError(error: unknown): void {
+    if (!this.onPushError) return;
+    const now = Date.now();
+    if (now - this.lastPushErrorNotifiedAt < PUSH_ERROR_NOTIFY_THROTTLE_MS) return;
+    this.lastPushErrorNotifiedAt = now;
+    this.onPushError(error);
   }
 
   async pushState(state: FoodOSState): Promise<void> {
