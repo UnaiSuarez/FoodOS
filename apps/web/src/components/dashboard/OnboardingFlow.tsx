@@ -2,10 +2,10 @@
 
 import Image from "next/image";
 import { useState, type FormEvent } from "react";
-import type { GoalMode, PhysicalProfile, Sex } from "@foodos/types";
+import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { MASCOTS } from "@/lib/mascots";
-import { GOAL_DESCRIPTIONS, GOAL_LABELS } from "@/lib/nutrition";
+import { ACTIVITY_LABELS, GOAL_DESCRIPTIONS, GOAL_LABELS } from "@/lib/nutrition";
 
 interface Props {
   onDone: () => void;
@@ -13,11 +13,25 @@ interface Props {
 
 const GOAL_ORDER: GoalMode[] = ["fat_loss", "muscle_gain", "recomp", "maintain"];
 
+const WEEKDAYS: Array<{ value: number; label: string }> = [
+  { value: 1, label: "L" },
+  { value: 2, label: "M" },
+  { value: 3, label: "X" },
+  { value: 4, label: "J" },
+  { value: 5, label: "V" },
+  { value: 6, label: "S" },
+  { value: 0, label: "D" },
+];
+
 export function OnboardingFlow({ onDone }: Props) {
   const { mutate } = useFoodOS();
   const [step, setStep] = useState(0);
   const [mascotId, setMascotId] = useState("zana");
   const [goal, setGoal] = useState<GoalMode>("fat_loss");
+  // Días de gym: si se dejan sin tocar, [1,3,5] (L/X/V) es un valor de
+  // arranque razonable — pero a diferencia de antes, el usuario los VE y
+  // puede ajustarlos aquí mismo en vez de heredar un valor oculto.
+  const [gymDays, setGymDays] = useState<number[]>([1, 3, 5]);
 
   const selectedMascot = MASCOTS.find((m) => m.id === mascotId) ?? MASCOTS[0];
 
@@ -29,16 +43,20 @@ export function OnboardingFlow({ onDone }: Props) {
   function saveProfile(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const d = new FormData(e.currentTarget);
+    const allergies = String(d.get("allergies") ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
     const profile: PhysicalProfile = {
       age:           Number(d.get("age")),
       sex:           String(d.get("sex")) as Sex,
       heightCm:      Number(d.get("height")),
       weightKg:      Number(d.get("weight")),
       bodyFatPct:    null,
-      activityLevel: "moderate",
+      activityLevel: String(d.get("activity")) as ActivityLevel,
       goal,
-      gymDays:       [1, 3, 5],
-      allergies:     [],
+      gymDays,
+      allergies,
       excludedFoods: [],
     };
     mutate((draft) => { draft.profile = profile; });
@@ -161,6 +179,16 @@ export function OnboardingFlow({ onDone }: Props) {
                   Peso actual (kg)
                   <input name="weight" type="number" min="35" max="250" step="0.1" required defaultValue={75} />
                 </label>
+                <label>
+                  Nivel de actividad
+                  <select name="activity" defaultValue="moderate">
+                    {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
+                      <option key={level} value={level}>
+                        {ACTIVITY_LABELS[level]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
               <fieldset className="ob-goals">
@@ -180,6 +208,34 @@ export function OnboardingFlow({ onDone }: Props) {
                   ))}
                 </div>
               </fieldset>
+
+              <fieldset className="gym-days">
+                <legend>Días de entrenamiento</legend>
+                <div className="day-toggles">
+                  {WEEKDAYS.map((day) => (
+                    <button
+                      key={day.value}
+                      type="button"
+                      className={`day-toggle ${gymDays.includes(day.value) ? "active" : ""}`}
+                      aria-pressed={gymDays.includes(day.value)}
+                      onClick={() =>
+                        setGymDays((current) =>
+                          current.includes(day.value)
+                            ? current.filter((value) => value !== day.value)
+                            : [...current, day.value]
+                        )
+                      }
+                    >
+                      {day.label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <label className="ob-allergies">
+                Alergias <small>(opcional, separadas por comas)</small>
+                <input name="allergies" placeholder="lactosa, frutos secos" />
+              </label>
 
               <div className="ob-nav">
                 <button type="button" className="ob-back" onClick={() => setStep(1)}>
