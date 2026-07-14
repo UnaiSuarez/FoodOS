@@ -48,10 +48,10 @@ function extractJSONArray(raw: string): string {
 async function callAIText(config: AIConfig, prompt: string, maxTokens = 512): Promise<string> {
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
@@ -202,10 +202,10 @@ Si no hay alimentos visibles devuelve [].`;
 
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{
             parts: [
@@ -336,10 +336,10 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
 
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
           generationConfig: { temperature: 0, maxOutputTokens: 256 },
