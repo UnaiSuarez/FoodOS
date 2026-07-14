@@ -2,7 +2,8 @@
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { expiryBadge, findRememberedUnitSize, matchAllergens, useFoodOS } from "@/lib/state";
+import { expiryBadge, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, useFoodOS } from "@/lib/state";
+import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
 import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
@@ -676,11 +677,17 @@ export function InventoryView() {
                       </button>
                       <button
                         className="small-action bad"
-                        onClick={() =>
+                        onClick={() => {
+                          // Antes de borrar el item, limpiar su foto de Storage si
+                          // ningún otro lote la usa ya — si no, se acumula para
+                          // siempre (comprobación con el estado ANTES de mutar).
+                          if (item.imageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
+                            void remote.deleteProductImage(item.imageUrl);
+                          }
                           mutate((draft) => {
                             draft.inventory = draft.inventory.filter((c) => c.id !== item.id);
-                          })
-                        }
+                          });
+                        }}
                       >
                         Borrar
                       </button>

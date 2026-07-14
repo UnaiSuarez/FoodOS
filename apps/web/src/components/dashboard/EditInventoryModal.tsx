@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { useFoodOS } from "@/lib/state";
+import { isImageUrlReferencedElsewhere, useFoodOS } from "@/lib/state";
+import { remote } from "@/lib/data-layer";
 import { Modal } from "./Modal";
 import { ImagePickerField } from "./ImagePickerField";
 
 export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
-  const { mutate, showToast } = useFoodOS();
+  const { state, mutate, showToast } = useFoodOS();
   const [form, setForm] = useState({
     name: item.name,
     qty: item.qty,
@@ -27,6 +28,12 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
 
   function save() {
     if (!form.name.trim()) { showToast("El nombre no puede estar vacío"); return; }
+    const newImageUrl = form.imageUrl?.trim() || undefined;
+    // Si se reemplazó o quitó la foto, limpiar la anterior de Storage — salvo
+    // que otro lote la siga usando (comprobado con el estado ANTES de mutar).
+    if (item.imageUrl && item.imageUrl !== newImageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
+      void remote.deleteProductImage(item.imageUrl);
+    }
     mutate((draft) => {
       const it = draft.inventory.find((x) => x.id === item.id);
       if (!it) return;
@@ -39,7 +46,7 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       it.kcal = form.kcal;
       it.protein = form.protein;
       it.unitSize = form.unit === "ud" ? form.unitSize : undefined;
-      it.imageUrl = form.imageUrl?.trim() || undefined;
+      it.imageUrl = newImageUrl;
     });
     showToast("Alimento actualizado");
     onClose();

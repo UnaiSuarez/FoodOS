@@ -848,6 +848,15 @@ export function getBudgetLeft(state: FoodOSState): number {
   return Math.max(0, Number(state.weeklyBudget) - getFoodSpend(state));
 }
 
+/** ¿Sigue habiendo algún OTRO item de inventario (o lote) que use esta misma
+    URL de imagen? (completeCart/moveCheckedToInventory copian imageUrl del
+    lote existente al restockear, así que la misma foto de Storage puede estar
+    referenciada por varios items). Comprobarlo antes de borrar de Storage: si
+    se comparte, borrarla rompería la foto del/de los otros items. */
+export function isImageUrlReferencedElsewhere(state: FoodOSState, url: string, excludeItemId: string): boolean {
+  return state.inventory.some((item) => item.id !== excludeItemId && item.imageUrl === url);
+}
+
 /** Items del inventario casi vacíos que no están pendientes ya en el carrito. */
 export function getLowStockSuggestions(state: FoodOSState): import("@foodos/types").CartItem[] {
   const thresholds = state.settings?.lowStockThresholds ?? DEFAULT_SETTINGS.lowStockThresholds;

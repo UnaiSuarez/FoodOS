@@ -199,6 +199,22 @@ class RemoteAdapter {
     return this.client.storage.from("product-images").getPublicUrl(path).data.publicUrl;
   }
 
+  /** Borra una foto de producto de Storage cuando ya no la referencia ningún
+      item (comprobarlo antes con isImageUrlReferencedElsewhere). No lanza: es
+      limpieza de mejor esfuerzo, un fallo aquí no debe romper la mutación que
+      la disparó (borrar/editar el item). Ignora URLs que no sean de nuestro
+      bucket (fotos base64 legacy, o una URL externa pegada a mano). */
+  async deleteProductImage(url: string): Promise<void> {
+    if (!this.client || !this.user) return;
+    const marker = "/product-images/";
+    const idx = url.indexOf(marker);
+    if (idx === -1) return;
+    const path = url.slice(idx + marker.length);
+    if (!path.startsWith(`${this.user.id}/`)) return; // defensivo: solo la carpeta propia
+    const { error } = await this.client.storage.from("product-images").remove([path]);
+    if (error) console.warn("FoodOS: no se pudo borrar la imagen huérfana de Storage", error);
+  }
+
   /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
   async incrementWater(date: string, deltaMl: number): Promise<number> {
     if (!this.client || !this.user) return 0;
