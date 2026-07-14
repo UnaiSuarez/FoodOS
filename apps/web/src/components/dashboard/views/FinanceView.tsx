@@ -708,7 +708,19 @@ export function FinanceView() {
                         </span>
                         <button
                           className="small-action bad"
-                          onClick={() => mutate((d) => { d.expenses = d.expenses.filter((c) => c.id !== entry.id); })}
+                          onClick={() => {
+                            const deleted = entry;
+                            // La lista se muestra en orden de inserción (invertido), así
+                            // que al deshacer se restaura en su posición original.
+                            const index = state.expenses.findIndex((c) => c.id === entry.id);
+                            mutate((d) => { d.expenses = d.expenses.filter((c) => c.id !== entry.id); });
+                            showToast(`Movimiento de ${eur(entry.amount)} borrado`, {
+                              label: "Deshacer",
+                              onAction: () => mutate((d) => {
+                                d.expenses.splice(Math.min(index, d.expenses.length), 0, deleted);
+                              }),
+                            });
+                          }}
                         >
                           Borrar
                         </button>

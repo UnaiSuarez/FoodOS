@@ -144,6 +144,19 @@ function relativeDate(state: Pick<FoodOSState, "debugDate">, days: number): stri
 export type MascotState = "idle" | "wave" | "thinking" | "celebrate" | "alert" | "suggest" | "sleep" | "success_buy" | "streak";
 const LOOP_MASCOT_STATES: MascotState[] = ["idle", "thinking", "sleep"];
 
+/** Duración de un toast con acción de deshacer. Exportado para que quien
+    difiera efectos secundarios irreversibles hasta que expire la ventana de
+    deshacer (ej. borrar la foto de Storage) use el mismo plazo. */
+export const UNDO_TOAST_MS = 5000;
+
+/** Acción opcional de un toast (ej. "Deshacer" tras un borrado). Mientras el
+    toast tiene acción permanece visible más tiempo (UNDO_TOAST_MS) para dar
+    margen a pulsarla. */
+export interface ToastAction {
+  label: string;
+  onAction: () => void;
+}
+
 interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
@@ -151,7 +164,7 @@ interface FoodOSContextValue {
   authUser: User | null;
   /** true cuando el canal de Supabase Realtime está SUBSCRIBED */
   realtimeConnected: boolean;
-  showToast: (message: string) => void;
+  showToast: (message: string, action?: ToastAction) => void;
   setMascotMessage: (message: string) => void;
   triggerMascot: (anim: MascotState, message?: string) => void;
   mutate: (fn: (draft: FoodOSState) => void) => void;
@@ -167,7 +180,7 @@ interface FoodOSContextValue {
     consumidores de useFoodOS() en cada parpadeo. Solo lo consumen el toast del
     shell y el widget de la mascota. */
 interface FoodOSUIValue {
-  toast: string;
+  toast: { message: string; action?: ToastAction } | null;
   mascotMessage: string;
   mascotState: MascotState;
 }
@@ -178,7 +191,7 @@ const FoodOSUIContext = createContext<FoodOSUIValue | null>(null);
 export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FoodOSState>(defaultState);
   const [hydrated, setHydrated] = useState(false);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<FoodOSUIValue["toast"]>(null);
   const [mascotMessage, setMascotMessage] = useState("Lista para organizar tu comida.");
   const [mascotState, setMascotState] = useState<MascotState>("idle");
   const mascotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -304,10 +317,18 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const showToast = useCallback((message: string) => {
-    setToast(message);
+  const showToast = useCallback((message: string, action?: ToastAction) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 2600);
+    const dismiss = () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      setToast(null);
+    };
+    setToast({
+      message,
+      // Al pulsar la acción, además de ejecutarla se cierra el toast al momento.
+      action: action ? { label: action.label, onAction: () => { dismiss(); action.onAction(); } } : undefined,
+    });
+    toastTimer.current = setTimeout(() => setToast(null), action ? UNDO_TOAST_MS : 2600);
   }, []);
 
   // Avisa si un guardado no llegó a Supabase (queda solo en este dispositivo

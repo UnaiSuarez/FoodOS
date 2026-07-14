@@ -199,12 +199,26 @@ export function DiaryView() {
                               className="small-action bad"
                               aria-label={`Borrar ${entry.name}`}
                               onClick={() => {
+                                // El borrado también devuelve cantidades al inventario,
+                                // así que deshacer tiene que restaurar AMBAS cosas tal
+                                // cual estaban — snapshot de los dos slices antes de mutar.
+                                const prevFoodLog = state.foodLog;
+                                const prevInventory = state.inventory;
                                 let restored = false;
                                 mutate((draft) => {
                                   restored = actions.returnEntryToInventory(draft, entry);
                                   draft.foodLog = draft.foodLog.filter((c) => c.id !== entry.id);
                                 });
-                                showToast(restored ? "Comida eliminada · cantidad devuelta al inventario" : "Comida eliminada");
+                                showToast(
+                                  restored ? "Comida eliminada · cantidad devuelta al inventario" : "Comida eliminada",
+                                  {
+                                    label: "Deshacer",
+                                    onAction: () => mutate((draft) => {
+                                      draft.foodLog = structuredClone(prevFoodLog);
+                                      draft.inventory = structuredClone(prevInventory);
+                                    }),
+                                  }
+                                );
                               }}
                             >
                               ×

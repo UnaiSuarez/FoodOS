@@ -2,7 +2,7 @@
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { expiryBadge, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, useFoodOS } from "@/lib/state";
+import { expiryBadge, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
@@ -670,15 +670,28 @@ export function InventoryView() {
                       <button
                         className="small-action bad"
                         onClick={() => {
-                          // Antes de borrar el item, limpiar su foto de Storage si
-                          // ningún otro lote la usa ya — si no, se acumula para
-                          // siempre (comprobación con el estado ANTES de mutar).
-                          if (item.imageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
-                            void remote.deleteProductImage(item.imageUrl);
-                          }
+                          const deleted = item;
+                          let undone = false;
                           mutate((draft) => {
                             draft.inventory = draft.inventory.filter((c) => c.id !== item.id);
                           });
+                          showToast(`"${item.name}" borrado`, {
+                            label: "Deshacer",
+                            onAction: () => {
+                              undone = true;
+                              mutate((draft) => { draft.inventory.push(deleted); });
+                            },
+                          });
+                          // Limpiar su foto de Storage si ningún otro lote la usa
+                          // (comprobación con el estado ANTES de mutar) — pero solo
+                          // cuando expire la ventana de deshacer: borrarla antes
+                          // dejaría la foto rota si el usuario deshace.
+                          if (item.imageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
+                            const url = item.imageUrl;
+                            setTimeout(() => {
+                              if (!undone) void remote.deleteProductImage(url);
+                            }, UNDO_TOAST_MS + 500);
+                          }
                         }}
                       >
                         Borrar

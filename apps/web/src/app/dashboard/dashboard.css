@@ -2487,6 +2487,24 @@ select:focus {
 .toast.show {
   opacity: 1;
   transform: translateY(0);
+  /* El toast base es solo informativo, pero con botón de acción (Deshacer)
+     tiene que poder recibir el clic. */
+  pointer-events: auto;
+}
+
+.toast-action {
+  margin-left: 12px;
+  padding: 4px 10px;
+  border: 1px solid rgba(74, 222, 128, 0.5);
+  border-radius: var(--radius-sm);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.12);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: rgba(74, 222, 128, 0.22);
 }
 
 /* ---------- Responsive ---------- */
