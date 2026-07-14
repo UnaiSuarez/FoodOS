@@ -128,10 +128,10 @@ function parseRecipe(raw: string): Recipe {
 
 async function callGemini(config: AIConfig, prompt: string): Promise<string> {
   checkRateLimit();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 1536 },
@@ -312,7 +312,7 @@ export async function callAIChat(
 
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       // Gemini needs alternating user/model turns; embed system in first user message
       type GeminiPart = { text: string };
       type GeminiContent = { role: "user" | "model"; parts: GeminiPart[] };
@@ -331,7 +331,7 @@ export async function callAIChat(
 
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({ contents, generationConfig: { temperature: 0.7, maxOutputTokens: 1536 } }),
       });
       if (!res.ok) {
@@ -508,10 +508,10 @@ export async function importRecipeFromImage(config: AIConfig, base64: string, mi
   let raw: string;
 
   if (config.provider === "gemini") {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
       body: JSON.stringify({
         contents: [{
           parts: [
