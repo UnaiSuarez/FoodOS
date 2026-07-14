@@ -13,15 +13,7 @@ import type { AIConfig } from "./ai-config";
 import { getMascot } from "./mascots";
 import { getBudgetLeft } from "./state";
 import { addDaysToDateKey, daysUntil, todayPlus, uid } from "./utils";
-import { canMakeRequest, recordRequest, getWaitMs } from "./ai-rate-limiter";
-
-function checkRateLimit() {
-  if (!canMakeRequest()) {
-    const wait = Math.ceil(getWaitMs() / 1000);
-    throw new Error(`Límite de solicitudes alcanzado (15/min). Espera ${wait}s antes de intentarlo de nuevo.`);
-  }
-  recordRequest();
-}
+import { checkRateLimit } from "./ai-rate-limiter";
 
 function buildPrompt(state: FoodOSState): string {
   const todayDate = state.debugDate ?? todayPlus(0);
