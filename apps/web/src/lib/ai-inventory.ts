@@ -2,6 +2,7 @@ import type { StorageName } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { findExactFood } from "./food-db";
 import { lookupFoodExternal } from "./food-lookup";
+import { checkRateLimit } from "./ai-rate-limiter";
 
 export type FoodNutriData = {
   kcal: number;
@@ -160,6 +161,7 @@ export async function fillFoodData(
   }
 
   if (!config) return null;
+  checkRateLimit();
 
   const prompt = `Dame los datos nutricionales de "${name}" por 100g (o 100ml si es líquido). Solo JSON, sin texto extra.
 Formato exacto:
@@ -188,6 +190,7 @@ export async function scanTicketImage(
   imageBase64: string,
   mimeType: string
 ): Promise<ScannedItem[]> {
+  checkRateLimit();
   const prompt = `Analiza esta imagen (ticket de compra, etiqueta de producto o foto de alimentos) y extrae TODOS los alimentos o productos alimentarios que encuentres.
 Responde ÚNICAMENTE con un array JSON. Sin texto extra. Sin markdown.
 Formato:
@@ -322,6 +325,7 @@ export async function identifyFoodFromPhoto(
   imageBase64: string,
   mimeType: string
 ): Promise<IdentifiedFood | null> {
+  checkRateLimit();
   const prompt =
     `Identifica el alimento o producto de la imagen y proporciona sus datos nutricionales por 100g (o 100ml si es líquido).
 Solo JSON, sin texto extra. Formato exacto:
@@ -444,6 +448,7 @@ export async function estimateMealMacros(
 "${description}"
 Responde SOLO con JSON: {"kcal":number,"protein":number,"carbs":number,"fat":number}
 Valores totales de la comida descrita, no por 100g. Sin explicaciones.`;
+  checkRateLimit();
   try {
     const raw = await callAIText(config, prompt, 128);
     const parsed = JSON.parse(extractJSON(raw)) as { kcal?: number; protein?: number; carbs?: number; fat?: number };
