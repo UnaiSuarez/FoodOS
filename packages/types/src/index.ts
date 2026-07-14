@@ -119,6 +119,11 @@ export interface Recipe {
   steps: string[];
   /** true si la genero la IA (PDF §15.7) */
   aiGenerated?: boolean;
+  /** Una frase de la IA explicando por qué esta receta encaja AHORA con el
+      usuario: qué ingrediente del inventario aprovecha (sobre todo si caduca
+      pronto), qué macros pendientes cubre, o cómo respeta el presupuesto
+      (why_this_recipe, PDF §15). Solo en recetas generadas por IA. */
+  whyThisRecipe?: string;
 }
 
 export interface FeedComment {

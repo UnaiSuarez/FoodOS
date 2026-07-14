@@ -57,6 +57,7 @@ export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onC
           <p>
             Ración base: {recipe.kcal} kcal · {recipe.protein} g proteína · {eur(recipe.cost)}.
           </p>
+          {recipe.whyThisRecipe && <p className="ai-recipe-why">💡 {recipe.whyThisRecipe}</p>}
           <div className="recipe-detail-tags">
             {recipe.tags.map((tag) => (
               <span key={tag} className="badge">

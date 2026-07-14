@@ -23,6 +23,7 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiUsed, setAiUsed] = useState(false);
+  const [whyThisRecipe, setWhyThisRecipe] = useState(draft.whyThisRecipe ?? "");
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void tryGenerateAI(); }, []);
@@ -44,6 +45,7 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
         fat: recipe.fat,
         cost: recipe.cost,
       });
+      setWhyThisRecipe(recipe.whyThisRecipe ?? "");
       setAiUsed(true);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : "Error generando receta con IA");
@@ -63,6 +65,7 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
         .map((s) => s.trim())
         .filter(Boolean),
       aiGenerated: aiUsed,
+      ...(whyThisRecipe ? { whyThisRecipe } : {}),
     };
   }
 
@@ -102,11 +105,13 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
       {!aiLoading && (
         <>
           <p className="ai-recipe-why">
-            {aiUsed
-              ? "Generada con tu IA personal según tu inventario, macros pendientes y presupuesto."
-              : hasConfig
-                ? "La IA encontró un error — edita esta receta local o regenera."
-                : "Receta local con tu inventario (priorizando caducidades), macros y presupuesto. Configura tu IA personal para resultados más precisos."}
+            {aiUsed && whyThisRecipe
+              ? <>💡 {whyThisRecipe}</>
+              : aiUsed
+                ? "Generada con tu IA personal según tu inventario, macros pendientes y presupuesto."
+                : hasConfig
+                  ? "La IA encontró un error — edita esta receta local o regenera."
+                  : "Receta local con tu inventario (priorizando caducidades), macros y presupuesto. Configura tu IA personal para resultados más precisos."}
             {" "}<strong>Edítala a tu gusto antes de guardarla</strong> — solo se guarda si tú quieres.
           </p>
 

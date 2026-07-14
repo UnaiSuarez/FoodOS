@@ -70,9 +70,10 @@ REGLAS:
 - Ajusta porciones para cubrir aproximadamente los macros pendientes (sin pasarlos)
 - Coste ≤ €${budgetLeft > 0 ? budgetLeft.toFixed(2) : "5.00"}
 - La receta debe ser realista y sabrosa
+- En why_this_recipe explica en UNA frase corta y concreta por qué esta receta encaja AHORA: qué ingrediente del inventario aprovecha (menciónalo si caduca pronto), qué macros pendientes cubre o cómo respeta el presupuesto. Ejemplo: "Aprovecha el pollo que caduca mañana y te cubre 40 g de la proteína que te falta hoy."
 
 JSON requerido (exactamente estos campos, sin más texto):
-{"title":"...","ingredients":[{"name":"...","quantity":150,"unit":"g","kcalPer100":165,"proteinPer100":31,"carbsPer100":0,"fatPer100":3.6}],"steps":["Paso 1.","Paso 2."],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"]}
+{"title":"...","ingredients":[{"name":"...","quantity":150,"unit":"g","kcalPer100":165,"proteinPer100":31,"carbsPer100":0,"fatPer100":3.6}],"steps":["Paso 1.","Paso 2."],"kcal":450,"protein":35,"carbs":40,"fat":12,"cost":2.50,"time":20,"servings":1,"difficulty":"fácil","tags":["proteico"],"why_this_recipe":"..."}
 
 IMPORTANTE: Cada ingrediente debe incluir kcalPer100/proteinPer100/carbsPer100/fatPer100 (valores por 100g). Estos son los macros del ingrediente crudo, no de la receta completa.`;
 }
@@ -115,6 +116,11 @@ function parseRecipe(raw: string): Recipe {
     difficulty: String(json.difficulty ?? "media"),
     tags: Array.isArray(json.tags) ? json.tags.map(String) : [],
     aiGenerated: true,
+    // Campo opcional: los prompts que no lo piden (planner, importar receta)
+    // simplemente no lo traen. Recortado por si la IA se extiende de más.
+    ...(json.why_this_recipe || json.whyThisRecipe
+      ? { whyThisRecipe: String(json.why_this_recipe ?? json.whyThisRecipe).slice(0, 240) }
+      : {}),
   };
 }
 
