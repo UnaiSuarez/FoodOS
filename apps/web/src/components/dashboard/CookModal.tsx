@@ -125,9 +125,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
       <div className="cook-servings">
         <span className="cook-label">Raciones</span>
         <div className="servings-row">
-          <button type="button" className="serving-btn" onClick={() => setServings((s) => Math.max(0.5, Math.round((s - 0.5) * 10) / 10))}>−</button>
+          <button type="button" className="serving-btn" aria-label="Menos raciones" onClick={() => setServings((s) => Math.max(0.5, Math.round((s - 0.5) * 10) / 10))}>−</button>
           <strong className="servings-val">{servings}</strong>
-          <button type="button" className="serving-btn" onClick={() => setServings((s) => Math.min(12, Math.round((s + 0.5) * 10) / 10))}>+</button>
+          <button type="button" className="serving-btn" aria-label="Más raciones" onClick={() => setServings((s) => Math.min(12, Math.round((s + 0.5) * 10) / 10))}>+</button>
         </div>
         <span className="cook-hint">Base: {recipe.servings || 1} ración{(recipe.servings || 1) !== 1 ? "es" : ""}</span>
       </div>

@@ -39,8 +39,8 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
         console.warn("FoodOS: subida a Storage falló, usando imagen local", uploadError);
         onChange(dataUrl);
       }
-    } catch {
-      setError("No se pudo procesar la imagen. Prueba con una URL.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "No se pudo procesar la imagen. Prueba con una URL.");
     } finally {
       setUploading(false);
     }

@@ -2,6 +2,7 @@ import type { StorageName } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { findExactFood } from "./food-db";
 import { lookupFoodExternal } from "./food-lookup";
+import { checkRateLimit } from "./ai-rate-limiter";
 
 export type FoodNutriData = {
   kcal: number;
@@ -47,10 +48,10 @@ function extractJSONArray(raw: string): string {
 async function callAIText(config: AIConfig, prompt: string, maxTokens = 512): Promise<string> {
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0, maxOutputTokens: maxTokens },
@@ -160,6 +161,7 @@ export async function fillFoodData(
   }
 
   if (!config) return null;
+  checkRateLimit();
 
   const prompt = `Dame los datos nutricionales de "${name}" por 100g (o 100ml si es líquido). Solo JSON, sin texto extra.
 Formato exacto:
@@ -188,6 +190,7 @@ export async function scanTicketImage(
   imageBase64: string,
   mimeType: string
 ): Promise<ScannedItem[]> {
+  checkRateLimit();
   const prompt = `Analiza esta imagen (ticket de compra, etiqueta de producto o foto de alimentos) y extrae TODOS los alimentos o productos alimentarios que encuentres.
 Responde ÚNICAMENTE con un array JSON. Sin texto extra. Sin markdown.
 Formato:
@@ -199,10 +202,10 @@ Si no hay alimentos visibles devuelve [].`;
 
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{
             parts: [
@@ -322,6 +325,7 @@ export async function identifyFoodFromPhoto(
   imageBase64: string,
   mimeType: string
 ): Promise<IdentifiedFood | null> {
+  checkRateLimit();
   const prompt =
     `Identifica el alimento o producto de la imagen y proporciona sus datos nutricionales por 100g (o 100ml si es líquido).
 Solo JSON, sin texto extra. Formato exacto:
@@ -332,10 +336,10 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
 
   switch (config.provider) {
     case "gemini": {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${config.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
           generationConfig: { temperature: 0, maxOutputTokens: 256 },
@@ -444,6 +448,7 @@ export async function estimateMealMacros(
 "${description}"
 Responde SOLO con JSON: {"kcal":number,"protein":number,"carbs":number,"fat":number}
 Valores totales de la comida descrita, no por 100g. Sin explicaciones.`;
+  checkRateLimit();
   try {
     const raw = await callAIText(config, prompt, 128);
     const parsed = JSON.parse(extractJSON(raw)) as { kcal?: number; protein?: number; carbs?: number; fat?: number };
