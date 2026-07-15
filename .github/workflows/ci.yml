@@ -1,0 +1,30 @@
+# CI de FoodOS: type-check + tests en cada PR y en cada push a main.
+# No incluye lint porque ESLint no está configurado en el repo (next lint
+# pide setup interactivo) — si algún día se configura, añadir el paso aquí.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Type-check (tsc --noEmit)
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Tests (vitest)
+        run: npm run test --workspace @foodos/web
