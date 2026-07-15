@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
+import { maybeNotifyExpiring } from "@/lib/notifications";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { HomeView } from "./views/HomeView";
 import { loadAIConfig } from "@/lib/ai-config";
@@ -126,6 +127,15 @@ function DashboardInner() {
     if (!needsAuth) return;
     if (remoteReady && !authUser) void router.replace("/");
   }, [needsAuth, remoteReady, authUser, router]);
+
+  // Aviso del sistema de caducidades (si está activado en Ajustes). Se
+  // re-evalúa con cada cambio de estado (incluida la hidratación remota, que
+  // llega después del primer render); el helper hace early-return barato y
+  // limita a un aviso por día, así que re-ejecutarlo a menudo no cuesta nada.
+  useEffect(() => {
+    if (!hydrated) return;
+    void maybeNotifyExpiring(state);
+  }, [hydrated, state]);
 
   const mascot = getMascot(state.mascotId);
   const currentTitle = view === "settings"

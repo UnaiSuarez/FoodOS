@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { actions, DEFAULT_SETTINGS, getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
+import { notificationsSupported } from "@/lib/notifications";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { addDaysToDateKey, uid } from "@/lib/utils";
 
@@ -43,6 +44,28 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     mutate((draft) => {
       (draft.settings.lowStockThresholds as Record<string, number>)[unit] = value;
     });
+  }
+
+  /** Activar pide el permiso del navegador primero: el toggle solo queda en
+      "on" si el usuario lo concede, para que el estado refleje la realidad. */
+  async function toggleExpiryNotifications(enabled: boolean) {
+    if (!enabled) {
+      set("expiryNotifications", false);
+      return;
+    }
+    if (!notificationsSupported()) {
+      showToast("Este navegador no soporta notificaciones");
+      return;
+    }
+    const permission = Notification.permission === "granted"
+      ? "granted"
+      : await Notification.requestPermission();
+    if (permission !== "granted") {
+      showToast("Permiso de notificaciones no concedido");
+      return;
+    }
+    set("expiryNotifications", true);
+    showToast("Notificaciones de caducidad activadas");
   }
 
   function handleDeleteAll() {
@@ -273,6 +296,23 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
               />
               <b>{s.dinnerSuggestionHour}:30 h</b>
             </div>
+          </label>
+          <label className="settings-field">
+            <span>Notificaciones del sistema de caducidad</span>
+            <div className="settings-range-row">
+              <input
+                type="checkbox"
+                checked={!!s.expiryNotifications}
+                onChange={(e) => void toggleExpiryNotifications(e.target.checked)}
+              />
+              <b>{s.expiryNotifications ? "Activadas" : "Desactivadas"}</b>
+            </div>
+            <small>
+              Un aviso del sistema (máx. 1 al día) al abrir la app si algo caduca hoy o mañana —
+              aunque no estés mirando el Panel.
+              {notificationsSupported() && Notification.permission === "denied" &&
+                " Tienes las notificaciones bloqueadas en el navegador: desbloquéalas en los ajustes del sitio."}
+            </small>
           </label>
         </div>
       </article>
