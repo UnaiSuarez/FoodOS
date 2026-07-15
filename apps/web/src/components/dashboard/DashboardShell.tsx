@@ -66,7 +66,12 @@ function ToastHost() {
   const { toast } = useFoodOSUI();
   return (
     <div className={`toast ${toast ? "show" : ""}`} role="status" aria-live="polite">
-      {toast}
+      {toast?.message}
+      {toast?.action && (
+        <button type="button" className="toast-action" onClick={toast.action.onAction}>
+          {toast.action.label}
+        </button>
+      )}
     </div>
   );
 }
