@@ -2550,7 +2550,24 @@ select:focus {
 
 @media (max-width: 720px) {
   .app-main {
-    padding: 18px 12px 28px;
+    /* Padding inferior generoso: la mascota flotante (64px + 24px de margen)
+       es fija abajo a la derecha — sin este hueco taparía permanentemente la
+       última fila de contenido (ej. celdas del planificador, botones de
+       listas). Con él, todo puede scrollear por encima de la mascota. */
+    padding: 18px 12px 104px;
+  }
+
+  /* Tap targets: estos controles median 20-30px de alto — por debajo del
+     mínimo táctil razonable. Solo en pantallas pequeñas para no engordar
+     la UI de escritorio. */
+  .bento-water-btn,
+  .feed-tab,
+  .savings-toggle {
+    min-height: 40px;
+  }
+
+  .smart-suggest-toggle {
+    min-height: 44px;
   }
 
   .bento-grid,
@@ -6226,7 +6243,10 @@ select:focus {
   position: fixed;
   bottom: 24px;
   right: 24px;
-  z-index: 200;
+  /* Sobre el contenido normal pero DEBAJO de modales (50), toast (60) y
+     drawer móvil (200): antes con 200 la mascota flotaba por encima de los
+     modales tapando su contenido. */
+  z-index: 40;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
