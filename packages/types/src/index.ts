@@ -281,6 +281,9 @@ export interface AppSettings {
   extraExpenseCategories: string[];
   /** Meta diaria de pasos (default 8000). */
   stepsGoal: number;
+  /** Notificaciones del sistema cuando algo caduca hoy/mañana (opt-in,
+      default off). Opcional: los settings ya guardados no lo traen. */
+  expiryNotifications?: boolean;
 }
 
 /** Una comida planificada en el planificador semanal. */
