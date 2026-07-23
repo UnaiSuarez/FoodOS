@@ -161,6 +161,8 @@ interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
   remoteReady: boolean;
+  /** true cuando ya se conoce el estado del servidor (o no hay Supabase). */
+  remoteHydrated: boolean;
   authUser: User | null;
   /** true cuando el canal de Supabase Realtime está SUBSCRIBED */
   realtimeConnected: boolean;
@@ -196,6 +198,10 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [mascotState, setMascotState] = useState<MascotState>("idle");
   const mascotTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [remoteReady, setRemoteReady] = useState(false);
+  // true cuando ya sabemos qué hay en el servidor: tras la primera hidratación
+  // remota (ok o fallo), o de inmediato en modo solo-local. La usa el onboarding
+  // para no mostrarse a un usuario que SÍ tiene perfil pero aún no ha hidratado.
+  const [remoteHydrated, setRemoteHydrated] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -214,10 +220,17 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     setState(normalizeState(loadLocalState(defaultState)));
     setHydrated(true);
 
-    if (!hasSupabaseConfig()) return;
+    // Sin Supabase: no hay nada remoto que esperar, el estado local es la verdad.
+    if (!hasSupabaseConfig()) { setRemoteHydrated(true); return; }
     let cancelled = false;
 
     const hydrateRemote = async () => {
+      // Mientras una hidratación está en curso, "aún no sabemos" el estado del
+      // servidor. Es clave porque onAuthChange (INITIAL_SESSION) limpia el
+      // estado a default (perfil null) y vuelve a hidratar: sin este reset,
+      // quedaría una ventana con remoteHydrated=true + perfil=null que haría
+      // asomar el onboarding a un usuario que sí tiene perfil.
+      setRemoteHydrated(false);
       try {
         await remote.ensureBaseRows();
         const remoteState = normalizeState(await remote.pullState(defaultState));
@@ -227,6 +240,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         setMascotMessage("Datos sincronizados desde Supabase.");
       } catch (error) {
         console.warn("FoodOS: fallo hidratando desde Supabase", error);
+      } finally {
+        if (!cancelled) setRemoteHydrated(true);
       }
     };
 
@@ -448,6 +463,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       state,
       hydrated,
       remoteReady,
+      remoteHydrated,
       authUser,
       realtimeConnected,
       showToast,
@@ -458,7 +474,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       resetAll,
       seedDemo,
     }),
-    [state, hydrated, remoteReady, authUser, realtimeConnected, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
+    [state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
   );
 
   const uiValue = useMemo<FoodOSUIValue>(

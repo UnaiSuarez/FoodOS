@@ -15,6 +15,10 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
   const remaining = Math.round((item.qty - safeQty) * 100) / 100;
   const pct = Math.round((safeQty / item.qty) * 100);
 
+  // Recorta al escribir para que el campo nunca muestre más de lo disponible
+  // (antes el input dejaba ver "999" mientras el consumo real se limitaba al stock).
+  const setQtyClamped = (val: number) => setQty(Math.max(0, Math.min(item.qty, val)));
+
   const presets =
     item.unit === "ud"
       ? [1, Math.max(1, Math.round(item.qty / 2)), item.qty].filter((v, i, a) => a.indexOf(v) === i)
@@ -38,7 +42,7 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
             max={item.qty}
             step={item.unit === "ud" ? 1 : 5}
             value={qty}
-            onChange={(event) => setQty(Number(event.target.value))}
+            onChange={(event) => setQtyClamped(Number(event.target.value))}
             autoFocus
           />
         </label>
@@ -49,7 +53,7 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           max={item.qty}
           step={item.unit === "ud" ? 1 : 5}
           value={safeQty}
-          onChange={(event) => setQty(Number(event.target.value))}
+          onChange={(event) => setQtyClamped(Number(event.target.value))}
           aria-label="Cantidad a consumir"
         />
         <div className="consume-presets">
