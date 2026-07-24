@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import type { StorageName } from "@foodos/types";
 import type { ScannedItem } from "@/lib/ai-inventory";
-import { matchAllergens, useFoodOS } from "@/lib/state";
-import { uid, todayPlus } from "@/lib/utils";
+import { getToday, matchAllergens, useFoodOS } from "@/lib/state";
+import { eur, uid, todayPlus } from "@/lib/utils";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 
 interface Props {
@@ -18,6 +18,14 @@ export function BulkImportModal({ items, onClose }: Props) {
   const { state, mutate, showToast } = useFoodOS();
   const [selected, setSelected] = useState<Set<number>>(new Set(items.map((_, i) => i)));
   const [editedItems, setEditedItems] = useState<ScannedItem[]>(items);
+  // Un tique de super es dinero gastado en comida: por defecto se registra como
+  // gasto (categoría Comida) para que descuente del presupuesto semanal. Se
+  // puede desmarcar si ya lo apuntaste a mano.
+  const [registerExpense, setRegisterExpense] = useState(true);
+
+  const selectedTotal = editedItems
+    .filter((_, i) => selected.has(i))
+    .reduce((sum, item) => sum + (Number(item.price) || 0), 0);
   // Alérgenos detectados por índice (cruzados con state.profile.allergies) — se
   // rellena de forma asíncrona buscando cada producto en Open Food Facts, ya
   // que el escaneo de ticket no trae por sí mismo datos de alérgenos.
@@ -68,6 +76,7 @@ export function BulkImportModal({ items, onClose }: Props) {
   function importSelected() {
     const toImport = editedItems.filter((_, i) => selected.has(i));
     if (toImport.length === 0) return;
+    const total = Math.round(selectedTotal * 100) / 100;
     mutate((draft) => {
       for (const item of toImport) {
         draft.inventory.push({
@@ -82,8 +91,21 @@ export function BulkImportModal({ items, onClose }: Props) {
           protein: item.protein,
         });
       }
+      // La compra como un único gasto de comida (no uno por producto, para no
+      // inundar el histórico de finanzas) — así descuenta del presupuesto.
+      if (registerExpense && total > 0) {
+        draft.expenses.push({
+          id: uid(),
+          type: "expense",
+          amount: total,
+          category: "Comida",
+          description: `Compra (${toImport.length} producto${toImport.length !== 1 ? "s" : ""})`,
+          date: getToday(draft),
+        });
+      }
     });
-    showToast(`${toImport.length} producto${toImport.length !== 1 ? "s" : ""} añadido${toImport.length !== 1 ? "s" : ""} al inventario`);
+    const expenseNote = registerExpense && total > 0 ? ` · ${eur(total)} en gastos` : "";
+    showToast(`${toImport.length} producto${toImport.length !== 1 ? "s" : ""} al inventario${expenseNote}`);
     onClose();
   }
 
@@ -187,6 +209,15 @@ export function BulkImportModal({ items, onClose }: Props) {
                 </label>
               ))}
             </div>
+
+            <label className="bulk-expense-toggle">
+              <input
+                type="checkbox"
+                checked={registerExpense}
+                onChange={(e) => setRegisterExpense(e.target.checked)}
+              />
+              <span>Registrar la compra como gasto de comida {selectedTotal > 0 && <strong>({eur(Math.round(selectedTotal * 100) / 100)})</strong>}</span>
+            </label>
 
             <div className="modal-actions">
               <button className="secondary-button" onClick={onClose}>Cancelar</button>
