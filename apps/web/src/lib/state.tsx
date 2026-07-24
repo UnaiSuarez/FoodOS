@@ -722,6 +722,21 @@ export function findRememberedUnitSize(state: FoodOSState, name: string): number
   return undefined;
 }
 
+/** Precio POR UNIDAD (€/g, €/ml o €/ud) del lote de inventario más reciente con
+    ese nombre, para prefijar el precio al re-añadir un alimento sin reescribirlo.
+    Del inventario (price/qty es un precio unitario bien definido); si no queda
+    ningún lote, undefined — no se puede derivar del diario porque el snapshot
+    guarda el precio del lote entero, no la cantidad original. */
+export function findRememberedUnitPrice(state: FoodOSState, name: string): number | undefined {
+  const key = name.toLowerCase().trim();
+  if (!key) return undefined;
+  const lot = state.inventory.find(
+    (item) => item.name.toLowerCase().trim() === key && item.qty > 0 && item.price > 0
+  );
+  if (!lot) return undefined;
+  return lot.price / lot.qty;
+}
+
 // Traduce los tags de alérgenos de Open Food Facts (taxonomía en inglés, prefijo "en:")
 // a términos en español para poder cruzarlos con profile.allergies (texto libre del usuario).
 const OFF_ALLERGEN_TERMS: Record<string, string[]> = {
