@@ -4607,6 +4607,36 @@ select:focus {
 .lm-dish-unit { font-size: 12px; color: var(--muted); min-width: 18px; }
 .lm-dish-kcal { font-size: 12px; color: var(--muted); min-width: 56px; text-align: right; }
 
+.lm-dish-topantry {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.lm-dish-topantry-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.lm-dish-topantry-row label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.lm-dish-topantry-row input,
+.lm-dish-topantry-row select {
+  width: 90px;
+}
+.lm-dish-perportion {
+  font-size: 12px;
+  color: var(--green);
+  align-self: center;
+}
+
 .lm-toggles {
   display: flex;
   gap: 16px;

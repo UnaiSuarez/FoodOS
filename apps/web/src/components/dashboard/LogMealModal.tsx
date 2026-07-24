@@ -6,7 +6,7 @@ import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/l
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealMacros } from "@/lib/ai-inventory";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
-import { mealTypeFromTime, toGrams, uid } from "@/lib/utils";
+import { mealTypeFromTime, toGrams, todayPlus, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type Tab = "inventory" | "recipe" | "dish" | "external";
@@ -177,12 +177,22 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
   const [showDishSuggestions, setShowDishSuggestions] = useState(false);
   const [saveDishAsRecipe, setSaveDishAsRecipe] = useState(false);
   const [deductFromInv, setDeductFromInv] = useState(true);
+  // Para guardar el plato como raciones en la despensa (batch cooking / meal prep).
+  const [dishPortions, setDishPortions] = useState(1);
+  const [dishStorage, setDishStorage] = useState<import("@foodos/types").StorageName>("Nevera");
   const dishTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(dishTimerRef.current), []);
 
   const dishMacroTotal = useMemo(
     () => sumMacros(dishIngredients.map(calcIngMacros)),
+    [dishIngredients]
+  );
+
+  // Gramos totales del plato (suma de ingredientes convertidos) — necesario para
+  // derivar macros por 100g y gramos por ración al guardarlo en inventario.
+  const dishTotalGrams = useMemo(
+    () => dishIngredients.reduce((sum, ing) => sum + toGrams(ing.qty, ing.unit, ing.unitSize), 0),
     [dishIngredients]
   );
 
@@ -340,6 +350,47 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     });
 
     showToast(`${name} registrado${saveDishAsRecipe ? " y guardado como receta" : ""}`);
+    onClose();
+  }
+
+  /** Guarda el plato compuesto como un item de inventario de N raciones (batch
+      cooking). Se modela como unit "ud": qty=raciones, unitSize=gramos/ración,
+      y kcal/proteína "por 100g" derivadas del total — así al consumir 1 ración
+      los macros salen correctos por la misma vía que cualquier item "ud". */
+  function saveDishToInventory() {
+    if (dishIngredients.length === 0 || dishTotalGrams <= 0 || dishPortions <= 0) return;
+    const name = dishName.trim() || "Plato preparado";
+    const macros = dishMacroTotal;
+    const per100 = (total: number) => Math.round((total / dishTotalGrams) * 100 * 10) / 10;
+    const gramsPerPortion = Math.round(dishTotalGrams / dishPortions);
+
+    mutate(draft => {
+      // Consumir los ingredientes crudos del inventario (cocinaste con ellos).
+      if (deductFromInv) {
+        for (const ing of dishIngredients) {
+          if (!ing.fromInventoryId) continue;
+          const item = draft.inventory.find(i => i.id === ing.fromInventoryId);
+          if (!item) continue;
+          item.qty = Math.max(0, Math.round((item.qty - Math.min(item.qty, ing.qty)) * 100) / 100);
+        }
+        draft.inventory = draft.inventory.filter(i => i.qty > 0);
+      }
+      draft.inventory.push({
+        id: uid(),
+        name,
+        qty: dishPortions,
+        unit: "ud",
+        unitSize: gramsPerPortion,
+        storage: dishStorage,
+        expires: todayPlus(3),
+        price: 0,
+        kcal: Math.round(per100(macros.kcal)),
+        protein: per100(macros.protein),
+        carbs: per100(macros.carbs),
+        fat: per100(macros.fat),
+      });
+    });
+    showToast(`"${name}" guardado en la despensa (${dishPortions} ración${dishPortions !== 1 ? "es" : ""})`);
     onClose();
   }
 
@@ -634,6 +685,33 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
               Guardar como receta
             </label>
           </div>
+
+          {/* Batch cooking: guardar el plato como raciones en la despensa */}
+          {dishIngredients.length > 0 && (
+            <div className="lm-dish-topantry">
+              <div className="lm-dish-topantry-row">
+                <label>
+                  Raciones
+                  <input
+                    type="number" min="1" step="1" value={dishPortions}
+                    onChange={e => setDishPortions(Math.max(1, Math.round(Number(e.target.value))))}
+                  />
+                </label>
+                <label>
+                  Almacén
+                  <select value={dishStorage} onChange={e => setDishStorage(e.target.value as import("@foodos/types").StorageName)}>
+                    <option>Nevera</option><option>Congelador</option><option>Despensa</option>
+                  </select>
+                </label>
+                <span className="lm-dish-perportion">
+                  {Math.round(dishMacroTotal.kcal / dishPortions)} kcal · {Math.round(dishMacroTotal.protein / dishPortions)}g prot / ración
+                </span>
+              </div>
+              <button className="secondary-button" type="button" onClick={saveDishToInventory}>
+                🥘 Guardar en la despensa ({dishPortions} ración{dishPortions !== 1 ? "es" : ""})
+              </button>
+            </div>
+          )}
 
           <BottomBar disabled={!canConfirm.dish} label="Registrar plato" onConfirm={confirmDish} />
         </div>
