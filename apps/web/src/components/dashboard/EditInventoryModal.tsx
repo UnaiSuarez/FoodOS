@@ -28,6 +28,7 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
 
   function save() {
     if (!form.name.trim()) { showToast("El nombre no puede estar vacío"); return; }
+    if (!(form.qty > 0)) { showToast("La cantidad debe ser mayor que 0"); return; }
     const newImageUrl = form.imageUrl?.trim() || undefined;
     // Si se reemplazó o quitó la foto, limpiar la anterior de Storage — salvo
     // que otro lote la siga usando (comprobado con el estado ANTES de mutar).
@@ -62,7 +63,7 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
         <label>
           Cantidad
           <input
-            type="number" min="0" step="0.1" value={form.qty}
+            type="number" min="0.1" step="0.1" value={form.qty}
             onChange={(e) => setField("qty", Number(e.target.value))}
           />
         </label>

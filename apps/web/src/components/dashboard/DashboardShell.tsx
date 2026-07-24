@@ -83,7 +83,7 @@ function SidebarMascotMessage() {
 }
 
 function DashboardInner() {
-  const { state, hydrated, remoteReady, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
+  const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
     useFoodOS();
   const router = useRouter();
   const needsAuth = hasSupabaseConfig();
@@ -94,10 +94,10 @@ function DashboardInner() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
-  const [showOnboarding, setShowOnboarding] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return !localStorage.getItem("foodos-ob-done") && !state.profile;
-  });
+  // El onboarding NO se decide en el primer render: con Supabase, el perfil aún
+  // no ha hidratado, así que un usuario que ya lo tiene lo vería igualmente
+  // (bug). Se decide en un efecto, cuando ya sabemos si hay perfil.
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [tourActive, setTourActive] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -127,6 +127,19 @@ function DashboardInner() {
     if (!needsAuth) return;
     if (remoteReady && !authUser) void router.replace("/");
   }, [needsAuth, remoteReady, authUser, router]);
+
+  // Onboarding: solo se muestra cuando ya sabemos con certeza que el usuario NO
+  // tiene perfil. Con Supabase hay que esperar sesión + hidratación remota; si
+  // no, un usuario existente en un dispositivo nuevo vería el asistente mientras
+  // su perfil llega del servidor. Una vez completado o saltado (foodos-ob-done),
+  // no vuelve a salir.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (needsAuth && (!authUser || !remoteHydrated)) return;
+    if (localStorage.getItem("foodos-ob-done")) return;
+    if (state.profile) return;
+    setShowOnboarding(true);
+  }, [hydrated, needsAuth, authUser, remoteHydrated, state.profile]);
 
   // Aviso del sistema de caducidades (si está activado en Ajustes). Se
   // re-evalúa con cada cambio de estado (incluida la hidratación remota, que

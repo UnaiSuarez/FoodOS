@@ -283,6 +283,9 @@ export function InventoryView() {
 
   function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Guard: además del min="0.1" nativo, rechaza cantidad ≤ 0 (un item de 0
+    // unidades no sirve para nada y ensucia el inventario).
+    if (!(form.qty > 0)) { showToast("La cantidad debe ser mayor que 0"); return; }
     mutate((draft) => {
       draft.inventory.push({
         id: uid(),
@@ -448,7 +451,7 @@ export function InventoryView() {
               <input
                 name="qty"
                 type="number"
-                min="0"
+                min="0.1"
                 step="0.1"
                 required
                 value={form.qty}
