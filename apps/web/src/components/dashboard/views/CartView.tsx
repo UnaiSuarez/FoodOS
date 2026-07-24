@@ -18,6 +18,7 @@ type SuggestTab = "lowstock" | "plan";
 const SOURCE_LABELS: Record<string, { label: string; cls: string }> = {
   lowstock: { label: "Stock bajo", cls: "amber" },
   plan:     { label: "Del plan",   cls: "blue"  },
+  recipe:   { label: "De receta",  cls: "blue"  },
 };
 
 export function CartView() {
@@ -293,6 +294,7 @@ export function CartView() {
                     <small>
                       {item.qty} {item.unit} · {item.store} · {eur(item.price)}
                     </small>
+                    {item.reason && <small className="cart-item-reason">{item.reason}</small>}
                     <div className="meta-row">
                       <span className={`badge ${item.checked ? "green" : "amber"}`}>
                         {item.checked ? "Comprado" : "Pendiente"}

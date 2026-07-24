@@ -46,7 +46,10 @@ export interface CartItem {
   store: string;
   checked: boolean;
   /** Origen del item para mostrar badge contextual */
-  source?: "manual" | "plan" | "lowstock";
+  source?: "manual" | "plan" | "lowstock" | "recipe";
+  /** Motivo concreto por el que está en el carrito, ej. "Para: Bowl de pollo".
+      Para items de receta/plan; se muestra bajo el nombre en el carrito. */
+  reason?: string;
   /** Gramos/ml que representa 1 unidad cuando unit==="ud", heredado del item de inventario origen. */
   unitSize?: number;
 }

@@ -2464,6 +2464,13 @@ select:focus {
   letter-spacing: 0.01em;
 }
 
+.cart-item-reason {
+  display: block;
+  margin-top: 2px;
+  color: var(--green);
+  font-size: 12px;
+}
+
 /* ---------- Toast ---------- */
 
 .toast {
