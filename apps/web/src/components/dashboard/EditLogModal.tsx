@@ -74,8 +74,10 @@ export function EditLogModal({ entry, onClose }: Props) {
           }
           draft.inventory = draft.inventory.filter((i) => i.qty > 0);
         } else {
-          // Return to inventory: add back to matching lot, or recreate it if it was fully consumed
-          actions.returnQtyToInventory(draft, entry, Math.abs(delta));
+          // Corregir a la baja = "comí menos": rellena un lote existente, pero
+          // NO recrea el item si ya no está (allowRecreate=false). Resucitar algo
+          // que el usuario borró a mano sería sorprendente (ver #3 del QA).
+          actions.returnQtyToInventory(draft, entry, Math.abs(delta), false);
         }
       }
     });
