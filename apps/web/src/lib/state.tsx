@@ -937,7 +937,7 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
   const inCart = new Set(
     state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
   );
-  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+  const needed = new Map<string, { qty: number; unit: string; price: number; titles: Set<string> }>();
 
   for (const day of plan) {
     for (const recipe of [day.breakfast, day.lunch, day.dinner]) {
@@ -956,11 +956,13 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
         const existing = needed.get(key);
         if (existing) {
           existing.qty += shortfall;
+          existing.titles.add(recipe.title);
         } else {
           needed.set(key, {
             qty: shortfall,
             unit: ing.unit,
             price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+            titles: new Set([recipe.title]),
           });
         }
       }
@@ -978,7 +980,16 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
       store: "Mercadona",
       checked: false,
       source: "plan" as const,
+      reason: formatCartReason(data.titles),
     }));
+}
+
+/** "Para: Receta A" · "Para: Receta A, Receta B" · "Para: Receta A +2 más". */
+function formatCartReason(titles: Set<string>): string {
+  const list = [...titles];
+  if (list.length === 0) return "";
+  if (list.length <= 2) return `Para: ${list.join(", ")}`;
+  return `Para: ${list.slice(0, 2).join(", ")} +${list.length - 2} más`;
 }
 
 /** Genera lista de la compra desde el mealPlan real del usuario para los días indicados. */
@@ -989,7 +1000,7 @@ export function getMealPlanShoppingList(
   const inCart = new Set(
     state.cart.filter((i) => !i.checked).map((i) => i.name.toLowerCase())
   );
-  const needed = new Map<string, { qty: number; unit: string; price: number }>();
+  const needed = new Map<string, { qty: number; unit: string; price: number; titles: Set<string> }>();
 
   for (const dateKey of dateKeys) {
     const day = state.mealPlan?.[dateKey];
@@ -1009,11 +1020,13 @@ export function getMealPlanShoppingList(
         const existing = needed.get(key);
         if (existing) {
           existing.qty += shortfall;
+          existing.titles.add(recipe.title);
         } else {
           needed.set(key, {
             qty: shortfall,
             unit: ing.unit,
             price: Math.max(0.5, recipe.cost / Math.max(1, recipe.ingredients.length)),
+            titles: new Set([recipe.title]),
           });
         }
       }
@@ -1031,6 +1044,7 @@ export function getMealPlanShoppingList(
       store: state.settings?.defaultStore ?? "Mercadona",
       checked: false,
       source: "plan" as const,
+      reason: formatCartReason(data.titles),
     }));
 }
 
@@ -1457,6 +1471,8 @@ export const actions = {
           price: Math.max(0.6, recipe.cost / recipe.ingredients.length),
           store: "Mercadona",
           checked: false,
+          source: "recipe",
+          reason: `Para: ${recipe.title}`,
         });
       }
     });
