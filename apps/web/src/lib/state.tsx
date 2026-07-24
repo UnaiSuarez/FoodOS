@@ -1268,12 +1268,19 @@ export function buildAiRecipeDraft(state: FoodOSState): Recipe | null {
 
 /** Núcleo compartido de returnQtyToInventory/returnIngredientsToInventory: busca
     el item por id (si se indica) o por nombre, le suma qty, o lo recrea desde
-    el snapshot si ya no existe. */
+    el snapshot si ya no existe.
+
+    `allowRecreate` distingue las dos intenciones (ver #3 del QA):
+    - BORRAR una entrada del diario = "esto no pasó" → reversión total, recrea
+      el lote si se había agotado/borrado (allowRecreate=true).
+    - EDITAR una entrada A LA BAJA = "comí menos de lo que apunté" → solo rellena
+      lotes que aún existen; NO resucita un item que borraste a mano
+      (allowRecreate=false), que sería sorprendente. */
 function restoreInventoryQty(
   draft: FoodOSState,
-  params: { inventoryItemId?: string; name: string; qty: number; unit: string; snapshot?: InventorySnapshot }
+  params: { inventoryItemId?: string; name: string; qty: number; unit: string; snapshot?: InventorySnapshot; allowRecreate?: boolean }
 ): boolean {
-  const { inventoryItemId, name, qty, unit, snapshot } = params;
+  const { inventoryItemId, name, qty, unit, snapshot, allowRecreate = true } = params;
   if (qty <= 0) return false;
   const byId = inventoryItemId ? draft.inventory.find((item) => item.id === inventoryItemId) : undefined;
   const target = byId ?? draft.inventory.find((item) => namesMatch(item.name, name));
@@ -1281,7 +1288,7 @@ function restoreInventoryQty(
     target.qty = Math.round((target.qty + qty) * 100) / 100;
     return true;
   }
-  if (snapshot) {
+  if (allowRecreate && snapshot) {
     draft.inventory.push({ id: uid(), name, qty, unit, ...snapshot });
     return true;
   }
@@ -1390,7 +1397,7 @@ export const actions = {
   /** Devuelve `qty` de una entrada del diario al inventario: si el item original
       sigue existiendo se le suma; si fue eliminado por completo, se recrea desde
       el snapshot guardado al consumir. Devuelve true si pudo devolver algo. */
-  returnQtyToInventory(draft: FoodOSState, entry: FoodLogEntry, qty: number): boolean {
+  returnQtyToInventory(draft: FoodOSState, entry: FoodLogEntry, qty: number, allowRecreate = true): boolean {
     if (qty <= 0) return false;
     return restoreInventoryQty(draft, {
       inventoryItemId: entry.inventoryItemId,
@@ -1398,6 +1405,7 @@ export const actions = {
       qty,
       unit: entry.unit ?? "g",
       snapshot: entry.inventorySnapshot,
+      allowRecreate,
     });
   },
 
