@@ -3904,6 +3904,21 @@ select:focus {
   margin: 0;
 }
 
+.bulk-expense-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.bulk-expense-toggle input {
+  width: auto;
+  min-height: 0;
+}
+
 .bulk-list {
   display: flex;
   flex-direction: column;
