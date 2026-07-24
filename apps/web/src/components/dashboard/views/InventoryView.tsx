@@ -2,7 +2,7 @@
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { expiryBadge, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
+import { expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
@@ -90,6 +90,14 @@ export function InventoryView() {
 
     const remembered = findRememberedUnitSize(state, value);
     if (remembered != null) setField("unitSize", remembered);
+
+    // Prefija el precio con el €/unidad recordado, escalado a la cantidad actual
+    // (así no reescribes el precio de algo que ya tienes). El usuario puede
+    // ajustarlo; si luego cambia la cantidad, handleQtyChange lo reescala.
+    const unitPrice = findRememberedUnitPrice(state, value);
+    if (unitPrice != null && form.qty > 0) {
+      setField("price", Math.round(unitPrice * form.qty * 100) / 100);
+    }
 
     const trimmed = value.trim();
     if (trimmed.length > 0) {
@@ -298,10 +306,16 @@ export function InventoryView() {
         ...itemExtras,
       });
     });
+    // Aviso no bloqueante si se guarda sin macros: contaría como 0 kcal en el
+    // diario, que rara vez es lo que se quiere. Se guarda igual (a veces es a
+    // propósito, ej. agua o especias), pero se sugiere completar los datos.
+    const noMacros = !(form.kcal > 0) && !(form.protein > 0);
     setForm({ ...DEFAULT_FORM, expires: todayPlus(4) });
     setItemExtras({});
     setMascotMessage("Alimento guardado. Estoy vigilando caducidades.");
-    showToast("Alimento añadido al inventario");
+    showToast(noMacros
+      ? "Guardado sin macros — contará como 0 kcal. Usa \"Completar datos\" para rellenarlos."
+      : "Alimento añadido al inventario");
   }
 
   const totalKcal = useMemo(() => {
