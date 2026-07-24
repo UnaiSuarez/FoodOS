@@ -16,7 +16,7 @@ import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalStat
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
-import { calcDailyTargets, isGymDay, weeklyCycle } from "./nutrition";
+import { calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
@@ -38,6 +38,7 @@ export const defaultState: FoodOSState = {
   incomeSources: [],
   recurringExpenses: [],
   savingsGoalPct: 20,
+  savingsGoal: null,
   feedPosts: [],
   foodLog: [],
   waterLog: {},
@@ -77,6 +78,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.incomeSources ||= [];
   next.recurringExpenses ||= [];
   next.savingsGoalPct ??= 20;
+  next.savingsGoal ??= null;
   next.foodLog ||= [];
   next.waterLog ||= {};
   next.weightLog ||= [];
@@ -907,6 +909,63 @@ export function getFoodSpend(state: FoodOSState): number {
 
 export function getBudgetLeft(state: FoodOSState): number {
   return Math.max(0, Number(state.weeklyBudget) - getFoodSpend(state));
+}
+
+/** Cuánto puedes gastar en variables (comida, ocio…) esta semana y seguir
+ *  cumpliendo tu meta de ahorro: ingresos fijos − gastos fijos − ahorro
+ *  objetivo, todo prorrateado a semana (mes / 4.345). 0 si no hay ingresos
+ *  configurados o el resultado es negativo (gastos fijos ya se comen la meta). */
+export function getWeeklySavingsTarget(state: FoodOSState): number {
+  const WEEKS_PER_MONTH = 4.345;
+  const weeklyIncome = state.incomeSources
+    .filter((s) => s.active)
+    .reduce((sum, s) => sum + monthlyAmountOf(s.frequency, s.amount), 0) / WEEKS_PER_MONTH;
+  if (weeklyIncome <= 0) return 0;
+  const weeklyFixed = (state.recurringExpenses ?? [])
+    .filter((r) => r.active)
+    .reduce((sum, r) => sum + monthlyAmountOf(r.frequency, r.amount), 0) / WEEKS_PER_MONTH;
+  const weeklyGoal = weeklyIncome * ((state.savingsGoalPct ?? 20) / 100);
+  return Math.max(0, weeklyIncome - weeklyFixed - weeklyGoal);
+}
+
+/** Por cada una de las últimas N semanas (7 días, terminando hoy), ¿el gasto
+ *  variable real (dated, category != fijo) se mantuvo dentro de lo que
+ *  permite la meta de ahorro? Igual patrón que getMacroAdherenceHistory: el
+ *  gasto variable sí varía semana a semana con el comportamiento real del
+ *  usuario (los gastos fijos no, por eso no cuentan aquí — machacarían
+ *  siempre el mismo resultado). "empty" si no hay ingresos configurados. */
+export function getWeeklySavingsHistory(
+  state: FoodOSState,
+  weeks = 12
+): Array<{ weekStart: string; weekEnd: string; spend: number; target: number; status: "hit" | "miss" | "empty" }> {
+  const target = getWeeklySavingsTarget(state);
+  const today = dateFromKey(getToday(state));
+  return Array.from({ length: weeks }, (_, i) => {
+    const offset = weeks - 1 - i;
+    const end = new Date(today); end.setDate(today.getDate() - offset * 7);
+    const start = new Date(end); start.setDate(end.getDate() - 6);
+    const spend = state.expenses
+      .filter((e) => e.type === "expense")
+      .filter((e) => { const d = dateFromKey(e.date); return d >= start && d <= end; })
+      .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const weekStart = start.toISOString().slice(0, 10);
+    const weekEnd = end.toISOString().slice(0, 10);
+    if (target <= 0) return { weekStart, weekEnd, spend, target, status: "empty" as const };
+    return { weekStart, weekEnd, spend, target, status: spend <= target ? ("hit" as const) : ("miss" as const) };
+  });
+}
+
+/** Semanas consecutivas (contando desde la actual hacia atrás) dentro del
+ *  presupuesto variable que exige la meta de ahorro. Se corta en el primer
+ *  "miss"; una semana "empty" (sin ingresos configurados) también corta. */
+export function getSavingsStreak(state: FoodOSState): number {
+  const history = getWeeklySavingsHistory(state, 26);
+  let streak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].status === "hit") streak++;
+    else break;
+  }
+  return streak;
 }
 
 /** ¿Sigue habiendo algún OTRO item de inventario (o lote) que use esta misma

@@ -30,6 +30,7 @@ export function CartView() {
   const [editCartItem, setEditCartItem] = useState<CartItem | null>(null);
 
   const checkedCount  = state.cart.filter((i) => i.checked).length;
+  const checkedTotal  = state.cart.filter((i) => i.checked).reduce((sum, i) => sum + Number(i.price || 0), 0);
   const estimated     = state.cart.reduce((sum, i) => sum + Number(i.price || 0), 0);
   const budgetLeft    = getBudgetLeft(state);
   const defaultStore  = state.settings?.defaultStore ?? "Mercadona";
@@ -94,6 +95,33 @@ export function CartView() {
     });
     showToast("Item añadido al carrito");
     form.reset();
+  }
+
+  function finishPurchase() {
+    let completed = 0;
+    mutate((draft) => { completed = actions.completeCart(draft); });
+    if (completed) {
+      triggerMascot("success_buy", "Compra completada. Finanzas e inventario sincronizados.");
+      showToast("Compra completada");
+    }
+  }
+
+  function handleCompleteCart() {
+    if (!checkedCount) {
+      showToast("Marca items como comprados primero");
+      return;
+    }
+    // Aviso preventivo: si lo marcado ya se come el presupuesto semanal que
+    // queda, frenamos antes de tocar Finanzas/Inventario en vez de avisar
+    // después — el usuario decide con un toque extra, no se bloquea.
+    if (checkedTotal > budgetLeft) {
+      showToast(
+        `⚠ Esta compra (${eur(checkedTotal)}) supera tu presupuesto semanal en ${eur(checkedTotal - budgetLeft)}.`,
+        { label: "Completar igualmente", onAction: finishPurchase }
+      );
+      return;
+    }
+    finishPurchase();
   }
 
   return (
@@ -239,19 +267,7 @@ export function CartView() {
               >
                 Limpiar marcados
               </button>
-              <button
-                className="primary-button"
-                onClick={() => {
-                  let completed = 0;
-                  mutate((draft) => { completed = actions.completeCart(draft); });
-                  if (!completed) {
-                    showToast("Marca items como comprados primero");
-                  } else {
-                    triggerMascot("success_buy", "Compra completada. Finanzas e inventario sincronizados.");
-                    showToast("Compra completada");
-                  }
-                }}
-              >
+              <button className="primary-button" onClick={handleCompleteCart}>
                 Completar compra
               </button>
             </div>

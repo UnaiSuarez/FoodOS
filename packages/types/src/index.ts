@@ -89,6 +89,16 @@ export interface IncomeSource {
   active: boolean;
 }
 
+/** Meta de ahorro con nombre propio (ej. "Viaje en agosto"), en vez de solo un % abstracto. */
+export interface SavingsGoal {
+  name: string;
+  targetAmount: number;
+  /** Fecha ISO yyyy-mm-dd objetivo, opcional. */
+  targetDate: string | null;
+  /** Fecha ISO en que se creó la meta — desde aquí se estima el progreso acumulado. */
+  createdAt: string;
+}
+
 /** Ingrediente de receta con cantidad, para poder escalar (PDF §5.3). */
 export interface RecipeIngredient {
   name: string;
@@ -374,6 +384,8 @@ export interface FoodOSState {
   recurringExpenses: RecurringExpense[];
   /** Meta de ahorro mensual en % sobre ingresos (por defecto 20). */
   savingsGoalPct: number;
+  /** Meta de ahorro con nombre y fecha, opcional (null = no configurada). */
+  savingsGoal: SavingsGoal | null;
   feedPosts: FeedPost[];
   /** Diario de comidas con fecha — la fuente de verdad de lo consumido. */
   foodLog: FoodLogEntry[];

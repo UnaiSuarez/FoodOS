@@ -209,18 +209,25 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     const invResults: DishSuggestion[] = state.inventory
       .filter(item => item.name.toLowerCase().includes(q.toLowerCase()))
       .slice(0, 4)
-      .map(item => ({
-        key: `inv-${item.id}`,
-        type: "inventory" as const,
-        name: item.name,
-        unit: item.unit,
-        kcalPer100: item.kcal,
-        proteinPer100: item.protein,
-        carbsPer100: item.carbs ?? 0,
-        fatPer100: item.fat ?? 0,
-        invId: item.id,
-        unitSize: item.unitSize,
-      }));
+      .map(item => {
+        // Igual que macrosForQuantity: si el item no tiene carbos/grasa explicitos
+        // (el formulario de inventario solo pide kcal y proteina), se estiman a
+        // partir de las kcal restantes en vez de darlos por 0.
+        const fatPer100 = item.fat ?? Math.max(0, (item.kcal * 0.25) / 9);
+        const carbsPer100 = item.carbs ?? Math.max(0, (item.kcal - item.protein * 4 - fatPer100 * 9) / 4);
+        return {
+          key: `inv-${item.id}`,
+          type: "inventory" as const,
+          name: item.name,
+          unit: item.unit,
+          kcalPer100: item.kcal,
+          proteinPer100: item.protein,
+          carbsPer100,
+          fatPer100,
+          invId: item.id,
+          unitSize: item.unitSize,
+        };
+      });
 
     setDishSuggestions(invResults);
     setShowDishSuggestions(true);
