@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { IncomeFrequency } from "@foodos/types";
-import { getFoodSpend, getToday, useFoodOS } from "@/lib/state";
+import { getFoodSpend, getSavingsStreak, getToday, useFoodOS } from "@/lib/state";
 import { monthlyAmountOf, projectSavings } from "@/lib/nutrition";
 import { dateFromKey, eur, uid } from "@/lib/utils";
 
@@ -44,23 +44,41 @@ function buildTip(params: {
   savingsGoalPct: number;
   totalIncome: number;
   monthlyFixed: number;
+  monthlyExpenses: number;
+  monthlySavings: number;
   foodPct: number;
+  foodSpend: number;
+  monthlyVariable: number;
   topVariableCat: string;
+  topVariableCatAmount: number;
 }): { icon: string; text: string; type: "good" | "warn" | "alert" | "info" } {
-  const { savingsRate, savingsGoalPct, totalIncome, monthlyFixed, foodPct, topVariableCat } = params;
+  const {
+    savingsRate, savingsGoalPct, totalIncome, monthlyFixed, monthlyExpenses, monthlySavings,
+    foodPct, foodSpend, monthlyVariable, topVariableCat, topVariableCatAmount,
+  } = params;
   if (totalIncome === 0)
     return { icon: "→", text: "Añade tus fuentes de ingreso para calcular tu tasa de ahorro real.", type: "info" };
   if (savingsRate >= savingsGoalPct)
     return { icon: "✓", text: `¡Meta de ahorro alcanzada! Llevas el ${Math.round(savingsRate)}% de ahorro. Considera invertir el excedente en un fondo indexado.`, type: "good" };
-  if (monthlyFixed > totalIncome * 0.6)
-    return { icon: "⚠", text: `Tus gastos fijos son el ${Math.round((monthlyFixed / totalIncome) * 100)}% de tus ingresos. Revisa suscripciones o servicios que puedas reducir.`, type: "alert" };
-  if (foodPct > 40)
-    return { icon: "◌", text: `La comida representa el ${Math.round(foodPct)}% de tus gastos variables. Activa el modo ahorro en Recetas para reducir el coste por ración.`, type: "warn" };
-  if (savingsRate < 10 && savingsRate > 0)
-    return { icon: "⚠", text: `Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Intenta reducir los gastos en ${topVariableCat || "ocio"} para subir al ${savingsGoalPct}%.`, type: "warn" };
-  if (savingsRate <= 0)
-    return { icon: "!", text: "Este mes gastas más de lo que ingresas. Revisa el desglose por categoría y activa el modo ahorro en Recetas.", type: "alert" };
-  return { icon: "✦", text: `Vas bien. Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Sube la meta al ${savingsGoalPct}% para acelerar tu fondo de emergencia.`, type: "info" };
+  if (monthlyFixed > totalIncome * 0.6) {
+    const over = Math.round(monthlyFixed - totalIncome * 0.6);
+    return { icon: "⚠", text: `Tus gastos fijos son el ${Math.round((monthlyFixed / totalIncome) * 100)}% de tus ingresos (${eur(monthlyFixed)}/mes). Recorta unos ${eur(over)}/mes en suscripciones o servicios para bajar del 60%.`, type: "alert" };
+  }
+  if (foodPct > 40) {
+    const over = Math.round(foodSpend - monthlyVariable * 0.4);
+    return { icon: "◌", text: `La comida representa el ${Math.round(foodPct)}% de tus gastos variables (${eur(foodSpend)}). Activa el modo ahorro en Recetas: bajar ${eur(over)} te dejaría en el 40%.`, type: "warn" };
+  }
+  if (savingsRate < 10 && savingsRate > 0) {
+    const needed = Math.max(0, (savingsGoalPct / 100) * totalIncome - monthlySavings);
+    const cut = Math.min(needed, topVariableCatAmount || needed);
+    return { icon: "⚠", text: `Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Recorta ${eur(cut)} en ${topVariableCat || "ocio"} este mes para llegar al ${savingsGoalPct}%.`, type: "warn" };
+  }
+  if (savingsRate <= 0) {
+    const deficit = Math.round(monthlyExpenses - totalIncome);
+    return { icon: "!", text: `Este mes gastas ${eur(deficit)} más de lo que ingresas. Revisa el desglose por categoría y activa el modo ahorro en Recetas.`, type: "alert" };
+  }
+  const needed = Math.max(0, (savingsGoalPct / 100) * totalIncome - monthlySavings);
+  return { icon: "✦", text: `Vas bien. Tu tasa de ahorro es del ${Math.round(savingsRate)}%. Te faltan ${eur(needed)}/mes para llegar al ${savingsGoalPct}%.`, type: "info" };
 }
 
 export function FinanceView() {
@@ -94,6 +112,14 @@ export function FinanceView() {
     .filter((r) => r.active)
     .reduce((sum, r) => sum + monthlyAmountOf(r.frequency, r.amount), 0);
 
+  // Auditoría de suscripciones: 8€/mes no impresiona, 96€/año sí — reencuadrar
+  // el coste como anual empuja a decidir si de verdad merece la pena.
+  const activeSubscriptions = (state.recurringExpenses ?? []).filter(
+    (r) => r.active && r.category === "Suscripciones"
+  );
+  const subscriptionsMonthly = activeSubscriptions.reduce((sum, r) => sum + monthlyAmountOf(r.frequency, r.amount), 0);
+  const subscriptionsYearly  = subscriptionsMonthly * 12;
+
   const variableExpenses = state.expenses.filter(
     (e) => e.type === "expense" && dateFromKey(e.date) >= thirtyDaysAgo
   );
@@ -108,6 +134,30 @@ export function FinanceView() {
   const savingsRate    = totalMonthlyIncome > 0 ? (monthlySavings / totalMonthlyIncome) * 100 : 0;
   const savingsGoalPct = state.savingsGoalPct ?? 20;
   const projection     = projectSavings(Math.max(0, monthlySavings), totalMonthlyExpenses);
+  const savingsStreak  = getSavingsStreak(state);
+
+  // ── Meta de ahorro con nombre ───────────────────────────────────
+  // No hay banco real conectado (bankSynced es demo), así que el progreso es
+  // una estimación honesta: ritmo de ahorro actual × meses desde que se creó
+  // la meta, igual que la proyección de abajo ya asume un ritmo constante.
+  const savingsGoal = state.savingsGoal;
+  const monthsSinceGoal = savingsGoal
+    ? Math.max(0, (now.getTime() - dateFromKey(savingsGoal.createdAt).getTime()) / (1000 * 60 * 60 * 24 * 30.44))
+    : 0;
+  const goalEstimatedSaved = savingsGoal
+    ? Math.max(0, Math.min(savingsGoal.targetAmount, Math.max(0, monthlySavings) * monthsSinceGoal))
+    : 0;
+  const goalProgressPct = savingsGoal && savingsGoal.targetAmount > 0
+    ? Math.min(100, (goalEstimatedSaved / savingsGoal.targetAmount) * 100)
+    : 0;
+  const monthsToGoalDate = savingsGoal?.targetDate
+    ? Math.max(0, (dateFromKey(savingsGoal.targetDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30.44))
+    : null;
+  const neededMonthlyPace = savingsGoal && monthsToGoalDate != null && monthsToGoalDate > 0.1
+    ? Math.max(0, savingsGoal.targetAmount - goalEstimatedSaved) / monthsToGoalDate
+    : null;
+  const goalBehindPace = neededMonthlyPace != null && monthlySavings < neededMonthlyPace;
+  const goalReached = savingsGoal ? goalEstimatedSaved >= savingsGoal.targetAmount : false;
 
   // ── Breakdown categorías ──────────────────────────────────────
   const byCategory: Record<string, number> = {};
@@ -119,12 +169,14 @@ export function FinanceView() {
   });
   const categories   = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
   const maxCategory  = Math.max(...categories.map(([, v]) => v), 1);
-  const topVariableCat = Object.entries(
+  const topVariableCatEntry = Object.entries(
     variableExpenses.reduce<Record<string, number>>((acc, e) => {
       acc[e.category] = (acc[e.category] ?? 0) + Number(e.amount);
       return acc;
     }, {})
-  ).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+  ).sort((a, b) => b[1] - a[1])[0];
+  const topVariableCat = topVariableCatEntry?.[0] ?? "";
+  const topVariableCatAmount = topVariableCatEntry?.[1] ?? 0;
 
   // ── Regla 50/30/20 ───────────────────────────────────────────
   let needs = 0, wants = 0;
@@ -140,7 +192,11 @@ export function FinanceView() {
   // ── Consejo ───────────────────────────────────────────────────
   const foodSpend = variableExpenses.filter((e) => e.category === "Comida").reduce((s, e) => s + Number(e.amount), 0);
   const foodPct   = monthlyVariable > 0 ? (foodSpend / monthlyVariable) * 100 : 0;
-  const tip       = buildTip({ savingsRate, savingsGoalPct, totalIncome: totalMonthlyIncome, monthlyFixed, foodPct, topVariableCat });
+  const tip       = buildTip({
+    savingsRate, savingsGoalPct, totalIncome: totalMonthlyIncome, monthlyFixed,
+    monthlyExpenses: totalMonthlyExpenses, monthlySavings, foodPct, foodSpend,
+    monthlyVariable, topVariableCat, topVariableCatAmount,
+  });
 
   // ── Comparativa mes anterior ──────────────────────────────────
   const vsLastMonth = monthlyVariable - prevMonthVariable;
@@ -216,6 +272,27 @@ export function FinanceView() {
     });
     showToast("Fuente de ingreso añadida");
     form.reset();
+  }
+
+  function saveSavingsGoal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const dateRaw = String(data.get("targetDate") ?? "").trim();
+    mutate((draft) => {
+      draft.savingsGoal = {
+        name: String(data.get("name")).trim(),
+        targetAmount: Number(data.get("targetAmount")),
+        targetDate: dateRaw || null,
+        createdAt: getToday(draft),
+      };
+    });
+    showToast("Meta de ahorro creada");
+  }
+
+  function deleteSavingsGoal() {
+    mutate((draft) => { draft.savingsGoal = null; });
+    showToast("Meta de ahorro borrada");
   }
 
   const balanceSign = monthlySavings >= 0 ? "positive" : "negative";
@@ -345,6 +422,16 @@ export function FinanceView() {
               </label>
             </div>
             <button className="secondary-button" type="submit">Añadir gasto fijo</button>
+
+            {activeSubscriptions.length > 0 && (
+              <div className="finance-tip tip-warn subscriptions-audit">
+                <span className="tip-icon">📱</span>
+                <p>
+                  {activeSubscriptions.length} suscripción{activeSubscriptions.length > 1 ? "es" : ""} activa{activeSubscriptions.length > 1 ? "s" : ""}:{" "}
+                  {eur(subscriptionsMonthly)}/mes = <strong>{eur(subscriptionsYearly)}/año</strong>. Si hay alguna que no usas, cancelarla es ahorro inmediato.
+                </p>
+              </div>
+            )}
 
             <div className="card-list income-list">
               {(state.recurringExpenses ?? []).length ? (
@@ -485,6 +572,13 @@ export function FinanceView() {
                   <span>%</span>
                 </div>
               </div>
+              {savingsStreak > 0 && (
+                <div className="meta-row" style={{ marginTop: 4, marginBottom: 8 }}>
+                  <span className="badge green" title="Semanas seguidas con el gasto variable dentro de lo que permite tu meta de ahorro">
+                    🔥 {savingsStreak} semana{savingsStreak > 1 ? "s" : ""} seguida{savingsStreak > 1 ? "s" : ""} en objetivo
+                  </span>
+                </div>
+              )}
               <div className="savings-rate-bar-wrap">
                 <div className="savings-rate-bar">
                   <div
@@ -504,6 +598,51 @@ export function FinanceView() {
           <div className={`finance-tip tip-${tip.type}`}>
             <span className="tip-icon">{tip.icon}</span>
             <p>{tip.text}</p>
+          </div>
+
+          {/* Meta de ahorro con nombre — más motivador que un % abstracto */}
+          <div className="projection-card">
+            <div className="panel-head">
+              <h3>🎯 Meta de ahorro</h3>
+            </div>
+            {savingsGoal ? (
+              <>
+                <div className="budget-card-head">
+                  <span>{savingsGoal.name}</span>
+                  <button className="small-action bad" onClick={deleteSavingsGoal}>Borrar meta</button>
+                </div>
+                <div className="budget-bar-wrap">
+                  <div className="budget-bar">
+                    <div
+                      className={`budget-bar-fill ${goalReached ? "" : goalBehindPace ? "warn" : ""}`}
+                      style={{ width: `${goalProgressPct}%` }}
+                    />
+                  </div>
+                  <span className={`budget-bar-label ${goalBehindPace && !goalReached ? "warn" : ""}`}>
+                    {eur(goalEstimatedSaved)} / {eur(savingsGoal.targetAmount)}
+                  </span>
+                </div>
+                {goalReached ? (
+                  <p className="projection-disclaimer">✓ Meta alcanzada (estimado). ¡Enhorabuena!</p>
+                ) : savingsGoal.targetDate ? (
+                  <p className="projection-disclaimer">
+                    {goalBehindPace
+                      ? `Vas por detrás: necesitas ~${eur(neededMonthlyPace ?? 0)}/mes hasta ${savingsGoal.targetDate} (ahora ahorras ${eur(Math.max(0, monthlySavings))}/mes).`
+                      : `Al ritmo actual llegas antes de ${savingsGoal.targetDate}.`}
+                  </p>
+                ) : (
+                  <p className="projection-disclaimer">Sin fecha objetivo — progreso estimado por tu ritmo de ahorro actual.</p>
+                )}
+                <p className="projection-disclaimer">Estimado a partir de tu ahorro mensual actual — no hay banco real conectado.</p>
+              </>
+            ) : (
+              <form onSubmit={saveSavingsGoal} className="form-grid compact">
+                <label>Objetivo<input name="name" required placeholder="Viaje en agosto" /></label>
+                <label>Importe €<input name="targetAmount" type="number" min="1" step="1" required placeholder="600" /></label>
+                <label>Fecha objetivo <small>(opcional)</small><input name="targetDate" type="date" /></label>
+                <button className="secondary-button" type="submit" style={{ alignSelf: "end" }}>Crear meta</button>
+              </form>
+            )}
           </div>
 
           {/* 50/30/20 cubetas detalladas */}
