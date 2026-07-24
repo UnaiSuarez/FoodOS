@@ -409,11 +409,27 @@ function buildWeeklyPlanPrompt(state: FoodOSState, recipes: Recipe[], dateKeys: 
     .map((r) => `  {"id":"${r.id}","title":"${r.title}","kcal":${r.kcal},"protein":${r.protein},"carbs":${r.carbs},"fat":${r.fat}}`)
     .join(",\n");
 
+  // Inventario con caducidades para que el plan priorice recetas que aprovechan
+  // lo que ya hay (sobre todo lo que caduca pronto), igual que la generación de
+  // una receta suelta. Sin esto el plan ignoraba la despensa y hacía comprar de más.
+  const inventoryLines = state.inventory
+    .filter((item) => item.qty > 0)
+    .sort((a, b) => daysUntil(a.expires) - daysUntil(b.expires))
+    .slice(0, 15)
+    .map((item) => {
+      const d = daysUntil(item.expires);
+      return `  - ${item.name} (${item.qty}${item.unit}, caduca ${d <= 0 ? "HOY" : `en ${d}d`})`;
+    })
+    .join("\n");
+
   return `Eres nutricionista. Genera un plan de comidas para ${dateKeys.length} días. Responde SOLO con JSON válido, sin texto extra.
 
 OBJETIVOS DIARIOS: ${targets.kcal} kcal · ${targets.protein}g proteína · ${targets.carbs}g carbos · ${targets.fat}g grasas.
 ${goalLine}
 Alergias/exclusiones: ${excluded.join(", ") || "ninguna"}.
+
+INVENTARIO ACTUAL (prioriza recetas que usen esto, sobre todo lo que caduca antes):
+${inventoryLines || "  (vacío)"}
 
 RECETAS DISPONIBLES:
 [
@@ -422,6 +438,7 @@ ${recipeLines}
 
 REGLAS:
 - Usa solo IDs de las recetas listadas arriba.
+- Prioriza recetas cuyos ingredientes estén en el inventario, especialmente los que caducan pronto, para no desperdiciar comida.
 - Distribuye entre los 5 slots: breakfast, almuerzo, lunch, merienda, dinner.
 - La suma de los slots del día debe aproximarse a los objetivos diarios.
 - No repitas la misma receta más de 2 veces en la semana.
