@@ -102,10 +102,8 @@ Service Worker v2 activo en producción:
 
 ## Pendiente
 
-- [ ] Notificaciones de caducidad (Web Notifications + SW push).
 - [ ] Imágenes propias para recetas (Supabase Storage).
 - [ ] Integración bancaria PSD2/Nordigen.
-- [ ] Deploy en Vercel (root directory `apps/web`, añadir las dos variables de entorno).
 - [ ] `apps/mobile`: Expo SDK 51.
 - [ ] `apps/desktop`: Tauri envolviendo el deploy web.
 - [ ] Sprites Lottie para las mascotas (9 estados por personaje, PDF §23).
