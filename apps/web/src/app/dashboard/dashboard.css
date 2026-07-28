@@ -3709,6 +3709,17 @@ select:focus {
   margin-top: -4px;
 }
 
+/* ── Inventario: aviso de kcal/proteína estimadas por IA (no verificadas) ── */
+.ai-estimate-warning {
+  font-size: 12.5px;
+  color: var(--amber);
+  background: rgba(251, 146, 60, 0.08);
+  border: 1px solid rgba(251, 146, 60, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  margin-top: -4px;
+}
+
 /* ── Inventario: thumbnail de producto en la tarjeta de la lista ──── */
 .card-info-row {
   display: flex;

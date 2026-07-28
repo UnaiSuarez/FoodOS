@@ -73,10 +73,51 @@ function parseOFFProduct(p: any): { kcal: number; protein: number; carbs: number
 }
 
 // ─── Open Food Facts text search (para lookupFoodExternal) ───────────────────
+//
+// La búsqueda por texto libre de OFF es difusa: para consultas raras (platos
+// caseros, nombres inventados) puede devolver un producto cuyo nombre no
+// tiene nada que ver (ej. "Guiso casero de mi abuela" → producto llamado
+// "De Mi Abuela", una marca cualquiera). Sin esta comprobación esos datos se
+// guardaban como si vinieran de una base verificada, sin ningún aviso —
+// peor que una estimación de IA, que al menos se marca como tal.
+// Exigimos que el nombre del producto comparta al menos una palabra
+// significativa (≥4 letras, sin stopwords) con la búsqueda del usuario.
+
+const ES_STOPWORDS = new Set([
+  "para", "con", "sin", "del", "las", "los", "una", "uno", "casero", "casera",
+]);
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function significantWords(query: string): string[] {
+  return stripAccents(query.toLowerCase())
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 4 && !ES_STOPWORDS.has(w));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function nameLooksRelevant(product: any, queryWords: string[]): boolean {
+  // Sin palabras significativas (nombres muy cortos, ej. "ajo") no hay señal
+  // suficiente para filtrar — se acepta el primer resultado, como antes.
+  if (queryWords.length === 0) return true;
+  const name = stripAccents(
+    String(product.product_name_es ?? product.product_name ?? "").toLowerCase()
+  );
+  if (!name) return false;
+  // Una sola palabra en común (ej. "abuela" en "guiso de mi abuela" vs. la
+  // marca "De Mi Abuela") no basta para platos/consultas de varias palabras:
+  // exigimos que coincida al menos la mitad de las palabras significativas.
+  const matches = queryWords.filter((w) => name.includes(w)).length;
+  return matches >= Math.ceil(queryWords.length / 2);
+}
 
 async function searchOFF(query: string): Promise<FoodLookupResult | null> {
   const products = await fetchOFFProxy(query);
+  const queryWords = significantWords(query);
   for (const p of products) {
+    if (!nameLooksRelevant(p, queryWords)) continue;
     const macros = parseOFFProduct(p);
     if (macros.kcal <= 0) continue;
     return { ...macros, source: "off-search", cachedAt: Date.now() };

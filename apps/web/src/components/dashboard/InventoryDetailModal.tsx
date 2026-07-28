@@ -106,6 +106,11 @@ export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props
         {/* Nutrición por 100g */}
         <section className="detail-section">
           <h3 className="detail-section-title">Por 100{item.unit === "ml" || item.unit === "L" ? "ml" : "g"}</h3>
+          {item.dataSource === "ai" && (
+            <p className="ai-estimate-warning" role="alert">
+              ⚠ Estimado por IA, no de una base de datos verificada — revísalo si no estás seguro.
+            </p>
+          )}
           <div className="detail-nutr-grid">
             <NutrRow label="Energía" value={item.kcal} unit=" kcal" />
             <NutrRow label="Proteína" value={item.protein} unit="g" />
