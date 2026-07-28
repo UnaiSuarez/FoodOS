@@ -122,6 +122,32 @@ function DashboardInner() {
     localStorage.setItem("foodos-theme", theme);
   }, [theme]);
 
+  // Bloquea el scroll de fondo mientras el menú móvil (drawer off-canvas) está
+  // abierto — el overlay es position:fixed pero eso no impide por sí solo que
+  // un gesto táctil siga haciendo scroll del body debajo. overflow:hidden a
+  // secas no basta en iOS Safari (rubber-band scroll) y además resetea el
+  // scroll a 0 mientras está activo, así que fijamos el body en su posición
+  // actual y restauramos el scroll exacto al cerrar.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const scrollY = window.scrollY;
+    const body = document.body.style;
+    const prev = { position: body.position, top: body.top, left: body.left, right: body.right, overflow: body.overflow };
+    body.position = "fixed";
+    body.top = `-${scrollY}px`;
+    body.left = "0";
+    body.right = "0";
+    body.overflow = "hidden";
+    return () => {
+      body.position = prev.position;
+      body.top = prev.top;
+      body.left = prev.left;
+      body.right = prev.right;
+      body.overflow = prev.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [menuOpen]);
+
   // Auth guard: si Supabase está configurado y no hay sesión, volver al landing.
   useEffect(() => {
     if (!needsAuth) return;
