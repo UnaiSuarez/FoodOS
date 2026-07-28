@@ -542,6 +542,10 @@ function ChatRecipeCard({
         <span className="badge">{recipe.time} min</span>
       </div>
 
+      <p className="ai-estimate-warning" role="alert">
+        ⚠ Macros estimados por la IA, no de una base de datos verificada — revísalos antes de guardar.
+      </p>
+
       <ul className="chat-ingredients">
         {recipe.ingredients.map((ing) => (
           <li key={ing.name}>
