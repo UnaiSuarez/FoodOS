@@ -93,6 +93,12 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
         <span className="badge blue">{eur(macros.cost)}</span>
       </div>
 
+      {aiUsed && (
+        <p className="ai-estimate-warning" role="alert">
+          ⚠ Macros estimados por la IA, no de una base de datos verificada — revísalos antes de guardar.
+        </p>
+      )}
+
       {aiLoading && (
         <div className="ai-loading-overlay">
           <div className="ai-loading-spinner" aria-hidden="true" />
