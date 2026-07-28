@@ -48,6 +48,11 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       it.protein = form.protein;
       it.unitSize = form.unit === "ud" ? form.unitSize : undefined;
       it.imageUrl = newImageUrl;
+      // Si el usuario corrige kcal/proteína a mano, ya no es una estimación
+      // de IA sin revisar — quitamos el aviso.
+      if (form.kcal !== item.kcal || form.protein !== item.protein) {
+        it.dataSource = undefined;
+      }
     });
     showToast("Alimento actualizado");
     onClose();

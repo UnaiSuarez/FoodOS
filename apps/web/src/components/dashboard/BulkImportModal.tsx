@@ -89,6 +89,7 @@ export function BulkImportModal({ items, onClose }: Props) {
           price: item.price,
           kcal: item.kcal,
           protein: item.protein,
+          dataSource: "ai",
         });
       }
       // La compra como un único gasto de comida (no uno por producto, para no
@@ -122,6 +123,11 @@ export function BulkImportModal({ items, onClose }: Props) {
             ? `${items.length} producto${items.length !== 1 ? "s" : ""} detectado${items.length !== 1 ? "s" : ""}. Edita si es necesario y marca los que quieras importar.`
             : "No se detectaron alimentos en la imagen."}
         </p>
+        {items.length > 0 && (
+          <p className="ai-estimate-warning" role="alert">
+            ⚠ Kcal/proteína estimadas por IA a partir de la imagen, no de una base de datos verificada — revísalas antes de importar.
+          </p>
+        )}
 
         {items.length > 0 && (
           <>

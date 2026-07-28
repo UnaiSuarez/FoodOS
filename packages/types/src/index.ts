@@ -35,6 +35,12 @@ export interface InventoryItem {
   imageUrl?: string;
   /** Tags de alérgenos de Open Food Facts (ej. "en:gluten", "en:milk"), sin traducir. */
   allergenTags?: string[];
+  /**
+   * Origen de los datos nutricionales (kcal/protein) de este lote.
+   * "ai" = estimado por un modelo de lenguaje, no viene de una base de datos
+   * verificada — mostrar como aproximado y animar a revisarlo.
+   */
+  dataSource?: "local" | "off" | "usda" | "ai" | "manual";
 }
 
 export interface CartItem {

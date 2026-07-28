@@ -29,6 +29,8 @@ type FormState = {
   protein: number;
   /** Gramos/ml que representa 1 unidad, solo aplica cuando unit==="ud" (ej. lata de 250 ml). */
   unitSize: number;
+  /** De dónde vienen kcal/protein ahora mismo — undefined = el usuario los ha escrito a mano. */
+  dataSource?: InventoryItem["dataSource"];
 };
 
 const DEFAULT_FORM: FormState = {
@@ -41,6 +43,7 @@ const DEFAULT_FORM: FormState = {
   kcal: 120,
   protein: 23,
   unitSize: 60,
+  dataSource: undefined,
 };
 
 export function InventoryView() {
@@ -78,7 +81,13 @@ export function InventoryView() {
   useEffect(() => () => clearTimeout(offTimerRef.current), []);
 
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((prev) => ({
+      ...prev,
+      [key]: value,
+      // Si el usuario edita kcal/proteína a mano, ya no es un dato "de origen X":
+      // pasa a ser su propia cifra, así que quitamos cualquier aviso de fuente.
+      ...((key === "kcal" || key === "protein") ? { dataSource: undefined } : {}),
+    }));
   }
 
   function handleNameChange(value: string) {
@@ -136,6 +145,7 @@ export function InventoryView() {
       kcal: entry.kcal,
       protein: entry.protein,
       unitSize: remembered ?? prev.unitSize,
+      dataSource: "local",
     }));
     setItemExtras({ carbs: entry.carbs, fat: entry.fat });
     setSuggestions([]);
@@ -158,6 +168,7 @@ export function InventoryView() {
       kcal: s.kcal,
       protein: s.protein,
       unitSize: unitSize ?? prev.unitSize,
+      dataSource: "off",
     }));
     setItemExtras({
       carbs: s.carbs, fat: s.fat, salt: s.salt, fiber: s.fiber, sugars: s.sugars,
@@ -196,8 +207,9 @@ export function InventoryView() {
           // Mantener la cantidad que el usuario haya introducido
           storage: data.storage,
           expires: todayPlus(data.expiryDays),
+          dataSource: data.source,
         }));
-        showToast("Datos completados");
+        showToast(data.source === "ai" ? "Datos estimados por IA — revísalos" : "Datos completados");
       } else {
         showToast("No se encontraron datos. Configura la IA para más resultados.");
       }
@@ -240,6 +252,7 @@ export function InventoryView() {
       protein: data.protein ?? prev.protein,
       ...(useUnits && { unit: "ud", qty: 1 }),
       unitSize: unitSize ?? prev.unitSize,
+      dataSource: "off",
     }));
     setItemExtras({
       carbs: data.carbs,
@@ -274,9 +287,10 @@ export function InventoryView() {
           qty: result.defaultQty,
           storage: result.storage,
           expires: todayPlus(result.expiryDays),
+          dataSource: "ai",
         }));
         setItemExtras({});
-        showToast(`Identificado: ${result.name}`);
+        showToast(`Identificado: ${result.name} — datos estimados por IA, revísalos`);
         setMascotMessage(`${result.name} detectado. Revisa los datos y guarda.`);
       } else {
         showToast("No se pudo identificar el alimento. Completa los datos manualmente.");
@@ -306,6 +320,7 @@ export function InventoryView() {
         kcal: form.kcal,
         protein: form.protein,
         unitSize: form.unit === "ud" ? form.unitSize : undefined,
+        dataSource: form.dataSource,
         ...itemExtras,
       });
     });
@@ -569,6 +584,12 @@ export function InventoryView() {
             onChange={(url) => setItemExtras((prev) => ({ ...prev, imageUrl: url }))}
           />
 
+          {form.dataSource === "ai" && (
+            <p className="ai-estimate-warning" role="alert">
+              ⚠ Kcal/proteína estimadas por IA, no de una base de datos verificada — revísalas antes de guardar.
+            </p>
+          )}
+
           {allergenWarnings.length > 0 && (
             <p className="allergen-warning" role="alert">
               ⚠ Contiene {allergenWarnings.join(", ")} — lo tienes marcado como alergia en tu perfil.
@@ -657,6 +678,14 @@ export function InventoryView() {
                             <span className="badge blue">{eur(item.price)}</span>
                             {(item.carbs != null || item.fat != null) && (
                               <span className="badge green-soft" title="Datos nutricionales completos">+info</span>
+                            )}
+                            {item.dataSource === "ai" && (
+                              <span
+                                className="badge amber"
+                                title="Kcal/proteína estimadas por IA, no de una base de datos verificada"
+                              >
+                                ⚠ IA — verifica
+                              </span>
                             )}
                           </div>
                         </div>

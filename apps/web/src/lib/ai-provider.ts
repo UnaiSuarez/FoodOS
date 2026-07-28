@@ -90,6 +90,9 @@ function extractJSON(raw: string): string {
 function parseRecipe(raw: string): Recipe {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const json = JSON.parse(extractJSON(raw)) as Record<string, any>;
+  const protein = Math.round(Number(json.protein) || 0);
+  const carbs   = Math.round(Number(json.carbs) || 0);
+  const fat     = Math.round(Number(json.fat) || 0);
   return {
     id: uid(),
     title: String(json.title ?? "Receta IA"),
@@ -105,10 +108,14 @@ function parseRecipe(raw: string): Recipe {
       ...(ing.fatPer100   != null ? { fatPer100:   Number(ing.fatPer100)   } : {}),
     })) : [],
     steps: Array.isArray(json.steps) ? json.steps.map(String) : [],
-    kcal: Math.round(Number(json.kcal) || 0),
-    protein: Math.round(Number(json.protein) || 0),
-    carbs: Math.round(Number(json.carbs) || 0),
-    fat: Math.round(Number(json.fat) || 0),
+    // kcal se recalcula con Atwater (4/4/9) en vez de usar el campo kcal que
+    // devuelve el modelo: la IA a veces declara un total que no cuadra con
+    // sus propios macros (protein/carbs/fat), así que las kcal mostradas
+    // siempre son coherentes con los macros mostrados.
+    kcal: Math.round(protein * 4 + carbs * 4 + fat * 9),
+    protein,
+    carbs,
+    fat,
     cost: Math.round((Number(json.cost) || 0) * 100) / 100,
     image: "",
     time: Number(json.time) || 20,

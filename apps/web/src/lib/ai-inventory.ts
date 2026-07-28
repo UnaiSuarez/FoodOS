@@ -4,6 +4,9 @@ import { findExactFood } from "./food-db";
 import { lookupFoodExternal } from "./food-lookup";
 import { checkRateLimit } from "./ai-rate-limiter";
 
+/** Origen de un dato nutricional: "ai" = estimado por el modelo, no verificado en una BD real. */
+export type NutriDataSource = "local" | "off" | "usda" | "ai";
+
 export type FoodNutriData = {
   kcal: number;
   protein: number;
@@ -11,6 +14,7 @@ export type FoodNutriData = {
   defaultQty: number;
   storage: StorageName;
   expiryDays: number;
+  source: NutriDataSource;
 };
 
 /** Resultado de identificar un alimento desde foto: igual que FoodNutriData pero con nombre. */
@@ -25,6 +29,8 @@ export type ScannedItem = {
   storage: StorageName;
   expiryDays: number;
   price: number;
+  /** El escaneo de tickets/fotos siempre pasa por la IA — no hay BD verificada de por medio. */
+  source: "ai";
 };
 
 function extractJSON(raw: string): string {
@@ -144,6 +150,7 @@ export async function fillFoodData(
       defaultQty: local.defaultQty,
       storage: local.storage,
       expiryDays: local.expiryDays,
+      source: "local",
     };
   }
 
@@ -157,6 +164,7 @@ export async function fillFoodData(
       defaultQty: 100,
       storage: "Nevera",
       expiryDays: 7,
+      source: external.source === "usda" ? "usda" : "off",
     };
   }
 
@@ -178,6 +186,7 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
       defaultQty: Number(parsed.defaultQty ?? 100),
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(parsed.storage)) ? parsed.storage : "Nevera") as StorageName,
       expiryDays: Number(parsed.expiryDays ?? 7),
+      source: "ai",
     };
   } catch {
     return null;
@@ -310,6 +319,7 @@ Si no hay alimentos visibles devuelve [].`;
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(item.storage)) ? item.storage : "Nevera") as StorageName,
       expiryDays: Number(item.expiryDays ?? 7),
       price: Number(item.price ?? 0),
+      source: "ai" as const,
     }));
   } catch {
     return [];
@@ -430,6 +440,7 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
       defaultQty: Number(parsed.defaultQty ?? 100),
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(parsed.storage)) ? parsed.storage : "Nevera") as StorageName,
       expiryDays: Number(parsed.expiryDays ?? 7),
+      source: "ai",
     };
   } catch {
     return null;
