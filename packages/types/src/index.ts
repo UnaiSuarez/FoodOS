@@ -252,6 +252,8 @@ export interface PhysicalProfile {
   experienceLevel?: ExperienceLevel;
   /** Material disponible — afina qué ejercicios puede sugerir la IA. */
   equipmentAccess?: EquipmentAccess;
+  /** Qué modelo interpreta activityLevel — ver ActivityModelVersion. Por defecto "legacy_total_pal". */
+  activityModelVersion?: ActivityModelVersion;
 }
 
 export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
@@ -268,6 +270,66 @@ export interface NutritionGoal extends MacroTotals {
 
 /** Preferencia de reparto grasa/carbohidratos dentro del rango EFSA (20-35% kcal en grasa). */
 export type MacroPreference = "higher_carbohydrate" | "balanced" | "higher_fat";
+
+/**
+ * Qué modelo interpreta activityLevel/PAL:
+ * - "legacy_total_pal": el único que existe hoy — el PAL representa vida
+ *   cotidiana Y entrenamiento habitual juntos (ver ACTIVITY_LABELS).
+ * - "lifestyle_plus_training": futuro — el PAL representaría solo vida
+ *   cotidiana, con el entrenamiento asignado aparte. Requiere un cuestionario
+ *   nuevo que todavía no existe; ningún perfil usa este valor por ahora.
+ */
+export type ActivityModelVersion = "legacy_total_pal" | "lifestyle_plus_training";
+
+/** Avisos de seguridad que puede generar evaluateNutritionSafety(). */
+export type SafetyWarning = "very_low_energy_diet" | "aggressive_energy_deficit" | "below_resting_energy";
+
+export interface NutritionSafetyResult {
+  automaticPlanAllowed: boolean;
+  requiresConfirmation: boolean;
+  warnings: SafetyWarning[];
+}
+
+export type SnapshotTriggerReason =
+  | "initial_calculation"
+  | "profile_changed"
+  | "goal_changed"
+  | "manual_recalculation"
+  | "adaptive_review"
+  | "manual_override";
+
+/**
+ * Registro inmutable de cómo se calculó un objetivo nutricional concreto —
+ * ver supabase/migrations/20260730_nutrition_engine_snapshots.sql. Se crea
+ * solo en eventos explícitos (guardar perfil, cambiar objetivo...), nunca
+ * desde un render o efecto.
+ */
+export interface NutritionCalculationSnapshot {
+  calculationVersion: string;
+  triggerReason: SnapshotTriggerReason;
+  inputSnapshot: {
+    age: number;
+    sex: Sex;
+    heightCm: number;
+    weightKg: number;
+    goal: GoalMode;
+    activityLevel: ActivityLevel;
+    macroPreference: MacroPreference;
+  };
+  restingEnergy: {
+    valueKcal: number;
+    method: "mifflin_st_jeor";
+  };
+  tdee: {
+    valueKcal: number;
+  };
+  calorieTarget: {
+    kcal: number;
+    dayType: DayType;
+  };
+  macros: MacroTotals & { fiber: number };
+  safety: NutritionSafetyResult;
+}
 
 export type DayType = "gym" | "rest";
 

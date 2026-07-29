@@ -28,12 +28,14 @@ import {
   calcProteinRange,
   calcSummary,
   calculateFiberTarget,
+  evaluateNutritionSafety,
   isGymDay,
   MACRO_PREFERENCE_LABELS,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
   weeklyCycle,
 } from "@/lib/nutrition";
+import { remote } from "@/lib/data-layer";
 import { dateFromKey, dateOffset } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
@@ -169,7 +171,7 @@ function NutritionToday() {
 // ---------- Onboarding / edicion de perfil fisico (PDF §9.1) ----------
 
 function ProfileForm({ onSaved }: { onSaved: () => void }) {
-  const { state, mutate } = useFoodOS();
+  const { state, mutate, showToast } = useFoodOS();
   const profile = state.profile;
   const [goal, setGoal] = useState<GoalMode>(profile?.goal ?? "recomp");
   const [gymDays, setGymDays] = useState<number[]>(profile?.gymDays ?? [1, 3, 5]);
@@ -199,11 +201,54 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       targetWeightKg: targetWeightRaw ? Number(targetWeightRaw) : undefined,
       experienceLevel: (data.get("experienceLevel") as ExperienceLevel) || undefined,
       equipmentAccess: (data.get("equipmentAccess") as EquipmentAccess) || undefined,
+      // No se toca todavía: todos los perfiles (nuevos y existentes) siguen
+      // en el modelo legacy hasta que exista el cuestionario de PR3.
+      activityModelVersion: profile?.activityModelVersion ?? "legacy_total_pal",
     };
+
+    // ── Guardarraíles de seguridad ──────────────────────────────────────────
+    const { tmb, tdee } = calcSummary(next);
+    const gymTodayForNext = isGymDay(next, dateFromKey(getToday(state)));
+    const targets = calcDailyTargets(next, gymTodayForNext, macroPreference);
+    const safety = evaluateNutritionSafety({
+      targetKcal: targets.kcal,
+      estimatedTdeeKcal: tdee,
+      restingEnergyKcal: tmb,
+    });
+    if (!safety.automaticPlanAllowed) {
+      showToast("Ese objetivo queda por debajo de 800 kcal — revisa peso/altura/edad o consulta a un profesional.");
+      return;
+    }
+    if (safety.warnings.includes("aggressive_energy_deficit")) {
+      showToast("⚠ El déficit calculado es agresivo (>30% del TDEE) — revísalo antes de seguir.");
+    } else if (safety.warnings.includes("below_resting_energy")) {
+      showToast("El objetivo queda por debajo de tu TMB estimada — no es peligroso por sí solo, pero merece revisión.");
+    }
+
     mutate((draft) => {
       draft.profile = next;
       draft.macroPreference = macroPreference;
     });
+
+    // Snapshot inmutable de cómo se calculó — solo en este evento explícito
+    // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
+    void remote.saveNutritionSnapshot({
+      calculationVersion: "nutrition-v1",
+      triggerReason: profile ? "profile_changed" : "initial_calculation",
+      inputSnapshot: {
+        age: next.age, sex: next.sex, heightCm: next.heightCm, weightKg: next.weightKg,
+        goal: next.goal, activityLevel: next.activityLevel, macroPreference,
+      },
+      restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
+      tdee: { valueKcal: tdee },
+      calorieTarget: { kcal: targets.kcal, dayType: targets.dayType },
+      macros: {
+        kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
+        fiber: calculateFiberTarget(targets.kcal),
+      },
+      safety,
+    });
+
     onSaved();
   }
 
@@ -692,6 +737,7 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const cycle = weeklyCycle(profile, state.macroPreference);
   const protRange = calcProteinRange(profile);
   const warnMuscle = shouldWarnMuscleGain(profile);
+  const safety = evaluateNutritionSafety({ targetKcal: today.kcal, estimatedTdeeKcal: tdee, restingEnergyKcal: tmb });
 
   return (
     <article className="panel form-panel">
@@ -746,6 +792,19 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           Tu IMC actual es superior a 27. En este punto, el superávit calórico favorece la
           acumulación de grasa más que el músculo. Te recomendamos{" "}
           <strong>Recomposición</strong> o <strong>Pérdida de grasa</strong> primero.
+        </div>
+      )}
+
+      {safety.warnings.includes("aggressive_energy_deficit") && (
+        <div className="nutrition-warn-banner" role="alert">
+          ⚠ Tu objetivo de hoy ({today.kcal} kcal) es un déficit agresivo — menos del 70% de tu
+          TDEE estimado ({tdee} kcal). Revisa si es el ritmo que buscas.
+        </div>
+      )}
+      {!safety.warnings.includes("aggressive_energy_deficit") && safety.warnings.includes("below_resting_energy") && (
+        <div className="nutrition-warn-banner">
+          Tu objetivo de hoy ({today.kcal} kcal) queda por debajo de tu TMB estimada ({tmb} kcal).
+          No es peligroso por sí solo — la TMB no es un mínimo obligatorio — pero merece revisión.
         </div>
       )}
 

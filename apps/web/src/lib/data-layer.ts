@@ -5,6 +5,7 @@ import type {
   GoalMode,
   IncomeFrequency,
   MealType,
+  NutritionCalculationSnapshot,
   PhysicalProfile,
   Sex,
   StorageName,
@@ -222,6 +223,44 @@ class RemoteAdapter {
     if (error) console.warn("FoodOS: no se pudo borrar la imagen huérfana de Storage", error);
   }
 
+  /** Guarda un snapshot inmutable de cómo se calculó un objetivo nutricional y
+      enlaza nutrition_goals de hoy con él (source_snapshot_id). Llamar SOLO
+      desde eventos explícitos del usuario (guardar perfil, cambiar objetivo,
+      recalcular manualmente) — nunca desde un render o el sync periódico, o
+      generaría un snapshot por cada tecla. No lanza: si falla, el perfil ya
+      se guardó igualmente — perder la trazabilidad de un snapshot no debe
+      bloquear al usuario. */
+  async saveNutritionSnapshot(snapshot: NutritionCalculationSnapshot): Promise<void> {
+    if (!this.client || !this.user) return;
+    const userId = this.user.id;
+    try {
+      const { data, error } = await this.client
+        .from("nutrition_calculation_snapshots")
+        .insert({
+          user_id: userId,
+          calculation_version: snapshot.calculationVersion,
+          trigger_reason: snapshot.triggerReason,
+          input_snapshot: snapshot.inputSnapshot,
+          resting_energy: snapshot.restingEnergy,
+          tdee: snapshot.tdee,
+          calorie_target: snapshot.calorieTarget,
+          macros: snapshot.macros,
+          safety: snapshot.safety,
+        })
+        .select("id")
+        .single();
+      if (error || !data) { console.warn("FoodOS: no se pudo guardar el snapshot nutricional", error); return; }
+
+      await this.client
+        .from("nutrition_goals")
+        .update({ source_snapshot_id: data.id, calculation_version: snapshot.calculationVersion })
+        .eq("user_id", userId)
+        .eq("goal_date", today());
+    } catch (err) {
+      console.warn("FoodOS: error guardando el snapshot nutricional", err);
+    }
+  }
+
   /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
   async incrementWater(date: string, deltaMl: number): Promise<number> {
     if (!this.client || !this.user) return 0;
@@ -336,7 +375,7 @@ class RemoteAdapter {
       client
         .from("user_profiles")
         .select(
-          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, experience_level, equipment_access, extra_state"
+          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, experience_level, equipment_access, activity_model_version, extra_state"
         )
         .eq("user_id", userId)
         .maybeSingle(),
@@ -426,6 +465,7 @@ class RemoteAdapter {
           targetWeightKg: p.target_weight_kg != null ? Number(p.target_weight_kg) : undefined,
           experienceLevel: (p.experience_level as PhysicalProfile["experienceLevel"]) ?? undefined,
           equipmentAccess: (p.equipment_access as PhysicalProfile["equipmentAccess"]) ?? undefined,
+          activityModelVersion: (p.activity_model_version as PhysicalProfile["activityModelVersion"]) ?? "legacy_total_pal",
         };
       }
       // extra_state: campos de app no tabulados (routines, workoutLog, etc.)
@@ -670,6 +710,7 @@ class RemoteAdapter {
               target_weight_kg: state.profile.targetWeightKg ?? null,
               experience_level: state.profile.experienceLevel ?? null,
               equipment_access: state.profile.equipmentAccess ?? null,
+              activity_model_version: state.profile.activityModelVersion ?? "legacy_total_pal",
               onboarding_completed: true,
             }
           : {}),

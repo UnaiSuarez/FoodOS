@@ -6,8 +6,10 @@ import type {
   GoalMode,
   MacroPreference,
   MacroTotals,
+  NutritionSafetyResult,
   PhysicalProfile,
   Recipe,
+  SafetyWarning,
 } from "@foodos/types";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
@@ -204,6 +206,45 @@ function kcalFactor(goal: GoalMode, gymDay: boolean, imc: number): number {
 /** ¿Es hoy (o la fecha dada) día de gym según el perfil? 0=Dom … 6=Sáb. */
 export function isGymDay(profile: PhysicalProfile, date: Date = new Date()): boolean {
   return (profile.gymDays ?? []).includes(date.getDay());
+}
+
+// ─── Guardarraíles de seguridad ──────────────────────────────────────────────
+
+/**
+ * Evalúa si un objetivo calórico concreto es razonable para el modo automático.
+ *
+ * - <800 kcal: bloqueo total. NICE (NG246) reserva las dietas de muy baja
+ *   energía a servicios especializados con supervisión clínica — nunca un
+ *   plan generado sin más por una app generalista.
+ * - <70% del TDEE estimado: aviso que requiere confirmación explícita (déficit
+ *   agresivo y sostenido).
+ * - Por debajo de la TMB: aviso informativo. La TMB es el gasto estimado en
+ *   reposo, no un "mínimo obligatorio de ingesta" — es una señal de
+ *   precaución, no un límite médico universal, así que no bloquea nada.
+ *
+ * calcDailyTargets() ya nunca baja de 1200 kcal automáticamente, así que el
+ * bloqueo <800 no debería dispararse hoy — existe para cuando exista una
+ * vía de override manual o de ajuste adaptativo que pueda proponer cifras
+ * más bajas.
+ */
+export function evaluateNutritionSafety(params: {
+  targetKcal: number;
+  estimatedTdeeKcal: number;
+  restingEnergyKcal: number;
+}): NutritionSafetyResult {
+  if (params.targetKcal < 800) {
+    return { automaticPlanAllowed: false, requiresConfirmation: false, warnings: ["very_low_energy_diet"] };
+  }
+
+  const warnings: SafetyWarning[] = [];
+  if (params.targetKcal < params.estimatedTdeeKcal * 0.70) warnings.push("aggressive_energy_deficit");
+  if (params.targetKcal < params.restingEnergyKcal) warnings.push("below_resting_energy");
+
+  return {
+    automaticPlanAllowed: true,
+    requiresConfirmation: warnings.includes("aggressive_energy_deficit"),
+    warnings,
+  };
 }
 
 /**

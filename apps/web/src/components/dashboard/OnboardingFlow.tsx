@@ -3,9 +3,20 @@
 import Image from "next/image";
 import { useState, type FormEvent } from "react";
 import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
-import { useFoodOS } from "@/lib/state";
+import { getToday, useFoodOS } from "@/lib/state";
+import { remote } from "@/lib/data-layer";
 import { MASCOTS } from "@/lib/mascots";
-import { ACTIVITY_LABELS, GOAL_DESCRIPTIONS, GOAL_LABELS } from "@/lib/nutrition";
+import {
+  ACTIVITY_LABELS,
+  GOAL_DESCRIPTIONS,
+  GOAL_LABELS,
+  calcDailyTargets,
+  calcSummary,
+  calculateFiberTarget,
+  evaluateNutritionSafety,
+  isGymDay,
+} from "@/lib/nutrition";
+import { dateFromKey } from "@/lib/utils";
 
 interface Props {
   onDone: () => void;
@@ -24,7 +35,7 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
 ];
 
 export function OnboardingFlow({ onDone }: Props) {
-  const { mutate } = useFoodOS();
+  const { state, mutate } = useFoodOS();
   const [step, setStep] = useState(0);
   const [mascotId, setMascotId] = useState("zana");
   const [goal, setGoal] = useState<GoalMode>("fat_loss");
@@ -58,8 +69,35 @@ export function OnboardingFlow({ onDone }: Props) {
       gymDays,
       allergies,
       excludedFoods: [],
+      activityModelVersion: "legacy_total_pal",
     };
+
+    const { tmb, tdee } = calcSummary(profile);
+    const gymTodayForProfile = isGymDay(profile, dateFromKey(getToday(state)));
+    const targets = calcDailyTargets(profile, gymTodayForProfile, "balanced");
+    const safety = evaluateNutritionSafety({ targetKcal: targets.kcal, estimatedTdeeKcal: tdee, restingEnergyKcal: tmb });
+
     mutate((draft) => { draft.profile = profile; });
+
+    // Snapshot inicial — mismo criterio que ProfileForm: solo en este evento
+    // explícito (completar onboarding), nunca desde un render.
+    void remote.saveNutritionSnapshot({
+      calculationVersion: "nutrition-v1",
+      triggerReason: "initial_calculation",
+      inputSnapshot: {
+        age: profile.age, sex: profile.sex, heightCm: profile.heightCm, weightKg: profile.weightKg,
+        goal: profile.goal, activityLevel: profile.activityLevel, macroPreference: "balanced",
+      },
+      restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
+      tdee: { valueKcal: tdee },
+      calorieTarget: { kcal: targets.kcal, dayType: targets.dayType },
+      macros: {
+        kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
+        fiber: calculateFiberTarget(targets.kcal),
+      },
+      safety,
+    });
+
     onDone();
   }
 
