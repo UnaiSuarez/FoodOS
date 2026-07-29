@@ -28,13 +28,54 @@ describe("calcTMB (Mifflin-St Jeor)", () => {
 });
 
 describe("calcTDEE", () => {
-  it("aplica el factor de actividad correcto a cada nivel", () => {
+  it("modelo legacy: aplica el factor de actividad correcto a cada nivel", () => {
     const tmb = 1500;
-    expect(calcTDEE(tmb, "sedentary")).toBe(Math.round(tmb * 1.2));
-    expect(calcTDEE(tmb, "light")).toBe(Math.round(tmb * 1.375));
-    expect(calcTDEE(tmb, "moderate")).toBe(Math.round(tmb * 1.45));
-    expect(calcTDEE(tmb, "active")).toBe(Math.round(tmb * 1.65));
-    expect(calcTDEE(tmb, "very_active")).toBe(Math.round(tmb * 1.9));
+    const withLevel = (activityLevel: PhysicalProfile["activityLevel"]) =>
+      calcTDEE({ ...baseProfile(), activityLevel, activityModelVersion: "legacy_total_pal" }, tmb);
+    expect(withLevel("sedentary")).toBe(Math.round(tmb * 1.2));
+    expect(withLevel("light")).toBe(Math.round(tmb * 1.375));
+    expect(withLevel("moderate")).toBe(Math.round(tmb * 1.45));
+    expect(withLevel("active")).toBe(Math.round(tmb * 1.65));
+    expect(withLevel("very_active")).toBe(Math.round(tmb * 1.9));
+  });
+
+  it("lifestyle_plus_training: suma el TDEE de vida cotidiana + el gasto medio de entreno", () => {
+    const tmb = 1500;
+    const profile = baseProfile({
+      weightKg: 80,
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "sedentary",
+        strengthDaysPerWeek: 3,
+        cardioDaysPerWeek: 2,
+        avgSessionDurationMin: 60,
+        habitualSteps: null,
+      },
+    });
+    const strengthWeekly = 3 * 60 * ((5.0 * 3.5 * 80) / 200);
+    const cardioWeekly = 2 * 60 * ((7.0 * 3.5 * 80) / 200);
+    const expectedAllowance = Math.round((strengthWeekly + cardioWeekly) / 7);
+    const expected = Math.round(tmb * 1.2 + expectedAllowance);
+    expect(calcTDEE(profile, tmb)).toBe(expected);
+  });
+
+  it("lifestyle_plus_training sin trainingActivity relleno cae de vuelta al modelo legacy", () => {
+    const tmb = 1500;
+    const profile = baseProfile({ activityLevel: "moderate", activityModelVersion: "lifestyle_plus_training" });
+    expect(calcTDEE(profile, tmb)).toBe(Math.round(tmb * 1.45));
+  });
+
+  it("a más días/duración de entreno, mayor TDEE (monotonía)", () => {
+    const tmb = 1500;
+    const light = baseProfile({
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0, avgSessionDurationMin: 30, habitualSteps: null },
+    });
+    const heavy = baseProfile({
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, avgSessionDurationMin: 75, habitualSteps: null },
+    });
+    expect(calcTDEE(heavy, tmb)).toBeGreaterThan(calcTDEE(light, tmb));
   });
 });
 
