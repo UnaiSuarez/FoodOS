@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import {
   actions,
   bestRecipe,
@@ -20,6 +20,7 @@ import {
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
+  calcHabitualTrainingAllowanceKcal,
   EQUIPMENT_LABELS,
   EXPERIENCE_LABELS,
   GOAL_DESCRIPTIONS,
@@ -30,6 +31,7 @@ import {
   calculateFiberTarget,
   evaluateNutritionSafety,
   isGymDay,
+  LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
@@ -176,6 +178,11 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   const [goal, setGoal] = useState<GoalMode>(profile?.goal ?? "recomp");
   const [gymDays, setGymDays] = useState<number[]>(profile?.gymDays ?? [1, 3, 5]);
   const [macroPreference, setMacroPreference] = useState<MacroPreference>(state.macroPreference ?? "balanced");
+  const [activityModelVersion, setActivityModelVersion] = useState<ActivityModelVersion>(
+    profile?.activityModelVersion ?? "legacy_total_pal"
+  );
+  const isNewActivityModel = activityModelVersion === "lifestyle_plus_training";
+  const defaultTraining = profile?.trainingActivity;
 
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -187,13 +194,31 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         .filter(Boolean);
     const bodyFatRaw = String(data.get("bodyFat")).trim();
     const targetWeightRaw = String(data.get("targetWeight")).trim();
+
+    const trainingActivity: TrainingActivityProfile | undefined = isNewActivityModel
+      ? {
+          lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
+          strengthDaysPerWeek: Number(data.get("strengthDays")),
+          cardioDaysPerWeek: Number(data.get("cardioDays")),
+          avgSessionDurationMin: Number(data.get("avgSessionDuration")),
+          habitualSteps: String(data.get("habitualSteps") ?? "").trim()
+            ? Number(data.get("habitualSteps"))
+            : null,
+        }
+      : undefined;
+
     const next: PhysicalProfile = {
       age: Number(data.get("age")),
       sex: String(data.get("sex")) as Sex,
       heightCm: Number(data.get("height")),
       weightKg: Number(data.get("weight")),
       bodyFatPct: bodyFatRaw ? Number(bodyFatRaw) : null,
-      activityLevel: String(data.get("activity")) as ActivityLevel,
+      // En el modelo nuevo, activityLevel deja de usarse para calcular el TDEE
+      // (ver calcTDEE) — se rellena con la actividad cotidiana declarada solo
+      // para que el campo no quede vacío en el resto de la app.
+      activityLevel: isNewActivityModel
+        ? (trainingActivity!.lifestyleActivity)
+        : (String(data.get("activity")) as ActivityLevel),
       goal,
       gymDays,
       allergies: parseList(String(data.get("allergies"))),
@@ -201,9 +226,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       targetWeightKg: targetWeightRaw ? Number(targetWeightRaw) : undefined,
       experienceLevel: (data.get("experienceLevel") as ExperienceLevel) || undefined,
       equipmentAccess: (data.get("equipmentAccess") as EquipmentAccess) || undefined,
-      // No se toca todavía: todos los perfiles (nuevos y existentes) siguen
-      // en el modelo legacy hasta que exista el cuestionario de PR3.
-      activityModelVersion: profile?.activityModelVersion ?? "legacy_total_pal",
+      activityModelVersion,
+      trainingActivity,
     };
 
     // ── Guardarraíles de seguridad ──────────────────────────────────────────
@@ -238,6 +262,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       inputSnapshot: {
         age: next.age, sex: next.sex, heightCm: next.heightCm, weightKg: next.weightKg,
         goal: next.goal, activityLevel: next.activityLevel, macroPreference,
+        activityModelVersion, trainingActivity,
       },
       restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
       tdee: { valueKcal: tdee },
@@ -289,16 +314,6 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           <input name="targetWeight" type="number" min="30" max="250" step="0.1" defaultValue={profile?.targetWeightKg ?? ""} placeholder="—" />
         </label>
         <label>
-          Nivel de actividad
-          <select name="activity" defaultValue={profile?.activityLevel ?? "moderate"}>
-            {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
-              <option key={level} value={level}>
-                {ACTIVITY_LABELS[level]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
           Preferencia de grasa/carbos
           <select
             name="macroPreference"
@@ -333,6 +348,104 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           </select>
         </label>
       </div>
+
+      <fieldset className="activity-model-section">
+        <legend>Actividad y entrenamiento</legend>
+        <div className="activity-model-toggle">
+          <button
+            type="button"
+            className={`activity-model-option ${!isNewActivityModel ? "active" : ""}`}
+            onClick={() => setActivityModelVersion("legacy_total_pal")}
+          >
+            <strong>Clásico</strong>
+            <small>Un solo nivel combina tu día a día y el entreno.</small>
+          </button>
+          <button
+            type="button"
+            className={`activity-model-option ${isNewActivityModel ? "active" : ""}`}
+            onClick={() => setActivityModelVersion("lifestyle_plus_training")}
+          >
+            <strong>Nuevo (beta)</strong>
+            <small>Declara tu día a día y tu entreno por separado — más preciso.</small>
+          </button>
+        </div>
+
+        {!isNewActivityModel ? (
+          <label className="activity-legacy-field">
+            Nivel de actividad
+            <select name="activity" defaultValue={profile?.activityLevel ?? "moderate"}>
+              {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
+                <option key={level} value={level}>
+                  {ACTIVITY_LABELS[level]}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="activity-new-model">
+            <p className="activity-model-note">
+              Así separamos cuánto te mueves fuera del gimnasio de cuánto entrenas — útil si tienes
+              un trabajo sedentario pero entrenas duro, o al revés.
+            </p>
+            <div className="form-grid compact">
+              <label>
+                Actividad cotidiana <small>(sin contar el entreno)</small>
+                <select name="lifestyleActivity" defaultValue={defaultTraining?.lifestyleActivity ?? "sedentary"}>
+                  {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
+                    <option key={level} value={level}>
+                      {ACTIVITY_LABELS[level]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Días de fuerza/semana
+                <input
+                  name="strengthDays"
+                  type="number"
+                  min="0"
+                  max="7"
+                  required
+                  defaultValue={defaultTraining?.strengthDaysPerWeek ?? 3}
+                />
+              </label>
+              <label>
+                Días de cardio/semana
+                <input
+                  name="cardioDays"
+                  type="number"
+                  min="0"
+                  max="7"
+                  required
+                  defaultValue={defaultTraining?.cardioDaysPerWeek ?? 0}
+                />
+              </label>
+              <label>
+                Duración media por sesión (min)
+                <input
+                  name="avgSessionDuration"
+                  type="number"
+                  min="10"
+                  max="240"
+                  required
+                  defaultValue={defaultTraining?.avgSessionDurationMin ?? 60}
+                />
+              </label>
+              <label>
+                Pasos diarios habituales <small>(opcional)</small>
+                <input
+                  name="habitualSteps"
+                  type="number"
+                  min="0"
+                  max="40000"
+                  placeholder="—"
+                  defaultValue={defaultTraining?.habitualSteps ?? ""}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+      </fieldset>
 
       <fieldset className="goal-options">
         <legend>Objetivo corporal</legend>
@@ -739,6 +852,14 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const warnMuscle = shouldWarnMuscleGain(profile);
   const safety = evaluateNutritionSafety({ targetKcal: today.kcal, estimatedTdeeKcal: tdee, restingEnergyKcal: tmb });
 
+  const usesNewActivityModel = profile.activityModelVersion === "lifestyle_plus_training" && !!profile.trainingActivity;
+  const lifestyleTdee = usesNewActivityModel
+    ? Math.round(tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity!.lifestyleActivity])
+    : null;
+  const trainingAllowance = usesNewActivityModel
+    ? calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity!)
+    : null;
+
   return (
     <article className="panel form-panel">
       <div className="panel-head">
@@ -758,6 +879,9 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
         <span className="badge">
           {profile.weightKg} kg · {profile.heightCm} cm · {profile.age} años
         </span>
+        {usesNewActivityModel && (
+          <span className="badge blue">Actividad: vida diaria + entreno (beta)</span>
+        )}
       </div>
 
       <div className="nutrition-totals">
@@ -769,7 +893,11 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
         <div>
           <span>TDEE</span>
           <strong>{tdee}</strong>
-          <small>kcal de mantenimiento</small>
+          <small>
+            {usesNewActivityModel
+              ? `${lifestyleTdee} vida diaria + ${trainingAllowance} entreno`
+              : "kcal de mantenimiento"}
+          </small>
         </div>
         <div>
           <span>Objetivo hoy</span>

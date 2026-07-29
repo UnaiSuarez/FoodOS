@@ -87,6 +87,7 @@ export function OnboardingFlow({ onDone }: Props) {
       inputSnapshot: {
         age: profile.age, sex: profile.sex, heightCm: profile.heightCm, weightKg: profile.weightKg,
         goal: profile.goal, activityLevel: profile.activityLevel, macroPreference: "balanced",
+        activityModelVersion: profile.activityModelVersion ?? "legacy_total_pal",
       },
       restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
       tdee: { valueKcal: tdee },

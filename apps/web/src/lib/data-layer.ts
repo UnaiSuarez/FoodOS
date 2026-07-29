@@ -489,6 +489,11 @@ class RemoteAdapter {
         }
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
         if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
+        // trainingActivity vive dentro de profile pero se persiste en extra_state
+        // (igual que macroPreference): es aditivo, no requiere migración.
+        if (state.profile && extra.trainingActivity && typeof extra.trainingActivity === "object") {
+          state.profile.trainingActivity = extra.trainingActivity as PhysicalProfile["trainingActivity"];
+        }
       }
     }
 
@@ -694,6 +699,7 @@ class RemoteAdapter {
           macroPreference:   state.macroPreference    ?? "balanced",
           debugDate:         state.debugDate         ?? null,
           stepsLog:          state.stepsLog          ?? {},
+          trainingActivity:  state.profile?.trainingActivity ?? null,
         },
         ...(state.profile
           ? {

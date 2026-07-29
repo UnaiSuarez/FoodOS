@@ -10,6 +10,7 @@ import type {
   PhysicalProfile,
   Recipe,
   SafetyWarning,
+  TrainingActivityProfile,
 } from "@foodos/types";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
@@ -46,8 +47,59 @@ export const ACTIVITY_LABELS: Record<ActivityLevel, string> = {
   very_active: "Muy activo (trabajo físico + ejercicio diario)",
 };
 
-export function calcTDEE(tmb: number, activityLevel: ActivityLevel): number {
-  return Math.round(tmb * ACTIVITY_FACTORS[activityLevel]);
+/**
+ * Factores de "solo vida cotidiana" (sin entrenamiento) para el modelo
+ * lifestyle_plus_training. Son más bajos que ACTIVITY_FACTORS porque ahí el
+ * entrenamiento habitual ya iba incluido en el multiplicador — aquí se suma
+ * aparte vía calcHabitualTrainingAllowanceKcal, así que el factor solo cubre
+ * trabajo, desplazamientos y tareas del día a día.
+ */
+export const LIFESTYLE_ONLY_FACTORS: Record<ActivityLevel, number> = {
+  sedentary:   1.2,
+  light:       1.3,
+  moderate:    1.4,
+  active:      1.6,
+  very_active: 1.8,
+};
+
+const STRENGTH_MET = 5.0; // Compendium of Physical Activities: fuerza general, esfuerzo moderado-alto
+const CARDIO_MET    = 7.0; // Compendium: carrera/bici a ritmo moderado
+
+/** kcal/min de una actividad según su MET (fórmula estándar del Compendium). */
+function metKcalPerMin(met: number, weightKg: number): number {
+  return (met * 3.5 * weightKg) / 200;
+}
+
+/**
+ * Gasto medio diario (kcal) que aporta el entrenamiento declarado en
+ * trainingActivity, repartido sobre los 7 días de la semana — se suma al
+ * TDEE de "solo vida cotidiana" en el modelo lifestyle_plus_training.
+ */
+export function calcHabitualTrainingAllowanceKcal(
+  weightKg: number,
+  training: TrainingActivityProfile,
+): number {
+  const strengthWeekly = training.strengthDaysPerWeek * training.avgSessionDurationMin * metKcalPerMin(STRENGTH_MET, weightKg);
+  const cardioWeekly   = training.cardioDaysPerWeek   * training.avgSessionDurationMin * metKcalPerMin(CARDIO_MET, weightKg);
+  return Math.round((strengthWeekly + cardioWeekly) / 7);
+}
+
+/**
+ * TDEE según el modelo de actividad del perfil (ver ActivityModelVersion):
+ * - "legacy_total_pal" (por defecto): TMB × ACTIVITY_FACTORS[activityLevel],
+ *   donde el PAL ya mezcla vida cotidiana y entrenamiento habitual.
+ * - "lifestyle_plus_training": TMB × LIFESTYLE_ONLY_FACTORS[lifestyleActivity]
+ *   + el gasto medio diario del entrenamiento declarado, calculado aparte.
+ *   Si el perfil dice usar este modelo pero no ha rellenado trainingActivity
+ *   todavía (transición a medias), cae de vuelta al cálculo legacy.
+ */
+export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
+  if (profile.activityModelVersion === "lifestyle_plus_training" && profile.trainingActivity) {
+    const lifestyleTdee = tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity.lifestyleActivity];
+    const trainingAllowance = calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity);
+    return Math.round(lifestyleTdee + trainingAllowance);
+  }
+  return Math.round(tmb * ACTIVITY_FACTORS[profile.activityLevel]);
 }
 
 // ─── Nivel de experiencia / material (perfil, asistente de rutinas IA) ──────
@@ -265,7 +317,7 @@ export function calcDailyTargets(
 ): DailyTargets {
   const config = GOAL_CONFIG[profile.goal];
   const tmb  = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
-  const tdee = calcTDEE(tmb, profile.activityLevel);
+  const tdee = calcTDEE(profile, tmb);
   const imc  = calcIMC(profile.weightKg, profile.heightCm);
   const kcal = Math.max(1200, Math.round(tdee * kcalFactor(profile.goal, gymDay, imc)));
 
@@ -289,7 +341,7 @@ export function calcDailyTargets(
 /** Resumen de cálculo para mostrar en la UI. */
 export function calcSummary(profile: PhysicalProfile) {
   const tmb      = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
-  const tdee     = calcTDEE(tmb, profile.activityLevel);
+  const tdee     = calcTDEE(profile, tmb);
   const imc      = calcIMC(profile.weightKg, profile.heightCm);
   const protBase = calcProteinBase(profile);
   return { tmb, tdee, imc, protBase };
