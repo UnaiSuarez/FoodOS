@@ -6,6 +6,8 @@ import {
   calcProteinBase,
   calcTDEE,
   calcTMB,
+  calculateFiberTarget,
+  distributeWeeklyCalories,
   estimateWorkoutKcal,
   monthlyAmountOf,
   projectSavings,
@@ -105,6 +107,71 @@ describe("calcDailyTargets — caso real verificado en la app (120kg/177cm/24añ
   it("nunca baja del suelo de seguridad de 1200 kcal", () => {
     const tinyProfile = baseProfile({ age: 60, heightCm: 150, weightKg: 40, goal: "fat_loss", activityLevel: "sedentary" });
     expect(calcDailyTargets(tinyProfile, false).kcal).toBeGreaterThanOrEqual(1200);
+  });
+
+  it("macroPreference por defecto ('balanced') no cambia las kcal ni la proteína respecto a no pasar el parámetro", () => {
+    const withDefault = calcDailyTargets(profile, true);
+    const withBalanced = calcDailyTargets(profile, true, "balanced");
+    expect(withBalanced).toEqual(withDefault);
+  });
+
+  it("'higher_fat' sube grasa y baja carbos sin tocar kcal totales ni proteína", () => {
+    const balanced = calcDailyTargets(profile, true, "balanced");
+    const higherFat = calcDailyTargets(profile, true, "higher_fat");
+    expect(higherFat.kcal).toBe(balanced.kcal);
+    expect(higherFat.protein).toBe(balanced.protein);
+    expect(higherFat.fat).toBeGreaterThan(balanced.fat);
+    expect(higherFat.carbs).toBeLessThan(balanced.carbs);
+  });
+
+  it("'higher_carbohydrate' baja grasa y sube carbos sin tocar kcal totales ni proteína", () => {
+    const balanced = calcDailyTargets(profile, true, "balanced");
+    const higherCarb = calcDailyTargets(profile, true, "higher_carbohydrate");
+    expect(higherCarb.kcal).toBe(balanced.kcal);
+    expect(higherCarb.protein).toBe(balanced.protein);
+    expect(higherCarb.fat).toBeLessThan(balanced.fat);
+    expect(higherCarb.carbs).toBeGreaterThan(balanced.carbs);
+  });
+});
+
+describe("calculateFiberTarget", () => {
+  it("nunca baja de 25g (suelo EFSA)", () => {
+    expect(calculateFiberTarget(1200)).toBe(25);
+  });
+
+  it("escala ~14g/1000kcal por encima del suelo", () => {
+    expect(calculateFiberTarget(2500)).toBe(35);
+  });
+
+  it("nunca supera el tope de 45g", () => {
+    expect(calculateFiberTarget(4000)).toBe(45);
+  });
+});
+
+describe("distributeWeeklyCalories (ciclado que conserva el presupuesto semanal)", () => {
+  it("el total semanal generado es idéntico al de un objetivo medio constante", () => {
+    const result = distributeWeeklyCalories({
+      averageDailyKcal: 2200,
+      trainingDays: 4,
+      trainingDayDeltaKcal: 150,
+    });
+    const generatedWeeklyTotal = result.trainingDayKcal * 4 + result.restDayKcal * 3;
+    expect(Math.abs(generatedWeeklyTotal - 2200 * 7)).toBeLessThanOrEqual(1); // margen de redondeo
+  });
+
+  it("con 0 o 7 días de entrenamiento no distingue tipos de día", () => {
+    const noneTraining = distributeWeeklyCalories({ averageDailyKcal: 2000, trainingDays: 0, trainingDayDeltaKcal: 150 });
+    expect(noneTraining.trainingDayKcal).toBe(2000);
+    expect(noneTraining.restDayKcal).toBe(2000);
+
+    const allTraining = distributeWeeklyCalories({ averageDailyKcal: 2000, trainingDays: 7, trainingDayDeltaKcal: 150 });
+    expect(allTraining.trainingDayKcal).toBe(2000);
+    expect(allTraining.restDayKcal).toBe(2000);
+  });
+
+  it("el día de entrenamiento siempre tiene más kcal que el de descanso cuando el delta es positivo", () => {
+    const result = distributeWeeklyCalories({ averageDailyKcal: 2200, trainingDays: 3, trainingDayDeltaKcal: 200 });
+    expect(result.trainingDayKcal).toBeGreaterThan(result.restDayKcal);
   });
 });
 
