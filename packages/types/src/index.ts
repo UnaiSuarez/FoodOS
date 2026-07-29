@@ -266,6 +266,9 @@ export interface NutritionGoal extends MacroTotals {
   mode: GoalMode;
 }
 
+/** Preferencia de reparto grasa/carbohidratos dentro del rango EFSA (20-35% kcal en grasa). */
+export type MacroPreference = "higher_carbohydrate" | "balanced" | "higher_fat";
+
 export type DayType = "gym" | "rest";
 
 export interface DailyTargets extends MacroTotals {
@@ -408,6 +411,8 @@ export interface FoodOSState {
   bankSynced: boolean;
   mascotId: string;
   recipeTag: string;
+  /** Preferencia de reparto grasa/carbos, opcional (por defecto "balanced" — no cambia el % actual por objetivo). */
+  macroPreference?: MacroPreference;
   settings: AppSettings;
   /** Nombres de sugerencias de stock bajo descartadas manualmente por el usuario. */
   dismissedSuggestions?: string[];
