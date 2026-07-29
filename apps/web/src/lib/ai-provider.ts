@@ -131,7 +131,7 @@ function parseRecipe(raw: string): Recipe {
   };
 }
 
-async function callGemini(config: AIConfig, prompt: string): Promise<string> {
+async function callGemini(config: AIConfig, prompt: string, maxTokens = 1536): Promise<string> {
   checkRateLimit();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
   const res = await fetch(url, {
@@ -139,7 +139,7 @@ async function callGemini(config: AIConfig, prompt: string): Promise<string> {
     headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.7, maxOutputTokens: 1536 },
+      generationConfig: { temperature: 0.7, maxOutputTokens: maxTokens },
     }),
   });
   if (!res.ok) {
@@ -152,7 +152,7 @@ async function callGemini(config: AIConfig, prompt: string): Promise<string> {
   return data.candidates[0].content.parts[0].text;
 }
 
-async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
+async function callOpenAI(config: AIConfig, prompt: string, maxTokens = 1536): Promise<string> {
   checkRateLimit();
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -164,7 +164,7 @@ async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
       model: config.model,
       messages: [{ role: "user", content: prompt }],
       response_format: { type: "json_object" },
-      max_tokens: 1536,
+      max_tokens: maxTokens,
     }),
   });
   if (!res.ok) {
@@ -175,7 +175,7 @@ async function callOpenAI(config: AIConfig, prompt: string): Promise<string> {
   return data.choices[0].message.content;
 }
 
-async function callAnthropic(config: AIConfig, prompt: string): Promise<string> {
+async function callAnthropic(config: AIConfig, prompt: string, maxTokens = 1536): Promise<string> {
   checkRateLimit();
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -187,7 +187,7 @@ async function callAnthropic(config: AIConfig, prompt: string): Promise<string> 
     } as Record<string, string>,
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1536,
+      max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -279,12 +279,17 @@ REGLAS DE ACCIÓN OBLIGATORIAS (tu personalidad NO puede ignorarlas):
   Escribe primero tu respuesta de texto Y DESPUÉS incluye OBLIGATORIAMENTE el tag [RECIPE] con el JSON.
   NUNCA respondas solo con texto cuando pidan una receta.
 
-▸ ALIMENTO para añadir/guardar/registrar →
+▸ ALIMENTO para añadir/guardar/registrar en la despensa →
   Escribe tu respuesta Y DESPUÉS incluye [INV] con el JSON.
+
+▸ RUTINA o EJERCICIO solicitado (rutina, entrenamiento, ejercicios, gimnasio, series) →
+  NO EXISTE un tag para esto — [INV] es solo para alimentos, JAMÁS lo uses para
+  ejercicios, series o equipamiento deportivo. Responde solo con texto explicando
+  que puede generar una rutina con IA desde la pestaña "Ejercicios".
 
 ▸ Ninguna de las anteriores → responde sin tags.
 
-▸ NUNCA uses [INV] y [RECIPE] a la vez.
+▸ NUNCA uses [INV] y [RECIPE] a la vez. NUNCA uses [INV] para algo que no se coma.
 
 FORMATO DE TAGS (JSON en una sola línea, sin saltos dentro del JSON):
 
@@ -670,11 +675,16 @@ Reglas:
 - Peso null para ejercicios de peso corporal, número (kg) para cargas con material.
 - exerciseId único por ejercicio, formato "ai-{numDia}-{numEjercicio}".`;
 
+  // Una rutina de varios días con 4-7 ejercicios cada uno genera bastante más
+  // JSON que una receta — el límite por defecto (1536) la trunca a mitad y
+  // rompe el parseo ("Expected ',' or ']'..."). Con 5-7 días completos puede
+  // rozar los 4096 tokens.
+  const ROUTINE_MAX_TOKENS = 4096;
   let text: string;
   switch (config.provider) {
-    case "gemini":    text = await callGemini(config, prompt);    break;
-    case "openai":    text = await callOpenAI(config, prompt);    break;
-    case "anthropic": text = await callAnthropic(config, prompt); break;
+    case "gemini":    text = await callGemini(config, prompt, ROUTINE_MAX_TOKENS);    break;
+    case "openai":    text = await callOpenAI(config, prompt, ROUTINE_MAX_TOKENS);    break;
+    case "anthropic": text = await callAnthropic(config, prompt, ROUTINE_MAX_TOKENS); break;
     case "ollama":    text = await callOllama(config, prompt);    break;
   }
 
@@ -684,12 +694,17 @@ Reglas:
     notes?: string;
     sets: Array<{ reps: number; weight?: number | null; rest?: number }>;
   };
-  const json = JSON.parse(extractJSON(text!)) as {
+  let json: {
     name: string;
     estimatedMinutes: number;
     days?: Array<{ label: string; muscleGroups?: string[]; exercises: RawExercise[] }>;
     exercises?: RawExercise[];
   };
+  try {
+    json = JSON.parse(extractJSON(text!));
+  } catch {
+    throw new Error("La IA devolvió una rutina incompleta o mal formada. Prueba con menos días de entrenamiento o inténtalo de nuevo.");
+  }
 
   const toRoutineExercise = (ex: RawExercise, fallbackId: string): RoutineExercise => ({
     exerciseId: ex.exerciseId ?? fallbackId,

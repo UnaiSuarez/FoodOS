@@ -58,6 +58,11 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
 
   async function startCamera() {
     setError("");
+    setInfo("");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Este navegador no permite acceder a la cámara. Introduce el código manualmente.");
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
@@ -72,10 +77,23 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
         scanningRef.current = true;
         startDetecting();
       } else {
-        setInfo("BarcodeDetector no disponible en este navegador. Introduce el código manualmente.");
+        // Safari (iOS/macOS) no implementa BarcodeDetector — la cámara se ve
+        // pero nunca detecta nada sola. Avisar claro en vez de dejar un vídeo
+        // en directo sin explicación de por qué "no hace nada".
+        setInfo("Tu navegador no puede leer el código automáticamente (BarcodeDetector solo en Chrome/Edge/Android). Introduce el código a mano mientras lo lees en el envase.");
       }
-    } catch {
-      setError("No se pudo acceder a la cámara. Introduce el código manualmente.");
+    } catch (err) {
+      stopCamera();
+      const name = err instanceof DOMException ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setError("Permiso de cámara denegado. Revisa los permisos del sitio en los ajustes de tu navegador (icono de candado/cámara junto a la URL) y vuelve a intentarlo.");
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        setError("No se encontró ninguna cámara en este dispositivo. Introduce el código manualmente.");
+      } else if (name === "NotReadableError") {
+        setError("La cámara ya está en uso por otra app o pestaña. Cierra esa app y vuelve a intentarlo.");
+      } else {
+        setError("No se pudo acceder a la cámara. Introduce el código manualmente.");
+      }
     }
   }
 
