@@ -9,6 +9,7 @@ import {
   calculateFiberTarget,
   distributeWeeklyCalories,
   estimateWorkoutKcal,
+  evaluateNutritionSafety,
   monthlyAmountOf,
   projectSavings,
   scaleByCalories,
@@ -242,5 +243,34 @@ describe("monthlyAmountOf", () => {
     expect(monthlyAmountOf("weekly", 100)).toBeCloseTo((100 * 52) / 12, 5);
     expect(monthlyAmountOf("biweekly", 100)).toBeCloseTo((100 * 26) / 12, 5);
     expect(monthlyAmountOf("yearly", 1200)).toBe(100);
+  });
+});
+
+describe("evaluateNutritionSafety", () => {
+  it("bloquea el plan automático por debajo de 800 kcal (NICE NG246)", () => {
+    const result = evaluateNutritionSafety({ targetKcal: 750, estimatedTdeeKcal: 2000, restingEnergyKcal: 1500 });
+    expect(result.automaticPlanAllowed).toBe(false);
+    expect(result.warnings).toEqual(["very_low_energy_diet"]);
+  });
+
+  it("exige confirmación cuando el objetivo baja del 70% del TDEE", () => {
+    const result = evaluateNutritionSafety({ targetKcal: 1300, estimatedTdeeKcal: 2000, restingEnergyKcal: 1200 });
+    expect(result.automaticPlanAllowed).toBe(true);
+    expect(result.requiresConfirmation).toBe(true);
+    expect(result.warnings).toContain("aggressive_energy_deficit");
+  });
+
+  it("avisa (sin bloquear) cuando el objetivo baja de la TMB estimada", () => {
+    const result = evaluateNutritionSafety({ targetKcal: 1400, estimatedTdeeKcal: 2000, restingEnergyKcal: 1500 });
+    expect(result.automaticPlanAllowed).toBe(true);
+    expect(result.requiresConfirmation).toBe(false);
+    expect(result.warnings).toEqual(["below_resting_energy"]);
+  });
+
+  it("sin avisos cuando el objetivo es razonable", () => {
+    const result = evaluateNutritionSafety({ targetKcal: 1900, estimatedTdeeKcal: 2000, restingEnergyKcal: 1500 });
+    expect(result.automaticPlanAllowed).toBe(true);
+    expect(result.requiresConfirmation).toBe(false);
+    expect(result.warnings).toEqual([]);
   });
 });
