@@ -2198,6 +2198,60 @@ select:focus {
   box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.3);
 }
 
+.activity-model-section {
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+
+.activity-model-section legend {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.activity-model-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.activity-model-option {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: rgba(7, 10, 5, 0.36);
+  text-align: left;
+}
+
+.activity-model-option small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.activity-model-option.active {
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.3);
+}
+
+.activity-legacy-field {
+  display: block;
+}
+
+.activity-model-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
 .day-toggles {
   display: flex;
   gap: 6px;
