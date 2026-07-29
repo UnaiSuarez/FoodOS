@@ -4994,6 +4994,10 @@ select:focus {
   color: var(--hint);
 }
 
+.today-ring-hint.workout-informational {
+  color: var(--amber);
+}
+
 /* =========================================================
    Tarjetas de receta — chips de macros + barra disponibilidad
    ========================================================= */

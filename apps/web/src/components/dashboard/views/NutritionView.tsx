@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, EquipmentAccess, ExperienceLevel, GoalMode, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, WeightEntry } from "@foodos/types";
 import {
   actions,
   bestRecipe,
@@ -27,7 +27,9 @@ import {
   calcDailyTargets,
   calcProteinRange,
   calcSummary,
+  calculateFiberTarget,
   isGymDay,
+  MACRO_PREFERENCE_LABELS,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
   weeklyCycle,
@@ -171,6 +173,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   const profile = state.profile;
   const [goal, setGoal] = useState<GoalMode>(profile?.goal ?? "recomp");
   const [gymDays, setGymDays] = useState<number[]>(profile?.gymDays ?? [1, 3, 5]);
+  const [macroPreference, setMacroPreference] = useState<MacroPreference>(state.macroPreference ?? "balanced");
 
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -199,6 +202,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     };
     mutate((draft) => {
       draft.profile = next;
+      draft.macroPreference = macroPreference;
     });
     onSaved();
   }
@@ -245,6 +249,20 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
             {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
               <option key={level} value={level}>
                 {ACTIVITY_LABELS[level]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Preferencia de grasa/carbos
+          <select
+            name="macroPreference"
+            value={macroPreference}
+            onChange={(e) => setMacroPreference(e.target.value as MacroPreference)}
+          >
+            {(Object.keys(MACRO_PREFERENCE_LABELS) as MacroPreference[]).map((pref) => (
+              <option key={pref} value={pref}>
+                {MACRO_PREFERENCE_LABELS[pref]}
               </option>
             ))}
           </select>
@@ -670,8 +688,8 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const { tmb, tdee } = calcSummary(profile);
   const activeDate = dateFromKey(getToday(state));
   const gymToday = isGymDay(profile, activeDate);
-  const today = calcDailyTargets(profile, gymToday);
-  const cycle = weeklyCycle(profile);
+  const today = calcDailyTargets(profile, gymToday, state.macroPreference);
+  const cycle = weeklyCycle(profile, state.macroPreference);
   const protRange = calcProteinRange(profile);
   const warnMuscle = shouldWarnMuscleGain(profile);
 
@@ -777,12 +795,16 @@ function TodayRingPanel() {
   const targets     = state.nutrition;
   const profile     = state.profile;
   const gymToday    = profile ? isGymDay(profile, dateFromKey(getToday(state))) : false;
+  const fiberTarget = calculateFiberTarget(targets.kcal);
 
-  // Las kcal quemadas amplían el presupuesto del día (déficit = TDEE + ejercicio − ingeridas).
-  const effectiveKcal = targets.kcal + burnedToday;
+  // El objetivo diario no cambia con el entrenamiento de hoy: el PAL/perfil ya
+  // asume la actividad habitual, y sumar además cada sesión concreta duplicaría
+  // ese mismo entrenamiento en el balance energético. burnedToday se muestra
+  // aparte como dato informativo (ver badge más abajo), nunca como presupuesto extra.
+  const dailyKcalTarget = targets.kcal;
 
   const clamp = (v: number) => Math.min(100, Math.max(0, v));
-  const kcalPct = effectiveKcal > 0 ? clamp(Math.round((consumed.kcal    / effectiveKcal)   * 100)) : 0;
+  const kcalPct = dailyKcalTarget > 0 ? clamp(Math.round((consumed.kcal    / dailyKcalTarget) * 100)) : 0;
   const protPct = targets.protein > 0 ? clamp(Math.round((consumed.protein / targets.protein) * 100)) : 0;
   const carbPct = targets.carbs   > 0 ? clamp(Math.round((consumed.carbs   / targets.carbs)   * 100)) : 0;
   const fatPct  = targets.fat     > 0 ? clamp(Math.round((consumed.fat     / targets.fat)     * 100)) : 0;
@@ -801,11 +823,6 @@ function TodayRingPanel() {
       <div className="panel-head">
         <h2>Resumen de hoy</h2>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          {burnedToday > 0 && (
-            <span className="badge green" title="Calorías quemadas en entrenamiento hoy">
-              🔥 +{burnedToday} kcal
-            </span>
-          )}
           {profile && (
             <span className={`badge ${gymToday ? "green" : "blue"}`}>
               {gymToday ? "Gym 💪" : "Descanso 😴"}
@@ -823,7 +840,7 @@ function TodayRingPanel() {
           <div className="kcal-ring-center">
             <strong>{kcalPct}%</strong>
             <span>{Math.round(consumed.kcal)}</span>
-            <small>/ {effectiveKcal} kcal</small>
+            <small>/ {dailyKcalTarget} kcal</small>
           </div>
         </div>
         <div className="macro-bars">
@@ -841,8 +858,13 @@ function TodayRingPanel() {
             </div>
           ))}
           <p className="today-ring-hint">
-            Detalle de comidas en <strong>Registro</strong>
+            Fibra recomendada: ~{fiberTarget}g · Detalle de comidas en <strong>Registro</strong>
           </p>
+          {burnedToday > 0 && (
+            <p className="today-ring-hint workout-informational">
+              🔥 Gasto orientativo del entrenamiento de hoy: ~{burnedToday} kcal — no modifica tu objetivo diario.
+            </p>
+          )}
         </div>
       </div>
     </article>

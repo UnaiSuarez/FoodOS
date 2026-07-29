@@ -444,6 +444,9 @@ class RemoteAdapter {
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
         if (typeof extra.bankSynced === "boolean") state.bankSynced = extra.bankSynced;
         if (typeof extra.recipeTag === "string") state.recipeTag = extra.recipeTag;
+        if (["higher_carbohydrate", "balanced", "higher_fat"].includes(extra.macroPreference as string)) {
+          state.macroPreference = extra.macroPreference as typeof state.macroPreference;
+        }
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
         if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
       }
@@ -648,6 +651,7 @@ class RemoteAdapter {
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
           bankSynced:        state.bankSynced        ?? false,
           recipeTag:         state.recipeTag         ?? "todos",
+          macroPreference:   state.macroPreference    ?? "balanced",
           debugDate:         state.debugDate         ?? null,
           stepsLog:          state.stepsLog          ?? {},
         },

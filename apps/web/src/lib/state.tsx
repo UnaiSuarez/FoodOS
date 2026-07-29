@@ -51,6 +51,7 @@ export const defaultState: FoodOSState = {
   bankSynced: false,
   mascotId: "zana",
   recipeTag: "todos",
+  macroPreference: "balanced",
   settings: DEFAULT_SETTINGS,
   dismissedSuggestions: [],
   mealPlan: {},
@@ -123,7 +124,7 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     ),
   }));
   if (next.profile) {
-    const targets = calcDailyTargets(next.profile, isGymDay(next.profile, stateDate(next)));
+    const targets = calcDailyTargets(next.profile, isGymDay(next.profile, stateDate(next)), next.macroPreference);
     next.nutrition = {
       kcal: targets.kcal,
       protein: targets.protein,
@@ -364,7 +365,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       fn(draft);
       // Si hay perfil, los objetivos del dia siempre derivan de el.
       if (draft.profile) {
-        const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile, stateDate(draft)));
+        const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile, stateDate(draft)), draft.macroPreference);
         draft.nutrition = {
           kcal: targets.kcal,
           protein: targets.protein,
@@ -671,13 +672,15 @@ export function getLogByDay(state: FoodOSState): Array<{
 }
 
 /** Macros que quedan por consumir hoy.
- *  Las kcal quemadas en el entrenamiento amplían el presupuesto calórico del día:
- *  déficit real = TDEE + ejercicio − ingeridas → el usuario puede comer más sin salir del plan. */
+ *  El gasto de entrenamiento (getKcalBurnedToday) NO se suma aquí: el PAL/perfil
+ *  ya se elige en función de la actividad habitual, y sumar además el gasto de
+ *  cada sesión concreta duplicaría ese mismo entrenamiento en el balance
+ *  energético. El gasto se muestra en la UI como dato informativo, no como
+ *  presupuesto extra — ver TodayRingPanel. */
 export function getPendingMacros(state: FoodOSState): MacroTotals {
   const consumed = getConsumedToday(state);
-  const burnedToday = getKcalBurnedToday(state);
   return {
-    kcal: Math.max(0, state.nutrition.kcal + burnedToday - consumed.kcal),
+    kcal: Math.max(0, state.nutrition.kcal - consumed.kcal),
     protein: Math.max(0, state.nutrition.protein - consumed.protein),
     carbs: Math.max(0, state.nutrition.carbs - consumed.carbs),
     fat: Math.max(0, state.nutrition.fat - consumed.fat),
@@ -882,7 +885,7 @@ export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
     const date = dateOffset(planBase, i);
     const dayOfWeek = new Date(date + "T12:00:00").getDay();
     const isGym = state.profile!.gymDays.includes(dayOfWeek);
-    const targets = calcDailyTargets(state.profile!, isGym);
+    const targets = calcDailyTargets(state.profile!, isGym, state.macroPreference);
 
     const breakfast = pick(targets.kcal * 0.25, i, []);
     const lunch = pick(targets.kcal * 0.35, i + 1, breakfast ? [breakfast.id] : []);

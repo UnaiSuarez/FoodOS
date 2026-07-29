@@ -4,6 +4,7 @@ import type {
   EquipmentAccess,
   ExperienceLevel,
   GoalMode,
+  MacroPreference,
   MacroTotals,
   PhysicalProfile,
   Recipe,
@@ -154,6 +155,28 @@ const GOAL_CONFIG: Record<GoalMode, GoalConfig> = {
 };
 
 /**
+ * Desplazamiento sobre el % de grasa por defecto de cada objetivo, según la
+ * preferencia de reparto del usuario. "balanced" no cambia nada — así el
+ * comportamiento por defecto (sin que el usuario toque el ajuste) es idéntico
+ * al de antes de introducir esta preferencia. El resultado final se recorta
+ * al rango EFSA de grasa total (20-35% de la energía).
+ */
+const FAT_PCT_DELTA: Record<MacroPreference, number> = {
+  higher_carbohydrate: -0.05,
+  balanced: 0,
+  higher_fat: 0.05,
+};
+
+const FAT_PCT_MIN = 0.20; // EFSA: 20-35% de la energía en grasa
+const FAT_PCT_MAX = 0.35;
+
+export const MACRO_PREFERENCE_LABELS: Record<MacroPreference, string> = {
+  higher_carbohydrate: "Más carbohidratos",
+  balanced: "Equilibrado (recomendado)",
+  higher_fat: "Más grasa",
+};
+
+/**
  * Factor kcal según objetivo, IMC y tipo de día.
  *
  * fat_loss:    0.80 siempre (−20%)
@@ -190,10 +213,15 @@ export function isGymDay(profile: PhysicalProfile, date: Date = new Date()): boo
  * 2. Proteína = calcProteinBase × proteinPerKg
  *    - En obesidad: adjusted_ESPEN = ideal_IMC25 + (actual − ideal) × 0.33
  *    - Multiplier: 2.0 fat_loss/recomp · 1.8 maintain/muscle_gain
- * 3. Grasa = kcal × fatPct
+ * 3. Grasa = kcal × fatPct (fatPct del objetivo, desplazado por macroPreference
+ *    y recortado al rango EFSA 20-35%; "balanced"/sin especificar no cambia nada)
  * 4. Carbos = resto
  */
-export function calcDailyTargets(profile: PhysicalProfile, gymDay: boolean): DailyTargets {
+export function calcDailyTargets(
+  profile: PhysicalProfile,
+  gymDay: boolean,
+  macroPreference: MacroPreference = "balanced",
+): DailyTargets {
   const config = GOAL_CONFIG[profile.goal];
   const tmb  = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
   const tdee = calcTDEE(tmb, profile.activityLevel);
@@ -203,8 +231,9 @@ export function calcDailyTargets(profile: PhysicalProfile, gymDay: boolean): Dai
   const protBase = calcProteinBase(profile);
   const proteinG = Math.round(config.proteinPerKg * protBase);
 
+  const fatPct = Math.min(FAT_PCT_MAX, Math.max(FAT_PCT_MIN, config.fatPct + FAT_PCT_DELTA[macroPreference]));
   const proteinKcal = proteinG * 4;
-  const fatKcal     = Math.round(kcal * config.fatPct);
+  const fatKcal     = Math.round(kcal * fatPct);
   const carbKcal    = Math.max(0, kcal - proteinKcal - fatKcal);
 
   return {
@@ -266,15 +295,75 @@ export function shouldWarnMuscleGain(profile: PhysicalProfile): boolean {
 /** Vista previa del ciclo semanal (7 días empezando en lunes). */
 export function weeklyCycle(
   profile: PhysicalProfile,
+  macroPreference: MacroPreference = "balanced",
 ): Array<{ day: string; targets: DailyTargets }> {
   const names = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
   return names.map((day, index) => {
     const weekday = (index + 1) % 7; // lunes=1 … domingo=0
     return {
       day,
-      targets: calcDailyTargets(profile, (profile.gymDays ?? []).includes(weekday)),
+      targets: calcDailyTargets(profile, (profile.gymDays ?? []).includes(weekday), macroPreference),
     };
   });
+}
+
+// ─── Fibra ────────────────────────────────────────────────────────────────
+
+/**
+ * Objetivo de fibra diaria. EFSA considera 25 g/día una ingesta adecuada para
+ * la función intestinal normal en adultos — es el suelo, no un mínimo estricto
+ * por persona. El escalado por encima de 25g (14g/1000kcal, tope 45g) es una
+ * regla de producto, no una recomendación clínica universal.
+ */
+export function calculateFiberTarget(caloriesKcal: number): number {
+  const scaled = (caloriesKcal / 1000) * 14;
+  return Math.round(Math.min(45, Math.max(25, scaled)));
+}
+
+// ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────
+
+export interface WeeklyCalorieDistribution {
+  trainingDayKcal: number;
+  restDayKcal: number;
+  weeklyBudget: number;
+}
+
+/**
+ * Reparte un objetivo medio diario entre días de entrenamiento y descanso
+ * SIN cambiar el total semanal — el ciclado mueve cuándo se comen las
+ * calorías, nunca añade calorías nuevas. Invariante protegido por test:
+ * trainingDayKcal × trainingDays + restDayKcal × restDays == averageDailyKcal × 7.
+ *
+ * No sustituye el ciclado por porcentaje que ya usa calcDailyTargets/kcalFactor
+ * (ese ciclado tiene sus propios valores ya verificados) — es una utilidad
+ * nueva e independiente, pensada para cuando el motor adaptativo necesite
+ * redistribuir un objetivo medio calculado dinámicamente.
+ */
+export function distributeWeeklyCalories(params: {
+  averageDailyKcal: number;
+  trainingDays: number;
+  trainingDayDeltaKcal: number;
+}): WeeklyCalorieDistribution {
+  const { averageDailyKcal, trainingDays, trainingDayDeltaKcal } = params;
+  const weeklyBudget = averageDailyKcal * 7;
+
+  if (trainingDays <= 0 || trainingDays >= 7) {
+    return {
+      trainingDayKcal: Math.round(averageDailyKcal),
+      restDayKcal: Math.round(averageDailyKcal),
+      weeklyBudget: Math.round(weeklyBudget),
+    };
+  }
+
+  const restDays = 7 - trainingDays;
+  const trainingDayKcal = averageDailyKcal + trainingDayDeltaKcal;
+  const restDayKcal = (weeklyBudget - trainingDayKcal * trainingDays) / restDays;
+
+  return {
+    trainingDayKcal: Math.round(trainingDayKcal),
+    restDayKcal: Math.round(restDayKcal),
+    weeklyBudget: Math.round(weeklyBudget),
+  };
 }
 
 // ─── Estimación kcal quemadas por ejercicio (MET) ────────────────────────────
