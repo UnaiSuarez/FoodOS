@@ -254,6 +254,25 @@ export interface PhysicalProfile {
   equipmentAccess?: EquipmentAccess;
   /** Qué modelo interpreta activityLevel — ver ActivityModelVersion. Por defecto "legacy_total_pal". */
   activityModelVersion?: ActivityModelVersion;
+  /** Cuestionario del modelo nuevo — solo se usa (y solo hace falta rellenarlo)
+      cuando activityModelVersion === "lifestyle_plus_training". */
+  trainingActivity?: TrainingActivityProfile;
+}
+
+/**
+ * Cuestionario de "lifestyle_plus_training": vida cotidiana y entrenamiento
+ * declarados por separado, en vez de un único nivel combinado (activityLevel).
+ */
+export interface TrainingActivityProfile {
+  /** Actividad cotidiana SIN contar el entrenamiento (trabajo, desplazamientos, tareas de casa). */
+  lifestyleActivity: ActivityLevel;
+  strengthDaysPerWeek: number;
+  cardioDaysPerWeek: number;
+  /** Duración media por sesión en minutos (fuerza y cardio). */
+  avgSessionDurationMin: number;
+  /** Pasos diarios habituales — se guarda para afinar el modelo adaptativo más
+      adelante (PR5/PR6); todavía no se usa en el cálculo de TDEE. */
+  habitualSteps?: number | null;
 }
 
 export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
@@ -315,6 +334,8 @@ export interface NutritionCalculationSnapshot {
     goal: GoalMode;
     activityLevel: ActivityLevel;
     macroPreference: MacroPreference;
+    activityModelVersion: ActivityModelVersion;
+    trainingActivity?: TrainingActivityProfile;
   };
   restingEnergy: {
     valueKcal: number;
