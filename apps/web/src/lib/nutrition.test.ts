@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { PhysicalProfile, Recipe, WeightEntry } from "@foodos/types";
+import type { PhysicalProfile, Recipe, WeightEntry, WeightTrendResult } from "@foodos/types";
 import {
+  calcAdaptiveTdee,
   calcDailyTargets,
   calcIMC,
+  calcIntakeCoverage,
   calcProteinBase,
   calcTDEE,
   calcTMB,
@@ -378,5 +380,82 @@ describe("calcWeightTrend", () => {
     const stale: WeightEntry = { date: addDays(REF, -40), kg: 95 };
     const result = calcWeightTrend([stale, ...recent], REF)!;
     expect(result.validMeasurements).toBe(5);
+  });
+});
+
+describe("calcIntakeCoverage", () => {
+  const REF = "2026-02-14";
+
+  it("devuelve null si ningún día llega al umbral de cobertura", () => {
+    const daily = [
+      { date: "2026-02-13", kcal: 300 },
+      { date: "2026-02-12", kcal: 200 },
+    ];
+    expect(calcIntakeCoverage(daily, REF, 7)).toBeNull();
+  });
+
+  it("promedia solo los días con cobertura suficiente e ignora los demás", () => {
+    const daily = [
+      { date: "2026-02-14", kcal: 2000 },
+      { date: "2026-02-13", kcal: 1800 },
+      { date: "2026-02-12", kcal: 300 }, // por debajo del umbral, se descarta
+    ];
+    const result = calcIntakeCoverage(daily, REF, 7)!;
+    expect(result.daysWithData).toBe(2);
+    expect(result.avgKcal).toBe(1900);
+    expect(result.coverageFraction).toBeCloseTo(2 / 7, 2);
+  });
+
+  it("ignora datos fuera de la ventana", () => {
+    const daily = [
+      { date: "2026-02-14", kcal: 2000 },
+      { date: "2026-01-01", kcal: 2500 }, // muy anterior a la ventana
+    ];
+    const result = calcIntakeCoverage(daily, REF, 7)!;
+    expect(result.daysWithData).toBe(1);
+  });
+});
+
+describe("calcAdaptiveTdee", () => {
+  const trend = (confidence: WeightTrendResult["confidence"], slopeKgPerDay: number): WeightTrendResult => ({
+    latestWeightKg: 80,
+    trendWeightKg: 80,
+    slopeKgPerDay,
+    weeklyChangeKg: slopeKgPerDay * 7,
+    weeklyChangePercent: (slopeKgPerDay * 7 / 80) * 100,
+    validMeasurements: 14,
+    confidence,
+  });
+
+  it("insufficient_data si no hay tendencia de peso", () => {
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 2000, weightTrend: null });
+    expect(result.confidence).toBe("insufficient_data");
+    expect(result.observedKcal).toBeNull();
+    expect(result.combinedKcal).toBe(2200);
+  });
+
+  it("insufficient_data si no hay ingesta media", () => {
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: null, weightTrend: trend("high", -0.05) });
+    expect(result.confidence).toBe("insufficient_data");
+  });
+
+  it("perdiendo peso: el TDEE observado es mayor que la ingesta media", () => {
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 1900, weightTrend: trend("high", -0.05) });
+    expect(result.observedKcal).toBe(Math.round(1900 - -0.05 * 7700));
+    expect(result.observedKcal!).toBeGreaterThan(1900);
+  });
+
+  it("ganando peso: el TDEE observado es menor que la ingesta media", () => {
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 2600, weightTrend: trend("high", 0.05) });
+    expect(result.observedKcal!).toBeLessThan(2600);
+  });
+
+  it("el combinado se acerca más al observado cuanta más confianza (peso mayor)", () => {
+    const params = (confidence: WeightTrendResult["confidence"]) =>
+      calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 1800, weightTrend: trend(confidence, -0.1) });
+    const low = params("low");
+    const high = params("high");
+    // Con más confianza, el combinado se aleja más del inicial (2200) hacia el observado.
+    expect(Math.abs(high.combinedKcal - high.initialKcal)).toBeGreaterThan(Math.abs(low.combinedKcal - low.initialKcal));
   });
 });

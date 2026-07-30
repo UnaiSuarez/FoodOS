@@ -1,10 +1,12 @@
 import type {
   ActivityLevel,
+  AdaptiveTdeeResult,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
   ExperienceLevel,
   GoalMode,
+  IntakeCoverageResult,
   MacroPreference,
   MacroTotals,
   NutritionSafetyResult,
@@ -504,6 +506,78 @@ export function calcWeightTrend(
     validMeasurements: sorted.length,
     confidence,
   };
+}
+
+// ─── TDEE adaptativo pasivo (solo informativo, PR5) ──────────────────────────
+
+/** Umbral bajo el cual un día se considera "sin registro fiable" — mismo
+    criterio que ya usaba el panel de proyección de peso: un día con <500 kcal
+    registradas normalmente significa que el usuario no anotó todo, no que
+    comió muy poco. */
+const INTAKE_COVERAGE_MIN_KCAL = 500;
+
+/**
+ * Cobertura de registro de ingesta en una ventana de días: promedio de kcal
+ * de los días con datos fiables, y qué fracción de la ventana tiene esos
+ * datos (cuanta menos cobertura, menos se puede confiar en ese promedio).
+ * `dailyKcal` debe venir ya agregado (una entrada por fecha).
+ */
+export function calcIntakeCoverage(
+  dailyKcal: Array<{ date: string; kcal: number }>,
+  referenceDate: string,
+  windowDays: number,
+): IntakeCoverageResult | null {
+  const withData = dailyKcal.filter(
+    (d) => d.date <= referenceDate && daysBetweenDates(d.date, referenceDate) < windowDays && d.kcal >= INTAKE_COVERAGE_MIN_KCAL
+  );
+  if (withData.length === 0) return null;
+
+  const avgKcal = Math.round(withData.reduce((sum, d) => sum + d.kcal, 0) / withData.length);
+  return {
+    avgKcal,
+    coverageFraction: Math.round((withData.length / windowDays) * 100) / 100,
+    daysWithData: withData.length,
+    windowDays,
+  };
+}
+
+/** Cuánto peso (0-1) recibe el TDEE observado frente al inicial en la media
+    ponderada — nunca reemplaza el inicial por completo, ni con confianza
+    alta: una ventana de semanas siempre es más ruidosa que la fórmula base. */
+export const ADAPTIVE_CONFIDENCE_WEIGHTS: Record<ConfidenceLevel, number> = {
+  low: 0.2,
+  moderate: 0.4,
+  high: 0.6,
+};
+
+/**
+ * TDEE adaptativo pasivo — combina el TDEE inicial (fórmula) con el TDEE
+ * observado (ingesta real medida contra el cambio de peso real):
+ *
+ *   TDEE_observado = ingesta_media − pendiente_kg/día × 7700
+ *   TDEE_combinado = (1−w)·TDEE_inicial + w·TDEE_observado
+ *
+ * w depende de la confianza de la tendencia de peso (ADAPTIVE_CONFIDENCE_WEIGHTS).
+ * Sin tendencia de peso o sin ingesta registrada, devuelve el inicial tal
+ * cual con confidence "insufficient_data". Puramente informativo en esta
+ * versión: no modifica ningún objetivo de calorías por sí solo (PR6 es quien
+ * podría proponer, nunca aplicar solo, un ajuste basado en esto).
+ */
+export function calcAdaptiveTdee(params: {
+  initialTdeeKcal: number;
+  avgIntakeKcal: number | null;
+  weightTrend: WeightTrendResult | null;
+}): AdaptiveTdeeResult {
+  const initialKcal = Math.round(params.initialTdeeKcal);
+  if (!params.weightTrend || params.avgIntakeKcal == null) {
+    return { initialKcal, observedKcal: null, combinedKcal: initialKcal, confidence: "insufficient_data" };
+  }
+
+  const observedKcal = Math.round(params.avgIntakeKcal - params.weightTrend.slopeKgPerDay * 7700);
+  const w = ADAPTIVE_CONFIDENCE_WEIGHTS[params.weightTrend.confidence];
+  const combinedKcal = Math.round((1 - w) * initialKcal + w * observedKcal);
+
+  return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence };
 }
 
 // ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────
