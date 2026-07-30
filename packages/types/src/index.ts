@@ -265,6 +265,10 @@ export interface IntakeCoverageResult {
   windowDays: number;
 }
 
+/** Avisos de calidad del propio cálculo adaptativo (no de seguridad del
+    objetivo — ver SafetyWarning). */
+export type AdaptiveTdeeWarning = "tdee_estimates_strongly_disagree";
+
 /**
  * Resultado de calcAdaptiveTdee(): TDEE inicial (fórmula Mifflin-St Jeor +
  * actividad) combinado con el TDEE observado (ingesta real vs. tendencia de
@@ -277,6 +281,36 @@ export interface AdaptiveTdeeResult {
   observedKcal: number | null;
   combinedKcal: number;
   confidence: ConfidenceLevel | "insufficient_data";
+  /** "tdee_estimates_strongly_disagree" si el observado difiere del inicial
+      en más de un 30% — señal de datos sospechosos (infrarregistro, agua,
+      creatina...), no un juicio fisiológico. Vacío si no hay avisos. */
+  warnings: AdaptiveTdeeWarning[];
+}
+
+/**
+ * Diagnóstico interno completo del motor adaptativo — pensado para depurar
+ * "por qué no me deja generar una propuesta" sin adivinar por consola.
+ * A diferencia de evaluateAdjustmentProposal (que para en el primer criterio
+ * que falla), ineligibilityReasons acumula TODOS los motivos a la vez.
+ */
+export interface AdaptiveDiagnostics {
+  evaluationStart: string;
+  evaluationEnd: string;
+  averageLoggedCalories: number | null;
+  calorieCoverage: number | null;
+  weightMeasurements: number;
+  /** Cambio total (kg) entre el primer y último registro crudo de la ventana. */
+  rawWeightChangeKg: number | null;
+  /** Cambio total (kg) que predice la pendiente suavizada en ese mismo tramo. */
+  smoothedWeightChangeKg: number | null;
+  regressionSlopeKgPerDay: number | null;
+  initialTdeeKcal: number;
+  observedTdeeKcal: number | null;
+  blendedTdeeKcal: number;
+  confidenceScore: number;
+  confidenceLevel: ConfidenceLevel | "insufficient_data";
+  proposalEligible: boolean;
+  ineligibilityReasons: string[];
 }
 
 /**

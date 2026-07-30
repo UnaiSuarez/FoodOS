@@ -479,6 +479,18 @@ describe("calcAdaptiveTdee", () => {
     // Con más confianza, el combinado se aleja más del inicial (2200) hacia el observado.
     expect(Math.abs(high.combinedKcal - high.initialKcal)).toBeGreaterThan(Math.abs(low.combinedKcal - low.initialKcal));
   });
+
+  it("sin discrepancia fuerte, warnings queda vacío", () => {
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 2000, weightTrend: trend("high", -0.02) });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("marca tdee_estimates_strongly_disagree cuando observado y fórmula difieren >30%", () => {
+    // slope muy agresivo -> observado se dispara muy por encima del inicial
+    const result = calcAdaptiveTdee({ initialTdeeKcal: 2200, avgIntakeKcal: 2000, weightTrend: trend("high", -0.15) });
+    expect(Math.abs(result.observedKcal! - result.initialKcal)).toBeGreaterThan(result.initialKcal * 0.3);
+    expect(result.warnings).toContain("tdee_estimates_strongly_disagree");
+  });
 });
 
 describe("evaluateAdjustmentProposal", () => {
@@ -488,7 +500,7 @@ describe("evaluateAdjustmentProposal", () => {
   };
   const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
   const adaptive = (combinedKcal: number): AdaptiveTdeeResult => ({
-    initialKcal: 2200, observedKcal: combinedKcal, combinedKcal, confidence: "high",
+    initialKcal: 2200, observedKcal: combinedKcal, combinedKcal, confidence: "high", warnings: [],
   });
 
   it("no propone sin tendencia de peso ni cobertura", () => {
@@ -523,23 +535,24 @@ describe("evaluateAdjustmentProposal", () => {
     expect(result.shouldPropose).toBe(false);
   });
 
-  it("no propone si la diferencia es menor de 50 kcal", () => {
+  it("no propone si el combinado apenas se separa de la fórmula inicial (<50 kcal)", () => {
+    // adaptive() fija initialKcal en 2200 — 2230 son solo 30 kcal de diferencia.
     const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2180, adaptive: adaptive(2200), weightTrend: highTrend, intakeCoverage: goodCoverage,
+      currentTargetKcal: 2000, adaptive: adaptive(2230), weightTrend: highTrend, intakeCoverage: goodCoverage,
     });
     expect(result.shouldPropose).toBe(false);
   });
 
-  it("propone subir cuando el combinado supera bastante al objetivo actual", () => {
+  it("propone subir cuando el combinado supera bastante a la fórmula inicial (no al objetivo actual, que ya es un déficit/superávit intencionado)", () => {
     const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: highTrend, intakeCoverage: goodCoverage,
+      currentTargetKcal: 2000, adaptive: adaptive(2400), weightTrend: highTrend, intakeCoverage: goodCoverage,
     });
     expect(result.shouldPropose).toBe(true);
     expect(result.deltaKcal).toBeGreaterThan(0);
     expect(result.proposedTargetKcal).toBe(2000 + result.deltaKcal);
   });
 
-  it("propone bajar cuando el combinado es bastante menor que el objetivo actual", () => {
+  it("propone bajar cuando el combinado es bastante menor que la fórmula inicial", () => {
     const result = evaluateAdjustmentProposal({
       currentTargetKcal: 2200, adaptive: adaptive(2000), weightTrend: highTrend, intakeCoverage: goodCoverage,
     });
@@ -547,11 +560,36 @@ describe("evaluateAdjustmentProposal", () => {
     expect(result.deltaKcal).toBeLessThan(0);
   });
 
-  it("recorta el delta a un máximo de 150 kcal aunque la diferencia real sea mayor", () => {
+  it("un objetivo en déficit importante (ej. fat_loss) no dispara una propuesta si el combinado coincide con la fórmula", () => {
+    // Esto es justo el bug que atrapó la suite de fixtures: comparar el
+    // combinado contra el objetivo actual (ya rebajado por el goal) en vez
+    // de contra la fórmula inicial disparaba SIEMPRE una propuesta de subir,
+    // incluso cuando la fórmula y la realidad coincidían perfectamente.
     const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 1800, adaptive: adaptive(2400), weightTrend: highTrend, intakeCoverage: goodCoverage,
+      currentTargetKcal: 1700, // muy por debajo del "mantenimiento" (2200) — déficit intencionado
+      adaptive: adaptive(2200), // combinado == inicial: la fórmula acertó
+      weightTrend: highTrend,
+      intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("recorta el delta a un máximo de 150 kcal aunque el desplazamiento de la fórmula sea mayor", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 1800, adaptive: adaptive(2600), weightTrend: highTrend, intakeCoverage: goodCoverage,
     });
     expect(result.deltaKcal).toBeLessThanOrEqual(150);
     expect(result.deltaKcal).toBeGreaterThanOrEqual(-150);
+  });
+
+  it("no propone si el TDEE observado y el inicial discrepan fuertemente (posible dato sospechoso)", () => {
+    const disagreeing: AdaptiveTdeeResult = {
+      initialKcal: 2200, observedKcal: 3200, combinedKcal: 2600, confidence: "high",
+      warnings: ["tdee_estimates_strongly_disagree"],
+    };
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: disagreeing, weightTrend: highTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(false);
   });
 });

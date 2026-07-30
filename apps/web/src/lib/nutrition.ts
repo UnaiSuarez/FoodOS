@@ -1,6 +1,8 @@
 import type {
   ActivityLevel,
+  AdaptiveDiagnostics,
   AdaptiveTdeeResult,
+  AdaptiveTdeeWarning,
   AdjustmentDecision,
   ConfidenceLevel,
   DailyTargets,
@@ -445,6 +447,12 @@ function daysBetweenDates(fromDateKey: string, toDateKey: string): number {
   return Math.round((to - from) / 86_400_000);
 }
 
+function subtractDaysFromDateKey(dateKey: string, days: number): string {
+  const d = new Date(`${dateKey}T12:00:00`);
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Tendencia de peso suavizada — nunca cambia ningún objetivo por sí sola,
  * solo informa (ver WeightTrendResult). Pipeline:
@@ -568,6 +576,12 @@ export const ADAPTIVE_CONFIDENCE_WEIGHTS: Record<ConfidenceLevel, number> = {
  * versión: no modifica ningún objetivo de calorías por sí solo (PR6 es quien
  * podría proponer, nunca aplicar solo, un ajuste basado en esto).
  */
+/** Si el TDEE observado difiere del inicial en más de este % del inicial,
+    algo en los datos es sospechoso (infrarregistro, agua, creatina, ciclo,
+    enfermedad...) — no es una ley fisiológica, es un guardarraíl de calidad
+    de datos configurable. */
+const TDEE_DISAGREEMENT_THRESHOLD = 0.30;
+
 export function calcAdaptiveTdee(params: {
   initialTdeeKcal: number;
   avgIntakeKcal: number | null;
@@ -575,14 +589,19 @@ export function calcAdaptiveTdee(params: {
 }): AdaptiveTdeeResult {
   const initialKcal = Math.round(params.initialTdeeKcal);
   if (!params.weightTrend || params.avgIntakeKcal == null) {
-    return { initialKcal, observedKcal: null, combinedKcal: initialKcal, confidence: "insufficient_data" };
+    return { initialKcal, observedKcal: null, combinedKcal: initialKcal, confidence: "insufficient_data", warnings: [] };
   }
 
   const observedKcal = Math.round(params.avgIntakeKcal - params.weightTrend.slopeKgPerDay * 7700);
   const w = ADAPTIVE_CONFIDENCE_WEIGHTS[params.weightTrend.confidence];
   const combinedKcal = Math.round((1 - w) * initialKcal + w * observedKcal);
 
-  return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence };
+  const warnings: AdaptiveTdeeWarning[] = [];
+  if (Math.abs(observedKcal - initialKcal) > initialKcal * TDEE_DISAGREEMENT_THRESHOLD) {
+    warnings.push("tdee_estimates_strongly_disagree");
+  }
+
+  return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence, warnings };
 }
 
 // ─── Propuestas de ajuste adaptativo (PR6) ───────────────────────────────────
@@ -621,6 +640,12 @@ export function evaluateAdjustmentProposal(params: {
   if (!weightTrend || !intakeCoverage || adaptive.confidence === "insufficient_data") {
     return noAdjustmentProposal(currentTargetKcal, "Todavía no hay suficiente historial de peso e ingesta.");
   }
+  if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
+    return noAdjustmentProposal(
+      currentTargetKcal,
+      "El TDEE observado y el de la fórmula discrepan demasiado (>30%) — puede haber registros incompletos, retención de agua u otro factor puntual. Esperamos a que los datos se estabilicen."
+    );
+  }
 
   const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
   if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
@@ -633,21 +658,148 @@ export function evaluateAdjustmentProposal(params: {
     return noAdjustmentProposal(currentTargetKcal, "Todavía no se han evaluado suficientes días.");
   }
 
-  const rawDelta = adaptive.combinedKcal - currentTargetKcal;
-  if (Math.abs(rawDelta) < ADJUSTMENT_MIN_DELTA_KCAL) {
-    return noAdjustmentProposal(currentTargetKcal, "Tu objetivo actual ya está alineado con tu mantenimiento real estimado.");
+  // OJO: el delta se basa en cuánto se ha desplazado la ESTIMACIÓN de
+  // mantenimiento (combinado vs. fórmula inicial) — nunca en la diferencia
+  // entre el combinado y el objetivo actual. El objetivo actual ya es,
+  // A PROPÓSITO, un déficit o superávit sobre el mantenimiento (ese es el
+  // sentido de tener un goal de pérdida/ganancia) — compararlo directamente
+  // contra el combinado propondría siempre "subir hacia el mantenimiento" en
+  // cualquier déficit razonable, incluso cuando la fórmula y la realidad
+  // coinciden perfectamente. Lo que sí debe trasladarse al objetivo es CUÁNTO
+  // ha cambiado la estimación de mantenimiento respecto a la fórmula.
+  const tdeeShift = adaptive.combinedKcal - adaptive.initialKcal;
+  if (Math.abs(tdeeShift) < ADJUSTMENT_MIN_DELTA_KCAL) {
+    return noAdjustmentProposal(currentTargetKcal, "Tu mantenimiento real coincide con la estimación de la fórmula — no hay motivo para tocar tu objetivo.");
   }
 
-  const clamped = Math.sign(rawDelta) * Math.min(ADJUSTMENT_MAX_DELTA_KCAL, Math.abs(rawDelta));
+  const clamped = Math.sign(tdeeShift) * Math.min(ADJUSTMENT_MAX_DELTA_KCAL, Math.abs(tdeeShift));
   const deltaKcal = Math.round(clamped / 10) * 10;
   const proposedTargetKcal = currentTargetKcal + deltaKcal;
 
   const reason =
     deltaKcal > 0
-      ? `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es mayor que tu objetivo actual (${currentTargetKcal} kcal) — subir ${deltaKcal} kcal/día mantendría el ritmo que buscas.`
-      : `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es menor que tu objetivo actual (${currentTargetKcal} kcal) — bajar ${Math.abs(deltaKcal)} kcal/día realinearía tu objetivo con tu ritmo real.`;
+      ? `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es mayor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — subir ${deltaKcal} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`
+      : `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es menor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — bajar ${Math.abs(deltaKcal)} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`;
 
   return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason };
+}
+
+/** Días de espera tras aceptar O rechazar una propuesta antes de permitir
+    generar otra — evita bombardear al usuario con revisiones repetidas. */
+export const ADJUSTMENT_COOLDOWN_DAYS = 14;
+
+/** ¿Sigue activo el cooldown desde la última decisión (aceptar/rechazar)?
+    lastDecisionDateKey null significa que nunca hubo una decisión previa. */
+export function isAdjustmentCooldownActive(
+  lastDecisionDateKey: string | null,
+  referenceDate: string,
+  cooldownDays: number = ADJUSTMENT_COOLDOWN_DAYS,
+): boolean {
+  if (!lastDecisionDateKey) return false;
+  return daysBetweenDates(lastDecisionDateKey, referenceDate) < cooldownDays;
+}
+
+/** Días que faltan para que termine el cooldown (0 si ya terminó o nunca empezó). */
+export function adjustmentCooldownDaysLeft(
+  lastDecisionDateKey: string | null,
+  referenceDate: string,
+  cooldownDays: number = ADJUSTMENT_COOLDOWN_DAYS,
+): number {
+  if (!lastDecisionDateKey) return 0;
+  return Math.max(0, cooldownDays - daysBetweenDates(lastDecisionDateKey, referenceDate));
+}
+
+/**
+ * Diagnóstico completo del motor adaptativo para un momento dado — a
+ * diferencia de evaluateAdjustmentProposal (que para en el primer criterio
+ * que falla), aquí se acumulan TODOS los motivos de bloqueo a la vez. Pensado
+ * para responder "¿por qué no me deja generar una propuesta?" sin adivinar
+ * por consola. proposalEligible usa evaluateAdjustmentProposal como única
+ * fuente de verdad — este diagnóstico nunca puede contradecirlo.
+ */
+export function getAdaptiveDiagnostics(params: {
+  weightLog: WeightEntry[];
+  dailyKcal: Array<{ date: string; kcal: number }>;
+  referenceDate: string;
+  initialTdeeKcal: number;
+  currentTargetKcal: number;
+  windowDays?: number;
+}): AdaptiveDiagnostics {
+  const windowDays = params.windowDays ?? 28;
+  const { weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal } = params;
+
+  const weightTrend = calcWeightTrend(weightLog, referenceDate, windowDays);
+  const coverage = calcIntakeCoverage(dailyKcal, referenceDate, windowDays);
+  const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
+  const decision = evaluateAdjustmentProposal({ currentTargetKcal, adaptive, weightTrend, intakeCoverage: coverage });
+
+  const inWindow = weightLog
+    .filter((e) => e.date <= referenceDate && daysBetweenDates(e.date, referenceDate) <= windowDays)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  let rawWeightChangeKg: number | null = null;
+  let smoothedWeightChangeKg: number | null = null;
+  if (inWindow.length >= 2) {
+    const first = inWindow[0];
+    const last = inWindow[inWindow.length - 1];
+    rawWeightChangeKg = Math.round((last.kg - first.kg) * 100) / 100;
+    if (weightTrend) {
+      const spanDays = daysBetweenDates(first.date, last.date);
+      smoothedWeightChangeKg = Math.round(weightTrend.slopeKgPerDay * spanDays * 100) / 100;
+    }
+  }
+
+  const ineligibilityReasons: string[] = [];
+  if (!weightTrend) {
+    ineligibilityReasons.push(
+      `Peso: solo ${inWindow.length} mediciones en los últimos ${windowDays} días (mínimo 3 para calcular tendencia).`
+    );
+  }
+  if (!coverage) {
+    ineligibilityReasons.push(`Ingesta: sin días con registro fiable en los últimos ${windowDays} días.`);
+  }
+  if (weightTrend && coverage) {
+    const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
+    if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
+      ineligibilityReasons.push(`Confianza de tendencia: ${weightTrend.confidence} (se necesita alta).`);
+    }
+    if (coverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
+      ineligibilityReasons.push(
+        `Cobertura de ingesta: ${Math.round(coverage.coverageFraction * 100)}% (mínimo ${Math.round(ADJUSTMENT_MIN_COVERAGE * 100)}%).`
+      );
+    }
+    if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
+      ineligibilityReasons.push(
+        `Días evaluados: ${weightTrend.validMeasurements} (mínimo ${ADJUSTMENT_MIN_EVALUATION_DAYS}).`
+      );
+    }
+    if (Math.abs(adaptive.combinedKcal - adaptive.initialKcal) < ADJUSTMENT_MIN_DELTA_KCAL) {
+      ineligibilityReasons.push(
+        `Desplazamiento de la estimación de mantenimiento: ${Math.round(adaptive.combinedKcal - adaptive.initialKcal)} kcal frente a la fórmula (mínimo ${ADJUSTMENT_MIN_DELTA_KCAL} kcal).`
+      );
+    }
+  }
+  if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
+    ineligibilityReasons.push("El TDEE observado y el de la fórmula discrepan más de un 30% — posible dato sospechoso.");
+  }
+
+  return {
+    evaluationStart: subtractDaysFromDateKey(referenceDate, windowDays),
+    evaluationEnd: referenceDate,
+    averageLoggedCalories: coverage?.avgKcal ?? null,
+    calorieCoverage: coverage?.coverageFraction ?? null,
+    weightMeasurements: weightTrend?.validMeasurements ?? inWindow.length,
+    rawWeightChangeKg,
+    smoothedWeightChangeKg,
+    regressionSlopeKgPerDay: weightTrend?.slopeKgPerDay ?? null,
+    initialTdeeKcal: adaptive.initialKcal,
+    observedTdeeKcal: adaptive.observedKcal,
+    blendedTdeeKcal: adaptive.combinedKcal,
+    confidenceScore: weightTrend ? ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence] : 0,
+    confidenceLevel: adaptive.confidence,
+    proposalEligible: decision.shouldPropose,
+    ineligibilityReasons,
+  };
 }
 
 // ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────
