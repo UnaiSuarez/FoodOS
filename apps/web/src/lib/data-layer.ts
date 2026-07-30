@@ -1,5 +1,7 @@
 import type {
   ActivityLevel,
+  AdjustmentDecision,
+  AdjustmentProposal,
   FoodLogEntry,
   FoodOSState,
   GoalMode,
@@ -261,6 +263,105 @@ class RemoteAdapter {
     }
   }
 
+  /** Mapea una fila de nutrition_adjustment_proposals al tipo de la app. */
+  private mapAdjustmentProposalRow(row: {
+    id: string;
+    current_target_kcal: number;
+    proposed_target_kcal: number;
+    delta_kcal: number;
+    reason: string;
+    status: AdjustmentProposal["status"];
+    created_at: string;
+    resolved_at: string | null;
+  }): AdjustmentProposal {
+    return {
+      id: row.id,
+      currentTargetKcal: row.current_target_kcal,
+      proposedTargetKcal: row.proposed_target_kcal,
+      deltaKcal: row.delta_kcal,
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at,
+    };
+  }
+
+  /** Crea el snapshot de una revisión adaptativa (trigger_reason:
+      'adaptive_review') y, solo si la decisión dice que procede, la propuesta
+      de ajuste enlazada a él. Llamar SOLO desde el botón explícito "Generar
+      propuesta" — nunca automáticamente desde un render o temporizador.
+      Devuelve la propuesta creada (o null si no procedía o falló). */
+  async createAdjustmentReview(params: {
+    snapshot: NutritionCalculationSnapshot;
+    decision: AdjustmentDecision;
+  }): Promise<AdjustmentProposal | null> {
+    if (!this.client || !this.user) return null;
+    const userId = this.user.id;
+    try {
+      const { snapshot, decision } = params;
+      const { data: snapshotRow, error: snapshotError } = await this.client
+        .from("nutrition_calculation_snapshots")
+        .insert({
+          user_id: userId,
+          calculation_version: snapshot.calculationVersion,
+          trigger_reason: snapshot.triggerReason,
+          input_snapshot: snapshot.inputSnapshot,
+          resting_energy: snapshot.restingEnergy,
+          tdee: snapshot.tdee,
+          calorie_target: snapshot.calorieTarget,
+          macros: snapshot.macros,
+          safety: snapshot.safety,
+        })
+        .select("id")
+        .single();
+      if (snapshotError || !snapshotRow) {
+        console.warn("FoodOS: no se pudo guardar el snapshot de revisión adaptativa", snapshotError);
+        return null;
+      }
+
+      if (!decision.shouldPropose) return null;
+
+      const { data: proposalRow, error: proposalError } = await this.client
+        .from("nutrition_adjustment_proposals")
+        .insert({
+          user_id: userId,
+          snapshot_id: snapshotRow.id,
+          current_target_kcal: decision.proposedTargetKcal - decision.deltaKcal,
+          proposed_target_kcal: decision.proposedTargetKcal,
+          delta_kcal: decision.deltaKcal,
+          reason: decision.reason,
+          evidence: {},
+        })
+        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at")
+        .single();
+      if (proposalError || !proposalRow) {
+        console.warn("FoodOS: no se pudo guardar la propuesta de ajuste", proposalError);
+        return null;
+      }
+
+      return this.mapAdjustmentProposalRow(proposalRow);
+    } catch (err) {
+      console.warn("FoodOS: error creando la revisión adaptativa", err);
+      return null;
+    }
+  }
+
+  /** Acepta o rechaza una propuesta de ajuste pendiente. No aplica ningún
+      cambio de perfil por sí sola — el caller decide qué hacer con
+      accepted (p.ej. escribir adaptiveKcalOffsetKcal en el perfil). */
+  async respondToAdjustmentProposal(proposalId: string, accepted: boolean): Promise<void> {
+    if (!this.client || !this.user) return;
+    try {
+      await this.client
+        .from("nutrition_adjustment_proposals")
+        .update({ status: accepted ? "accepted" : "rejected", resolved_at: new Date().toISOString() })
+        .eq("id", proposalId)
+        .eq("user_id", this.user.id);
+    } catch (err) {
+      console.warn("FoodOS: error respondiendo a la propuesta de ajuste", err);
+    }
+  }
+
   /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
   async incrementWater(date: string, deltaMl: number): Promise<number> {
     if (!this.client || !this.user) return 0;
@@ -371,7 +472,7 @@ class RemoteAdapter {
       throw new Error("pullState: shoppingListId no está listo (ensureBaseRows no se completó)");
     }
 
-    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes, waterRes, weightRes] = await Promise.all([
+    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes, waterRes, weightRes, proposalRes] = await Promise.all([
       client
         .from("user_profiles")
         .select(
@@ -416,6 +517,12 @@ class RemoteAdapter {
         .select("log_date, kg")
         .eq("user_id", userId)
         .order("log_date", { ascending: true }),
+      client
+        .from("nutrition_adjustment_proposals")
+        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1),
     ]);
 
     // Supabase-js NO lanza excepción en fallos de consulta (400, RLS, etc.):
@@ -434,6 +541,7 @@ class RemoteAdapter {
       ["feed", feedRes],
       ["agua", waterRes],
       ["peso", weightRes],
+      ["propuesta de ajuste", proposalRes],
     ];
     const failed = namedResults.find(([, res]) => res.error);
     if (failed) {
@@ -494,6 +602,13 @@ class RemoteAdapter {
         if (state.profile && extra.trainingActivity && typeof extra.trainingActivity === "object") {
           state.profile.trainingActivity = extra.trainingActivity as PhysicalProfile["trainingActivity"];
         }
+        // adaptiveKcalOffsetKcal vive dentro de profile pero se persiste en
+        // extra_state (igual que trainingActivity/macroPreference): es
+        // aditivo, no requiere migración. Solo lo escribe aceptar/rechazar
+        // una AdjustmentProposal (PR6), nunca un guardado normal de perfil.
+        if (state.profile && typeof extra.adaptiveKcalOffsetKcal === "number") {
+          state.profile.adaptiveKcalOffsetKcal = extra.adaptiveKcalOffsetKcal;
+        }
       }
     }
 
@@ -508,6 +623,27 @@ class RemoteAdapter {
         date: row.log_date as string,
         kg:   Number(row.kg),
       }));
+    }
+
+    // Propuesta de ajuste más reciente: si sigue pendiente, la UI la muestra
+    // para aceptar/rechazar; si ya se resolvió, solo guardamos la fecha para
+    // el cooldown (no proponer otra vez inmediatamente).
+    const proposalRow = proposalRes.data?.[0];
+    if (proposalRow && proposalRow.status === "pending") {
+      state.pendingAdjustmentProposal = {
+        id: proposalRow.id,
+        currentTargetKcal: Number(proposalRow.current_target_kcal),
+        proposedTargetKcal: Number(proposalRow.proposed_target_kcal),
+        deltaKcal: Number(proposalRow.delta_kcal),
+        reason: proposalRow.reason,
+        status: proposalRow.status,
+        createdAt: proposalRow.created_at,
+        resolvedAt: proposalRow.resolved_at,
+      };
+      state.lastAdjustmentDecisionAt = null;
+    } else {
+      state.pendingAdjustmentProposal = null;
+      state.lastAdjustmentDecisionAt = proposalRow?.resolved_at ? String(proposalRow.resolved_at).slice(0, 10) : null;
     }
 
     state.inventory = (inventoryRes.data ?? []).map((row) => ({
@@ -700,6 +836,7 @@ class RemoteAdapter {
           debugDate:         state.debugDate         ?? null,
           stepsLog:          state.stepsLog          ?? {},
           trainingActivity:  state.profile?.trainingActivity ?? null,
+          adaptiveKcalOffsetKcal: state.profile?.adaptiveKcalOffsetKcal ?? 0,
         },
         ...(state.profile
           ? {

@@ -61,6 +61,8 @@ export const defaultState: FoodOSState = {
   routines: [],
   workoutLog: [],
   stepsLog: {},
+  pendingAdjustmentProposal: null,
+  lastAdjustmentDecisionAt: null,
 };
 
 // Migra estados guardados con formatos antiguos (modos en español,

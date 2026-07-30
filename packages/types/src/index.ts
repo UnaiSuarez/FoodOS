@@ -279,6 +279,36 @@ export interface AdaptiveTdeeResult {
   confidence: ConfidenceLevel | "insufficient_data";
 }
 
+/**
+ * Resultado de evaluateAdjustmentProposal(): si se cumplen los criterios
+ * mínimos para proponer (nunca aplicar solo) un ajuste de calorías basado en
+ * el TDEE adaptativo. shouldPropose=false siempre trae deltaKcal 0 y
+ * proposedTargetKcal igual al actual — el reason explica por qué no procede.
+ */
+export interface AdjustmentDecision {
+  shouldPropose: boolean;
+  /** Entre -150 y 150 kcal cuando shouldPropose es true (ver migración de
+      nutrition_adjustment_proposals) — nunca se propone un salto brusco. */
+  deltaKcal: number;
+  proposedTargetKcal: number;
+  reason: string;
+}
+
+export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "expired";
+
+/** Espejo de una fila de nutrition_adjustment_proposals — nunca se aplica
+    sola, siempre requiere una decisión explícita del usuario (aceptar/rechazar). */
+export interface AdjustmentProposal {
+  id: string;
+  currentTargetKcal: number;
+  proposedTargetKcal: number;
+  deltaKcal: number;
+  reason: string;
+  status: AdjustmentProposalStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
   age: number;
@@ -304,6 +334,12 @@ export interface PhysicalProfile {
   /** Cuestionario del modelo nuevo — solo se usa (y solo hace falta rellenarlo)
       cuando activityModelVersion === "lifestyle_plus_training". */
   trainingActivity?: TrainingActivityProfile;
+  /** Ajuste (kcal/día) aceptado explícitamente por el usuario a partir de una
+      propuesta del motor adaptativo (PR6) — se suma al kcal calculado por la
+      fórmula en calcDailyTargets. 0/undefined = sin ajuste, comportamiento
+      idéntico a antes de que existiera este campo. Nunca lo escribe nada
+      salvo aceptar una AdjustmentProposal explícitamente. */
+  adaptiveKcalOffsetKcal?: number;
 }
 
 /**
@@ -564,4 +600,11 @@ export interface FoodOSState {
   workoutLog: WorkoutSession[];
   /** Pasos registrados por dia (manual): { "2026-07-01": 6500 }. */
   stepsLog: Record<string, number>;
+  /** Propuesta de ajuste adaptativo pendiente de decisión (null si no hay
+      ninguna, o si la última ya fue aceptada/rechazada) — viene de
+      nutrition_adjustment_proposals, se refresca en cada pull remoto. */
+  pendingAdjustmentProposal?: AdjustmentProposal | null;
+  /** Fecha ISO (yyyy-mm-dd) de la última propuesta resuelta (aceptada o
+      rechazada) — cooldown para no volver a proponer inmediatamente después. */
+  lastAdjustmentDecisionAt?: string | null;
 }

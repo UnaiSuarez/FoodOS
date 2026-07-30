@@ -1,6 +1,7 @@
 import type {
   ActivityLevel,
   AdaptiveTdeeResult,
+  AdjustmentDecision,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
@@ -324,7 +325,11 @@ export function calcDailyTargets(
   const tmb  = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
   const tdee = calcTDEE(profile, tmb);
   const imc  = calcIMC(profile.weightKg, profile.heightCm);
-  const kcal = Math.max(1200, Math.round(tdee * kcalFactor(profile.goal, gymDay, imc)));
+  // adaptiveKcalOffsetKcal: ajuste aceptado explícitamente por el usuario a
+  // partir de una AdjustmentProposal (PR6) — 0/undefined no cambia nada de
+  // lo que había antes de que existiera este campo.
+  const rawKcal = tdee * kcalFactor(profile.goal, gymDay, imc) + (profile.adaptiveKcalOffsetKcal ?? 0);
+  const kcal = Math.max(1200, Math.round(rawKcal));
 
   const protBase = calcProteinBase(profile);
   const proteinG = Math.round(config.proteinPerKg * protBase);
@@ -578,6 +583,71 @@ export function calcAdaptiveTdee(params: {
   const combinedKcal = Math.round((1 - w) * initialKcal + w * observedKcal);
 
   return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence };
+}
+
+// ─── Propuestas de ajuste adaptativo (PR6) ───────────────────────────────────
+
+/** Umbral de confianza mínima (misma escala que ADAPTIVE_CONFIDENCE_WEIGHTS)
+    para considerar una propuesta — equivale a exigir confianza "high", ya que
+    "moderate" pesa 0.4 y "low" 0.2 en esa tabla. */
+const ADJUSTMENT_MIN_CONFIDENCE_SCORE = 0.6;
+const ADJUSTMENT_MIN_COVERAGE = 0.85;
+const ADJUSTMENT_MIN_EVALUATION_DAYS = 14;
+const ADJUSTMENT_MIN_DELTA_KCAL = 50;
+const ADJUSTMENT_MAX_DELTA_KCAL = 150; // igual al check constraint de la tabla
+
+function noAdjustmentProposal(currentTargetKcal: number, reason: string): AdjustmentDecision {
+  return { shouldPropose: false, deltaKcal: 0, proposedTargetKcal: currentTargetKcal, reason };
+}
+
+/**
+ * Decide si el TDEE adaptativo justifica PROPONER (nunca aplicar solo) un
+ * ajuste del objetivo de calorías. Todos los criterios deben cumplirse:
+ *
+ *   confianza >= 0.6 (alta) && cobertura de ingesta >= 85% && >= 14 días
+ *   evaluados && |diferencia| >= 50 kcal
+ *
+ * El delta se recorta a ±150 kcal (nunca un salto brusco de una vez, aunque
+ * la diferencia real sea mayor) y se redondea a la decena más cercana.
+ */
+export function evaluateAdjustmentProposal(params: {
+  currentTargetKcal: number;
+  adaptive: AdaptiveTdeeResult;
+  weightTrend: WeightTrendResult | null;
+  intakeCoverage: IntakeCoverageResult | null;
+}): AdjustmentDecision {
+  const { currentTargetKcal, adaptive, weightTrend, intakeCoverage } = params;
+
+  if (!weightTrend || !intakeCoverage || adaptive.confidence === "insufficient_data") {
+    return noAdjustmentProposal(currentTargetKcal, "Todavía no hay suficiente historial de peso e ingesta.");
+  }
+
+  const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
+  if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
+    return noAdjustmentProposal(currentTargetKcal, "La confianza de tu tendencia de peso todavía es baja o moderada.");
+  }
+  if (intakeCoverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
+    return noAdjustmentProposal(currentTargetKcal, "Te faltan días de registro de comidas para confiar en el promedio.");
+  }
+  if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
+    return noAdjustmentProposal(currentTargetKcal, "Todavía no se han evaluado suficientes días.");
+  }
+
+  const rawDelta = adaptive.combinedKcal - currentTargetKcal;
+  if (Math.abs(rawDelta) < ADJUSTMENT_MIN_DELTA_KCAL) {
+    return noAdjustmentProposal(currentTargetKcal, "Tu objetivo actual ya está alineado con tu mantenimiento real estimado.");
+  }
+
+  const clamped = Math.sign(rawDelta) * Math.min(ADJUSTMENT_MAX_DELTA_KCAL, Math.abs(rawDelta));
+  const deltaKcal = Math.round(clamped / 10) * 10;
+  const proposedTargetKcal = currentTargetKcal + deltaKcal;
+
+  const reason =
+    deltaKcal > 0
+      ? `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es mayor que tu objetivo actual (${currentTargetKcal} kcal) — subir ${deltaKcal} kcal/día mantendría el ritmo que buscas.`
+      : `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es menor que tu objetivo actual (${currentTargetKcal} kcal) — bajar ${Math.abs(deltaKcal)} kcal/día realinearía tu objetivo con tu ritmo real.`;
+
+  return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason };
 }
 
 // ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────
