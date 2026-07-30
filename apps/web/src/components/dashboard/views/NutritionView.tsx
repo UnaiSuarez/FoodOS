@@ -20,6 +20,7 @@ import {
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
+  adjustmentCooldownDaysLeft,
   calcAdaptiveTdee,
   calcHabitualTrainingAllowanceKcal,
   calcIntakeCoverage,
@@ -34,6 +35,8 @@ import {
   calcWeightTrend,
   evaluateAdjustmentProposal,
   evaluateNutritionSafety,
+  getAdaptiveDiagnostics,
+  isAdjustmentCooldownActive,
   isGymDay,
   LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
@@ -806,19 +809,19 @@ function AdaptiveTdeePanel() {
         Tu mantenimiento adaptativo estimado es de {adaptive.combinedKcal} kcal. Todavía no ha
         modificado tu objetivo diario.
       </p>
+      {adaptive.warnings.includes("tdee_estimates_strongly_disagree") && (
+        <div className="nutrition-warn-banner">
+          ⚠ Tu ingesta real y tu tendencia de peso implican un mantenimiento muy distinto al de la
+          fórmula (más de un 30% de diferencia). Puede deberse a registros incompletos, retención
+          de agua, creatina u otro factor puntual — de momento no se generan propuestas de ajuste
+          hasta que los datos se estabilicen.
+        </div>
+      )}
     </article>
   );
 }
 
 // ---------- Propuestas de ajuste adaptativo (PR6) ----------
-
-const ADJUSTMENT_COOLDOWN_DAYS = 14;
-
-function daysSinceDateKey(fromDateKey: string, toDateKey: string): number {
-  return Math.round(
-    (new Date(`${toDateKey}T12:00:00`).getTime() - new Date(`${fromDateKey}T12:00:00`).getTime()) / 86_400_000
-  );
-}
 
 function AdjustmentProposalPanel() {
   const { state, mutate, showToast } = useFoodOS();
@@ -843,11 +846,16 @@ function AdjustmentProposalPanel() {
     intakeCoverage: coverage,
   });
 
-  const cooldownDaysLeft =
-    !pending && state.lastAdjustmentDecisionAt
-      ? ADJUSTMENT_COOLDOWN_DAYS - daysSinceDateKey(state.lastAdjustmentDecisionAt, today)
-      : 0;
-  const inCooldown = cooldownDaysLeft > 0;
+  const cooldownDaysLeft = pending ? 0 : adjustmentCooldownDaysLeft(state.lastAdjustmentDecisionAt ?? null, today);
+  const inCooldown = !pending && isAdjustmentCooldownActive(state.lastAdjustmentDecisionAt ?? null, today);
+
+  const diagnostics = getAdaptiveDiagnostics({
+    weightLog: state.weightLog,
+    dailyKcal: Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
+    referenceDate: today,
+    initialTdeeKcal,
+    currentTargetKcal: currentTargets.kcal,
+  });
 
   async function generateProposal() {
     const snapshot: NutritionCalculationSnapshot = {
@@ -968,6 +976,69 @@ function AdjustmentProposalPanel() {
       ) : (
         <p className="empty">{decision.reason}</p>
       )}
+
+      <details className="adaptive-diagnostics">
+        <summary>Diagnóstico</summary>
+        <div className="adaptive-diagnostics-grid">
+          <div>
+            <span>Ventana evaluada</span>
+            <strong>
+              {diagnostics.evaluationStart} → {diagnostics.evaluationEnd}
+            </strong>
+          </div>
+          <div>
+            <span>Ingesta media registrada</span>
+            <strong>{diagnostics.averageLoggedCalories != null ? `${diagnostics.averageLoggedCalories} kcal` : "—"}</strong>
+          </div>
+          <div>
+            <span>Cobertura de ingesta</span>
+            <strong>
+              {diagnostics.calorieCoverage != null ? `${Math.round(diagnostics.calorieCoverage * 100)}%` : "—"}
+            </strong>
+          </div>
+          <div>
+            <span>Mediciones de peso</span>
+            <strong>{diagnostics.weightMeasurements}</strong>
+          </div>
+          <div>
+            <span>Cambio de peso (crudo / suavizado)</span>
+            <strong>
+              {diagnostics.rawWeightChangeKg != null ? `${diagnostics.rawWeightChangeKg} kg` : "—"}
+              {" / "}
+              {diagnostics.smoothedWeightChangeKg != null ? `${diagnostics.smoothedWeightChangeKg} kg` : "—"}
+            </strong>
+          </div>
+          <div>
+            <span>Pendiente de regresión</span>
+            <strong>
+              {diagnostics.regressionSlopeKgPerDay != null ? `${diagnostics.regressionSlopeKgPerDay} kg/día` : "—"}
+            </strong>
+          </div>
+          <div>
+            <span>TDEE inicial / observado / combinado</span>
+            <strong>
+              {diagnostics.initialTdeeKcal} / {diagnostics.observedTdeeKcal ?? "—"} / {diagnostics.blendedTdeeKcal}
+            </strong>
+          </div>
+          <div>
+            <span>Confianza</span>
+            <strong>
+              {diagnostics.confidenceLevel} ({Math.round(diagnostics.confidenceScore * 100)}%)
+            </strong>
+          </div>
+          <div>
+            <span>Elegible para propuesta</span>
+            <strong>{diagnostics.proposalEligible ? "Sí" : "No"}</strong>
+          </div>
+        </div>
+        {diagnostics.ineligibilityReasons.length > 0 && (
+          <ul className="adaptive-diagnostics-reasons">
+            {diagnostics.ineligibilityReasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        )}
+      </details>
     </article>
   );
 }
