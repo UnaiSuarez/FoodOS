@@ -20,7 +20,9 @@ import {
 } from "@/lib/state";
 import {
   ACTIVITY_LABELS,
+  calcAdaptiveTdee,
   calcHabitualTrainingAllowanceKcal,
+  calcIntakeCoverage,
   EQUIPMENT_LABELS,
   EXPERIENCE_LABELS,
   GOAL_DESCRIPTIONS,
@@ -84,6 +86,8 @@ export function NutritionView() {
       {state.profile && <WeightPanel />}
 
       {state.profile && <WeightTrendPanel />}
+
+      {state.profile && <AdaptiveTdeePanel />}
 
       {state.profile && <WeightProjectionPanel />}
     </section>
@@ -257,6 +261,25 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       draft.macroPreference = macroPreference;
     });
 
+    // Desglose adaptativo (PR5), solo si ya hay tendencia de peso e ingesta
+    // registradas — se guarda como contexto adicional del snapshot, nunca
+    // dispara un snapshot por sí solo.
+    const weightTrendAtSave = calcWeightTrend(state.weightLog, getToday(state));
+    const dailyKcalAtSave = new Map<string, number>();
+    for (const entry of state.foodLog) {
+      dailyKcalAtSave.set(entry.date, (dailyKcalAtSave.get(entry.date) ?? 0) + entry.kcal);
+    }
+    const coverageAtSave = calcIntakeCoverage(
+      Array.from(dailyKcalAtSave, ([date, kcal]) => ({ date, kcal })),
+      getToday(state),
+      28
+    );
+    const adaptiveAtSave = calcAdaptiveTdee({
+      initialTdeeKcal: tdee,
+      avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
+      weightTrend: weightTrendAtSave,
+    });
+
     // Snapshot inmutable de cómo se calculó — solo en este evento explícito
     // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
     void remote.saveNutritionSnapshot({
@@ -268,7 +291,10 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         activityModelVersion, trainingActivity,
       },
       restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
-      tdee: { valueKcal: tdee },
+      tdee: {
+        valueKcal: tdee,
+        ...(adaptiveAtSave.confidence !== "insufficient_data" && { adaptive: adaptiveAtSave }),
+      },
       calorieTarget: { kcal: targets.kcal, dayType: targets.dayType },
       macros: {
         kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
@@ -697,6 +723,85 @@ function WeightTrendPanel() {
       </div>
       <p className="cycle-note">
         Este dato es solo informativo — todavía no ajusta tu objetivo de calorías.
+      </p>
+    </article>
+  );
+}
+
+// ---------- TDEE adaptativo pasivo (solo informativo, PR5) ----------
+
+const ADAPTIVE_TDEE_WINDOW_DAYS = 28;
+
+function AdaptiveTdeePanel() {
+  const { state } = useFoodOS();
+  const profile = state.profile!;
+  const today = getToday(state);
+  const { tdee: initialTdeeKcal } = calcSummary(profile);
+  const weightTrend = calcWeightTrend(state.weightLog, today);
+
+  const dailyKcalByDate = new Map<string, number>();
+  for (const entry of state.foodLog) {
+    dailyKcalByDate.set(entry.date, (dailyKcalByDate.get(entry.date) ?? 0) + entry.kcal);
+  }
+  const dailyKcal = Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal }));
+  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS);
+
+  const adaptive = calcAdaptiveTdee({
+    initialTdeeKcal,
+    avgIntakeKcal: coverage?.avgKcal ?? null,
+    weightTrend,
+  });
+
+  if (adaptive.confidence === "insufficient_data") {
+    return (
+      <article className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">TDEE adaptativo (beta)</p>
+            <h2>Mantenimiento real estimado</h2>
+          </div>
+        </div>
+        <p className="empty">
+          Registra tu peso y tus comidas durante unas semanas para ver una estimación de tu
+          mantenimiento real basada en datos, no solo en la fórmula.
+        </p>
+      </article>
+    );
+  }
+
+  const confidenceBadge = adaptive.confidence === "high" ? "green" : adaptive.confidence === "moderate" ? "amber" : "";
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">
+            TDEE adaptativo (beta) · cobertura {coverage ? Math.round(coverage.coverageFraction * 100) : 0}%
+          </p>
+          <h2>Mantenimiento real estimado</h2>
+        </div>
+        <span className={`badge ${confidenceBadge}`}>Confianza: {TREND_CONFIDENCE_LABELS[adaptive.confidence]}</span>
+      </div>
+      <div className="nutrition-totals">
+        <div>
+          <span>Fórmula</span>
+          <strong>{adaptive.initialKcal}</strong>
+          <small>kcal (Mifflin-St Jeor)</small>
+        </div>
+        <div>
+          <span>Observado</span>
+          <strong>{adaptive.observedKcal}</strong>
+          <small>ingesta real vs. peso real</small>
+        </div>
+        <div>
+          <span>Combinado</span>
+          <strong>{adaptive.combinedKcal}</strong>
+          <small>mantenimiento adaptativo</small>
+        </div>
+      </div>
+      <p className="cycle-note">
+        Tu mantenimiento adaptativo estimado es de {adaptive.combinedKcal} kcal. Todavía no ha
+        modificado tu objetivo diario.
       </p>
     </article>
   );

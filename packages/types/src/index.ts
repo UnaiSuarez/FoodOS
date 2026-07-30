@@ -255,6 +255,30 @@ export interface WeightTrendResult {
   confidence: ConfidenceLevel;
 }
 
+/** Cobertura de registro de ingesta en una ventana de días — cuánto se puede
+    confiar en el promedio de kcal calculado sobre esos días. */
+export interface IntakeCoverageResult {
+  avgKcal: number;
+  /** Fracción (0-1) de días de la ventana con registro suficiente. */
+  coverageFraction: number;
+  daysWithData: number;
+  windowDays: number;
+}
+
+/**
+ * Resultado de calcAdaptiveTdee(): TDEE inicial (fórmula Mifflin-St Jeor +
+ * actividad) combinado con el TDEE observado (ingesta real vs. tendencia de
+ * peso real). Solo informativo en su primera versión — no cambia ningún
+ * objetivo por sí solo.
+ */
+export interface AdaptiveTdeeResult {
+  initialKcal: number;
+  /** null si no hay suficiente tendencia de peso o cobertura de ingesta. */
+  observedKcal: number | null;
+  combinedKcal: number;
+  confidence: ConfidenceLevel | "insufficient_data";
+}
+
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
   age: number;
@@ -366,6 +390,10 @@ export interface NutritionCalculationSnapshot {
   };
   tdee: {
     valueKcal: number;
+    /** Desglose del TDEE adaptativo (PR5) si había datos suficientes en el
+        momento de guardar — ausente en la mayoría de guardados (perfiles
+        nuevos, sin histórico de peso/ingesta todavía). */
+    adaptive?: AdaptiveTdeeResult;
   };
   calorieTarget: {
     kcal: number;
