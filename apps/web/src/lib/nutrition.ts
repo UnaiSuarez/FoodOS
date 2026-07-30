@@ -1,5 +1,6 @@
 import type {
   ActivityLevel,
+  ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
   ExperienceLevel,
@@ -11,6 +12,8 @@ import type {
   Recipe,
   SafetyWarning,
   TrainingActivityProfile,
+  WeightEntry,
+  WeightTrendResult,
 } from "@foodos/types";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
@@ -411,6 +414,96 @@ export function weeklyCycle(
 export function calculateFiberTarget(caloriesKcal: number): number {
   const scaled = (caloriesKcal / 1000) * 14;
   return Math.round(Math.min(45, Math.max(25, scaled)));
+}
+
+// ─── Tendencia de peso (suavizado, sin efecto en calorías) ───────────────────
+
+const TREND_WINDOW_DAYS = 28;
+/** Peso del punto más reciente en el EWMA. 0.2 es un punto intermedio típico
+    en apps de peso suavizado (más reactivo que el 0.1 de "Hacker's Diet",
+    menos ruidoso que seguir el peso crudo). No es un valor clínico, es un
+    parámetro de suavizado — ajustable si en producción resulta muy/poco reactivo. */
+const TREND_EWMA_ALPHA = 0.2;
+const TREND_MIN_MEASUREMENTS = 3;
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function daysBetweenDates(fromDateKey: string, toDateKey: string): number {
+  const from = new Date(`${fromDateKey}T12:00:00`).getTime();
+  const to = new Date(`${toDateKey}T12:00:00`).getTime();
+  return Math.round((to - from) / 86_400_000);
+}
+
+/**
+ * Tendencia de peso suavizada — nunca cambia ningún objetivo por sí sola,
+ * solo informa (ver WeightTrendResult). Pipeline:
+ *
+ * 1. Filtra registros válidos dentro de la ventana (por defecto 28 días).
+ * 2. Mediana móvil de 3 (ventana centrada, recortada en los extremos) — quita
+ *    picos aislados de un día (agua, sal, ciclo menstrual...).
+ * 3. EWMA sobre la serie de medianas — la curva de "peso tendencia" que se
+ *    muestra al usuario.
+ * 4. Regresión lineal (mínimos cuadrados) de la serie EWMA frente a días
+ *    transcurridos → pendiente diaria.
+ *
+ * Devuelve null si no hay datos suficientes (< 3 registros en la ventana) —
+ * igual que el resto de paneles de peso/proyección de esta vista.
+ */
+export function calcWeightTrend(
+  entries: WeightEntry[],
+  referenceDate: string,
+  windowDays: number = TREND_WINDOW_DAYS,
+): WeightTrendResult | null {
+  const sorted = entries
+    .filter((e) => e.date <= referenceDate && daysBetweenDates(e.date, referenceDate) <= windowDays)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (sorted.length < TREND_MIN_MEASUREMENTS) return null;
+
+  const medianSmoothed = sorted.map((entry, i) => {
+    const windowVals = [sorted[i - 1]?.kg, entry.kg, sorted[i + 1]?.kg].filter(
+      (v): v is number => v != null
+    );
+    return { date: entry.date, kg: median(windowVals) };
+  });
+
+  let ewma = medianSmoothed[0].kg;
+  const ewmaSeries = medianSmoothed.map((point, i) => {
+    if (i === 0) return { date: point.date, kg: ewma };
+    ewma = TREND_EWMA_ALPHA * point.kg + (1 - TREND_EWMA_ALPHA) * ewma;
+    return { date: point.date, kg: ewma };
+  });
+
+  const x = ewmaSeries.map((p) => daysBetweenDates(ewmaSeries[0].date, p.date));
+  const y = ewmaSeries.map((p) => p.kg);
+  const n = x.length;
+  const xMean = x.reduce((s, v) => s + v, 0) / n;
+  const yMean = y.reduce((s, v) => s + v, 0) / n;
+  const num = x.reduce((s, xi, i) => s + (xi - xMean) * (y[i] - yMean), 0);
+  const den = x.reduce((s, xi) => s + (xi - xMean) ** 2, 0);
+  const slopeKgPerDay = den === 0 ? 0 : num / den;
+
+  const trendWeightKg = Math.round(ewmaSeries[ewmaSeries.length - 1].kg * 10) / 10;
+  const latestWeightKg = sorted[sorted.length - 1].kg;
+  const weeklyChangeKg = Math.round(slopeKgPerDay * 7 * 100) / 100;
+  const weeklyChangePercent = Math.round((weeklyChangeKg / trendWeightKg) * 1000) / 10;
+
+  const confidence: ConfidenceLevel =
+    sorted.length >= 14 ? "high" : sorted.length >= 7 ? "moderate" : "low";
+
+  return {
+    latestWeightKg,
+    trendWeightKg,
+    slopeKgPerDay: Math.round(slopeKgPerDay * 10000) / 10000,
+    weeklyChangeKg,
+    weeklyChangePercent,
+    validMeasurements: sorted.length,
+    confidence,
+  };
 }
 
 // ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────

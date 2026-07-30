@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, ActivityModelVersion, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import {
   actions,
   bestRecipe,
@@ -29,6 +29,7 @@ import {
   calcProteinRange,
   calcSummary,
   calculateFiberTarget,
+  calcWeightTrend,
   evaluateNutritionSafety,
   isGymDay,
   LIFESTYLE_ONLY_FACTORS,
@@ -81,6 +82,8 @@ export function NutritionView() {
       {state.profile && <ProteinOptimizerPanel />}
 
       {state.profile && <WeightPanel />}
+
+      {state.profile && <WeightTrendPanel />}
 
       {state.profile && <WeightProjectionPanel />}
     </section>
@@ -626,6 +629,76 @@ function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: num
         </text>
       )}
     </svg>
+  );
+}
+
+// ---------- Tendencia de peso suavizada (solo informativa, PR4) ----------
+
+const TREND_CONFIDENCE_LABELS: Record<ConfidenceLevel, string> = {
+  low: "Baja",
+  moderate: "Moderada",
+  high: "Alta",
+};
+
+function WeightTrendPanel() {
+  const { state } = useFoodOS();
+  const trend = calcWeightTrend(state.weightLog, getToday(state));
+
+  if (!trend) {
+    return (
+      <article className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">Tendencia</p>
+            <h2>Peso suavizado</h2>
+          </div>
+        </div>
+        <p className="empty">
+          Registra tu peso al menos 3 días (dentro de las últimas 4 semanas) para ver tu tendencia suavizada.
+        </p>
+      </article>
+    );
+  }
+
+  const isLoss = trend.weeklyChangeKg < 0;
+  const isFlat = Math.abs(trend.weeklyChangeKg) < 0.05;
+  const confidenceBadge = trend.confidence === "high" ? "green" : trend.confidence === "moderate" ? "amber" : "";
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Tendencia · {trend.validMeasurements} mediciones (últimas 4 semanas)</p>
+          <h2>Peso suavizado</h2>
+        </div>
+        <span className={`badge ${confidenceBadge}`}>Confianza: {TREND_CONFIDENCE_LABELS[trend.confidence]}</span>
+      </div>
+      <div className="nutrition-totals">
+        <div>
+          <span>Registrado</span>
+          <strong>{trend.latestWeightKg} kg</strong>
+          <small>último dato tal cual</small>
+        </div>
+        <div>
+          <span>Tendencia</span>
+          <strong>{trend.trendWeightKg} kg</strong>
+          <small>suavizado (mediana + EWMA)</small>
+        </div>
+        <div>
+          <span>Cambio estimado</span>
+          <strong>
+            {isFlat ? "≈0" : `${isLoss ? "−" : "+"}${Math.abs(trend.weeklyChangeKg).toFixed(2)}`} kg
+          </strong>
+          <small>
+            por semana ({trend.weeklyChangePercent >= 0 ? "+" : ""}
+            {trend.weeklyChangePercent}%)
+          </small>
+        </div>
+      </div>
+      <p className="cycle-note">
+        Este dato es solo informativo — todavía no ajusta tu objetivo de calorías.
+      </p>
+    </article>
   );
 }
 
