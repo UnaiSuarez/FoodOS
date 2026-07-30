@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { PhysicalProfile, Recipe } from "@foodos/types";
+import type { PhysicalProfile, Recipe, WeightEntry } from "@foodos/types";
 import {
   calcDailyTargets,
   calcIMC,
   calcProteinBase,
   calcTDEE,
   calcTMB,
+  calcWeightTrend,
   calculateFiberTarget,
   distributeWeeklyCalories,
   estimateWorkoutKcal,
@@ -313,5 +314,69 @@ describe("evaluateNutritionSafety", () => {
     expect(result.automaticPlanAllowed).toBe(true);
     expect(result.requiresConfirmation).toBe(false);
     expect(result.warnings).toEqual([]);
+  });
+});
+
+describe("calcWeightTrend", () => {
+  const REF = "2026-02-14";
+
+  function addDays(dateKey: string, days: number): string {
+    const d = new Date(`${dateKey}T12:00:00`);
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** Serie diaria de `count` entradas terminando en `endDate`, con pendiente
+      lineal `dailyDeltaKg` (positiva = ganando peso, negativa = perdiendo). */
+  function linearSeries(startKg: number, count: number, dailyDeltaKg: number, endDate: string): WeightEntry[] {
+    return Array.from({ length: count }, (_, i) => ({
+      date: addDays(endDate, -(count - 1 - i)),
+      kg: Math.round((startKg + dailyDeltaKg * i) * 100) / 100,
+    }));
+  }
+
+  it("devuelve null con menos de 3 mediciones en la ventana", () => {
+    const entries = linearSeries(80, 2, -0.1, REF);
+    expect(calcWeightTrend(entries, REF)).toBeNull();
+  });
+
+  it("detecta una tendencia de pérdida de peso clara (14 días, alta confianza)", () => {
+    const entries = linearSeries(80, 14, -0.1, REF); // 80.0 -> 78.7 kg
+    const result = calcWeightTrend(entries, REF)!;
+    expect(result).not.toBeNull();
+    expect(result.validMeasurements).toBe(14);
+    expect(result.confidence).toBe("high");
+    expect(result.latestWeightKg).toBe(78.7);
+    expect(result.slopeKgPerDay).toBeLessThan(0);
+    expect(result.weeklyChangeKg).toBeLessThan(0);
+    expect(Math.abs(result.weeklyChangeKg)).toBeGreaterThan(0.3);
+    expect(Math.abs(result.weeklyChangeKg)).toBeLessThan(1.0);
+  });
+
+  it("detecta una tendencia de ganancia de peso (pendiente positiva)", () => {
+    const entries = linearSeries(70, 14, 0.08, REF);
+    const result = calcWeightTrend(entries, REF)!;
+    expect(result.slopeKgPerDay).toBeGreaterThan(0);
+    expect(result.weeklyChangeKg).toBeGreaterThan(0);
+  });
+
+  it("peso plano (sin cambio) da pendiente ~0", () => {
+    const entries = linearSeries(75, 10, 0, REF);
+    const result = calcWeightTrend(entries, REF)!;
+    expect(result.slopeKgPerDay).toBeCloseTo(0, 2);
+    expect(result.trendWeightKg).toBeCloseTo(75, 1);
+  });
+
+  it("niveles de confianza según mediciones válidas: 3-6 baja, 7-13 moderada, 14+ alta", () => {
+    expect(calcWeightTrend(linearSeries(80, 5, -0.1, REF), REF)!.confidence).toBe("low");
+    expect(calcWeightTrend(linearSeries(80, 10, -0.1, REF), REF)!.confidence).toBe("moderate");
+    expect(calcWeightTrend(linearSeries(80, 20, -0.1, REF), REF)!.confidence).toBe("high");
+  });
+
+  it("ignora mediciones fuera de la ventana de 28 días", () => {
+    const recent = linearSeries(80, 5, -0.1, REF);
+    const stale: WeightEntry = { date: addDays(REF, -40), kg: 95 };
+    const result = calcWeightTrend([stale, ...recent], REF)!;
+    expect(result.validMeasurements).toBe(5);
   });
 });

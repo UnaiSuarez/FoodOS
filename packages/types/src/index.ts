@@ -232,6 +232,29 @@ export interface WeightEntry {
   kg: number;
 }
 
+/** Nivel de confianza de una estimación derivada de datos del usuario
+    (tendencia de peso, TDEE adaptativo...) — basado en cuántos datos válidos
+    hay disponibles, no en la precisión estadística real de la estimación. */
+export type ConfidenceLevel = "low" | "moderate" | "high";
+
+/**
+ * Resultado de calcWeightTrend(): peso suavizado (mediana móvil + EWMA) y su
+ * pendiente diaria, calculados sobre una ventana de hasta 28 días. Solo
+ * informativo — no modifica ningún objetivo por sí solo.
+ */
+export interface WeightTrendResult {
+  /** Último peso registrado tal cual (sin suavizar). */
+  latestWeightKg: number;
+  /** Peso suavizado (EWMA sobre mediana móvil de 3) en el punto más reciente. */
+  trendWeightKg: number;
+  slopeKgPerDay: number;
+  weeklyChangeKg: number;
+  weeklyChangePercent: number;
+  /** Cuántas entradas de peso había dentro de la ventana usada. */
+  validMeasurements: number;
+  confidence: ConfidenceLevel;
+}
+
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
   age: number;
