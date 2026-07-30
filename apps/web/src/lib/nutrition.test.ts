@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PhysicalProfile, Recipe, WeightEntry, WeightTrendResult } from "@foodos/types";
+import type { AdaptiveTdeeResult, IntakeCoverageResult, PhysicalProfile, Recipe, WeightEntry, WeightTrendResult } from "@foodos/types";
 import {
   calcAdaptiveTdee,
   calcDailyTargets,
@@ -12,6 +12,7 @@ import {
   calculateFiberTarget,
   distributeWeeklyCalories,
   estimateWorkoutKcal,
+  evaluateAdjustmentProposal,
   evaluateNutritionSafety,
   monthlyAmountOf,
   projectSavings,
@@ -176,6 +177,26 @@ describe("calcDailyTargets — caso real verificado en la app (120kg/177cm/24añ
     expect(higherCarb.protein).toBe(balanced.protein);
     expect(higherCarb.fat).toBeLessThan(balanced.fat);
     expect(higherCarb.carbs).toBeGreaterThan(balanced.carbs);
+  });
+
+  it("adaptiveKcalOffsetKcal (PR6) desplaza el kcal final en esa cantidad exacta", () => {
+    const withoutOffset = calcDailyTargets(profile, true);
+    const withOffset = calcDailyTargets(baseProfile({ ...profile, adaptiveKcalOffsetKcal: -100 }), true);
+    expect(withOffset.kcal).toBe(withoutOffset.kcal - 100);
+  });
+
+  it("undefined/0 en adaptiveKcalOffsetKcal no cambia nada respecto a no tener el campo", () => {
+    const withUndefined = calcDailyTargets(profile, true);
+    const withZero = calcDailyTargets(baseProfile({ ...profile, adaptiveKcalOffsetKcal: 0 }), true);
+    expect(withZero).toEqual(withUndefined);
+  });
+
+  it("el offset nunca hace bajar del suelo de seguridad de 1200 kcal", () => {
+    const tinyProfile = baseProfile({
+      age: 60, heightCm: 150, weightKg: 40, goal: "fat_loss", activityLevel: "sedentary",
+      adaptiveKcalOffsetKcal: -300,
+    });
+    expect(calcDailyTargets(tinyProfile, false).kcal).toBeGreaterThanOrEqual(1200);
   });
 });
 
@@ -457,5 +478,80 @@ describe("calcAdaptiveTdee", () => {
     const high = params("high");
     // Con más confianza, el combinado se aleja más del inicial (2200) hacia el observado.
     expect(Math.abs(high.combinedKcal - high.initialKcal)).toBeGreaterThan(Math.abs(low.combinedKcal - low.initialKcal));
+  });
+});
+
+describe("evaluateAdjustmentProposal", () => {
+  const highTrend: WeightTrendResult = {
+    latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: -0.08,
+    weeklyChangeKg: -0.56, weeklyChangePercent: -0.7, validMeasurements: 20, confidence: "high",
+  };
+  const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
+  const adaptive = (combinedKcal: number): AdaptiveTdeeResult => ({
+    initialKcal: 2200, observedKcal: combinedKcal, combinedKcal, confidence: "high",
+  });
+
+  it("no propone sin tendencia de peso ni cobertura", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: null, intakeCoverage: null,
+    });
+    expect(result.shouldPropose).toBe(false);
+    expect(result.deltaKcal).toBe(0);
+  });
+
+  it("no propone con confianza insuficiente (moderada)", () => {
+    const moderateTrend: WeightTrendResult = { ...highTrend, confidence: "moderate", validMeasurements: 10 };
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: moderateTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("no propone con cobertura de ingesta insuficiente", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: highTrend,
+      intakeCoverage: { ...goodCoverage, coverageFraction: 0.5 },
+    });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("no propone con menos de 14 días evaluados", () => {
+    const shortTrend: WeightTrendResult = { ...highTrend, validMeasurements: 10 };
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: shortTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("no propone si la diferencia es menor de 50 kcal", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2180, adaptive: adaptive(2200), weightTrend: highTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("propone subir cuando el combinado supera bastante al objetivo actual", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: highTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(true);
+    expect(result.deltaKcal).toBeGreaterThan(0);
+    expect(result.proposedTargetKcal).toBe(2000 + result.deltaKcal);
+  });
+
+  it("propone bajar cuando el combinado es bastante menor que el objetivo actual", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 2200, adaptive: adaptive(2000), weightTrend: highTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.shouldPropose).toBe(true);
+    expect(result.deltaKcal).toBeLessThan(0);
+  });
+
+  it("recorta el delta a un máximo de 150 kcal aunque la diferencia real sea mayor", () => {
+    const result = evaluateAdjustmentProposal({
+      currentTargetKcal: 1800, adaptive: adaptive(2400), weightTrend: highTrend, intakeCoverage: goodCoverage,
+    });
+    expect(result.deltaKcal).toBeLessThanOrEqual(150);
+    expect(result.deltaKcal).toBeGreaterThanOrEqual(-150);
   });
 });
