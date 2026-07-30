@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import {
   actions,
   bestRecipe,
@@ -32,6 +32,7 @@ import {
   calcSummary,
   calculateFiberTarget,
   calcWeightTrend,
+  evaluateAdjustmentProposal,
   evaluateNutritionSafety,
   isGymDay,
   LIFESTYLE_ONLY_FACTORS,
@@ -88,6 +89,8 @@ export function NutritionView() {
       {state.profile && <WeightTrendPanel />}
 
       {state.profile && <AdaptiveTdeePanel />}
+
+      {state.profile && <AdjustmentProposalPanel />}
 
       {state.profile && <WeightProjectionPanel />}
     </section>
@@ -803,6 +806,168 @@ function AdaptiveTdeePanel() {
         Tu mantenimiento adaptativo estimado es de {adaptive.combinedKcal} kcal. Todavía no ha
         modificado tu objetivo diario.
       </p>
+    </article>
+  );
+}
+
+// ---------- Propuestas de ajuste adaptativo (PR6) ----------
+
+const ADJUSTMENT_COOLDOWN_DAYS = 14;
+
+function daysSinceDateKey(fromDateKey: string, toDateKey: string): number {
+  return Math.round(
+    (new Date(`${toDateKey}T12:00:00`).getTime() - new Date(`${fromDateKey}T12:00:00`).getTime()) / 86_400_000
+  );
+}
+
+function AdjustmentProposalPanel() {
+  const { state, mutate, showToast } = useFoodOS();
+  const profile = state.profile!;
+  const today = getToday(state);
+  const gymToday = isGymDay(profile, dateFromKey(today));
+  const pending = state.pendingAdjustmentProposal ?? null;
+
+  const { tmb, tdee: initialTdeeKcal } = calcSummary(profile);
+  const weightTrend = calcWeightTrend(state.weightLog, today);
+  const dailyKcalByDate = new Map<string, number>();
+  for (const entry of state.foodLog) {
+    dailyKcalByDate.set(entry.date, (dailyKcalByDate.get(entry.date) ?? 0) + entry.kcal);
+  }
+  const coverage = calcIntakeCoverage(Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })), today, 28);
+  const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
+  const currentTargets = calcDailyTargets(profile, gymToday, state.macroPreference);
+  const decision = evaluateAdjustmentProposal({
+    currentTargetKcal: currentTargets.kcal,
+    adaptive,
+    weightTrend,
+    intakeCoverage: coverage,
+  });
+
+  const cooldownDaysLeft =
+    !pending && state.lastAdjustmentDecisionAt
+      ? ADJUSTMENT_COOLDOWN_DAYS - daysSinceDateKey(state.lastAdjustmentDecisionAt, today)
+      : 0;
+  const inCooldown = cooldownDaysLeft > 0;
+
+  async function generateProposal() {
+    const snapshot: NutritionCalculationSnapshot = {
+      calculationVersion: "nutrition-v1",
+      triggerReason: "adaptive_review",
+      inputSnapshot: {
+        age: profile.age, sex: profile.sex, heightCm: profile.heightCm, weightKg: profile.weightKg,
+        goal: profile.goal, activityLevel: profile.activityLevel,
+        macroPreference: state.macroPreference ?? "balanced",
+        activityModelVersion: profile.activityModelVersion ?? "legacy_total_pal",
+        trainingActivity: profile.trainingActivity,
+      },
+      restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
+      tdee: { valueKcal: initialTdeeKcal, adaptive },
+      calorieTarget: { kcal: currentTargets.kcal, dayType: currentTargets.dayType },
+      macros: {
+        kcal: currentTargets.kcal, protein: currentTargets.protein, carbs: currentTargets.carbs, fat: currentTargets.fat,
+        fiber: calculateFiberTarget(currentTargets.kcal),
+      },
+      safety: evaluateNutritionSafety({ targetKcal: currentTargets.kcal, estimatedTdeeKcal: initialTdeeKcal, restingEnergyKcal: tmb }),
+    };
+    const created = await remote.createAdjustmentReview({ snapshot, decision });
+    if (created) {
+      mutate((draft) => { draft.pendingAdjustmentProposal = created; });
+      showToast("Propuesta de ajuste generada — revísala abajo.");
+    } else {
+      showToast("No se pudo generar la propuesta (revisa tu conexión).");
+    }
+  }
+
+  async function respond(accepted: boolean) {
+    if (!pending) return;
+
+    if (accepted) {
+      const nextOffset = (profile.adaptiveKcalOffsetKcal ?? 0) + pending.deltaKcal;
+      const nextProfile: PhysicalProfile = { ...profile, adaptiveKcalOffsetKcal: nextOffset };
+      const nextTargets = calcDailyTargets(nextProfile, gymToday, state.macroPreference);
+      const { tmb: nextTmb, tdee: nextTdee } = calcSummary(nextProfile);
+      const safety = evaluateNutritionSafety({
+        targetKcal: nextTargets.kcal,
+        estimatedTdeeKcal: nextTdee,
+        restingEnergyKcal: nextTmb,
+      });
+
+      if (!safety.automaticPlanAllowed) {
+        await remote.respondToAdjustmentProposal(pending.id, false);
+        mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });
+        showToast("Ese ajuste dejaría tu objetivo por debajo de 800 kcal — rechazado automáticamente por seguridad.");
+        return;
+      }
+
+      await remote.respondToAdjustmentProposal(pending.id, true);
+      mutate((draft) => {
+        if (draft.profile) draft.profile.adaptiveKcalOffsetKcal = nextOffset;
+        draft.pendingAdjustmentProposal = null;
+        draft.lastAdjustmentDecisionAt = today;
+      });
+      showToast(
+        safety.warnings.length
+          ? `Ajuste aplicado (${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día) — revisa el aviso de seguridad en tu resumen.`
+          : `Ajuste aplicado: ${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día`
+      );
+    } else {
+      await remote.respondToAdjustmentProposal(pending.id, false);
+      mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });
+      showToast("Propuesta rechazada");
+    }
+  }
+
+  return (
+    <article className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">Revisión adaptativa (beta)</p>
+          <h2>Propuesta de ajuste</h2>
+        </div>
+      </div>
+
+      {pending ? (
+        <>
+          <p className="cycle-note">{pending.reason}</p>
+          <div className="nutrition-totals">
+            <div>
+              <span>Actual</span>
+              <strong>{pending.currentTargetKcal}</strong>
+              <small>kcal/día</small>
+            </div>
+            <div>
+              <span>Propuesto</span>
+              <strong>{pending.proposedTargetKcal}</strong>
+              <small>
+                ({pending.deltaKcal > 0 ? "+" : ""}
+                {pending.deltaKcal} kcal/día)
+              </small>
+            </div>
+          </div>
+          <div className="meta-row" style={{ marginTop: 12 }}>
+            <button className="primary-button" onClick={() => void respond(true)}>
+              Aceptar ajuste
+            </button>
+            <button className="secondary-button" onClick={() => void respond(false)}>
+              Rechazar
+            </button>
+          </div>
+        </>
+      ) : decision.shouldPropose && !inCooldown ? (
+        <>
+          <p className="cycle-note">{decision.reason}</p>
+          <button className="primary-button" onClick={() => void generateProposal()}>
+            Generar propuesta de ajuste
+          </button>
+        </>
+      ) : inCooldown ? (
+        <p className="empty">
+          Ya revisamos tu objetivo hace poco. Próxima revisión disponible en {cooldownDaysLeft} día
+          {cooldownDaysLeft === 1 ? "" : "s"}.
+        </p>
+      ) : (
+        <p className="empty">{decision.reason}</p>
+      )}
     </article>
   );
 }
