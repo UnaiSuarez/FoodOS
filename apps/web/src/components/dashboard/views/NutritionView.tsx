@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import { Modal } from "@/components/dashboard/Modal";
 import {
   actions,
   bestRecipe,
@@ -203,6 +204,85 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   const isNewActivityModel = activityModelVersion === "lifestyle_plus_training";
   const defaultTraining = profile?.trainingActivity;
 
+  // N10: un déficit agresivo (>30% del TDEE) ya no se guarda con solo un
+  // toast informativo — se detiene el guardado y se pide una confirmación
+  // real, persistente, con el dato concreto delante. pendingConfirm != null
+  // mientras esa decisión está pendiente.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    next: PhysicalProfile;
+    tmb: number;
+    tdee: number;
+    targets: DailyTargets;
+    safety: NutritionSafetyResult;
+    trainingActivity?: TrainingActivityProfile;
+  } | null>(null);
+
+  /** Escribe el perfil de verdad — solo se llama cuando no hace falta
+      confirmación, o después de que el usuario la haya dado explícitamente. */
+  function commitSave(
+    next: PhysicalProfile,
+    tmb: number,
+    tdee: number,
+    targets: DailyTargets,
+    safety: NutritionSafetyResult,
+    trainingActivity: TrainingActivityProfile | undefined,
+  ) {
+    mutate((draft) => {
+      draft.profile = next;
+      draft.macroPreference = macroPreference;
+    });
+
+    // Desglose adaptativo (PR5), solo si ya hay tendencia de peso e ingesta
+    // registradas — se guarda como contexto adicional del snapshot, nunca
+    // dispara un snapshot por sí solo. Se filtra por la calibración vigente
+    // TRAS este guardado (next.adaptiveCalibrationStartedAt): si este mismo
+    // guardado acaba de reiniciarla, el desglose ya refleja que apenas hay
+    // histórico bajo el nuevo régimen, en vez de mezclar datos de antes.
+    const weightLogAtSave = filterEntriesFromCalibrationStart(state.weightLog, next.adaptiveCalibrationStartedAt);
+    const weightTrendAtSave = calcWeightTrend(weightLogAtSave, getToday(state));
+    const dailyKcalAtSaveMap = new Map<string, number>();
+    for (const entry of state.foodLog) {
+      dailyKcalAtSaveMap.set(entry.date, (dailyKcalAtSaveMap.get(entry.date) ?? 0) + entry.kcal);
+    }
+    const dailyKcalAtSave = filterEntriesFromCalibrationStart(
+      Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
+      next.adaptiveCalibrationStartedAt
+    );
+    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, targets.kcal);
+    const adaptiveAtSave = calcAdaptiveTdee({
+      initialTdeeKcal: tdee,
+      avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
+      weightTrend: weightTrendAtSave,
+    });
+
+    // Snapshot inmutable de cómo se calculó — solo en este evento explícito
+    // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
+    // safety puede llevar confirmedDespiteWarning:true (N10) — queda en el
+    // snapshot como constancia de que el aviso no se ignoró en silencio.
+    void remote.saveNutritionSnapshot({
+      calculationVersion: NUTRITION_ENGINE_VERSION,
+      triggerReason: profile ? "profile_changed" : "initial_calculation",
+      inputSnapshot: {
+        age: next.age, sex: next.sex, heightCm: next.heightCm, weightKg: next.weightKg,
+        goal: next.goal, activityLevel: next.activityLevel, macroPreference,
+        activityModelVersion, trainingActivity,
+      },
+      restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
+      tdee: {
+        valueKcal: tdee,
+        ...(adaptiveAtSave.confidence !== "insufficient_data" && { adaptive: adaptiveAtSave }),
+      },
+      calorieTarget: { kcal: targets.kcal, dayType: targets.dayType },
+      macros: {
+        kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
+        fiber: calculateFiberTarget(targets.kcal),
+      },
+      safety,
+    });
+
+    onSaved();
+  }
+
   function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -279,67 +359,23 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       showToast("Ese objetivo queda por debajo de 800 kcal — revisa peso/altura/edad o consulta a un profesional.");
       return;
     }
-    if (safety.warnings.includes("aggressive_energy_deficit")) {
-      showToast("⚠ El déficit calculado es agresivo (>30% del TDEE) — revísalo antes de seguir.");
-    } else if (safety.warnings.includes("below_resting_energy")) {
+    if (safety.warnings.includes("below_resting_energy")) {
       showToast("El objetivo queda por debajo de tu TMB estimada — no es peligroso por sí solo, pero merece revisión.");
     }
 
-    mutate((draft) => {
-      draft.profile = next;
-      draft.macroPreference = macroPreference;
-    });
-
-    // Desglose adaptativo (PR5), solo si ya hay tendencia de peso e ingesta
-    // registradas — se guarda como contexto adicional del snapshot, nunca
-    // dispara un snapshot por sí solo. Se filtra por la calibración vigente
-    // TRAS este guardado (next.adaptiveCalibrationStartedAt): si este mismo
-    // guardado acaba de reiniciarla, el desglose ya refleja que apenas hay
-    // histórico bajo el nuevo régimen, en vez de mezclar datos de antes.
-    const weightLogAtSave = filterEntriesFromCalibrationStart(state.weightLog, next.adaptiveCalibrationStartedAt);
-    const weightTrendAtSave = calcWeightTrend(weightLogAtSave, getToday(state));
-    const dailyKcalAtSaveMap = new Map<string, number>();
-    for (const entry of state.foodLog) {
-      dailyKcalAtSaveMap.set(entry.date, (dailyKcalAtSaveMap.get(entry.date) ?? 0) + entry.kcal);
+    // N10: un déficit agresivo detiene el guardado y pide confirmación real
+    // (diálogo persistente, no un toast) — antes se avisaba y se guardaba
+    // igual, así que "requiresConfirmation" nunca llegaba a exigir nada.
+    if (safety.requiresConfirmation) {
+      setPendingConfirm({ next, tmb, tdee, targets, safety, trainingActivity });
+      return;
     }
-    const dailyKcalAtSave = filterEntriesFromCalibrationStart(
-      Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
-      next.adaptiveCalibrationStartedAt
-    );
-    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, targets.kcal);
-    const adaptiveAtSave = calcAdaptiveTdee({
-      initialTdeeKcal: tdee,
-      avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
-      weightTrend: weightTrendAtSave,
-    });
 
-    // Snapshot inmutable de cómo se calculó — solo en este evento explícito
-    // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
-    void remote.saveNutritionSnapshot({
-      calculationVersion: NUTRITION_ENGINE_VERSION,
-      triggerReason: profile ? "profile_changed" : "initial_calculation",
-      inputSnapshot: {
-        age: next.age, sex: next.sex, heightCm: next.heightCm, weightKg: next.weightKg,
-        goal: next.goal, activityLevel: next.activityLevel, macroPreference,
-        activityModelVersion, trainingActivity,
-      },
-      restingEnergy: { valueKcal: tmb, method: "mifflin_st_jeor" },
-      tdee: {
-        valueKcal: tdee,
-        ...(adaptiveAtSave.confidence !== "insufficient_data" && { adaptive: adaptiveAtSave }),
-      },
-      calorieTarget: { kcal: targets.kcal, dayType: targets.dayType },
-      macros: {
-        kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
-        fiber: calculateFiberTarget(targets.kcal),
-      },
-      safety,
-    });
-
-    onSaved();
+    commitSave(next, tmb, tdee, targets, safety, trainingActivity);
   }
 
   return (
+    <>
     <form className="panel form-panel" onSubmit={save}>
       <p className="eyebrow">{profile ? "Editar perfil" : "Configura tu perfil"}</p>
       <h2>{profile ? "Tu perfil físico" : "Cuéntanos tu objetivo"}</h2>
@@ -350,22 +386,27 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
 
       <div className="form-grid">
         <label>
-          Edad <input name="age" type="number" min="14" max="100" required defaultValue={profile?.age ?? 25} />
+          Edad
+          {/* Sin valor por defecto (N9): un dato inventado (25 años) podía
+              guardarse sin que el usuario lo notara. Al editar sí se muestra
+              el valor ya guardado — eso no es un dato inventado. */}
+          <input name="age" type="number" min="14" max="100" required defaultValue={profile?.age} placeholder="ej. 28" />
         </label>
         <label>
           Sexo biológico
-          <select name="sex" defaultValue={profile?.sex ?? "male"}>
+          <select name="sex" defaultValue={profile?.sex ?? ""} required>
+            {!profile && <option value="" disabled>Elige una opción</option>}
             <option value="male">Hombre</option>
             <option value="female">Mujer</option>
           </select>
         </label>
         <label>
           Altura (cm)
-          <input name="height" type="number" min="120" max="230" required defaultValue={profile?.heightCm ?? 175} />
+          <input name="height" type="number" min="120" max="230" required defaultValue={profile?.heightCm} placeholder="ej. 175" />
         </label>
         <label>
           Peso (kg)
-          <input name="weight" type="number" min="35" max="250" step="0.1" required defaultValue={profile?.weightKg ?? 75} />
+          <input name="weight" type="number" min="35" max="250" step="0.1" required defaultValue={profile?.weightKg} placeholder="ej. 75" />
         </label>
         <label>
           % graso <small>(opcional)</small>
@@ -435,7 +476,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         {!isNewActivityModel ? (
           <label className="activity-legacy-field">
             Nivel de actividad
-            <select name="activity" defaultValue={profile?.activityLevel ?? "moderate"}>
+            <select name="activity" defaultValue={profile?.activityLevel ?? ""} required>
+              {!profile && <option value="" disabled>Elige una opción</option>}
               {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
                 <option key={level} value={level}>
                   {ACTIVITY_LABELS[level]}
@@ -452,7 +494,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
             <div className="form-grid compact">
               <label>
                 Actividad cotidiana <small>(sin contar el entreno)</small>
-                <select name="lifestyleActivity" defaultValue={defaultTraining?.lifestyleActivity ?? "sedentary"}>
+                <select name="lifestyleActivity" defaultValue={defaultTraining?.lifestyleActivity ?? ""} required>
+                  {!defaultTraining && <option value="" disabled>Elige una opción</option>}
                   {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
                     <option key={level} value={level}>
                       {ACTIVITY_LABELS[level]}
@@ -462,13 +505,16 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
               </label>
               <label>
                 Días de fuerza/semana
+                {/* Sin valor por defecto (N9): "3 días" sin que el usuario lo
+                    tocara podía sumar gasto de entreno inventado al TDEE. */}
                 <input
                   name="strengthDays"
                   type="number"
                   min="0"
                   max="7"
                   required
-                  defaultValue={defaultTraining?.strengthDaysPerWeek ?? 3}
+                  defaultValue={defaultTraining?.strengthDaysPerWeek}
+                  placeholder="ej. 3"
                 />
               </label>
               <label>
@@ -479,7 +525,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   min="0"
                   max="7"
                   required
-                  defaultValue={defaultTraining?.cardioDaysPerWeek ?? 0}
+                  defaultValue={defaultTraining?.cardioDaysPerWeek}
+                  placeholder="ej. 0"
                 />
               </label>
               <label>
@@ -490,11 +537,12 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   min="10"
                   max="240"
                   required
-                  defaultValue={defaultTraining?.avgSessionDurationMin ?? 60}
+                  defaultValue={defaultTraining?.avgSessionDurationMin}
+                  placeholder="ej. 60"
                 />
               </label>
               <label>
-                Pasos diarios habituales <small>(opcional)</small>
+                Pasos diarios habituales <small>(opcional — todavía no afecta al cálculo, ver abajo)</small>
                 <input
                   name="habitualSteps"
                   type="number"
@@ -505,6 +553,15 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                 />
               </label>
             </div>
+            {/* N8: se captura para un futuro modelo que evite doble conteo
+                con la actividad cotidiana, pero hoy no entra en ningún
+                cálculo — sin esto, el usuario podía asumir que rellenarlo
+                cambiaba su TDEE. */}
+            <p className="activity-model-note">
+              📌 Los pasos diarios se guardan como referencia — <strong>todavía no afectan</strong> a tu
+              cálculo de calorías. Los tendremos en cuenta más adelante, evitando contar dos veces el
+              mismo movimiento si ya está incluido en tu actividad cotidiana.
+            </p>
           </div>
         )}
       </fieldset>
@@ -562,6 +619,35 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         {profile ? "Guardar cambios" : "Calcular mis objetivos"}
       </button>
     </form>
+
+    {pendingConfirm && (
+      <Modal title="Revisa tu déficit antes de continuar" onClose={() => setPendingConfirm(null)}>
+        <p className="cycle-note">
+          Este objetivo ({pendingConfirm.targets.kcal} kcal/día) equivale aproximadamente al{" "}
+          <strong>{Math.round((pendingConfirm.targets.kcal / pendingConfirm.tdee) * 100)}%</strong> de tu
+          mantenimiento estimado ({pendingConfirm.tdee} kcal/día) — un déficit superior al 30% se considera
+          agresivo. No es peligroso por sí solo, pero conviene revisarlo antes de seguir: comprueba que edad,
+          peso, altura y actividad son correctos, o consulta con un profesional si mantienes este ritmo mucho
+          tiempo.
+        </p>
+        <div className="meta-row" style={{ marginTop: 12 }}>
+          <button className="secondary-button" onClick={() => setPendingConfirm(null)}>
+            ← Revisar los datos
+          </button>
+          <button
+            className="primary-button"
+            onClick={() => {
+              const { next, tmb, tdee, targets, safety, trainingActivity } = pendingConfirm;
+              commitSave(next, tmb, tdee, targets, { ...safety, confirmedDespiteWarning: true }, trainingActivity);
+              setPendingConfirm(null);
+            }}
+          >
+            Guardar de todos modos
+          </button>
+        </div>
+      </Modal>
+    )}
+    </>
   );
 }
 
@@ -829,7 +915,12 @@ function AdaptiveTdeePanel() {
         <div>
           <span>Fórmula</span>
           <strong>{adaptive.initialKcal}</strong>
-          <small>kcal (Mifflin-St Jeor)</small>
+          {/* N15: Mifflin-St Jeor solo calcula la TMB (reposo) — este número
+              ya incluye el factor de actividad, así que atribuirlo solo a
+              la fórmula del metabolismo basal inducía a error. */}
+          <small title="TMB (Mifflin-St Jeor) × tu factor de actividad declarado — no es solo la fórmula del metabolismo basal.">
+            kcal (TMB + actividad)
+          </small>
         </div>
         <div>
           <span>Observado</span>
@@ -909,6 +1000,81 @@ function AdjustmentProposalPanel() {
   const currentFingerprint = buildAdjustmentProfileFingerprint(profile, state.macroPreference ?? "balanced");
   const proposalStale = pending ? isProposalStale(pending.evidence?.profileFingerprint, currentFingerprint) : false;
 
+  // N11: si aceptar el ajuste cruza un umbral de advertencia (déficit
+  // agresivo o por debajo de la TMB) — sin llegar al bloqueo duro de <800
+  // kcal, que ya se rechaza solo — antes se aplicaba igual y el aviso solo
+  // aparecía después en un toast. Ahora se detiene y se pide confirmación
+  // explícita, igual criterio que el guardado de perfil (N10).
+  const [pendingWarningConfirm, setPendingWarningConfirm] = useState<{
+    nextOffset: number;
+    nextProfile: PhysicalProfile;
+    nextTargets: DailyTargets;
+    nextTmb: number;
+    nextTdee: number;
+    safety: NutritionSafetyResult;
+  } | null>(null);
+
+  async function commitAccept(
+    nextOffset: number,
+    nextProfile: PhysicalProfile,
+    nextTargets: DailyTargets,
+    nextTmb: number,
+    nextTdee: number,
+    safety: NutritionSafetyResult,
+  ) {
+    if (!pending) return;
+    const finalSnapshot: NutritionCalculationSnapshot = {
+      calculationVersion: NUTRITION_ENGINE_VERSION,
+      triggerReason: "adaptive_adjustment_accepted",
+      inputSnapshot: {
+        age: nextProfile.age, sex: nextProfile.sex, heightCm: nextProfile.heightCm, weightKg: nextProfile.weightKg,
+        goal: nextProfile.goal, activityLevel: nextProfile.activityLevel,
+        macroPreference: state.macroPreference ?? "balanced",
+        activityModelVersion: nextProfile.activityModelVersion ?? "legacy_total_pal",
+        trainingActivity: nextProfile.trainingActivity,
+      },
+      restingEnergy: { valueKcal: nextTmb, method: "mifflin_st_jeor" },
+      tdee: { valueKcal: nextTdee },
+      calorieTarget: { kcal: nextTargets.kcal, dayType: nextTargets.dayType },
+      macros: {
+        kcal: nextTargets.kcal, protein: nextTargets.protein, carbs: nextTargets.carbs, fat: nextTargets.fat,
+        fiber: calculateFiberTarget(nextTargets.kcal),
+      },
+      safety,
+    };
+
+    // La UI NO toca perfil/propuesta local hasta que el RPC confirme ok:true
+    // — si falla (red, RLS, propuesta ya resuelta en otro dispositivo...) el
+    // estado local se queda exactamente como estaba, sin un "aplicado" falso.
+    const result = await remote.acceptAdjustmentProposal({
+      proposalId: pending.id,
+      accepted: true,
+      goalDate: today,
+      newOffsetKcal: nextOffset,
+      kcalTarget: nextTargets.kcal,
+      proteinG: nextTargets.protein,
+      carbsG: nextTargets.carbs,
+      fatG: nextTargets.fat,
+      mode: nextProfile.goal,
+      finalSnapshot,
+    });
+    if (!result.ok) {
+      showToast(`No se pudo aplicar el ajuste: ${result.error}`);
+      return;
+    }
+
+    mutate((draft) => {
+      if (draft.profile) draft.profile.adaptiveKcalOffsetKcal = nextOffset;
+      draft.pendingAdjustmentProposal = null;
+      draft.lastAdjustmentDecisionAt = today;
+    });
+    showToast(
+      safety.warnings.length
+        ? `Ajuste aplicado (${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día) — revisa el aviso de seguridad en tu resumen.`
+        : `Ajuste aplicado: ${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día`
+    );
+  }
+
   async function generateProposal() {
     const snapshot: NutritionCalculationSnapshot = {
       calculationVersion: NUTRITION_ENGINE_VERSION,
@@ -976,56 +1142,15 @@ function AdjustmentProposalPanel() {
         return;
       }
 
-      const finalSnapshot: NutritionCalculationSnapshot = {
-        calculationVersion: NUTRITION_ENGINE_VERSION,
-        triggerReason: "adaptive_adjustment_accepted",
-        inputSnapshot: {
-          age: nextProfile.age, sex: nextProfile.sex, heightCm: nextProfile.heightCm, weightKg: nextProfile.weightKg,
-          goal: nextProfile.goal, activityLevel: nextProfile.activityLevel,
-          macroPreference: state.macroPreference ?? "balanced",
-          activityModelVersion: nextProfile.activityModelVersion ?? "legacy_total_pal",
-          trainingActivity: nextProfile.trainingActivity,
-        },
-        restingEnergy: { valueKcal: nextTmb, method: "mifflin_st_jeor" },
-        tdee: { valueKcal: nextTdee },
-        calorieTarget: { kcal: nextTargets.kcal, dayType: nextTargets.dayType },
-        macros: {
-          kcal: nextTargets.kcal, protein: nextTargets.protein, carbs: nextTargets.carbs, fat: nextTargets.fat,
-          fiber: calculateFiberTarget(nextTargets.kcal),
-        },
-        safety,
-      };
-
-      // La UI NO toca perfil/propuesta local hasta que el RPC confirme ok:true
-      // — si falla (red, RLS, propuesta ya resuelta en otro dispositivo...) el
-      // estado local se queda exactamente como estaba, sin un "aplicado" falso.
-      const result = await remote.acceptAdjustmentProposal({
-        proposalId: pending.id,
-        accepted: true,
-        goalDate: today,
-        newOffsetKcal: nextOffset,
-        kcalTarget: nextTargets.kcal,
-        proteinG: nextTargets.protein,
-        carbsG: nextTargets.carbs,
-        fatG: nextTargets.fat,
-        mode: nextProfile.goal,
-        finalSnapshot,
-      });
-      if (!result.ok) {
-        showToast(`No se pudo aplicar el ajuste: ${result.error}`);
+      // N11: cualquier warning nuevo (déficit agresivo o por debajo de la
+      // TMB) detiene la aplicación y pide confirmación explícita — antes se
+      // aplicaba directamente y el aviso solo se veía después, en un toast.
+      if (safety.warnings.length > 0) {
+        setPendingWarningConfirm({ nextOffset, nextProfile, nextTargets, nextTmb, nextTdee, safety });
         return;
       }
 
-      mutate((draft) => {
-        if (draft.profile) draft.profile.adaptiveKcalOffsetKcal = nextOffset;
-        draft.pendingAdjustmentProposal = null;
-        draft.lastAdjustmentDecisionAt = today;
-      });
-      showToast(
-        safety.warnings.length
-          ? `Ajuste aplicado (${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día) — revisa el aviso de seguridad en tu resumen.`
-          : `Ajuste aplicado: ${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día`
-      );
+      await commitAccept(nextOffset, nextProfile, nextTargets, nextTmb, nextTdee, safety);
     } else {
       const result = await remote.acceptAdjustmentProposal({ proposalId: pending.id, accepted: false, goalDate: today });
       if (!result.ok) {
@@ -1038,6 +1163,7 @@ function AdjustmentProposalPanel() {
   }
 
   return (
+    <>
     <article className="panel">
       <div className="panel-head">
         <div>
@@ -1168,6 +1294,45 @@ function AdjustmentProposalPanel() {
         )}
       </details>
     </article>
+
+    {pendingWarningConfirm && (
+      <Modal title="Revisa el aviso antes de aplicar" onClose={() => setPendingWarningConfirm(null)}>
+        {pendingWarningConfirm.safety.warnings.includes("aggressive_energy_deficit") && (
+          <p className="cycle-note">
+            ⚠ Con este ajuste tu objetivo pasaría a {pendingWarningConfirm.nextTargets.kcal} kcal/día — un
+            déficit agresivo, por debajo del 70% de tu TDEE estimado ({pendingWarningConfirm.nextTdee} kcal).
+            No es peligroso por sí solo, pero conviene revisarlo antes de aplicarlo.
+          </p>
+        )}
+        {!pendingWarningConfirm.safety.warnings.includes("aggressive_energy_deficit") &&
+          pendingWarningConfirm.safety.warnings.includes("below_resting_energy") && (
+          <p className="cycle-note">
+            Con este ajuste tu objetivo pasaría a {pendingWarningConfirm.nextTargets.kcal} kcal/día — por
+            debajo de tu TMB estimada ({pendingWarningConfirm.nextTmb} kcal). No es un mínimo obligatorio,
+            pero merece revisión.
+          </p>
+        )}
+        <div className="meta-row" style={{ marginTop: 12 }}>
+          <button className="secondary-button" onClick={() => setPendingWarningConfirm(null)}>
+            ← No aplicar todavía
+          </button>
+          <button
+            className="primary-button"
+            onClick={() => {
+              const { nextOffset, nextProfile, nextTargets, nextTmb, nextTdee, safety } = pendingWarningConfirm;
+              setPendingWarningConfirm(null);
+              void commitAccept(nextOffset, nextProfile, nextTargets, nextTmb, nextTdee, {
+                ...safety,
+                confirmedDespiteWarning: true,
+              });
+            }}
+          >
+            Aplicar de todos modos
+          </button>
+        </div>
+      </Modal>
+    )}
+    </>
   );
 }
 

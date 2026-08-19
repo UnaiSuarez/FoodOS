@@ -510,6 +510,16 @@ export interface NutritionSafetyResult {
   automaticPlanAllowed: boolean;
   requiresConfirmation: boolean;
   warnings: SafetyWarning[];
+  /**
+   * true si el usuario vio un diálogo persistente explicando el aviso y
+   * pulsó "continuar de todos modos" — evaluateNutritionSafety() nunca lo
+   * pone (es una función pura de cálculo, no sabe de diálogos); lo añade el
+   * caller antes de guardar el snapshot, para que quede trazado que
+   * `requiresConfirmation: true` no se ignoró en silencio (ver N10 en
+   * docs/REVISION_NUTRICION_PR48-52.md — antes solo se mostraba un toast y
+   * el guardado continuaba igual, sin registrar ninguna decisión).
+   */
+  confirmedDespiteWarning?: boolean;
 }
 
 export type SnapshotTriggerReason =
