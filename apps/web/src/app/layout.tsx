@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import { DM_Mono, DM_Serif_Display, Outfit } from "next/font/google";
 import "./globals.css";
 import { ServiceWorkerRegistrar } from "@/components/ServiceWorkerRegistrar";
@@ -50,7 +51,14 @@ export const viewport: Viewport = {
   themeColor: "#070a05",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // E15-03/E20-03: leer el nonce que puso el middleware es lo que hace que
+  // Next.js aplique automáticamente ese mismo nonce a los scripts que él
+  // mismo inyecta (hidratación, chunks...) — sin esto, la CSP del middleware
+  // no protegería nada que Next.js genera por su cuenta. Convierte este
+  // layout en dinámico (no se puede pre-renderizar de forma estática), un
+  // coste aceptado a cambio de tener nonces reales.
+  await headers();
   return (
     <html lang="es" className={`${serif.variable} ${sans.variable} ${mono.variable}`}>
       <body>
