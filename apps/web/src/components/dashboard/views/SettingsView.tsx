@@ -73,7 +73,7 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
     resetAll();
     setShowDeleteZone(false);
     setDeleteWord("");
-    showToast("Todos los datos han sido eliminados.");
+    showToast(authUser ? "Datos de este dispositivo eliminados." : "Todos los datos han sido eliminados.");
   }
 
   function shiftDebugDate(deltaDays: number) {
@@ -451,15 +451,33 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
       </article>
 
       {/* Zona de peligro */}
+      {/* E17-01: el texto anterior decía "elimina permanentemente todos tus
+          datos... esta acción no se puede deshacer" sin distinguir local de
+          nube. resetAll() SOLO borra localStorage — con sesión activa, tus
+          datos siguen en Supabase y volverían a sincronizarse en el próximo
+          inicio, justo lo contrario de "no se puede deshacer". El texto
+          ahora refleja el alcance real según haya sesión o no. */}
       <article className="panel settings-section settings-danger-zone">
         <h2>Zona de peligro</h2>
         <p className="form-intro">
-          Elimina permanentemente todos tus datos de FoodOS: inventario, recetas, registro de comidas,
-          finanzas, planificador y ajustes. Esta acción no se puede deshacer.
+          {authUser ? (
+            <>
+              Borra inventario, recetas, registro de comidas, finanzas, planificador y ajustes guardados
+              <strong> en este dispositivo</strong>. Como tu cuenta sincroniza con la nube, estos datos
+              volverán a descargarse la próxima vez que abras FoodOS aquí o en otro dispositivo — esto
+              no borra nada de tu cuenta. Para eliminar tus datos de forma permanente, usa
+              «Eliminar cuenta permanentemente» en Cuenta.
+            </>
+          ) : (
+            <>
+              Elimina permanentemente todos tus datos de FoodOS: inventario, recetas, registro de comidas,
+              finanzas, planificador y ajustes. Esta acción no se puede deshacer.
+            </>
+          )}
         </p>
         {!showDeleteZone ? (
           <button className="danger-button" onClick={() => setShowDeleteZone(true)}>
-            Borrar todos los datos
+            {authUser ? "Borrar datos de este dispositivo" : "Borrar todos los datos"}
           </button>
         ) : (
           <div className="delete-confirm-zone">

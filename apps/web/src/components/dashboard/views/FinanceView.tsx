@@ -59,7 +59,9 @@ function buildTip(params: {
   if (totalIncome === 0)
     return { icon: "→", text: "Añade tus fuentes de ingreso para calcular tu tasa de ahorro real.", type: "info" };
   if (savingsRate >= savingsGoalPct)
-    return { icon: "✓", text: `¡Meta de ahorro alcanzada! Llevas el ${Math.round(savingsRate)}% de ahorro. Considera invertir el excedente en un fondo indexado.`, type: "good" };
+    // E13-01: sin recomendar un producto financiero concreto — FoodOS no es
+    // un asesor de inversión (ver E23-02).
+    return { icon: "✓", text: `¡Meta de ahorro alcanzada! Llevas el ${Math.round(savingsRate)}% de ahorro. Es un buen momento para decidir qué hacer con el excedente: seguir ahorrando, invertir o adelantar tu próximo objetivo.`, type: "good" };
   if (monthlyFixed > totalIncome * 0.6) {
     const over = Math.round(monthlyFixed - totalIncome * 0.6);
     return { icon: "⚠", text: `Tus gastos fijos son el ${Math.round((monthlyFixed / totalIncome) * 100)}% de tus ingresos (${eur(monthlyFixed)}/mes). Recorta unos ${eur(over)}/mes en suscripciones o servicios para bajar del 60%.`, type: "alert" };
@@ -362,7 +364,9 @@ export function FinanceView() {
             <div className="form-grid compact" style={{ marginTop: 14 }}>
               <label>
                 Importe €
-                <input name="amount" type="number" min="0" step="0.01" defaultValue="12" required />
+                {/* E13-03: sin importe por defecto — un 12€ inventado podía
+                    guardarse sin que el usuario lo notara. */}
+                <input name="amount" type="number" min="0" step="0.01" placeholder="ej. 12,50" required />
               </label>
               <label>
                 Categoría
@@ -768,11 +772,17 @@ export function FinanceView() {
                   <div><span>En 6 meses</span><strong>{eur(projection.months6)}</strong></div>
                   <div><span>En 1 año</span><strong>{eur(projection.year1)}</strong></div>
                   <div><span>5 años (cuenta)</span><strong>{eur(projection.years5Bank)}</strong></div>
-                  <div><span>5 años (fondo 7%)</span><strong className="highlight">{eur(projection.years5Fund)}</strong></div>
-                  <div><span>10 años (fondo 7%)</span><strong className="highlight">{eur(projection.years10Fund)}</strong></div>
-                  <div><span>Fondo emergencia (3 meses)</span><strong>{projection.emergencyFundMonths ? `en ${projection.emergencyFundMonths} meses` : "—"}</strong></div>
+                  <div><span>5 años (con crecimiento ~7%)</span><strong className="highlight">{eur(projection.years5Fund)}</strong></div>
+                  <div><span>10 años (con crecimiento ~7%)</span><strong className="highlight">{eur(projection.years10Fund)}</strong></div>
+                  <div><span>Colchón de emergencia (3 meses)</span><strong>{projection.emergencyFundMonths ? `en ${projection.emergencyFundMonths} meses` : "—"}</strong></div>
                 </div>
-                <p className="projection-disclaimer">El 7% es la rentabilidad histórica media de fondos indexados. Rentabilidades pasadas no garantizan rentabilidades futuras.</p>
+                {/* E13-01/E23-02: ilustra el interés compuesto con una
+                    rentabilidad media de mercado, sin nombrar ni recomendar
+                    ningún producto de inversión concreto. */}
+                <p className="projection-disclaimer">
+                  El 7% es una rentabilidad media histórica de mercado, usada solo como referencia para
+                  ilustrar el interés compuesto — no es un consejo de inversión ni garantiza resultados futuros.
+                </p>
               </>
             ) : (
               <p className="projection-disclaimer">

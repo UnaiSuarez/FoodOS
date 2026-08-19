@@ -77,9 +77,16 @@ export function AIConfigModal({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal title="Conectar tu IA personal" onClose={onClose}>
+      {/* E15-01: la redacción anterior ("nunca viaja a ningún servidor") era
+          engañosa — la clave SÍ viaja, al servidor del proveedor de IA que
+          elijas (Google, OpenAI, Anthropic...). Lo que es cierto, y lo que
+          de verdad importa aquí, es que nunca pasa por servidores de
+          FoodOS: la petición va directa de tu navegador al proveedor. */}
       <p className="ai-privacy-note">
-        🔒 Tu clave se guarda <strong>solo en este navegador</strong>. Nunca viaja a ningún servidor —
-        la petición va directamente de tu navegador a la API del proveedor.
+        🔒 Tu clave se guarda <strong>solo en este navegador</strong> y nunca pasa por los servidores de
+        FoodOS — la petición va directamente de tu navegador a la API del proveedor que elijas. Sí llega
+        a los servidores de ese proveedor (Google, OpenAI, Anthropic…), como con cualquier clave de API:
+        revisa su propia política de privacidad si te preocupa.
       </p>
 
       <div className="provider-tabs">

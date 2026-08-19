@@ -51,6 +51,11 @@ const VIEWS = [
   { id: "ejercicios", icon: "⊙", label: "Ejercicios",    title: "Ejercicios" },
 ] as const;
 
+// E17-03/04: versión del formato de export/import y clave de la copia de
+// seguridad que se guarda automáticamente antes de cada importación.
+const EXPORT_FORMAT_VERSION = 1;
+const IMPORT_BACKUP_KEY = "foodos-import-backup-v1";
+
 export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
 
 export function DashboardShell() {
@@ -182,7 +187,14 @@ function DashboardInner() {
     : VIEWS.find((entry) => entry.id === view)?.title ?? "Panel diario";
 
   function exportData() {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    // E17-03: envuelto con versión y fecha — sin esto, una futura migración
+    // de esquema no tenía forma de saber si un archivo importado es viejo.
+    const payload = {
+      exportVersion: EXPORT_FORMAT_VERSION,
+      exportedAt: new Date().toISOString(),
+      state,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `foodos-datos-${todayPlus(0)}.json`;
@@ -194,14 +206,49 @@ function DashboardInner() {
   async function importData(file: File | undefined) {
     if (!file) return;
     try {
-      const imported = JSON.parse(await file.text());
+      const parsed = JSON.parse(await file.text());
+      // Acepta el formato con envoltorio (v1+, ver exportData) y también un
+      // export "plano" antiguo (el estado directamente en la raíz, sin
+      // exportVersion) por compatibilidad con archivos ya exportados.
+      const imported =
+        parsed && typeof parsed === "object" && "state" in parsed && "exportVersion" in parsed
+          ? parsed.state
+          : parsed;
       if (typeof imported !== "object" || imported === null || !Array.isArray(imported.inventory)) {
         throw new Error("formato no reconocido");
       }
+      // E17-04: copia de seguridad del estado actual ANTES de sobrescribir —
+      // sin esto, importar el archivo equivocado (viejo, de otra cuenta...)
+      // no tenía vuelta atrás salvo recargar y perder lo que hubiera sin sincronizar.
+      try {
+        localStorage.setItem(
+          IMPORT_BACKUP_KEY,
+          JSON.stringify({ backedUpAt: new Date().toISOString(), state })
+        );
+      } catch {
+        // localStorage lleno o no disponible: no bloquea la importación,
+        // solo se pierde la posibilidad de deshacer.
+      }
       mutate((draft) => Object.assign(draft, imported));
-      showToast("Datos importados");
+      showToast('Datos importados — si algo no cuadra, usa "Restaurar copia" para deshacer.');
     } catch {
       showToast("El archivo no es un export válido de FoodOS");
+    }
+  }
+
+  function restoreImportBackup() {
+    try {
+      const raw = localStorage.getItem(IMPORT_BACKUP_KEY);
+      if (!raw) {
+        showToast("No hay ninguna copia de seguridad de una importación reciente.");
+        return;
+      }
+      const backup = JSON.parse(raw) as { state: unknown };
+      mutate((draft) => Object.assign(draft, backup.state));
+      localStorage.removeItem(IMPORT_BACKUP_KEY);
+      showToast("Estado anterior a la última importación restaurado.");
+    } catch {
+      showToast("No se pudo restaurar la copia de seguridad.");
     }
   }
 
@@ -314,6 +361,13 @@ function DashboardInner() {
                       }}
                     />
                   </label>
+                  <button
+                    className="icon-button"
+                    onClick={restoreImportBackup}
+                    title="Restaurar copia de seguridad de la última importación"
+                  >
+                    ⟲
+                  </button>
                   <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
                     ↻
                   </button>

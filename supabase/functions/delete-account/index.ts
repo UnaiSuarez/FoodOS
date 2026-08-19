@@ -33,12 +33,36 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Admin client para borrar el usuario (requiere service role key)
+    // Admin client para borrar el usuario y su Storage (requiere service role key)
     const adminClient = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
+
+    // E20-06: borrar las fotos de producto del usuario en Storage ANTES de
+    // borrar la cuenta — el cascade de las tablas (auth.users → ... on
+    // delete cascade) limpia todas las filas, pero Storage vive en su
+    // propio bucket sin cascade automático. Sin este paso, cada foto subida
+    // quedaba huérfana en "product-images" para siempre tras eliminar la
+    // cuenta. Best-effort: si falla, no bloquea el borrado de la cuenta
+    // (que es la parte irreversible e importante) — solo se registra.
+    try {
+      const { data: files, error: listError } = await adminClient.storage
+        .from("product-images")
+        .list(user.id, { limit: 1000 });
+      if (listError) {
+        console.warn("delete-account: no se pudo listar Storage del usuario", listError);
+      } else if (files && files.length > 0) {
+        const paths = files.map((f) => `${user.id}/${f.name}`);
+        const { error: removeError } = await adminClient.storage.from("product-images").remove(paths);
+        if (removeError) {
+          console.warn("delete-account: no se pudieron borrar todos los archivos de Storage", removeError);
+        }
+      }
+    } catch (storageErr) {
+      console.warn("delete-account: error inesperado limpiando Storage", storageErr);
+    }
 
     const { error: deleteError } = await adminClient.auth.admin.deleteUser(user.id);
     if (deleteError) {
