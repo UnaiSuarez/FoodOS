@@ -4,6 +4,7 @@ import type {
   AdaptiveTdeeResult,
   AdaptiveTdeeWarning,
   AdjustmentDecision,
+  AdjustmentProposalEvidence,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
@@ -20,6 +21,23 @@ import type {
   WeightEntry,
   WeightTrendResult,
 } from "@foodos/types";
+
+/**
+ * Versión del motor de cálculo nutricional — única fuente de verdad para
+ * calculationVersion en snapshots, nutrition_goals y propuestas. Súbela cada
+ * vez que cambie una fórmula, un guardarraíl o el criterio de una propuesta
+ * de forma que afecte al resultado (no por cambios puramente cosméticos de UI).
+ *
+ * Historial:
+ * - nutrition-v1: TMB (Mifflin-St Jeor) + TDEE por factor de actividad,
+ *   macros por objetivo, ciclado gym/descanso, fibra, guardarraíles de
+ *   seguridad básicos.
+ * - nutrition-v2: añade modelo de actividad lifestyle_plus_training, tendencia
+ *   de peso suavizada (mediana+EWMA+regresión), TDEE adaptativo combinado,
+ *   propuestas de ajuste explícitas con guardarraíl de discrepancia >30%,
+ *   diagnóstico completo, y aceptación transaccional vía RPC (PR8).
+ */
+export const NUTRITION_ENGINE_VERSION = "nutrition-v2";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
 
@@ -799,6 +817,34 @@ export function getAdaptiveDiagnostics(params: {
     confidenceLevel: adaptive.confidence,
     proposalEligible: decision.shouldPropose,
     ineligibilityReasons,
+  };
+}
+
+/**
+ * Construye la evidencia completa que se guarda junto a una propuesta de
+ * ajuste (columna evidence, jsonb) a partir del mismo AdaptiveDiagnostics que
+ * ya se calculó para decidir si procedía proponer — nunca recalcula nada, así
+ * la evidencia nunca puede desincronizarse del diagnóstico mostrado en la UI.
+ * Sin esto la propuesta quedaba con evidence:{} y era imposible auditar por
+ * qué se propuso un ajuste concreto una vez pasado el momento (ver N13).
+ */
+export function buildAdjustmentEvidence(
+  diagnostics: AdaptiveDiagnostics,
+  adaptiveWarnings: AdaptiveTdeeWarning[],
+  engineVersion: string = NUTRITION_ENGINE_VERSION,
+): AdjustmentProposalEvidence {
+  return {
+    evaluationWindow: { start: diagnostics.evaluationStart, end: diagnostics.evaluationEnd },
+    intakeCoverage: diagnostics.calorieCoverage,
+    averageIntakeKcal: diagnostics.averageLoggedCalories,
+    weightMeasurements: diagnostics.weightMeasurements,
+    regressionSlopeKgPerDay: diagnostics.regressionSlopeKgPerDay,
+    confidence: diagnostics.confidenceLevel,
+    initialTdeeKcal: diagnostics.initialTdeeKcal,
+    observedTdeeKcal: diagnostics.observedTdeeKcal,
+    combinedTdeeKcal: diagnostics.blendedTdeeKcal,
+    warnings: adaptiveWarnings,
+    engineVersion,
   };
 }
 

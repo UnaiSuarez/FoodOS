@@ -21,6 +21,7 @@ import {
 import {
   ACTIVITY_LABELS,
   adjustmentCooldownDaysLeft,
+  buildAdjustmentEvidence,
   calcAdaptiveTdee,
   calcHabitualTrainingAllowanceKcal,
   calcIntakeCoverage,
@@ -40,6 +41,7 @@ import {
   isGymDay,
   LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
+  NUTRITION_ENGINE_VERSION,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
   weeklyCycle,
@@ -289,7 +291,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     // Snapshot inmutable de cómo se calculó — solo en este evento explícito
     // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
     void remote.saveNutritionSnapshot({
-      calculationVersion: "nutrition-v1",
+      calculationVersion: NUTRITION_ENGINE_VERSION,
       triggerReason: profile ? "profile_changed" : "initial_calculation",
       inputSnapshot: {
         age: next.age, sex: next.sex, heightCm: next.heightCm, weightKg: next.weightKg,
@@ -859,7 +861,7 @@ function AdjustmentProposalPanel() {
 
   async function generateProposal() {
     const snapshot: NutritionCalculationSnapshot = {
-      calculationVersion: "nutrition-v1",
+      calculationVersion: NUTRITION_ENGINE_VERSION,
       triggerReason: "adaptive_review",
       inputSnapshot: {
         age: profile.age, sex: profile.sex, heightCm: profile.heightCm, weightKg: profile.weightKg,
@@ -877,7 +879,8 @@ function AdjustmentProposalPanel() {
       },
       safety: evaluateNutritionSafety({ targetKcal: currentTargets.kcal, estimatedTdeeKcal: initialTdeeKcal, restingEnergyKcal: tmb }),
     };
-    const created = await remote.createAdjustmentReview({ snapshot, decision });
+    const evidence = buildAdjustmentEvidence(diagnostics, adaptive.warnings, NUTRITION_ENGINE_VERSION);
+    const created = await remote.createAdjustmentReview({ snapshot, decision, evidence });
     if (created) {
       mutate((draft) => { draft.pendingAdjustmentProposal = created; });
       showToast("Propuesta de ajuste generada — revísala abajo.");
@@ -901,13 +904,56 @@ function AdjustmentProposalPanel() {
       });
 
       if (!safety.automaticPlanAllowed) {
-        await remote.respondToAdjustmentProposal(pending.id, false);
+        const result = await remote.acceptAdjustmentProposal({ proposalId: pending.id, accepted: false, goalDate: today });
+        if (!result.ok) {
+          showToast(`No se pudo rechazar la propuesta: ${result.error}`);
+          return;
+        }
         mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });
         showToast("Ese ajuste dejaría tu objetivo por debajo de 800 kcal — rechazado automáticamente por seguridad.");
         return;
       }
 
-      await remote.respondToAdjustmentProposal(pending.id, true);
+      const finalSnapshot: NutritionCalculationSnapshot = {
+        calculationVersion: NUTRITION_ENGINE_VERSION,
+        triggerReason: "adaptive_adjustment_accepted",
+        inputSnapshot: {
+          age: nextProfile.age, sex: nextProfile.sex, heightCm: nextProfile.heightCm, weightKg: nextProfile.weightKg,
+          goal: nextProfile.goal, activityLevel: nextProfile.activityLevel,
+          macroPreference: state.macroPreference ?? "balanced",
+          activityModelVersion: nextProfile.activityModelVersion ?? "legacy_total_pal",
+          trainingActivity: nextProfile.trainingActivity,
+        },
+        restingEnergy: { valueKcal: nextTmb, method: "mifflin_st_jeor" },
+        tdee: { valueKcal: nextTdee },
+        calorieTarget: { kcal: nextTargets.kcal, dayType: nextTargets.dayType },
+        macros: {
+          kcal: nextTargets.kcal, protein: nextTargets.protein, carbs: nextTargets.carbs, fat: nextTargets.fat,
+          fiber: calculateFiberTarget(nextTargets.kcal),
+        },
+        safety,
+      };
+
+      // La UI NO toca perfil/propuesta local hasta que el RPC confirme ok:true
+      // — si falla (red, RLS, propuesta ya resuelta en otro dispositivo...) el
+      // estado local se queda exactamente como estaba, sin un "aplicado" falso.
+      const result = await remote.acceptAdjustmentProposal({
+        proposalId: pending.id,
+        accepted: true,
+        goalDate: today,
+        newOffsetKcal: nextOffset,
+        kcalTarget: nextTargets.kcal,
+        proteinG: nextTargets.protein,
+        carbsG: nextTargets.carbs,
+        fatG: nextTargets.fat,
+        mode: nextProfile.goal,
+        finalSnapshot,
+      });
+      if (!result.ok) {
+        showToast(`No se pudo aplicar el ajuste: ${result.error}`);
+        return;
+      }
+
       mutate((draft) => {
         if (draft.profile) draft.profile.adaptiveKcalOffsetKcal = nextOffset;
         draft.pendingAdjustmentProposal = null;
@@ -919,7 +965,11 @@ function AdjustmentProposalPanel() {
           : `Ajuste aplicado: ${pending.deltaKcal > 0 ? "+" : ""}${pending.deltaKcal} kcal/día`
       );
     } else {
-      await remote.respondToAdjustmentProposal(pending.id, false);
+      const result = await remote.acceptAdjustmentProposal({ proposalId: pending.id, accepted: false, goalDate: today });
+      if (!result.ok) {
+        showToast(`No se pudo rechazar la propuesta: ${result.error}`);
+        return;
+      }
       mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });
       showToast("Propuesta rechazada");
     }

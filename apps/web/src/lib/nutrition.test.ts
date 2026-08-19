@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AdaptiveTdeeResult, IntakeCoverageResult, PhysicalProfile, Recipe, WeightEntry, WeightTrendResult } from "@foodos/types";
 import {
+  buildAdjustmentEvidence,
   calcAdaptiveTdee,
   calcDailyTargets,
   calcIMC,
@@ -14,7 +15,9 @@ import {
   estimateWorkoutKcal,
   evaluateAdjustmentProposal,
   evaluateNutritionSafety,
+  getAdaptiveDiagnostics,
   monthlyAmountOf,
+  NUTRITION_ENGINE_VERSION,
   projectSavings,
   scaleByCalories,
   scaleByRatio,
@@ -591,5 +594,73 @@ describe("evaluateAdjustmentProposal", () => {
       currentTargetKcal: 2000, adaptive: disagreeing, weightTrend: highTrend, intakeCoverage: goodCoverage,
     });
     expect(result.shouldPropose).toBe(false);
+  });
+});
+
+// ─── PR8: versionado del motor + evidencia de propuestas (N1/N13) ──────────
+
+describe("NUTRITION_ENGINE_VERSION", () => {
+  it("es la constante v2 (modelo de actividad + adaptativo + propuestas transaccionales)", () => {
+    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v2");
+  });
+});
+
+describe("buildAdjustmentEvidence", () => {
+  const weightLog: WeightEntry[] = Array.from({ length: 20 }, (_, i) => ({
+    date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+    kg: 80 - i * 0.05,
+  }));
+  const dailyKcal = Array.from({ length: 20 }, (_, i) => ({
+    date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+    kcal: 2100,
+  }));
+
+  it("traslada 1:1 los campos del diagnóstico ya calculado, sin recalcular nada distinto", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog,
+      dailyKcal,
+      referenceDate: "2026-01-20",
+      initialTdeeKcal: 2400,
+      currentTargetKcal: 1900,
+    });
+    const evidence = buildAdjustmentEvidence(diagnostics, [], NUTRITION_ENGINE_VERSION);
+
+    expect(evidence.evaluationWindow).toEqual({ start: diagnostics.evaluationStart, end: diagnostics.evaluationEnd });
+    expect(evidence.intakeCoverage).toBe(diagnostics.calorieCoverage);
+    expect(evidence.averageIntakeKcal).toBe(diagnostics.averageLoggedCalories);
+    expect(evidence.weightMeasurements).toBe(diagnostics.weightMeasurements);
+    expect(evidence.regressionSlopeKgPerDay).toBe(diagnostics.regressionSlopeKgPerDay);
+    expect(evidence.confidence).toBe(diagnostics.confidenceLevel);
+    expect(evidence.initialTdeeKcal).toBe(diagnostics.initialTdeeKcal);
+    expect(evidence.observedTdeeKcal).toBe(diagnostics.observedTdeeKcal);
+    expect(evidence.combinedTdeeKcal).toBe(diagnostics.blendedTdeeKcal);
+    expect(evidence.engineVersion).toBe(NUTRITION_ENGINE_VERSION);
+  });
+
+  it("conserva los warnings del TDEE adaptativo que recibe (no los del diagnóstico, que no los expone)", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog,
+      dailyKcal,
+      referenceDate: "2026-01-20",
+      initialTdeeKcal: 2400,
+      currentTargetKcal: 1900,
+    });
+    const evidence = buildAdjustmentEvidence(diagnostics, ["tdee_estimates_strongly_disagree"], NUTRITION_ENGINE_VERSION);
+    expect(evidence.warnings).toEqual(["tdee_estimates_strongly_disagree"]);
+  });
+
+  it("nunca queda vacía: siempre hay al menos ventana evaluada, TDEE inicial y versión — a diferencia del evidence:{} anterior", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog: [],
+      dailyKcal: [],
+      referenceDate: "2026-01-20",
+      initialTdeeKcal: 2400,
+      currentTargetKcal: 1900,
+    });
+    const evidence = buildAdjustmentEvidence(diagnostics, [], NUTRITION_ENGINE_VERSION);
+    expect(Object.keys(evidence).length).toBeGreaterThan(0);
+    expect(evidence.evaluationWindow.start).toBeTruthy();
+    expect(evidence.initialTdeeKcal).toBe(2400);
+    expect(evidence.engineVersion).toBe("nutrition-v2");
   });
 });
