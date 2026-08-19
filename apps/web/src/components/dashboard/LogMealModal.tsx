@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MacroTotals, MealType, Recipe } from "@foodos/types";
 import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
-import { estimateMealMacros } from "@/lib/ai-inventory";
+import { estimateMealFromPhoto, estimateMealMacros } from "@/lib/ai-inventory";
 import { searchFoodDB } from "@/lib/food-db";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { mealTypeFromTime, toGrams, todayPlus, uid } from "@/lib/utils";
@@ -418,33 +418,67 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
 
   // ── Tab Externa ────────────────────────────────────────────────────────────
   const [extDesc, setExtDesc] = useState("");
+  const [extName, setExtName] = useState(""); // nombre editable de la entrada del diario, se rellena tras estimar
+  const [extPhoto, setExtPhoto] = useState<{ base64: string; mimeType: string; fileName: string } | null>(null);
   const [extMacros, setExtMacros] = useState<MacroTotals | null>(null);
   const [extEstimating, setExtEstimating] = useState(false);
   const [extPrice, setExtPrice] = useState(0);
   const aiConfig = useMemo(() => loadAIConfig(), []);
+  const extCameraRef = useRef<HTMLInputElement>(null);
+  const extGalleryRef = useRef<HTMLInputElement>(null);
+
+  function handleExtPhotoFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { showToast("Selecciona una imagen (JPG, PNG, WebP)"); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(",")[1];
+      setExtPhoto({ base64, mimeType: file.type, fileName: file.name });
+    };
+    reader.readAsDataURL(file);
+  }
 
   async function estimateExternal() {
-    if (!aiConfig || !extDesc.trim()) return;
+    if (!aiConfig) return;
+    if (!extPhoto && !extDesc.trim()) return;
     setExtEstimating(true);
     setExtMacros(null);
     try {
-      const result = await estimateMealMacros(aiConfig, extDesc.trim());
-      if (result) setExtMacros(result);
-      else showToast("La IA no pudo estimar los macros, inténtalo de nuevo");
+      if (extPhoto) {
+        // Foto del plato (puede tener varios alimentos) — la nota de texto,
+        // si hay, se manda como contexto extra para afinar la estimación
+        // (mismo patrón que "Photo & Text" de MacroFactor).
+        const result = await estimateMealFromPhoto(aiConfig, extPhoto.base64, extPhoto.mimeType, extDesc.trim() || undefined);
+        if (result) {
+          setExtMacros({ kcal: result.kcal, protein: result.protein, carbs: result.carbs, fat: result.fat });
+          setExtName(result.name);
+        } else {
+          showToast("La IA no pudo identificar la comida en la foto, inténtalo de nuevo");
+        }
+      } else {
+        const result = await estimateMealMacros(aiConfig, extDesc.trim());
+        if (result) {
+          setExtMacros(result);
+          setExtName(extDesc.trim());
+        } else {
+          showToast("La IA no pudo estimar los macros, inténtalo de nuevo");
+        }
+      }
     } finally {
       setExtEstimating(false);
     }
   }
 
   function confirmExternal() {
-    if (!extMacros || !extDesc.trim()) return;
+    if (!extMacros || !extName.trim()) return;
     const t = nowTime();
     mutate(draft => {
       draft.foodLog.push({
         id: uid(),
         date: getToday(draft),
         time: t,
-        name: extDesc.trim(),
+        name: extName.trim(),
         qty: null,
         unit: null,
         kcal: extMacros.kcal,
@@ -460,7 +494,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           type: "expense",
           amount: extPrice,
           category: "Comida",
-          description: extDesc.trim().slice(0, 60),
+          description: extName.trim().slice(0, 60),
           date: getToday(draft),
         });
       }
@@ -474,7 +508,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     inventory: selectedQtys.size > 0,
     recipe: selectedRecipe !== null,
     dish: dishIngredients.length > 0,
-    external: extMacros !== null && extDesc.trim().length > 0,
+    external: extMacros !== null && extName.trim().length > 0,
   };
 
   // Shared meal type + confirm row used by all tabs
@@ -749,9 +783,42 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
       {/* ── Tab: Comida externa ── */}
       {tab === "external" && (
         <div className="lm-body">
+          <div className="lm-ext-photo-row">
+            <button
+              type="button"
+              className={`secondary-button ${extPhoto ? "active" : ""}`}
+              onClick={() => extCameraRef.current?.click()}
+            >
+              📷 Foto del plato
+            </button>
+            <button
+              type="button"
+              className={`secondary-button ${extPhoto ? "active" : ""}`}
+              onClick={() => extGalleryRef.current?.click()}
+            >
+              🖼 Galería
+            </button>
+            {extPhoto && (
+              <span className="lm-ext-photo-name">
+                {extPhoto.fileName}
+                <button type="button" className="lm-ext-photo-remove" onClick={() => setExtPhoto(null)} aria-label="Quitar foto">×</button>
+              </span>
+            )}
+          </div>
+          <input
+            ref={extCameraRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+            onChange={e => { handleExtPhotoFile(e.target.files?.[0]); e.target.value = ""; }}
+          />
+          <input
+            ref={extGalleryRef} type="file" accept="image/*" style={{ display: "none" }}
+            onChange={e => { handleExtPhotoFile(e.target.files?.[0]); e.target.value = ""; }}
+          />
+
           <textarea
             className="lm-ext-textarea"
-            placeholder="Describe qué has comido, ej: menú del día con lentejas, filete y postre, o 2 trozos de pizza margarita…"
+            placeholder={extPhoto
+              ? "Nota opcional para afinar la estimación, ej: con una cucharada extra de aceite…"
+              : "Describe qué has comido, ej: menú del día con lentejas, filete y postre, o 2 trozos de pizza margarita…"}
             value={extDesc}
             onChange={e => setExtDesc(e.target.value)}
             rows={3}
@@ -765,7 +832,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
 
           <button
             className="secondary-button lm-estimate-btn"
-            disabled={!aiConfig || extEstimating || extDesc.trim().length < 5}
+            disabled={!aiConfig || extEstimating || (!extPhoto && extDesc.trim().length < 5)}
             onClick={estimateExternal}
           >
             {extEstimating ? "Estimando…" : "✨ Estimar con IA"}
@@ -773,6 +840,10 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
 
           {extMacros && (
             <>
+              <label className="lm-ext-field lm-ext-name-field">
+                <small>Nombre</small>
+                <input type="text" value={extName} onChange={e => setExtName(e.target.value)} />
+              </label>
               <p className="lm-ext-hint">Macros estimados (puedes ajustarlos):</p>
               <div className="lm-ext-macros">
                 {(["kcal", "protein", "carbs", "fat"] as const).map(k => (

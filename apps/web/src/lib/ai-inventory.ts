@@ -474,3 +474,128 @@ Valores totales de la comida descrita, no por 100g. Sin explicaciones.`;
     return null;
   }
 }
+
+/**
+ * Identifica una comida completa (puede tener varios alimentos en el plato) a
+ * partir de una foto y estima sus macronutrientes TOTALES — el equivalente en
+ * foto de estimateMealMacros(). A diferencia de identifyFoodFromPhoto (pensada
+ * para UN producto/ingrediente, macros por 100g, flujo de inventario), esto
+ * devuelve el total de todo lo visible en el plato, pensado para registrar
+ * directamente en el diario. `extraNote` es la descripción opcional que el
+ * usuario añade junto a la foto (ej. "con una cucharada extra de aceite") —
+ * el mismo patrón que usa MacroFactor para afinar la estimación visual.
+ */
+export async function estimateMealFromPhoto(
+  config: AIConfig,
+  imageBase64: string,
+  mimeType: string,
+  extraNote?: string
+): Promise<{ name: string; kcal: number; protein: number; carbs: number; fat: number } | null> {
+  checkRateLimit();
+  const prompt =
+    `Eres nutricionista. Identifica la comida de esta foto — puede tener varios alimentos en el mismo plato — y estima sus macronutrientes TOTALES (de todo lo visible, no por 100g).` +
+    (extraNote?.trim() ? `\nNota del usuario: "${extraNote.trim()}"` : "") +
+    `\nResponde SOLO con JSON, sin texto extra: {"name":"Nombre breve del plato","kcal":number,"protein":number,"carbs":number,"fat":number}`;
+
+  let text = "";
+
+  switch (config.provider) {
+    case "gemini": {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
+        body: JSON.stringify({
+          contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 256 },
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `Gemini error ${res.status}`);
+      }
+      const data = await res.json() as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> };
+      text = data.candidates[0].content.parts[0].text;
+      break;
+    }
+    case "openai": {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+        body: JSON.stringify({
+          model: config.model,
+          messages: [{ role: "user", content: [
+            { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+            { type: "text", text: prompt },
+          ]}],
+          max_tokens: 256,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `OpenAI error ${res.status}`);
+      }
+      const data = await res.json() as { choices: Array<{ message: { content: string } }> };
+      text = data.choices[0].message.content;
+      break;
+    }
+    case "anthropic": {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": config.apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-allow-browser": "true",
+        } as Record<string, string>,
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: 256,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
+            { type: "text", text: prompt },
+          ]}],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
+        throw new Error(err.error?.message ?? `Anthropic error ${res.status}`);
+      }
+      const data = await res.json() as { content: Array<{ text: string }> };
+      text = data.content[0].text;
+      break;
+    }
+    case "ollama": {
+      const baseUrl = (config.ollamaBaseUrl ?? "http://localhost:11434").replace(/\/$/, "");
+      const modelName = config.model === "custom" ? "llama3.2" : config.model;
+      const res = await fetch(`${baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [{ role: "user", content: prompt, images: [imageBase64] }],
+          stream: false,
+          options: { temperature: 0.3 },
+        }),
+      });
+      if (!res.ok) throw new Error(`Ollama: error ${res.status}`);
+      const data = await res.json() as { message: { content: string } };
+      text = data.message.content;
+      break;
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(extractJSON(text)) as { name?: string; kcal?: number; protein?: number; carbs?: number; fat?: number };
+    if (typeof parsed.kcal !== "number") return null;
+    return {
+      name: String(parsed.name ?? "Comida (foto)"),
+      kcal: Math.round(parsed.kcal),
+      protein: Math.round((parsed.protein ?? 0) * 10) / 10,
+      carbs: Math.round((parsed.carbs ?? 0) * 10) / 10,
+      fat: Math.round((parsed.fat ?? 0) * 10) / 10,
+    };
+  } catch {
+    return null;
+  }
+}
