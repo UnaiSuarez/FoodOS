@@ -454,6 +454,75 @@ const TREND_WINDOW_DAYS = 28;
 const TREND_EWMA_ALPHA = 0.2;
 const TREND_MIN_MEASUREMENTS = 3;
 
+/**
+ * PR10b (N7): antes `confidence` dependía solo del número de mediciones
+ * (3-6 baja, 7-13 moderada, 14+ alta) — 14 mediciones registradas en 3 días
+ * seguidos (viaje, enfermedad, un usuario compulsivo con la báscula) pasaban
+ * como "alta confianza" igual que 14 mediciones bien repartidas en 4
+ * semanas, aunque las primeras dicen mucho menos sobre la tendencia real.
+ *
+ * qualityScore (0-1) combina, a partes iguales:
+ *   - cantidad:          nº de mediciones, satura en TREND_QUALITY_QUANTITY_TARGET
+ *   - cobertura temporal: días de calendario reales cubiertos (detecta
+ *                         mediciones agrupadas — E11-23), satura en
+ *                         TREND_QUALITY_SPAN_TARGET_DAYS
+ *   - regularidad:        1 − coeficiente de variación de los huecos entre
+ *                         mediciones consecutivas (huecos parejos = mejor)
+ *   - ajuste estadístico: R² de la regresión sobre la serie EWMA (cuánto
+ *                         explica la recta frente al ruido residual)
+ *
+ * Pesos iguales por simplicidad y transparencia — no hay evidencia todavía
+ * de que un factor deba pesar más que otro; revisar con datos reales de uso,
+ * igual que la constante 7700 en calcAdaptiveTdee (ver N11-26 del backlog).
+ */
+const TREND_QUALITY_QUANTITY_TARGET = 14;
+const TREND_QUALITY_SPAN_TARGET_DAYS = 21;
+const TREND_QUALITY_HIGH = 0.85;
+const TREND_QUALITY_MODERATE = 0.65;
+
+function calcWeightTrendQualityScore(params: {
+  x: number[];
+  y: number[];
+  slopeKgPerDay: number;
+  xMean: number;
+  yMean: number;
+  /** Días entre la primera y la última medición de la ventana (x[n-1], ya que x[0]=0). */
+  spanDays: number;
+}): number {
+  const { x, y, slopeKgPerDay, xMean, yMean, spanDays } = params;
+  const n = x.length;
+
+  const quantityScore = Math.min(1, n / TREND_QUALITY_QUANTITY_TARGET);
+  const temporalCoverageScore = Math.min(1, spanDays / TREND_QUALITY_SPAN_TARGET_DAYS);
+
+  // Regularidad: coeficiente de variación de los huecos entre mediciones
+  // consecutivas. Huecos idénticos (registro diario o cada X días fijo) dan
+  // CV=0 → score 1. Huecos muy dispares (varias mediciones el mismo día de
+  // viaje y luego dos semanas de silencio) dan CV alto → score bajo.
+  const gaps = x.slice(1).map((xi, i) => xi - x[i]);
+  const meanGap = spanDays / (n - 1);
+  const gapVariance = gaps.reduce((s, g) => s + (g - meanGap) ** 2, 0) / gaps.length;
+  const gapStdDev = Math.sqrt(gapVariance);
+  const regularityScore = meanGap > 0 ? Math.max(0, 1 - gapStdDev / meanGap) : 1;
+
+  // Ajuste (R²) de la recta de regresión sobre la serie EWMA ya suavizada:
+  // cuánta de la variación de y explica la tendencia lineal frente al ruido
+  // residual. Con y prácticamente constante (peso plano) SS_tot≈0 y la recta
+  // explica toda la (poca) variación que hay — se trata como ajuste perfecto.
+  const ssTot = y.reduce((s, yi) => s + (yi - yMean) ** 2, 0);
+  let fitScore = 1;
+  if (ssTot > 1e-6) {
+    const ssRes = x.reduce((s, xi, i) => {
+      const predicted = yMean + slopeKgPerDay * (xi - xMean);
+      return s + (y[i] - predicted) ** 2;
+    }, 0);
+    const rSquared = 1 - ssRes / ssTot;
+    fitScore = Math.max(0, Math.min(1, rSquared));
+  }
+
+  return (quantityScore + temporalCoverageScore + regularityScore + fitScore) / 4;
+}
+
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -526,8 +595,9 @@ export function calcWeightTrend(
   const weeklyChangeKg = Math.round(slopeKgPerDay * 7 * 100) / 100;
   const weeklyChangePercent = Math.round((weeklyChangeKg / trendWeightKg) * 1000) / 10;
 
+  const qualityScore = calcWeightTrendQualityScore({ x, y, slopeKgPerDay, xMean, yMean, spanDays: x[n - 1] });
   const confidence: ConfidenceLevel =
-    sorted.length >= 14 ? "high" : sorted.length >= 7 ? "moderate" : "low";
+    qualityScore >= TREND_QUALITY_HIGH ? "high" : qualityScore >= TREND_QUALITY_MODERATE ? "moderate" : "low";
 
   return {
     latestWeightKg,
@@ -537,6 +607,7 @@ export function calcWeightTrend(
     weeklyChangePercent,
     validMeasurements: sorted.length,
     confidence,
+    qualityScore,
   };
 }
 
@@ -851,6 +922,7 @@ export function getAdaptiveDiagnostics(params: {
     blendedTdeeKcal: adaptive.combinedKcal,
     confidenceScore: weightTrend ? ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence] : 0,
     confidenceLevel: adaptive.confidence,
+    weightTrendQualityScore: weightTrend?.qualityScore ?? null,
     proposalEligible: decision.shouldPropose,
     ineligibilityReasons,
   };
@@ -876,6 +948,7 @@ export function buildAdjustmentEvidence(
     weightMeasurements: diagnostics.weightMeasurements,
     regressionSlopeKgPerDay: diagnostics.regressionSlopeKgPerDay,
     confidence: diagnostics.confidenceLevel,
+    weightTrendQualityScore: diagnostics.weightTrendQualityScore,
     initialTdeeKcal: diagnostics.initialTdeeKcal,
     observedTdeeKcal: diagnostics.observedTdeeKcal,
     combinedTdeeKcal: diagnostics.blendedTdeeKcal,

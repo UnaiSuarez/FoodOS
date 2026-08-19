@@ -1148,6 +1148,13 @@ function AdjustmentProposalPanel() {
             </strong>
           </div>
           <div>
+            <span>Calidad de la tendencia</span>
+            <strong>
+              {diagnostics.weightTrendQualityScore != null ? `${Math.round(diagnostics.weightTrendQualityScore * 100)}%` : "—"}
+            </strong>
+            <small>Cantidad + cobertura temporal + regularidad + ajuste — no solo nº de mediciones.</small>
+          </div>
+          <div>
             <span>Elegible para propuesta</span>
             <strong>{diagnostics.proposalEligible ? "Sí" : "No"}</strong>
           </div>
