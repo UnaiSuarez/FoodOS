@@ -8336,6 +8336,48 @@ button.secondary-button.small {
   font-weight: 600;
 }
 
+/* N16: pestañas de la vista Nutrición (Hoy / Peso / Adaptativo) — mismo
+   patrón visual que .exercises-tabs, mismo criterio de nombrado por
+   feature que el resto del CSS (sin componente de tabs compartido). */
+.nutrition-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  margin: 4px 0 16px;
+}
+
+.nutrition-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.nutrition-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #000;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .nutrition-tabs {
+    gap: 6px;
+  }
+
+  .nutrition-tab {
+    flex: 1;
+    text-align: center;
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+}
+
 .exercises-body {
   display: flex;
   flex-direction: column;
