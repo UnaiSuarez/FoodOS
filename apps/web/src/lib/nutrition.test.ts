@@ -442,6 +442,45 @@ describe("calcIntakeCoverage", () => {
     const result = calcIntakeCoverage(daily, REF, 7)!;
     expect(result.daysWithData).toBe(1);
   });
+
+  // ── PR10 (N6): suelo relativo al objetivo, no solo absoluto ──────────────
+
+  it("sin targetKcal, el comportamiento es idéntico al de antes de PR10 (solo suelo absoluto)", () => {
+    const daily = [{ date: "2026-02-14", kcal: 600 }]; // por encima de 500, sin target
+    const result = calcIntakeCoverage(daily, REF, 7)!;
+    expect(result.daysWithData).toBe(1);
+  });
+
+  it("caso documentado en N6: objetivo 2600, solo 1200 registrados (46%) — ya no cuenta como día completo", () => {
+    const daily = [
+      { date: "2026-02-14", kcal: 1200 }, // > 500 (suelo absoluto) pero < 60% de 2600
+      { date: "2026-02-13", kcal: 2550 },
+    ];
+    const result = calcIntakeCoverage(daily, REF, 7, 2600)!;
+    expect(result.daysWithData).toBe(1);
+    expect(result.avgKcal).toBe(2550);
+  });
+
+  it("un déficit deliberado cumplido al 100% del objetivo SÍ cuenta (el suelo relativo no penaliza objetivos bajos)", () => {
+    const daily = [{ date: "2026-02-14", kcal: 1500 }];
+    const result = calcIntakeCoverage(daily, REF, 7, 1500)!;
+    expect(result.daysWithData).toBe(1);
+  });
+
+  it("justo en el límite del 60% cuenta; un kcal por debajo no", () => {
+    const target = 2000;
+    const atThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1200 }], REF, 7, target)!; // exactamente 60%
+    expect(atThreshold.daysWithData).toBe(1);
+    const belowThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1199 }], REF, 7, target);
+    expect(belowThreshold).toBeNull();
+  });
+
+  it("con targetKcal, sigue exigiendo también el suelo absoluto de 500 kcal (objetivos muy bajos no lo saltan)", () => {
+    // 60% de un objetivo de 700 son 420 kcal — por debajo del suelo absoluto,
+    // así que 450 kcal registradas NO deberían contar como día fiable.
+    const result = calcIntakeCoverage([{ date: "2026-02-14", kcal: 450 }], REF, 7, 700);
+    expect(result).toBeNull();
+  });
 });
 
 describe("calcAdaptiveTdee", () => {
