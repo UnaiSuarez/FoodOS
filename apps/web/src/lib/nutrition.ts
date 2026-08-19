@@ -545,22 +545,46 @@ export function calcWeightTrend(
 /** Umbral bajo el cual un día se considera "sin registro fiable" — mismo
     criterio que ya usaba el panel de proyección de peso: un día con <500 kcal
     registradas normalmente significa que el usuario no anotó todo, no que
-    comió muy poco. */
+    comió muy poco. Es un suelo ABSOLUTO (atrapa días vacíos u olvidados) —
+    ver INTAKE_COVERAGE_MIN_RELATIVE_FRACTION para el suelo RELATIVO. */
 const INTAKE_COVERAGE_MIN_KCAL = 500;
+
+/**
+ * PR10 (N6): el umbral absoluto de 500 kcal no detecta un registro parcial
+ * en un objetivo alto — con un objetivo de 2600 kcal, un día con solo
+ * desayuno y comida (1200 kcal, ya por encima de 500) se contaba como
+ * "completo" y el TDEE observado interpretaba que el usuario había comido
+ * de verdad solo 1200 kcal ese día, desviando el resultado. Este suelo
+ * relativo exige además llegar a un % del objetivo del día — no penaliza un
+ * déficit deliberado (un objetivo de 1500 kcal cumplido al 100% sigue
+ * contando), solo un registro que se queda muy corto respecto a lo esperado.
+ */
+const INTAKE_COVERAGE_MIN_RELATIVE_FRACTION = 0.6;
 
 /**
  * Cobertura de registro de ingesta en una ventana de días: promedio de kcal
  * de los días con datos fiables, y qué fracción de la ventana tiene esos
  * datos (cuanta menos cobertura, menos se puede confiar en ese promedio).
  * `dailyKcal` debe venir ya agregado (una entrada por fecha).
+ *
+ * `targetKcal` es opcional (y retrocompatible: sin él, el criterio es
+ * exactamente el de antes de PR10, solo el suelo absoluto) — cuando se
+ * pasa, un día también necesita llegar al 60% del objetivo de ESE día para
+ * contar como "con datos fiables" (ver INTAKE_COVERAGE_MIN_RELATIVE_FRACTION).
  */
 export function calcIntakeCoverage(
   dailyKcal: Array<{ date: string; kcal: number }>,
   referenceDate: string,
   windowDays: number,
+  targetKcal?: number,
 ): IntakeCoverageResult | null {
+  const relativeFloor = targetKcal != null ? targetKcal * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION : 0;
   const withData = dailyKcal.filter(
-    (d) => d.date <= referenceDate && daysBetweenDates(d.date, referenceDate) < windowDays && d.kcal >= INTAKE_COVERAGE_MIN_KCAL
+    (d) =>
+      d.date <= referenceDate &&
+      daysBetweenDates(d.date, referenceDate) < windowDays &&
+      d.kcal >= INTAKE_COVERAGE_MIN_KCAL &&
+      d.kcal >= relativeFloor
   );
   if (withData.length === 0) return null;
 

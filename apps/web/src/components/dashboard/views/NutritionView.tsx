@@ -306,7 +306,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
       next.adaptiveCalibrationStartedAt
     );
-    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28);
+    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, targets.kcal);
     const adaptiveAtSave = calcAdaptiveTdee({
       initialTdeeKcal: tdee,
       avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
@@ -770,6 +770,9 @@ function AdaptiveTdeePanel() {
   const profile = state.profile!;
   const today = getToday(state);
   const { tdee: initialTdeeKcal } = calcSummary(profile);
+  // Referencia para el suelo relativo de cobertura (PR10/N6) — el objetivo
+  // de HOY, ya que cambia entre día de gym y de descanso.
+  const targetKcalToday = calcDailyTargets(profile, isGymDay(profile, dateFromKey(today)), state.macroPreference).kcal;
   // Filtrado por calibración (PR9): tras cambiar objetivo/actividad, el
   // histórico previo ya no representa el régimen actual — ver N5.
   const calibrationFloor = profile.adaptiveCalibrationStartedAt ?? null;
@@ -784,7 +787,7 @@ function AdaptiveTdeePanel() {
     Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
     calibrationFloor
   );
-  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS);
+  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS, targetKcalToday);
 
   const adaptive = calcAdaptiveTdee({
     initialTdeeKcal,
@@ -877,9 +880,9 @@ function AdjustmentProposalPanel() {
     Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
     calibrationFloor
   );
-  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28);
-  const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
   const currentTargets = calcDailyTargets(profile, gymToday, state.macroPreference);
+  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, currentTargets.kcal);
+  const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
   const decision = evaluateAdjustmentProposal({
     currentTargetKcal: currentTargets.kcal,
     adaptive,
