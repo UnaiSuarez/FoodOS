@@ -4,6 +4,7 @@ import type {
   AdaptiveTdeeResult,
   AdaptiveTdeeWarning,
   AdjustmentDecision,
+  AdjustmentProfileFingerprint,
   AdjustmentProposalEvidence,
   ConfidenceLevel,
   DailyTargets,
@@ -742,9 +743,20 @@ export function getAdaptiveDiagnostics(params: {
   initialTdeeKcal: number;
   currentTargetKcal: number;
   windowDays?: number;
+  /** PR9: si hubo un reinicio de calibración más reciente que el inicio de la
+      ventana estándar (referenceDate - windowDays), el periodo evaluado
+      "real" empieza ahí — aunque weightLog/dailyKcal ya vengan pre-filtrados
+      por el caller, evaluationStart necesita este dato aparte para mostrarlo
+      correctamente (no se puede deducir solo de qué entradas sobrevivieron). */
+  calibrationStartedAt?: string | null;
 }): AdaptiveDiagnostics {
   const windowDays = params.windowDays ?? 28;
   const { weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal } = params;
+  const standardWindowStart = subtractDaysFromDateKey(referenceDate, windowDays);
+  const effectiveEvaluationStart =
+    params.calibrationStartedAt && params.calibrationStartedAt > standardWindowStart
+      ? params.calibrationStartedAt
+      : standardWindowStart;
 
   const weightTrend = calcWeightTrend(weightLog, referenceDate, windowDays);
   const coverage = calcIntakeCoverage(dailyKcal, referenceDate, windowDays);
@@ -802,7 +814,7 @@ export function getAdaptiveDiagnostics(params: {
   }
 
   return {
-    evaluationStart: subtractDaysFromDateKey(referenceDate, windowDays),
+    evaluationStart: effectiveEvaluationStart,
     evaluationEnd: referenceDate,
     averageLoggedCalories: coverage?.avgKcal ?? null,
     calorieCoverage: coverage?.coverageFraction ?? null,
@@ -846,6 +858,93 @@ export function buildAdjustmentEvidence(
     warnings: adaptiveWarnings,
     engineVersion,
   };
+}
+
+// ─── Ciclo de calibración adaptativa y propuestas obsoletas (PR9) ──────────
+
+/** Solo los campos de TrainingActivityProfile que de verdad afectan al
+    cálculo — habitualSteps se guarda para referencia pero todavía no entra
+    en ninguna fórmula (ver N8), así que cambiarlo NO debe invalidar nada. */
+function trainingActivityRelevantEqual(
+  a: TrainingActivityProfile | null | undefined,
+  b: TrainingActivityProfile | null | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    a.lifestyleActivity === b.lifestyleActivity &&
+    a.strengthDaysPerWeek === b.strengthDaysPerWeek &&
+    a.cardioDaysPerWeek === b.cardioDaysPerWeek &&
+    a.avgSessionDurationMin === b.avgSessionDurationMin
+  );
+}
+
+/**
+ * ¿Este guardado de perfil cambia algo que invalida el histórico anterior
+ * como referencia para el motor adaptativo? Solo objetivo, actividad y
+ * modelo de actividad — NO peso (fluctúa día a día sin ser un cambio de
+ * "régimen") ni preferencia de macros (no afecta al TDEE). prev=null (primer
+ * perfil) nunca cuenta como cambio: no hay calibración previa que invalidar.
+ */
+export function isRelevantCalibrationChange(prev: PhysicalProfile | null, next: PhysicalProfile): boolean {
+  if (!prev) return false;
+  return (
+    prev.goal !== next.goal ||
+    prev.activityLevel !== next.activityLevel ||
+    (prev.activityModelVersion ?? "legacy_total_pal") !== (next.activityModelVersion ?? "legacy_total_pal") ||
+    !trainingActivityRelevantEqual(prev.trainingActivity, next.trainingActivity)
+  );
+}
+
+/** Solo conserva las entradas con date >= calibrationStartedAt. Sin fecha de
+    calibración (null/undefined — el caso normal antes de PR9 o cuando nunca
+    ha habido un cambio relevante), no filtra nada: mismo comportamiento que
+    siempre ha tenido el motor. */
+export function filterEntriesFromCalibrationStart<T extends { date: string }>(
+  entries: T[],
+  calibrationStartedAt: string | null | undefined,
+): T[] {
+  if (!calibrationStartedAt) return entries;
+  return entries.filter((e) => e.date >= calibrationStartedAt);
+}
+
+/** Instantánea de los campos del perfil que importan para decidir si una
+    propuesta sigue vigente — ver AdjustmentProfileFingerprint y N4. */
+export function buildAdjustmentProfileFingerprint(
+  profile: PhysicalProfile,
+  macroPreference: MacroPreference,
+): AdjustmentProfileFingerprint {
+  return {
+    goal: profile.goal,
+    weightKg: profile.weightKg,
+    activityLevel: profile.activityLevel,
+    activityModelVersion: profile.activityModelVersion ?? "legacy_total_pal",
+    trainingActivity: profile.trainingActivity ?? null,
+    macroPreference,
+    adaptiveKcalOffsetKcal: profile.adaptiveKcalOffsetKcal ?? 0,
+  };
+}
+
+/**
+ * ¿Sigue siendo válido aceptar una propuesta generada con `original` ahora
+ * que el perfil actual es `current`? true si CUALQUIER campo relevante
+ * cambió desde que se generó — sin fingerprint original (propuestas creadas
+ * antes de PR9), se asume vigente para no romper propuestas ya pendientes.
+ */
+export function isProposalStale(
+  original: AdjustmentProfileFingerprint | undefined,
+  current: AdjustmentProfileFingerprint,
+): boolean {
+  if (!original) return false;
+  return (
+    original.goal !== current.goal ||
+    original.weightKg !== current.weightKg ||
+    original.activityLevel !== current.activityLevel ||
+    original.activityModelVersion !== current.activityModelVersion ||
+    original.macroPreference !== current.macroPreference ||
+    original.adaptiveKcalOffsetKcal !== current.adaptiveKcalOffsetKcal ||
+    !trainingActivityRelevantEqual(original.trainingActivity, current.trainingActivity)
+  );
 }
 
 // ─── Reparto semanal de calorías (gym vs. descanso) ──────────────────────────

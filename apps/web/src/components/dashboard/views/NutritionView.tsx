@@ -36,12 +36,16 @@ import {
   calcWeightTrend,
   evaluateAdjustmentProposal,
   evaluateNutritionSafety,
+  filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
   isAdjustmentCooldownActive,
   isGymDay,
+  isProposalStale,
+  isRelevantCalibrationChange,
   LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
   NUTRITION_ENGINE_VERSION,
+  buildAdjustmentProfileFingerprint,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
   weeklyCycle,
@@ -243,7 +247,24 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       equipmentAccess: (data.get("equipmentAccess") as EquipmentAccess) || undefined,
       activityModelVersion,
       trainingActivity,
+      // Se conservan salvo que este guardado dispare un reinicio de
+      // calibración más abajo — antes de PR9 este objeto ni siquiera
+      // incluía adaptiveKcalOffsetKcal, así que guardar el perfil borraba
+      // en silencio cualquier ajuste adaptativo ya aceptado.
+      adaptiveKcalOffsetKcal: profile?.adaptiveKcalOffsetKcal ?? 0,
+      adaptiveCalibrationStartedAt: profile?.adaptiveCalibrationStartedAt ?? null,
+      lastTargetChangedAt: profile?.lastTargetChangedAt ?? null,
     };
+
+    // Reinicia la calibración adaptativa si este guardado cambia objetivo,
+    // actividad o modelo de actividad: el histórico de peso/ingesta previo ya
+    // no representa el nuevo régimen (ver N5). No se toca por cambios de
+    // peso o preferencia de macros — esos no invalidan la ventana adaptativa.
+    if (isRelevantCalibrationChange(profile ?? null, next)) {
+      const changeDate = getToday(state);
+      next.adaptiveCalibrationStartedAt = changeDate;
+      next.lastTargetChangedAt = changeDate;
+    }
 
     // ── Guardarraíles de seguridad ──────────────────────────────────────────
     const { tmb, tdee } = calcSummary(next);
@@ -271,17 +292,21 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
 
     // Desglose adaptativo (PR5), solo si ya hay tendencia de peso e ingesta
     // registradas — se guarda como contexto adicional del snapshot, nunca
-    // dispara un snapshot por sí solo.
-    const weightTrendAtSave = calcWeightTrend(state.weightLog, getToday(state));
-    const dailyKcalAtSave = new Map<string, number>();
+    // dispara un snapshot por sí solo. Se filtra por la calibración vigente
+    // TRAS este guardado (next.adaptiveCalibrationStartedAt): si este mismo
+    // guardado acaba de reiniciarla, el desglose ya refleja que apenas hay
+    // histórico bajo el nuevo régimen, en vez de mezclar datos de antes.
+    const weightLogAtSave = filterEntriesFromCalibrationStart(state.weightLog, next.adaptiveCalibrationStartedAt);
+    const weightTrendAtSave = calcWeightTrend(weightLogAtSave, getToday(state));
+    const dailyKcalAtSaveMap = new Map<string, number>();
     for (const entry of state.foodLog) {
-      dailyKcalAtSave.set(entry.date, (dailyKcalAtSave.get(entry.date) ?? 0) + entry.kcal);
+      dailyKcalAtSaveMap.set(entry.date, (dailyKcalAtSaveMap.get(entry.date) ?? 0) + entry.kcal);
     }
-    const coverageAtSave = calcIntakeCoverage(
-      Array.from(dailyKcalAtSave, ([date, kcal]) => ({ date, kcal })),
-      getToday(state),
-      28
+    const dailyKcalAtSave = filterEntriesFromCalibrationStart(
+      Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
+      next.adaptiveCalibrationStartedAt
     );
+    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28);
     const adaptiveAtSave = calcAdaptiveTdee({
       initialTdeeKcal: tdee,
       avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
@@ -745,13 +770,20 @@ function AdaptiveTdeePanel() {
   const profile = state.profile!;
   const today = getToday(state);
   const { tdee: initialTdeeKcal } = calcSummary(profile);
-  const weightTrend = calcWeightTrend(state.weightLog, today);
+  // Filtrado por calibración (PR9): tras cambiar objetivo/actividad, el
+  // histórico previo ya no representa el régimen actual — ver N5.
+  const calibrationFloor = profile.adaptiveCalibrationStartedAt ?? null;
+  const weightLogForAdaptive = filterEntriesFromCalibrationStart(state.weightLog, calibrationFloor);
+  const weightTrend = calcWeightTrend(weightLogForAdaptive, today);
 
   const dailyKcalByDate = new Map<string, number>();
   for (const entry of state.foodLog) {
     dailyKcalByDate.set(entry.date, (dailyKcalByDate.get(entry.date) ?? 0) + entry.kcal);
   }
-  const dailyKcal = Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal }));
+  const dailyKcal = filterEntriesFromCalibrationStart(
+    Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
+    calibrationFloor
+  );
   const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS);
 
   const adaptive = calcAdaptiveTdee({
@@ -833,12 +865,19 @@ function AdjustmentProposalPanel() {
   const pending = state.pendingAdjustmentProposal ?? null;
 
   const { tmb, tdee: initialTdeeKcal } = calcSummary(profile);
-  const weightTrend = calcWeightTrend(state.weightLog, today);
+  // Filtrado por calibración (PR9) — mismo criterio que AdaptiveTdeePanel.
+  const calibrationFloor = profile.adaptiveCalibrationStartedAt ?? null;
+  const weightLogForAdaptive = filterEntriesFromCalibrationStart(state.weightLog, calibrationFloor);
+  const weightTrend = calcWeightTrend(weightLogForAdaptive, today);
   const dailyKcalByDate = new Map<string, number>();
   for (const entry of state.foodLog) {
     dailyKcalByDate.set(entry.date, (dailyKcalByDate.get(entry.date) ?? 0) + entry.kcal);
   }
-  const coverage = calcIntakeCoverage(Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })), today, 28);
+  const dailyKcalForAdaptive = filterEntriesFromCalibrationStart(
+    Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
+    calibrationFloor
+  );
+  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28);
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
   const currentTargets = calcDailyTargets(profile, gymToday, state.macroPreference);
   const decision = evaluateAdjustmentProposal({
@@ -852,12 +891,20 @@ function AdjustmentProposalPanel() {
   const inCooldown = !pending && isAdjustmentCooldownActive(state.lastAdjustmentDecisionAt ?? null, today);
 
   const diagnostics = getAdaptiveDiagnostics({
-    weightLog: state.weightLog,
-    dailyKcal: Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
+    weightLog: weightLogForAdaptive,
+    dailyKcal: dailyKcalForAdaptive,
     referenceDate: today,
     initialTdeeKcal,
     currentTargetKcal: currentTargets.kcal,
+    calibrationStartedAt: calibrationFloor,
   });
+
+  // ¿Sigue siendo válida la propuesta pendiente con el perfil actual? Un
+  // cambio de objetivo/peso/actividad/macros/offset desde que se generó la
+  // invalida — aceptarla aplicaría un ajuste calculado para otro contexto
+  // (ver N4). Rechazar siempre es seguro, solo se bloquea aceptar.
+  const currentFingerprint = buildAdjustmentProfileFingerprint(profile, state.macroPreference ?? "balanced");
+  const proposalStale = pending ? isProposalStale(pending.evidence?.profileFingerprint, currentFingerprint) : false;
 
   async function generateProposal() {
     const snapshot: NutritionCalculationSnapshot = {
@@ -879,7 +926,10 @@ function AdjustmentProposalPanel() {
       },
       safety: evaluateNutritionSafety({ targetKcal: currentTargets.kcal, estimatedTdeeKcal: initialTdeeKcal, restingEnergyKcal: tmb }),
     };
-    const evidence = buildAdjustmentEvidence(diagnostics, adaptive.warnings, NUTRITION_ENGINE_VERSION);
+    const evidence = {
+      ...buildAdjustmentEvidence(diagnostics, adaptive.warnings, NUTRITION_ENGINE_VERSION),
+      profileFingerprint: currentFingerprint,
+    };
     const created = await remote.createAdjustmentReview({ snapshot, decision, evidence });
     if (created) {
       mutate((draft) => { draft.pendingAdjustmentProposal = created; });
@@ -893,6 +943,15 @@ function AdjustmentProposalPanel() {
     if (!pending) return;
 
     if (accepted) {
+      // Bloqueo de propuesta obsoleta (N4): si el perfil cambió desde que se
+      // generó, el delta ya no corresponde al contexto actual — nunca se
+      // aplica silenciosamente sobre un régimen distinto. Rechazar sigue
+      // permitido siempre (no aplica nada, es seguro por definición).
+      if (proposalStale) {
+        showToast("Tu perfil cambió desde que se generó esta propuesta — descártala y genera una nueva para que refleje tu situación actual.");
+        return;
+      }
+
       const nextOffset = (profile.adaptiveKcalOffsetKcal ?? 0) + pending.deltaKcal;
       const nextProfile: PhysicalProfile = { ...profile, adaptiveKcalOffsetKcal: nextOffset };
       const nextTargets = calcDailyTargets(nextProfile, gymToday, state.macroPreference);
@@ -1002,12 +1061,18 @@ function AdjustmentProposalPanel() {
               </small>
             </div>
           </div>
+          {proposalStale && (
+            <div className="nutrition-warn-banner">
+              ⚠ Tu perfil cambió desde que se generó esta propuesta (objetivo, peso, actividad, macros u offset) —
+              ya no aplica a tu situación actual. Descártala y genera una nueva.
+            </div>
+          )}
           <div className="meta-row" style={{ marginTop: 12 }}>
-            <button className="primary-button" onClick={() => void respond(true)}>
+            <button className="primary-button" onClick={() => void respond(true)} disabled={proposalStale}>
               Aceptar ajuste
             </button>
             <button className="secondary-button" onClick={() => void respond(false)}>
-              Rechazar
+              {proposalStale ? "Descartar propuesta obsoleta" : "Rechazar"}
             </button>
           </div>
         </>
@@ -1035,6 +1100,9 @@ function AdjustmentProposalPanel() {
             <strong>
               {diagnostics.evaluationStart} → {diagnostics.evaluationEnd}
             </strong>
+            {calibrationFloor && (
+              <small>Recortada: cambiaste objetivo/actividad el {calibrationFloor} — solo cuentan datos desde entonces.</small>
+            )}
           </div>
           <div>
             <span>Ingesta media registrada</span>

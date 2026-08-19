@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { AdaptiveTdeeResult, IntakeCoverageResult, PhysicalProfile, Recipe, WeightEntry, WeightTrendResult } from "@foodos/types";
+import type { AdaptiveTdeeResult, IntakeCoverageResult, PhysicalProfile, Recipe, TrainingActivityProfile, WeightEntry, WeightTrendResult } from "@foodos/types";
 import {
   buildAdjustmentEvidence,
+  buildAdjustmentProfileFingerprint,
   calcAdaptiveTdee,
   calcDailyTargets,
   calcIMC,
@@ -15,7 +16,10 @@ import {
   estimateWorkoutKcal,
   evaluateAdjustmentProposal,
   evaluateNutritionSafety,
+  filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
+  isProposalStale,
+  isRelevantCalibrationChange,
   monthlyAmountOf,
   NUTRITION_ENGINE_VERSION,
   projectSavings,
@@ -662,5 +666,147 @@ describe("buildAdjustmentEvidence", () => {
     expect(evidence.evaluationWindow.start).toBeTruthy();
     expect(evidence.initialTdeeKcal).toBe(2400);
     expect(evidence.engineVersion).toBe("nutrition-v2");
+  });
+});
+
+// ─── PR9: ciclo de calibración y propuestas obsoletas (N4/N5) ─────────────
+
+describe("isRelevantCalibrationChange", () => {
+  const training: TrainingActivityProfile = {
+    lifestyleActivity: "light", strengthDaysPerWeek: 3, cardioDaysPerWeek: 1, avgSessionDurationMin: 60,
+  };
+
+  it("prev=null (primer perfil) nunca cuenta como cambio", () => {
+    expect(isRelevantCalibrationChange(null, baseProfile())).toBe(false);
+  });
+
+  it("no cambia nada relevante: false", () => {
+    const prev = baseProfile({ weightKg: 75 });
+    const next = baseProfile({ weightKg: 74 }); // solo cambia el peso
+    expect(isRelevantCalibrationChange(prev, next)).toBe(false);
+  });
+
+  it("cambiar el objetivo (goal) SÍ reinicia la calibración", () => {
+    const prev = baseProfile({ goal: "maintain" });
+    const next = baseProfile({ goal: "fat_loss" });
+    expect(isRelevantCalibrationChange(prev, next)).toBe(true);
+  });
+
+  it("cambiar activityLevel SÍ reinicia la calibración", () => {
+    const prev = baseProfile({ activityLevel: "sedentary" });
+    const next = baseProfile({ activityLevel: "active" });
+    expect(isRelevantCalibrationChange(prev, next)).toBe(true);
+  });
+
+  it("cambiar activityModelVersion SÍ reinicia la calibración", () => {
+    const prev = baseProfile({ activityModelVersion: "legacy_total_pal" });
+    const next = baseProfile({ activityModelVersion: "lifestyle_plus_training", trainingActivity: training });
+    expect(isRelevantCalibrationChange(prev, next)).toBe(true);
+  });
+
+  it("cambiar días de fuerza/cardio o duración de trainingActivity SÍ reinicia la calibración", () => {
+    const prev = baseProfile({ activityModelVersion: "lifestyle_plus_training", trainingActivity: training });
+    const next = baseProfile({
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: { ...training, strengthDaysPerWeek: 5 },
+    });
+    expect(isRelevantCalibrationChange(prev, next)).toBe(true);
+  });
+
+  it("cambiar solo habitualSteps NO reinicia la calibración (N8: todavía no afecta al cálculo)", () => {
+    const prev = baseProfile({ activityModelVersion: "lifestyle_plus_training", trainingActivity: { ...training, habitualSteps: 5000 } });
+    const next = baseProfile({ activityModelVersion: "lifestyle_plus_training", trainingActivity: { ...training, habitualSteps: 12000 } });
+    expect(isRelevantCalibrationChange(prev, next)).toBe(false);
+  });
+});
+
+describe("filterEntriesFromCalibrationStart", () => {
+  const entries = [
+    { date: "2026-01-01", kg: 80 },
+    { date: "2026-01-10", kg: 79 },
+    { date: "2026-01-20", kg: 78 },
+  ];
+
+  it("sin fecha de calibración, no filtra nada (comportamiento previo a PR9)", () => {
+    expect(filterEntriesFromCalibrationStart(entries, null)).toEqual(entries);
+    expect(filterEntriesFromCalibrationStart(entries, undefined)).toEqual(entries);
+  });
+
+  it("con fecha de calibración, solo conserva date >= esa fecha", () => {
+    const result = filterEntriesFromCalibrationStart(entries, "2026-01-10");
+    expect(result.map((e) => e.date)).toEqual(["2026-01-10", "2026-01-20"]);
+  });
+
+  it("una fecha posterior a todas las entradas deja el resultado vacío", () => {
+    expect(filterEntriesFromCalibrationStart(entries, "2026-02-01")).toEqual([]);
+  });
+});
+
+describe("buildAdjustmentProfileFingerprint / isProposalStale", () => {
+  it("dos perfiles idénticos producen fingerprints iguales → no obsoleta", () => {
+    const profile = baseProfile({ adaptiveKcalOffsetKcal: 50 });
+    const a = buildAdjustmentProfileFingerprint(profile, "balanced");
+    const b = buildAdjustmentProfileFingerprint({ ...profile }, "balanced");
+    expect(isProposalStale(a, b)).toBe(false);
+  });
+
+  it("sin fingerprint original (propuesta previa a PR9), nunca se considera obsoleta", () => {
+    const current = buildAdjustmentProfileFingerprint(baseProfile(), "balanced");
+    expect(isProposalStale(undefined, current)).toBe(false);
+  });
+
+  it("cambiar el objetivo entre generar y aceptar marca la propuesta como obsoleta", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ goal: "maintain" }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ goal: "fat_loss" }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar el peso entre generar y aceptar marca la propuesta como obsoleta", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ weightKg: 80 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ weightKg: 78 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar la preferencia de macros marca la propuesta como obsoleta", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile(), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile(), "higher_carbohydrate");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("aceptar otra propuesta mientras esta seguía pendiente (offset distinto) la marca obsoleta", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ adaptiveKcalOffsetKcal: 0 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ adaptiveKcalOffsetKcal: 80 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+});
+
+describe("getAdaptiveDiagnostics — ventana recortada por calibración (PR9)", () => {
+  const weightLog: WeightEntry[] = Array.from({ length: 40 }, (_, i) => ({
+    date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+    kg: 80,
+  })).filter((e) => Number(e.date.slice(-2)) <= 31);
+  const dailyKcal = weightLog.map((e) => ({ date: e.date, kcal: 2100 }));
+
+  it("sin calibración, la ventana evaluada es la estándar (referenceDate - windowDays)", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+    });
+    expect(diagnostics.evaluationStart).toBe("2026-01-13"); // 2026-02-10 - 28 días
+  });
+
+  it("con una calibración MÁS RECIENTE que la ventana estándar, la ventana se recorta a esa fecha", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      calibrationStartedAt: "2026-01-25",
+    });
+    expect(diagnostics.evaluationStart).toBe("2026-01-25");
+  });
+
+  it("con una calibración MÁS ANTIGUA que la ventana estándar, no la alarga (el techo de 28 días se mantiene)", () => {
+    const diagnostics = getAdaptiveDiagnostics({
+      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      calibrationStartedAt: "2025-12-01",
+    });
+    expect(diagnostics.evaluationStart).toBe("2026-01-13");
   });
 });
