@@ -447,6 +447,7 @@ export function InventoryView() {
                       >
                         <span className="ac-name">{entry.name}</span>
                         <span className="ac-meta">{entry.kcal} kcal · {entry.protein}g prot</span>
+                        <span className="ac-badge-verified">✓ Verificado</span>
                       </li>
                     ))}
                     {offLoading && (

@@ -4142,6 +4142,18 @@ select:focus {
   padding: 1px 5px;
   margin-left: 4px;
 }
+.ac-badge-verified {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(74,222,128,0.14);
+  color: var(--green);
+  border: 1px solid rgba(74,222,128,0.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+}
 .ac-muted { color: var(--muted) !important; font-style: italic; }
 .ac-loading { pointer-events: none; opacity: 0.7; }
 .ac-divider {
