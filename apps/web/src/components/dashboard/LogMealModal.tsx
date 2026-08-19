@@ -5,6 +5,7 @@ import type { MacroTotals, MealType, Recipe } from "@foodos/types";
 import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealMacros } from "@/lib/ai-inventory";
+import { searchFoodDB } from "@/lib/food-db";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { mealTypeFromTime, toGrams, todayPlus, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
@@ -27,7 +28,7 @@ interface DishIngredient {
 
 interface DishSuggestion {
   key: string;
-  type: "inventory" | "off";
+  type: "inventory" | "local" | "off";
   name: string;
   unit: string;
   kcalPer100: number;
@@ -229,7 +230,21 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         };
       });
 
-    setDishSuggestions(invResults);
+    // Base local verificada (~200 alimentos españoles, BEDCA/USDA/valores
+    // estándar) — búsqueda síncrona, sin red, se muestra antes que OFF por
+    // ser más fiable que un producto crowdsourced.
+    const localResults: DishSuggestion[] = searchFoodDB(q, 4).map(entry => ({
+      key: `local-${entry.name}`,
+      type: "local" as const,
+      name: entry.name,
+      unit: entry.unit,
+      kcalPer100: entry.kcal,
+      proteinPer100: entry.protein,
+      carbsPer100: entry.carbs,
+      fatPer100: entry.fat,
+    }));
+
+    setDishSuggestions([...invResults, ...localResults]);
     setShowDishSuggestions(true);
     setDishLoading(true);
 
@@ -237,7 +252,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
       try {
         const offResults = await searchOFFSuggestions(q, 4);
         setDishSuggestions(prev => [
-          ...prev.filter(s => s.type === "inventory"),
+          ...prev.filter(s => s.type === "inventory" || s.type === "local"),
           ...offResults.map((s, i) => ({
             key: `off-${i}-${s.name}`,
             type: "off" as const,
@@ -637,6 +652,13 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
                   <li key={s.key} onMouseDown={() => addDishIngredient(s)}>
                     <span>{s.name}</span>
                     <span className="ac-badge">📦 inv</span>
+                    <span className="ac-muted">{s.kcalPer100} kcal/100{s.unit}</span>
+                  </li>
+                ))}
+                {dishSuggestions.filter(s => s.type === "local").map(s => (
+                  <li key={s.key} onMouseDown={() => addDishIngredient(s)}>
+                    <span>{s.name}</span>
+                    <span className="ac-badge-verified">✓ Verificado</span>
                     <span className="ac-muted">{s.kcalPer100} kcal/100{s.unit}</span>
                   </li>
                 ))}
