@@ -253,6 +253,17 @@ export interface WeightTrendResult {
   /** Cuántas entradas de peso había dentro de la ventana usada. */
   validMeasurements: number;
   confidence: ConfidenceLevel;
+  /**
+   * Score continuo (0-1) del que sale `confidence` — combina cantidad de
+   * datos, cobertura temporal real (no solo conteo: 14 mediciones en 3 días
+   * puntúan mal aquí aunque cuenten como "muchas"), regularidad del registro
+   * y calidad del ajuste de la regresión (R²). Ver N7 en
+   * docs/REVISION_NUTRICION_PR48-52.md — antes `confidence` dependía
+   * únicamente del número de mediciones. Se expone para diagnóstico/UI, no
+   * es un contrato estable para tomar decisiones fuera de esta librería
+   * (usa `confidence` para eso).
+   */
+  qualityScore: number;
 }
 
 /** Cobertura de registro de ingesta en una ventana de días — cuánto se puede
@@ -307,8 +318,15 @@ export interface AdaptiveDiagnostics {
   initialTdeeKcal: number;
   observedTdeeKcal: number | null;
   blendedTdeeKcal: number;
+  /** Peso (0-1) que recibe el TDEE observado en la media ponderada — ver
+      ADAPTIVE_CONFIDENCE_WEIGHTS. NO es una medida de calidad de los datos
+      (para eso, weightTrendQualityScore). */
   confidenceScore: number;
   confidenceLevel: ConfidenceLevel | "insufficient_data";
+  /** Score de calidad (0-1) de la tendencia de peso en sí — ver
+      WeightTrendResult.qualityScore. null si no hubo suficientes mediciones
+      para calcular tendencia. */
+  weightTrendQualityScore: number | null;
   proposalEligible: boolean;
   ineligibilityReasons: string[];
 }
@@ -361,6 +379,8 @@ export interface AdjustmentProposalEvidence {
   weightMeasurements: number;
   regressionSlopeKgPerDay: number | null;
   confidence: ConfidenceLevel | "insufficient_data";
+  /** Ver WeightTrendResult.qualityScore (N7) — null si no hubo tendencia. */
+  weightTrendQualityScore: number | null;
   initialTdeeKcal: number;
   observedTdeeKcal: number | null;
   combinedTdeeKcal: number;

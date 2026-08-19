@@ -409,6 +409,75 @@ describe("calcWeightTrend", () => {
     const result = calcWeightTrend([stale, ...recent], REF)!;
     expect(result.validMeasurements).toBe(5);
   });
+
+  // ── PR10b (N7): qualityScore combina más que el conteo ───────────────────
+
+  it("qualityScore está siempre entre 0 y 1", () => {
+    for (const count of [3, 5, 8, 14, 25]) {
+      const result = calcWeightTrend(linearSeries(80, count, -0.05, REF), REF)!;
+      expect(result.qualityScore).toBeGreaterThanOrEqual(0);
+      expect(result.qualityScore).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("14 mediciones agrupadas en pocos días puntúan peor que 14 bien repartidas en 4 semanas (mismo count)", () => {
+    // Igual número de mediciones, pero las "agrupadas" están todas en una
+    // ventana de 4 días (p.ej. alguien pesándose varias veces al día durante
+    // un viaje corto) — antes de PR10b, ambas contaban como "alta confianza"
+    // solo por tener >=14 mediciones (ver N7/E11-23).
+    const spread = linearSeries(80, 14, -0.05, REF); // una medición diaria, 14 días
+    const clusteredDates = Array.from({ length: 14 }, (_, i) => addDays(REF, -Math.floor(i / 4)));
+    const clustered: WeightEntry[] = clusteredDates.map((date, i) => ({
+      date,
+      kg: Math.round((80 - 0.05 * i) * 100) / 100,
+    }));
+
+    const spreadResult = calcWeightTrend(spread, REF)!;
+    const clusteredResult = calcWeightTrend(clustered, REF)!;
+
+    expect(clusteredResult.validMeasurements).toBeLessThanOrEqual(spreadResult.validMeasurements);
+    expect(clusteredResult.qualityScore).toBeLessThan(spreadResult.qualityScore);
+  });
+
+  it("una tendencia limpia (buen ajuste lineal) puntúa mejor que una muy ruidosa con el mismo count y periodo", () => {
+    const clean = linearSeries(80, 14, -0.05, REF);
+    // Misma cantidad de días, mismo rango, pero con ruido grande en zigzag en
+    // vez de una tendencia limpia — el R² de la regresión debería ser mucho peor.
+    const noisy: WeightEntry[] = Array.from({ length: 14 }, (_, i) => ({
+      date: addDays(REF, -(13 - i)),
+      kg: 80 + (i % 2 === 0 ? 2.5 : -2.5),
+    }));
+
+    const cleanResult = calcWeightTrend(clean, REF)!;
+    const noisyResult = calcWeightTrend(noisy, REF)!;
+
+    expect(noisyResult.qualityScore).toBeLessThan(cleanResult.qualityScore);
+  });
+
+  it("un registro muy irregular (huecos dispares) puntúa peor que uno con la misma cadencia (regularidad)", () => {
+    const regular = linearSeries(80, 8, -0.05, REF); // cada 1 día
+    // Mismo nº de mediciones y mismo rango total, pero agrupadas en dos
+    // ráfagas separadas por un hueco grande, en vez de espaciado uniforme.
+    const irregularDates = [
+      addDays(REF, -20), addDays(REF, -19), addDays(REF, -18), addDays(REF, -17),
+      addDays(REF, -3), addDays(REF, -2), addDays(REF, -1), REF,
+    ];
+    const irregular: WeightEntry[] = irregularDates.map((date, i) => ({
+      date, kg: Math.round((80 - 0.05 * i) * 100) / 100,
+    }));
+
+    const regularResult = calcWeightTrend(regular, REF)!;
+    const irregularResult = calcWeightTrend(irregular, REF)!;
+
+    expect(irregularResult.qualityScore).toBeLessThan(regularResult.qualityScore);
+  });
+
+  it("peso perfectamente plano no se penaliza por 'mal ajuste' (SS_tot≈0 se trata como ajuste perfecto)", () => {
+    const flat = linearSeries(75, 14, 0, REF);
+    const result = calcWeightTrend(flat, REF)!;
+    expect(result.confidence).toBe("high");
+    expect(result.qualityScore).toBeGreaterThan(0.85);
+  });
 });
 
 describe("calcIntakeCoverage", () => {
@@ -492,6 +561,7 @@ describe("calcAdaptiveTdee", () => {
     weeklyChangePercent: (slopeKgPerDay * 7 / 80) * 100,
     validMeasurements: 14,
     confidence,
+    qualityScore: confidence === "high" ? 0.9 : confidence === "moderate" ? 0.7 : 0.4,
   });
 
   it("insufficient_data si no hay tendencia de peso", () => {
@@ -543,6 +613,7 @@ describe("evaluateAdjustmentProposal", () => {
   const highTrend: WeightTrendResult = {
     latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: -0.08,
     weeklyChangeKg: -0.56, weeklyChangePercent: -0.7, validMeasurements: 20, confidence: "high",
+    qualityScore: 0.9,
   };
   const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
   const adaptive = (combinedKcal: number): AdaptiveTdeeResult => ({
