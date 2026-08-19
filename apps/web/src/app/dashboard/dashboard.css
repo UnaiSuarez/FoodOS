@@ -3978,17 +3978,34 @@ select:focus {
 
 .autocomplete-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 7px 12px;
   cursor: pointer;
   transition: background 0.12s;
-  gap: 8px;
+  gap: 2px;
 }
 
 .autocomplete-item:hover { background: var(--surface3, rgba(255,255,255,0.06)); }
 
-.ac-name { font-size: 13.5px; color: var(--text); flex: 1; }
+/* Nombre en su propia línea (con elipsis si no cabe) para que la fila de
+   abajo (kcal/proteína + badge de fuente) nunca tenga que competir por
+   espacio y quede recortada o invisible en el panel estrecho de "Añadir
+   alimento". */
+.ac-name {
+  font-size: 13.5px;
+  color: var(--text);
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-item-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
 .ac-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 
 /* ── Form actions row ─────────────────────────────────── */

@@ -446,8 +446,10 @@ export function InventoryView() {
                         className="autocomplete-item"
                       >
                         <span className="ac-name">{entry.name}</span>
-                        <span className="ac-meta">{entry.kcal} kcal · {entry.protein}g prot</span>
-                        <span className="ac-badge-verified">✓ Verificado</span>
+                        <span className="ac-item-meta-row">
+                          <span className="ac-meta">{entry.kcal} kcal · {entry.protein}g prot</span>
+                          <span className="ac-badge-verified" title="Verificado — base de datos local curada">✓</span>
+                        </span>
                       </li>
                     ))}
                     {offLoading && (
@@ -465,8 +467,10 @@ export function InventoryView() {
                             className="autocomplete-item"
                           >
                             <span className="ac-name">{s.name}</span>
-                            <span className="ac-meta">{s.kcal} kcal · {s.protein}g prot</span>
-                            <span className="ac-badge-off">OFF</span>
+                            <span className="ac-item-meta-row">
+                              <span className="ac-meta">{s.kcal} kcal · {s.protein}g prot</span>
+                              <span className="ac-badge-off">OFF</span>
+                            </span>
                           </li>
                         ))}
                       </>
