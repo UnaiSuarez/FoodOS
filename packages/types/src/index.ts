@@ -330,6 +330,26 @@ export interface AdjustmentDecision {
 
 export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "expired";
 
+/**
+ * Todo el contexto numérico con el que el motor decidió proponer (o no) el
+ * ajuste — se guarda junto a la propuesta (columna evidence, jsonb) para que
+ * siga siendo auditable aunque una versión futura del algoritmo cambie la
+ * fórmula. Ver N13 en docs/REVISION_NUTRICION_PR48-52.md.
+ */
+export interface AdjustmentProposalEvidence {
+  evaluationWindow: { start: string; end: string };
+  intakeCoverage: number | null;
+  averageIntakeKcal: number | null;
+  weightMeasurements: number;
+  regressionSlopeKgPerDay: number | null;
+  confidence: ConfidenceLevel | "insufficient_data";
+  initialTdeeKcal: number;
+  observedTdeeKcal: number | null;
+  combinedTdeeKcal: number;
+  warnings: AdaptiveTdeeWarning[];
+  engineVersion: string;
+}
+
 /** Espejo de una fila de nutrition_adjustment_proposals — nunca se aplica
     sola, siempre requiere una decisión explícita del usuario (aceptar/rechazar). */
 export interface AdjustmentProposal {
@@ -341,7 +361,20 @@ export interface AdjustmentProposal {
   status: AdjustmentProposalStatus;
   createdAt: string;
   resolvedAt: string | null;
+  evidence?: AdjustmentProposalEvidence;
 }
+
+/**
+ * Resultado de aceptar/rechazar una propuesta vía fn_accept_nutrition_adjustment
+ * (RPC transaccional — ver supabase/migrations). La UI NO debe mutar ningún
+ * estado local (perfil, pendingAdjustmentProposal...) hasta recibir ok:true:
+ * Supabase puede rechazar la operación (propuesta ya resuelta por otro
+ * dispositivo, error de red, RLS) y un catch silencioso dejaría al usuario
+ * viendo un "aplicado" que nunca llegó a la base de datos.
+ */
+export type AcceptAdjustmentResult =
+  | { ok: true; status: "accepted" | "rejected"; newOffsetKcal: number | null }
+  | { ok: false; error: string };
 
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {
@@ -432,7 +465,11 @@ export type SnapshotTriggerReason =
   | "goal_changed"
   | "manual_recalculation"
   | "adaptive_review"
-  | "manual_override";
+  | "manual_override"
+  /** Snapshot del objetivo final tras aceptar una AdjustmentProposal — ver
+      fn_accept_nutrition_adjustment. Distinto de "adaptive_review" (que es la
+      revisión que generó la propuesta, no el resultado de aceptarla). */
+  | "adaptive_adjustment_accepted";
 
 /**
  * Registro inmutable de cómo se calculó un objetivo nutricional concreto —

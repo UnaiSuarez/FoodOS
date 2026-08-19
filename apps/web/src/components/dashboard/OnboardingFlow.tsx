@@ -15,6 +15,7 @@ import {
   calculateFiberTarget,
   evaluateNutritionSafety,
   isGymDay,
+  NUTRITION_ENGINE_VERSION,
 } from "@/lib/nutrition";
 import { dateFromKey } from "@/lib/utils";
 
@@ -82,7 +83,7 @@ export function OnboardingFlow({ onDone }: Props) {
     // Snapshot inicial — mismo criterio que ProfileForm: solo en este evento
     // explícito (completar onboarding), nunca desde un render.
     void remote.saveNutritionSnapshot({
-      calculationVersion: "nutrition-v1",
+      calculationVersion: NUTRITION_ENGINE_VERSION,
       triggerReason: "initial_calculation",
       inputSnapshot: {
         age: profile.age, sex: profile.sex, heightCm: profile.heightCm, weightKg: profile.weightKg,

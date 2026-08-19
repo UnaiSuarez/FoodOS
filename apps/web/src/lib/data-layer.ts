@@ -1,7 +1,9 @@
 import type {
+  AcceptAdjustmentResult,
   ActivityLevel,
   AdjustmentDecision,
   AdjustmentProposal,
+  AdjustmentProposalEvidence,
   FoodLogEntry,
   FoodOSState,
   GoalMode,
@@ -273,6 +275,7 @@ class RemoteAdapter {
     status: AdjustmentProposal["status"];
     created_at: string;
     resolved_at: string | null;
+    evidence?: AdjustmentProposalEvidence | null;
   }): AdjustmentProposal {
     return {
       id: row.id,
@@ -283,22 +286,26 @@ class RemoteAdapter {
       status: row.status,
       createdAt: row.created_at,
       resolvedAt: row.resolved_at,
+      evidence: row.evidence ?? undefined,
     };
   }
 
   /** Crea el snapshot de una revisión adaptativa (trigger_reason:
       'adaptive_review') y, solo si la decisión dice que procede, la propuesta
-      de ajuste enlazada a él. Llamar SOLO desde el botón explícito "Generar
-      propuesta" — nunca automáticamente desde un render o temporizador.
-      Devuelve la propuesta creada (o null si no procedía o falló). */
+      de ajuste enlazada a él — con toda la evidencia numérica que la sustenta
+      (cobertura, tendencia, TDEE, confianza...), nunca vacía (ver N13).
+      Llamar SOLO desde el botón explícito "Generar propuesta" — nunca
+      automáticamente desde un render o temporizador. Devuelve la propuesta
+      creada (o null si no procedía o falló). */
   async createAdjustmentReview(params: {
     snapshot: NutritionCalculationSnapshot;
     decision: AdjustmentDecision;
+    evidence: AdjustmentProposalEvidence;
   }): Promise<AdjustmentProposal | null> {
     if (!this.client || !this.user) return null;
     const userId = this.user.id;
     try {
-      const { snapshot, decision } = params;
+      const { snapshot, decision, evidence } = params;
       const { data: snapshotRow, error: snapshotError } = await this.client
         .from("nutrition_calculation_snapshots")
         .insert({
@@ -330,9 +337,9 @@ class RemoteAdapter {
           proposed_target_kcal: decision.proposedTargetKcal,
           delta_kcal: decision.deltaKcal,
           reason: decision.reason,
-          evidence: {},
+          evidence,
         })
-        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at")
+        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at, evidence")
         .single();
       if (proposalError || !proposalRow) {
         console.warn("FoodOS: no se pudo guardar la propuesta de ajuste", proposalError);
@@ -346,19 +353,71 @@ class RemoteAdapter {
     }
   }
 
-  /** Acepta o rechaza una propuesta de ajuste pendiente. No aplica ningún
-      cambio de perfil por sí sola — el caller decide qué hacer con
-      accepted (p.ej. escribir adaptiveKcalOffsetKcal en el perfil). */
-  async respondToAdjustmentProposal(proposalId: string, accepted: boolean): Promise<void> {
-    if (!this.client || !this.user) return;
+  /**
+   * Acepta o rechaza una propuesta de ajuste pendiente a través de
+   * fn_accept_nutrition_adjustment (RPC transaccional — ver
+   * supabase/migrations/20260819_nutrition_adjustment_accept_rpc.sql).
+   * A diferencia de la versión anterior (update directo + mutación local por
+   * separado), aquí resolver la propuesta, guardar el snapshot final, aplicar
+   * el offset al perfil y actualizar el objetivo vigente ocurren en una sola
+   * transacción — y el resultado SIEMPRE indica si de verdad se aplicó.
+   * El caller (UI) NO debe tocar ningún estado local salvo que ok sea true:
+   * un error de Supabase aquí no lanza necesariamente una excepción (llega
+   * como el campo `error` de la respuesta), así que ignorarlo dejaría a la UI
+   * mostrando "aplicado" sin que el servidor hiciera nada (ver N3).
+   */
+  async acceptAdjustmentProposal(params: {
+    proposalId: string;
+    accepted: boolean;
+    goalDate: string;
+    /** Obligatorios solo cuando accepted es true — el RPC los ignora al rechazar. */
+    newOffsetKcal?: number | null;
+    kcalTarget?: number | null;
+    proteinG?: number | null;
+    carbsG?: number | null;
+    fatG?: number | null;
+    mode?: GoalMode | null;
+    finalSnapshot?: NutritionCalculationSnapshot | null;
+  }): Promise<AcceptAdjustmentResult> {
+    if (!this.client || !this.user) {
+      return { ok: false, error: "Sin conexión con el servidor — no se pudo aplicar el cambio." };
+    }
     try {
-      await this.client
-        .from("nutrition_adjustment_proposals")
-        .update({ status: accepted ? "accepted" : "rejected", resolved_at: new Date().toISOString() })
-        .eq("id", proposalId)
-        .eq("user_id", this.user.id);
+      const s = params.finalSnapshot;
+      const { data, error } = await this.client.rpc("fn_accept_nutrition_adjustment", {
+        p_proposal_id: params.proposalId,
+        p_accepted: params.accepted,
+        p_new_offset_kcal: params.accepted ? params.newOffsetKcal ?? null : null,
+        p_goal_date: params.goalDate,
+        p_kcal_target: params.accepted ? params.kcalTarget ?? null : null,
+        p_protein_g: params.accepted ? params.proteinG ?? null : null,
+        p_carbs_g: params.accepted ? params.carbsG ?? null : null,
+        p_fat_g: params.accepted ? params.fatG ?? null : null,
+        p_mode: params.accepted ? params.mode ?? null : null,
+        p_snapshot: params.accepted && s
+          ? {
+              calculation_version: s.calculationVersion,
+              input_snapshot: s.inputSnapshot,
+              resting_energy: s.restingEnergy,
+              tdee: s.tdee,
+              calorie_target: s.calorieTarget,
+              macros: s.macros,
+              safety: s.safety,
+            }
+          : null,
+      });
+      if (error) {
+        console.warn("FoodOS: fn_accept_nutrition_adjustment devolvió un error", error);
+        return { ok: false, error: error.message };
+      }
+      const row = data as { ok: boolean; status: "accepted" | "rejected"; new_offset_kcal: number | null };
+      if (!row?.ok) {
+        return { ok: false, error: "El servidor no confirmó el cambio." };
+      }
+      return { ok: true, status: row.status, newOffsetKcal: row.new_offset_kcal };
     } catch (err) {
-      console.warn("FoodOS: error respondiendo a la propuesta de ajuste", err);
+      console.warn("FoodOS: error de red respondiendo a la propuesta de ajuste", err);
+      return { ok: false, error: err instanceof Error ? err.message : "Error de red desconocido." };
     }
   }
 
