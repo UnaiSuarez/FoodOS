@@ -202,26 +202,30 @@ export function OnboardingFlow({ onDone }: Props) {
               <div className="ob-form-grid">
                 <label>
                   Edad
-                  <input name="age" type="number" min="14" max="100" required defaultValue={25} />
+                  {/* Sin valor por defecto (N9): un dato inventado (25 años)
+                      podía guardarse sin que el usuario lo notara. */}
+                  <input name="age" type="number" min="14" max="100" required placeholder="ej. 28" />
                 </label>
                 <label>
                   Sexo biológico
-                  <select name="sex" defaultValue="male">
+                  <select name="sex" defaultValue="" required>
+                    <option value="" disabled>Elige una opción</option>
                     <option value="male">Hombre</option>
                     <option value="female">Mujer</option>
                   </select>
                 </label>
                 <label>
                   Altura (cm)
-                  <input name="height" type="number" min="120" max="230" required defaultValue={175} />
+                  <input name="height" type="number" min="120" max="230" required placeholder="ej. 175" />
                 </label>
                 <label>
                   Peso actual (kg)
-                  <input name="weight" type="number" min="35" max="250" step="0.1" required defaultValue={75} />
+                  <input name="weight" type="number" min="35" max="250" step="0.1" required placeholder="ej. 75" />
                 </label>
                 <label>
                   Nivel de actividad
-                  <select name="activity" defaultValue="moderate">
+                  <select name="activity" defaultValue="" required>
+                    <option value="" disabled>Elige una opción</option>
                     {(Object.keys(ACTIVITY_LABELS) as ActivityLevel[]).map((level) => (
                       <option key={level} value={level}>
                         {ACTIVITY_LABELS[level]}
