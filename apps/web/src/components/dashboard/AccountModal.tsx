@@ -182,8 +182,12 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
           <input
             type="password"
             required
-            minLength={6}
-            placeholder={isRegister ? "Mínimo 6 caracteres" : "Tu contraseña"}
+            // E20-05: "Leaked password protection" de Supabase (HaveIBeenPwned)
+            // requiere plan Pro. Como mitigación gratuita, se sube el mínimo a
+            // 8 caracteres — solo al REGISTRARSE, nunca al iniciar sesión (una
+            // cuenta ya creada con 6-7 caracteres debe poder seguir entrando).
+            minLength={isRegister ? 8 : undefined}
+            placeholder={isRegister ? "Mínimo 8 caracteres" : "Tu contraseña"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
