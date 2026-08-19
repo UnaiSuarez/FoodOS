@@ -7,6 +7,7 @@ import { MASCOTS } from "@/lib/mascots";
 import { actions, getMascot, getBudgetLeft, getPendingMacros, buildAiRecipeDraft, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { callAIChat, type ChatTurn } from "@/lib/ai-provider";
+import { validateInventoryAction, validateRecipeAction } from "@/lib/ai-actions";
 import { eur, todayPlus, uid } from "@/lib/utils";
 import { CreateRecipeModal } from "../CreateRecipeModal";
 
@@ -80,36 +81,6 @@ function parseActions(raw: string): Parsed {
   }
 
   return { text, invRaw, recipeRaw };
-}
-
-function buildRecipeFromRaw(raw: Record<string, unknown>): Recipe {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ings = Array.isArray(raw.ingredients) ? (raw.ingredients as any[]).map((i) => ({
-    name: String(i.name ?? ""),
-    quantity: Number(i.quantity ?? 0),
-    unit: String(i.unit ?? "g"),
-    ...(i.kcalPer100    ? { kcalPer100:    Number(i.kcalPer100)    } : {}),
-    ...(i.proteinPer100 ? { proteinPer100: Number(i.proteinPer100) } : {}),
-    ...(i.carbsPer100 != null ? { carbsPer100: Number(i.carbsPer100) } : {}),
-    ...(i.fatPer100   != null ? { fatPer100:   Number(i.fatPer100)   } : {}),
-  })) : [];
-  return {
-    id: uid(),
-    title: String(raw.title ?? "Receta"),
-    ingredients: ings,
-    kcal: Number(raw.kcal) || 0,
-    protein: Number(raw.protein) || 0,
-    carbs: Number(raw.carbs) || 0,
-    fat: Number(raw.fat) || 0,
-    cost: Number(raw.cost) || 0,
-    time: Number(raw.time) || 20,
-    servings: Number(raw.servings) || 1,
-    difficulty: String(raw.difficulty ?? "media"),
-    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
-    steps: Array.isArray(raw.steps) ? raw.steps.map(String) : [],
-    image: "",
-    aiGenerated: true,
-  };
 }
 
 // ── Frases motivacionales contextuales (sin IA) ──────────────────
@@ -278,29 +249,29 @@ export function AssistantView() {
       const msg: ChatMessage = { role: "assistant", text: cleanText };
 
       if (invRaw) {
-        const name = String(invRaw.name ?? "Alimento");
-        const qty = Number(invRaw.qty ?? 100);
-        const unit = String(invRaw.unit ?? "g");
-        const expiresDays = Number(invRaw.expires_days ?? 7);
-        mutate((draft) => {
-          draft.inventory.push({
-            id: uid(),
-            name,
-            qty,
-            unit,
-            storage: (String(invRaw.storage ?? "Despensa")) as import("@foodos/types").StorageName,
-            expires: todayPlus(expiresDays),
-            price: Number(invRaw.price ?? 0),
-            kcal: Number(invRaw.kcal ?? 0),
-            protein: Number(invRaw.protein ?? 0),
+        // E15-04: la acción de la IA se valida (rangos, tipos, storage
+        // reconocido) antes de tocar el estado — antes se aplicaba con solo
+        // Number()/String() sueltos, que nunca rechazan un dato absurdo.
+        const validated = validateInventoryAction(invRaw);
+        if (validated.ok) {
+          const { name, qty, unit, storage, expiresDays, price, kcal, protein } = validated.value;
+          mutate((draft) => {
+            draft.inventory.push({ id: uid(), name, qty, unit, storage, expires: todayPlus(expiresDays), price, kcal, protein });
           });
-        });
-        msg.invAdded = { name, qty, unit };
-        showToast(`${name} añadido al inventario`);
+          msg.invAdded = { name, qty, unit };
+          showToast(`${name} añadido al inventario`);
+        } else {
+          showToast(`No se pudo añadir el alimento propuesto por la IA: ${validated.reason}`);
+        }
       }
 
       if (recipeRaw) {
-        msg.recipe = buildRecipeFromRaw(recipeRaw);
+        const validated = validateRecipeAction(recipeRaw);
+        if (validated.ok) {
+          msg.recipe = validated.value;
+        } else {
+          showToast(`No se pudo construir la receta propuesta por la IA: ${validated.reason}`);
+        }
       } else {
         // Fallback: si pidieron receta pero la IA no incluyó [RECIPE], generamos una local
         const recipeKeywords = ["receta", "cocinar", "preparar", "cena", "come", "comer", "plato", "hazme", "dame", "propón"];
