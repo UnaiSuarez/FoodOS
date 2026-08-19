@@ -64,9 +64,21 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 0, label: "D" },
 ];
 
+/**
+ * N16: la sección Nutrición había crecido a 8 paneles apilados verticalmente
+ * (ver docs/REVISION_NUTRICION_PR48-52.md) — aquí se organiza el contenido
+ * secundario en pestañas. El plan diario (perfil + resumen de hoy) se queda
+ * FUERA de las pestañas, a propósito: es lo único que casi todo el mundo
+ * quiere ver sin un clic extra, y moverlo a una pestaña "Objetivos" solo
+ * habría duplicado ProfileSummary (ya es exactamente ese contenido) sin
+ * ganar nada. Por eso hay 3 pestañas, no 4 — "Objetivos" ya está pinned.
+ */
+type NutritionTab = "hoy" | "peso" | "adaptativo";
+
 export function NutritionView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [editing, setEditing] = useState(false);
+  const [tab, setTab] = useState<NutritionTab>("hoy");
 
   const showForm = !state.profile || editing;
 
@@ -88,21 +100,53 @@ export function NutritionView() {
         <TodayRingPanel />
       </div>
 
-      {state.profile && <MacroWeekChart />}
+      {state.profile && (
+        <>
+          <div className="nutrition-tabs">
+            <button
+              className={`nutrition-tab ${tab === "hoy" ? "active" : ""}`}
+              onClick={() => setTab("hoy")}
+            >
+              Hoy
+            </button>
+            <button
+              className={`nutrition-tab ${tab === "peso" ? "active" : ""}`}
+              onClick={() => setTab("peso")}
+            >
+              Peso
+            </button>
+            <button
+              className={`nutrition-tab ${tab === "adaptativo" ? "active" : ""}`}
+              onClick={() => setTab("adaptativo")}
+            >
+              Adaptativo
+            </button>
+          </div>
 
-      {state.profile && <MacroAdherencePanel />}
+          {tab === "hoy" && (
+            <>
+              <MacroWeekChart />
+              <MacroAdherencePanel />
+              <ProteinOptimizerPanel />
+            </>
+          )}
 
-      {state.profile && <ProteinOptimizerPanel />}
+          {tab === "peso" && (
+            <>
+              <WeightPanel />
+              <WeightTrendPanel />
+              <WeightProjectionPanel />
+            </>
+          )}
 
-      {state.profile && <WeightPanel />}
-
-      {state.profile && <WeightTrendPanel />}
-
-      {state.profile && <AdaptiveTdeePanel />}
-
-      {state.profile && <AdjustmentProposalPanel />}
-
-      {state.profile && <WeightProjectionPanel />}
+          {tab === "adaptativo" && (
+            <>
+              <AdaptiveTdeePanel />
+              <AdjustmentProposalPanel />
+            </>
+          )}
+        </>
+      )}
     </section>
   );
 }
