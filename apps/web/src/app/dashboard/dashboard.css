@@ -2380,6 +2380,12 @@ select:focus {
   color: var(--text);
 }
 
+.adaptive-diagnostics-grid small {
+  font-size: 10px;
+  color: var(--hint, var(--muted));
+  line-height: 1.3;
+}
+
 .adaptive-diagnostics-reasons {
   margin: 10px 0 0;
   padding-left: 18px;

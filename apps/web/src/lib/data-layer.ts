@@ -578,7 +578,7 @@ class RemoteAdapter {
         .order("log_date", { ascending: true }),
       client
         .from("nutrition_adjustment_proposals")
-        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at")
+        .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at, evidence")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1),
@@ -668,6 +668,14 @@ class RemoteAdapter {
         if (state.profile && typeof extra.adaptiveKcalOffsetKcal === "number") {
           state.profile.adaptiveKcalOffsetKcal = extra.adaptiveKcalOffsetKcal;
         }
+        // adaptiveCalibrationStartedAt/lastTargetChangedAt (PR9): mismo
+        // criterio que adaptiveKcalOffsetKcal — viven en extra_state, aditivo.
+        if (state.profile && (typeof extra.adaptiveCalibrationStartedAt === "string" || extra.adaptiveCalibrationStartedAt === null)) {
+          state.profile.adaptiveCalibrationStartedAt = extra.adaptiveCalibrationStartedAt as string | null;
+        }
+        if (state.profile && (typeof extra.lastTargetChangedAt === "string" || extra.lastTargetChangedAt === null)) {
+          state.profile.lastTargetChangedAt = extra.lastTargetChangedAt as string | null;
+        }
       }
     }
 
@@ -698,6 +706,7 @@ class RemoteAdapter {
         status: proposalRow.status,
         createdAt: proposalRow.created_at,
         resolvedAt: proposalRow.resolved_at,
+        evidence: (proposalRow.evidence as AdjustmentProposalEvidence | null) ?? undefined,
       };
       state.lastAdjustmentDecisionAt = null;
     } else {
@@ -896,6 +905,8 @@ class RemoteAdapter {
           stepsLog:          state.stepsLog          ?? {},
           trainingActivity:  state.profile?.trainingActivity ?? null,
           adaptiveKcalOffsetKcal: state.profile?.adaptiveKcalOffsetKcal ?? 0,
+          adaptiveCalibrationStartedAt: state.profile?.adaptiveCalibrationStartedAt ?? null,
+          lastTargetChangedAt: state.profile?.lastTargetChangedAt ?? null,
         },
         ...(state.profile
           ? {

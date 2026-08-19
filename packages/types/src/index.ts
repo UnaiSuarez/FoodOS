@@ -331,6 +331,24 @@ export interface AdjustmentDecision {
 export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "expired";
 
 /**
+ * Instantánea de los datos del perfil que influyen en el cálculo adaptativo,
+ * tomada en el momento de generar una propuesta — permite detectar que la
+ * propuesta quedó obsoleta si el usuario cambia algo relevante antes de
+ * aceptarla (ver isProposalStale en nutrition.ts y N4 en
+ * docs/REVISION_NUTRICION_PR48-52.md). No incluye "objetivo manual" porque
+ * ese campo todavía no existe en FoodOS.
+ */
+export interface AdjustmentProfileFingerprint {
+  goal: GoalMode;
+  weightKg: number;
+  activityLevel: ActivityLevel;
+  activityModelVersion: ActivityModelVersion;
+  trainingActivity: TrainingActivityProfile | null;
+  macroPreference: MacroPreference;
+  adaptiveKcalOffsetKcal: number;
+}
+
+/**
  * Todo el contexto numérico con el que el motor decidió proponer (o no) el
  * ajuste — se guarda junto a la propuesta (columna evidence, jsonb) para que
  * siga siendo auditable aunque una versión futura del algoritmo cambie la
@@ -348,6 +366,9 @@ export interface AdjustmentProposalEvidence {
   combinedTdeeKcal: number;
   warnings: AdaptiveTdeeWarning[];
   engineVersion: string;
+  /** Con qué perfil se generó — ver AdjustmentProfileFingerprint. Opcional
+      solo por compatibilidad con propuestas creadas antes de PR9. */
+  profileFingerprint?: AdjustmentProfileFingerprint;
 }
 
 /** Espejo de una fila de nutrition_adjustment_proposals — nunca se aplica
@@ -407,6 +428,18 @@ export interface PhysicalProfile {
       idéntico a antes de que existiera este campo. Nunca lo escribe nada
       salvo aceptar una AdjustmentProposal explícitamente. */
   adaptiveKcalOffsetKcal?: number;
+  /** Fecha (YYYY-MM-DD) desde la que el motor adaptativo puede usar datos de
+      peso/ingesta para calcular tendencia y TDEE observado — null/undefined
+      significa "usa toda la ventana normal" (comportamiento idéntico a antes
+      de PR9). Se resetea a hoy cada vez que cambia algo que invalida el
+      histórico anterior como referencia (objetivo, actividad, modelo de
+      actividad) — ver isRelevantCalibrationChange en nutrition.ts. */
+  adaptiveCalibrationStartedAt?: string | null;
+  /** Fecha (YYYY-MM-DD) del último cambio de objetivo/actividad — distinta de
+      adaptiveCalibrationStartedAt para poder mostrar en la UI "por qué" se
+      reinició la calibración sin ambigüedad, y de lastAdjustmentDecisionAt
+      (que es sobre aceptar/rechazar propuestas, no sobre editar el perfil). */
+  lastTargetChangedAt?: string | null;
 }
 
 /**
