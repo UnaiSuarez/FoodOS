@@ -27,6 +27,7 @@ import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
 import { VIEWS, NAV_GROUPS, type ViewId } from "@/lib/dashboard-views";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 import { QuickAddButton } from "./QuickAddButton";
+import { getSavedTourStep } from "@/lib/tour-progress";
 
 // E03-12: traduce la clave plana de VIEWS (lib/dashboard-views.ts no puede
 // importar componentes de React, ver el comentario de ese archivo) al icono
@@ -199,6 +200,12 @@ function DashboardInner() {
   // (bug). Se decide en un efecto, cuando ya sabemos si hay perfil.
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [tourActive, setTourActive] = useState(false);
+  // E18-11: el tour se cerraba solo al navegar a su segundo paso — ver el
+  // comentario de tour-progress.ts. Si queda un paso guardado (tour en
+  // curso interrumpido por el remontaje de la página), se retoma solo.
+  useEffect(() => {
+    if (getSavedTourStep() !== null) setTourActive(true);
+  }, []);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [menuOpen, setMenuOpen] = useState(false);
   // E04-08: colapsar el sidebar a solo iconos en escritorio. Arranca en

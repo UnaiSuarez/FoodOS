@@ -3,6 +3,8 @@
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getMascot, useFoodOS } from "@/lib/state";
+import { useEscapeToClose } from "@/lib/use-escape-key";
+import { clearTourStep, getSavedTourStep, saveTourStep } from "@/lib/tour-progress";
 import type { ViewId } from "./DashboardShell";
 
 interface TourStep {
@@ -83,12 +85,33 @@ interface Props {
 export function AppTour({ setView, onDone }: Props) {
   const { state } = useFoodOS();
   const mascot = getMascot(state.mascotId);
-  const [step, setStep] = useState(0);
+  // El tour navega entre secciones para resaltarlas (setView), y eso
+  // remonta este componente (ver tour-progress.ts) — arrancar leyendo el
+  // paso guardado en vez de siempre en 0 es lo que permite retomar donde
+  // se quedó en vez de reiniciarse solo.
+  const [step, setStep] = useState(() => getSavedTourStep() ?? 0);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const titleRef = useRef<HTMLHeadingElement>(null);
 
   const current = STEPS[step];
   const isFirst = step === 0;
   const isLast = step === STEPS.length - 1;
+
+  useEffect(() => {
+    saveTourStep(step);
+  }, [step]);
+
+  // E18-11: el tour no tenía role de diálogo ni gestión de foco — un lector
+  // de pantalla no se enteraba de que había un overlay nuevo, y cambiar de
+  // paso no comunicaba nada (el foco se quedaba en "Siguiente", que sigue
+  // ahí pero ya no describe el paso nuevo). Se mueve el foco al título en
+  // cada paso (mismo patrón que el onboarding, E18-10) — anuncia por sí
+  // solo "paso X de Y: título" vía el aria-label del propio heading.
+  useEscapeToClose(done);
+  useEffect(() => {
+    titleRef.current?.focus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   const applyHighlight = useCallback(
     (selector: string | undefined) => {
@@ -129,27 +152,32 @@ export function AppTour({ setView, onDone }: Props) {
   function done() {
     document.querySelectorAll("[data-tour]").forEach((el) => el.classList.remove("tour-highlight"));
     localStorage.setItem("foodos-tour-done", "1");
+    clearTourStep();
     onDone();
   }
 
   return (
-    <div className="app-tour">
+    <div className="app-tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-desc">
       <div className="tour-card">
         <div className="tour-mascot">
           <Image src={mascot.image} alt={mascot.name} width={52} height={58} />
         </div>
 
         <div className="tour-content">
-          <div className="tour-progress">
+          {/* E18-11: los puntos son decorativos (aria-hidden) — el grupo
+              lleva el "Paso X de Y" en texto real, que es lo que un lector
+              de pantalla necesita en vez de contar puntitos. */}
+          <div className="tour-progress" role="group" aria-label={`Paso ${step + 1} de ${STEPS.length}`}>
             {STEPS.map((_, i) => (
               <span
                 key={i}
+                aria-hidden="true"
                 className={`tour-dot${i === step ? " active" : i < step ? " done" : ""}`}
               />
             ))}
           </div>
-          <h3 className="tour-title">{current.title}</h3>
-          <p className="tour-desc">{current.description}</p>
+          <h3 id="tour-title" ref={titleRef} tabIndex={-1} className="tour-title">{current.title}</h3>
+          <p id="tour-desc" className="tour-desc">{current.description}</p>
         </div>
 
         <div className="tour-actions">
