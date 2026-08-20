@@ -10,18 +10,26 @@
  * módulo plano lo resuelve: tanto el server component (metadata) como
  * DashboardShell.tsx (cliente) pueden importarlo sin problema.
  */
+/**
+ * "icon" es una CLAVE, no el icono en sí (E03-12): este módulo no puede
+ * depender de React/lucide-react porque generateMetadata() lo importa en el
+ * servidor solo para leer título/label, y antes usaba directamente un
+ * carácter Unicode (⌂ ≣ □ ◌...) como icono — inconsistente entre fuentes del
+ * sistema, sin variantes de tamaño/trazo reales. DashboardShell.tsx (donde sí
+ * se renderiza) traduce esta clave al componente de lucide-react real.
+ */
 export const VIEWS = [
-  { id: "dashboard",  icon: "⌂", label: "Panel",        title: "Panel diario" },
-  { id: "diary",      icon: "≣", label: "Registro",      title: "Registro diario" },
-  { id: "inventory",  icon: "□", label: "Inventario",    title: "Inventario" },
-  { id: "recipes",    icon: "◌", label: "Recetas",       title: "Recetas" },
-  { id: "cart",       icon: "✓", label: "Carrito",       title: "Carrito de compra" },
-  { id: "finance",    icon: "€", label: "Finanzas",      title: "Finanzas" },
-  { id: "stats",      icon: "↗", label: "Estadísticas",  title: "Estadísticas" },
-  { id: "nutrition",  icon: "%", label: "Nutrición",     title: "Nutrición" },
-  { id: "assistant",  icon: "✦", label: "Asistente",     title: "Asistente FoodOS" },
-  { id: "planner",    icon: "⊞", label: "Planificador",  title: "Planificador semanal" },
-  { id: "ejercicios", icon: "⊙", label: "Ejercicios",    title: "Ejercicios" },
+  { id: "dashboard",  icon: "layout-dashboard", label: "Panel",        title: "Panel diario" },
+  { id: "diary",      icon: "notebook-pen",     label: "Registro",      title: "Registro diario" },
+  { id: "inventory",  icon: "package",          label: "Inventario",    title: "Inventario" },
+  { id: "recipes",    icon: "chef-hat",         label: "Recetas",       title: "Recetas" },
+  { id: "cart",       icon: "shopping-cart",    label: "Carrito",       title: "Carrito de compra" },
+  { id: "finance",    icon: "wallet",           label: "Finanzas",      title: "Finanzas" },
+  { id: "stats",      icon: "trending-up",      label: "Estadísticas",  title: "Estadísticas" },
+  { id: "nutrition",  icon: "apple",            label: "Nutrición",     title: "Nutrición" },
+  { id: "assistant",  icon: "sparkles",         label: "Asistente",     title: "Asistente FoodOS" },
+  { id: "planner",    icon: "calendar-days",    label: "Planificador",  title: "Planificador semanal" },
+  { id: "ejercicios", icon: "dumbbell",         label: "Ejercicios",    title: "Ejercicios" },
 ] as const;
 
 export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
