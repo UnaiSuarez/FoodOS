@@ -21,7 +21,10 @@ test.beforeEach(async ({ page }) => {
 async function seedDemo(page: Page) {
   await page.goto("/dashboard/settings");
   await page.getByRole("button", { name: "Cargar datos demo" }).click();
-  await expect(page.getByRole("status")).toHaveText("Datos demo cargados");
+  // E04-07 añadió otro role="status" persistente en la cabecera (el
+  // indicador de sincronización) — getByRole("status") a secas ya no es
+  // único, se acota a la clase del toast.
+  await expect(page.locator(".toast")).toHaveText("Datos demo cargados");
 }
 
 test("cocinar una receta descuenta la cantidad correcta de cada ingrediente (E21-02)", async ({ page }) => {
@@ -37,7 +40,7 @@ test("cocinar una receta descuenta la cantidad correcta de cada ingrediente (E21
   await expect(modal.getByRole("checkbox", { name: "Descontar ingredientes del inventario al cocinar" })).toBeChecked();
   await modal.getByRole("button", { name: "Cocinar 1 ración" }).click();
 
-  await expect(page.getByRole("status")).toHaveText("Bowl proteico de pollo cocinado (1 ración)");
+  await expect(page.locator(".toast")).toHaveText("Bowl proteico de pollo cocinado (1 ración)");
 
   await page.goto("/dashboard/inventory");
   await expect(page.locator(".card", { hasText: "Pechuga de pollo" }).locator("small")).toContainText("80g");
@@ -80,7 +83,9 @@ test("borrar una comida y deshacer restaura diario e inventario juntos (E21-03)"
   const entryRow = page.locator("li", { hasText: "Pechuga de pollo" }).first();
   await entryRow.getByRole("button", { name: /^Borrar/ }).click();
 
-  const undoToast = page.getByRole("status");
+  // E04-07 añadió otro role="status" persistente en la cabecera — se acota
+  // al toast por clase para no chocar con él.
+  const undoToast = page.locator(".toast");
   await expect(undoToast).toContainText("Comida eliminada");
   await expect(page.locator("li", { hasText: "Pechuga de pollo" })).toHaveCount(0);
   // El borrado ya devuelve la cantidad al inventario, sin necesitar deshacer.
@@ -143,7 +148,7 @@ test("completar una compra llega consistente a inventario y finanzas (E21-05)", 
   await review.locator(".review-purchase-row input[type=number]").fill("2.10");
   await review.getByRole("button", { name: "Confirmar compra" }).click();
 
-  await expect(page.getByRole("status")).toHaveText("Compra completada");
+  await expect(page.locator(".toast")).toHaveText("Compra completada");
 
   // El carrito ya no tiene el item comprado.
   await expect(page.locator(".card", { hasText: "Avena" })).toHaveCount(0);

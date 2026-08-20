@@ -182,6 +182,17 @@ export interface PurchaseReviewItem {
   expires: string;
 }
 
+/** E04-07: estado de guardado que muestra la cabecera.
+    - "local": no hay Supabase configurado — todo vive solo en este dispositivo,
+      no hay "servidor" con el que estar sincronizado o no.
+    - "saved": el último cambio ya llegó al servidor.
+    - "syncing": hay un guardado remoto programado o en curso.
+    - "offline": el navegador no tiene conexión (navigator.onLine) — un push
+      fallaría igualmente, así que se distingue de "error" (que sí lo intentó).
+    - "error": el último intento de push falló y no ha vuelto a resolverse
+      (reintenta solo — ver PUSH_RETRY_MS en data-layer.ts). */
+export type SyncStatus = "local" | "saved" | "syncing" | "offline" | "error";
+
 interface FoodOSContextValue {
   state: FoodOSState;
   hydrated: boolean;
@@ -191,6 +202,8 @@ interface FoodOSContextValue {
   authUser: User | null;
   /** true cuando el canal de Supabase Realtime está SUBSCRIBED */
   realtimeConnected: boolean;
+  /** E04-07: ver SyncStatus. */
+  syncStatus: SyncStatus;
   showToast: (message: string, action?: ToastAction) => void;
   setMascotMessage: (message: string) => void;
   triggerMascot: (anim: MascotState, message?: string) => void;
@@ -229,6 +242,11 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [remoteHydrated, setRemoteHydrated] = useState(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
+  // E04-07: "saved" de entrada — sin Supabase se sobreescribe a "local" más
+  // abajo antes del primer paint útil; con Supabase asumimos sincronizado
+  // hasta el primer cambio (no hay nada pendiente al arrancar).
+  const [pushStatus, setPushStatus] = useState<"saved" | "syncing" | "error">("saved");
+  const [isOnline, setIsOnline] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeUnsubRef = useRef<(() => void) | null>(null);
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -380,6 +398,32 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     return () => { remote.onPushError = null; };
   }, [showToast]);
 
+  // E04-07: refleja en la cabecera cada transición de guardado remoto.
+  useEffect(() => {
+    remote.onStatusChange = (status) => setPushStatus(status);
+    return () => { remote.onStatusChange = null; };
+  }, []);
+
+  // E04-07: navigator.onLine — un push fallaría igualmente estando offline,
+  // así que la cabecera lo distingue de un error de servidor real.
+  useEffect(() => {
+    setIsOnline(navigator.onLine);
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  const syncStatus: SyncStatus = !hasSupabaseConfig()
+    ? "local"
+    : !isOnline
+      ? "offline"
+      : pushStatus;
+
   // Toda mutacion pasa por aqui: clona, aplica, persiste (local + remoto).
   const mutate = useCallback((fn: (draft: FoodOSState) => void) => {
     setState((current) => {
@@ -490,6 +534,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       remoteHydrated,
       authUser,
       realtimeConnected,
+      syncStatus,
       showToast,
       setMascotMessage,
       triggerMascot,
@@ -498,7 +543,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       resetAll,
       seedDemo,
     }),
-    [state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
+    [state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, syncStatus, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
   );
 
   const uiValue = useMemo<FoodOSUIValue>(
