@@ -547,21 +547,35 @@ export function pruneOrphanedQuickMeals(draft: FoodOSState): void {
   draft.plannerQuickMeals = draft.plannerQuickMeals.filter((qm) => referencedIds.has(qm.id));
 }
 
+/** Gramos/ml disponibles en inventario para un ingrediente, sumando todos
+    los lotes cuyo nombre casa (namesMatch). */
+function availableForIngredient(state: FoodOSState, ingredientName: string): number {
+  return state.inventory
+    .filter((item) => namesMatch(item.name, ingredientName))
+    .reduce((sum, item) => sum + toGrams(item.qty, item.unit, item.unitSize), 0);
+}
+
+/** E08-06: antes "tener" un ingrediente era solo que existiera ALGO con ese
+    nombre en inventario, aunque fueran 5g de los 500g que pide la receta.
+    Ahora compara cantidades (convertidas a gramos/ml vía toGrams, misma
+    lógica que el resto de la app) — "tener" significa tener lo suficiente. */
+function hasEnoughForIngredient(state: FoodOSState, ingredient: Recipe["ingredients"][number]): boolean {
+  const available = availableForIngredient(state, ingredient.name);
+  if (available <= 0) return false;
+  return available >= toGrams(ingredient.quantity, ingredient.unit);
+}
+
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
-  const names = state.inventory.map((item) => item.name);
-  const matches = recipe.ingredients.filter((ingredient) =>
-    names.some((name) => namesMatch(name, ingredient.name))
-  );
+  const matches = recipe.ingredients.filter((ingredient) => hasEnoughForIngredient(state, ingredient));
   return { matches, pct: Math.round((matches.length / Math.max(1, recipe.ingredients.length)) * 100) };
 }
 
 export function getIngredientStatus(state: FoodOSState, recipe: Recipe) {
-  const names = state.inventory.map((item) => item.name);
   return recipe.ingredients.map((ingredient) => ({
     name: ingredient.name,
     quantity: ingredient.quantity,
     unit: ingredient.unit,
-    has: names.some((name) => namesMatch(name, ingredient.name)),
+    has: hasEnoughForIngredient(state, ingredient),
   }));
 }
 
