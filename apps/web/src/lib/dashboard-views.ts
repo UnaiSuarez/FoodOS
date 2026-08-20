@@ -18,18 +18,36 @@
  * sistema, sin variantes de tamaño/trazo reales. DashboardShell.tsx (donde sí
  * se renderiza) traduce esta clave al componente de lucide-react real.
  */
+/**
+ * E04-01: las once secciones se mostraban como una lista plana de opciones
+ * equivalentes, sin ninguna jerarquía — "group" las agrupa por dominio
+ * (criterio de aceptación: dejan de parecer opciones intercambiables).
+ * "dashboard" queda fuera de cualquier grupo a propósito: es el punto de
+ * entrada, no un miembro más de un dominio. Los grupos y su orden reflejan
+ * los tres pilares del producto (inventario+nutrición, finanzas, actividad
+ * física — ver docs/DECISIONES_PRODUCTO.md) más el asistente de IA, que al
+ * poder actuar sobre inventario y recetas a la vez no encaja dentro de
+ * ningún dominio concreto.
+ */
+export const NAV_GROUPS = [
+  { id: "food",      label: "Comida" },
+  { id: "finance",   label: "Finanzas" },
+  { id: "progress",  label: "Progreso" },
+  { id: "assistant", label: "Asistente" },
+] as const;
+
 export const VIEWS = [
-  { id: "dashboard",  icon: "layout-dashboard", label: "Panel",        title: "Panel diario" },
-  { id: "diary",      icon: "notebook-pen",     label: "Registro",      title: "Registro diario" },
-  { id: "inventory",  icon: "package",          label: "Inventario",    title: "Inventario" },
-  { id: "recipes",    icon: "chef-hat",         label: "Recetas",       title: "Recetas" },
-  { id: "cart",       icon: "shopping-cart",    label: "Carrito",       title: "Carrito de compra" },
-  { id: "finance",    icon: "wallet",           label: "Finanzas",      title: "Finanzas" },
-  { id: "stats",      icon: "trending-up",      label: "Estadísticas",  title: "Estadísticas" },
-  { id: "nutrition",  icon: "apple",            label: "Nutrición",     title: "Nutrición" },
-  { id: "assistant",  icon: "sparkles",         label: "Asistente",     title: "Asistente FoodOS" },
-  { id: "planner",    icon: "calendar-days",    label: "Planificador",  title: "Planificador semanal" },
-  { id: "ejercicios", icon: "dumbbell",         label: "Ejercicios",    title: "Ejercicios" },
+  { id: "dashboard",  icon: "layout-dashboard", label: "Panel",        title: "Panel diario",         group: null },
+  { id: "diary",      icon: "notebook-pen",     label: "Registro",      title: "Registro diario",      group: "food" },
+  { id: "inventory",  icon: "package",          label: "Inventario",    title: "Inventario",           group: "food" },
+  { id: "recipes",    icon: "chef-hat",         label: "Recetas",       title: "Recetas",              group: "food" },
+  { id: "cart",       icon: "shopping-cart",    label: "Carrito",       title: "Carrito de compra",    group: "food" },
+  { id: "nutrition",  icon: "apple",            label: "Nutrición",     title: "Nutrición",            group: "food" },
+  { id: "finance",    icon: "wallet",           label: "Finanzas",      title: "Finanzas",             group: "finance" },
+  { id: "stats",      icon: "trending-up",      label: "Estadísticas",  title: "Estadísticas",         group: "progress" },
+  { id: "planner",    icon: "calendar-days",    label: "Planificador",  title: "Planificador semanal", group: "progress" },
+  { id: "ejercicios", icon: "dumbbell",         label: "Ejercicios",    title: "Ejercicios",           group: "progress" },
+  { id: "assistant",  icon: "sparkles",         label: "Asistente",     title: "Asistente FoodOS",     group: "assistant" },
 ] as const;
 
 export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
