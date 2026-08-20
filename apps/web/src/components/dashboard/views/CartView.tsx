@@ -12,6 +12,7 @@ import {
 } from "@/lib/state";
 import { eur, uid } from "@/lib/utils";
 import { EditCartItemModal } from "../EditCartItemModal";
+import { Modal } from "../Modal";
 
 type SuggestTab = "lowstock" | "plan";
 
@@ -28,6 +29,12 @@ export function CartView() {
   const [activeTab, setActiveTab]     = useState<SuggestTab>("lowstock");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [editCartItem, setEditCartItem] = useState<CartItem | null>(null);
+  // E10-02: antes el aviso de "supera presupuesto" era un toast con acción
+  // (5s, UNDO_TOAST_MS) — fácil de perder de vista o que se cierre solo
+  // antes de decidir. Superar el presupuesto es una decisión real, no algo
+  // para un aviso efímero: ahora es un diálogo persistente (mismo patrón
+  // que N10 en NutritionView, "Revisa tu déficit antes de continuar").
+  const [pendingOverBudget, setPendingOverBudget] = useState<{ total: number; over: number } | null>(null);
 
   const checkedCount  = state.cart.filter((i) => i.checked).length;
   const checkedTotal  = state.cart.filter((i) => i.checked).reduce((sum, i) => sum + Number(i.price || 0), 0);
@@ -81,13 +88,19 @@ export function CartView() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
+    const qty = Number(data.get("qty"));
+    const price = Number(data.get("price"));
+    // E10-01: sin esto, dejar el campo vacío o poner 0 añadía un item de
+    // cantidad 0 al carrito — no sirve para nada y ensucia la lista.
+    if (!(qty > 0)) { showToast("La cantidad debe ser mayor que 0"); return; }
+    if (Number.isNaN(price) || price < 0) { showToast("El precio no puede ser negativo"); return; }
     mutate((draft) => {
       draft.cart.push({
         id: uid(),
         name: String(data.get("name")).trim(),
-        qty: Number(data.get("qty")),
+        qty,
         unit: String(data.get("unit")),
-        price: Number(data.get("price")),
+        price,
         store: String(data.get("store")),
         checked: false,
         source: "manual" as const,
@@ -113,12 +126,9 @@ export function CartView() {
     }
     // Aviso preventivo: si lo marcado ya se come el presupuesto semanal que
     // queda, frenamos antes de tocar Finanzas/Inventario en vez de avisar
-    // después — el usuario decide con un toque extra, no se bloquea.
+    // después — el usuario decide con una interacción real, no se bloquea.
     if (checkedTotal > budgetLeft) {
-      showToast(
-        `⚠ Esta compra (${eur(checkedTotal)}) supera tu presupuesto semanal en ${eur(checkedTotal - budgetLeft)}.`,
-        { label: "Completar igualmente", onAction: finishPurchase }
-      );
+      setPendingOverBudget({ total: checkedTotal, over: checkedTotal - budgetLeft });
       return;
     }
     finishPurchase();
@@ -219,7 +229,7 @@ export function CartView() {
             </label>
             <label>
               Cantidad
-              <input name="qty" type="number" min="0" step="0.1" defaultValue={1} required />
+              <input name="qty" type="number" min="0.1" step="0.1" defaultValue={1} required />
             </label>
             <label>
               Unidad <input name="unit" defaultValue="ud" />
@@ -402,6 +412,28 @@ export function CartView() {
         )}
       </article>
       {editCartItem && <EditCartItemModal item={editCartItem} onClose={() => setEditCartItem(null)} />}
+      {pendingOverBudget && (
+        <Modal title="Revisa el presupuesto antes de completar" onClose={() => setPendingOverBudget(null)}>
+          <p className="cycle-note">
+            ⚠ Esta compra ({eur(pendingOverBudget.total)}) supera tu presupuesto semanal en{" "}
+            {eur(pendingOverBudget.over)}.
+          </p>
+          <div className="meta-row" style={{ marginTop: 12 }}>
+            <button className="secondary-button" onClick={() => setPendingOverBudget(null)}>
+              ← Revisar la compra
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => {
+                setPendingOverBudget(null);
+                finishPurchase();
+              }}
+            >
+              Completar igualmente
+            </button>
+          </div>
+        </Modal>
+      )}
     </section>
   );
 }

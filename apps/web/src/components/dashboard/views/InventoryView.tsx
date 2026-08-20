@@ -33,15 +33,24 @@ type FormState = {
   dataSource?: InventoryItem["dataSource"];
 };
 
+// E07-01/02/03: antes price/kcal/protein arrancaban en valores inventados
+// (2,80 €, 120 kcal, 23g prot — "típicos" de nada en particular) que podían
+// guardarse sin que el usuario los tocara, y expires en "caduca en 4 días"
+// para CUALQUIER alimento (una lata de garbanzos no caduca en 4 días). 0 es
+// una señal honesta de "sin rellenar todavía" — ya existe un aviso no
+// bloqueante al guardar sin macros (ver addItem) para ese caso. expires
+// vacío obliga a elegir fecha a propósito (el input ya es required); al
+// elegir una sugerencia de food-db/OFF/IA, expires se sobreescribe con una
+// caducidad propia de ESE alimento (ver handleNameChange/fillFromEntry).
 const DEFAULT_FORM: FormState = {
   name: "",
   qty: 250,
   unit: "g",
   storage: "Nevera",
-  expires: todayPlus(4),
-  price: 2.8,
-  kcal: 120,
-  protein: 23,
+  expires: "",
+  price: 0,
+  kcal: 0,
+  protein: 0,
   unitSize: 60,
   dataSource: undefined,
 };
@@ -305,9 +314,18 @@ export function InventoryView() {
 
   function addItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Guard: además del min="0.1" nativo, rechaza cantidad ≤ 0 (un item de 0
-    // unidades no sirve para nada y ensucia el inventario).
+    // Guard: además del min="0"/min="0.1" nativo (que no impide escribir "-5" a
+    // mano), rechaza cantidad ≤ 0 y cualquier NaN/negativo en el resto de
+    // campos numéricos antes de guardar (E07-04) — un item con precio o kcal
+    // negativos, o NaN por un campo vaciado a medio escribir, ensucia el
+    // inventario y descuadra Finanzas/Nutrición silenciosamente.
     if (!(form.qty > 0)) { showToast("La cantidad debe ser mayor que 0"); return; }
+    if (form.unit === "ud" && !(form.unitSize > 0)) {
+      showToast("El tamaño por unidad debe ser mayor que 0"); return;
+    }
+    if ([form.price, form.kcal, form.protein].some((n) => Number.isNaN(n) || n < 0)) {
+      showToast("Precio, kcal y proteína no pueden ser negativos"); return;
+    }
     mutate((draft) => {
       draft.inventory.push({
         id: uid(),
@@ -328,7 +346,7 @@ export function InventoryView() {
     // diario, que rara vez es lo que se quiere. Se guarda igual (a veces es a
     // propósito, ej. agua o especias), pero se sugiere completar los datos.
     const noMacros = !(form.kcal > 0) && !(form.protein > 0);
-    setForm({ ...DEFAULT_FORM, expires: todayPlus(4) });
+    setForm(DEFAULT_FORM);
     setItemExtras({});
     setMascotMessage("Alimento guardado. Estoy vigilando caducidades.");
     showToast(noMacros

@@ -1211,13 +1211,20 @@ select:focus {
 
 /* ---------- Pantalla de inicio (bento) ---------- */
 
+/* E05-01: cuando hay una sugerencia de "siguiente acción" (qué cocinar
+   ahora), antes vivía abajo del todo (fila 3, junto a los accesos rápidos)
+   mientras que el presupuesto semanal — información relevante pero no la
+   "acción siguiente" de hoy — ocupaba el hueco preferente de arriba a la
+   derecha. Se intercambian: la sugerencia sube junto al estado del día
+   (macros/expiry), el presupuesto baja. Sin sugerencia activa (.no-suggest)
+   se mantiene el orden anterior, que ya tenía sentido para ese caso. */
 .bento-grid {
   display: grid;
   grid-template-columns: 1.5fr 1fr 1fr;
   grid-template-areas:
-    "macros expiry budget"
+    "macros expiry suggest"
     "macros expiry mascot"
-    "actions suggest mascot";
+    "actions budget mascot";
   gap: 12px;
 }
 
@@ -1276,6 +1283,15 @@ select:focus {
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+}
+
+/* E05-02: frase de estado del día, entre la cabecera y el anillo de kcal —
+   suficientemente destacada para leerse de un vistazo, sin competir en
+   tamaño con el número de kcal (que sigue siendo lo primero que se ve). */
+.bento-status-line {
+  margin: -6px 0 0;
+  color: var(--text);
+  font-size: 14px;
 }
 
 .bento-macros-body {
@@ -2647,8 +2663,9 @@ select:focus {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
       "macros macros"
+      "suggest suggest"
       "expiry budget"
-      "suggest mascot"
+      "mascot mascot"
       "actions actions";
   }
 
@@ -4456,6 +4473,15 @@ select:focus {
 .diary-entry-name-link {
   cursor: pointer;
   font-size: 14px;
+  /* E06-01: ahora es un <button>, no un <strong> — reset de estilos por
+     defecto del navegador para que se siga viendo igual (negrita incluida,
+     ya que <button> no hereda el peso de fuente de <strong>). */
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-weight: 700;
+  color: inherit;
+  text-align: left;
 }
 .diary-entry-name-link:hover { color: var(--green); }
 

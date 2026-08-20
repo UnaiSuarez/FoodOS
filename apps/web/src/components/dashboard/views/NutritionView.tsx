@@ -52,7 +52,7 @@ import {
   weeklyCycle,
 } from "@/lib/nutrition";
 import { remote } from "@/lib/data-layer";
-import { dateFromKey, dateOffset } from "@/lib/utils";
+import { dateFromKey, dateOffset, eur } from "@/lib/utils";
 
 const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 1, label: "L" },
@@ -1578,7 +1578,7 @@ function ProteinOptimizerPanel() {
               <span className="optimizer-rank">{i + 1}</span>
               <span className="optimizer-name">{item.title}</span>
               <span className="optimizer-macro">{item.protein}g prot</span>
-              <span className="optimizer-cost">€{item.cost.toFixed(2)}/ración</span>
+              <span className="optimizer-cost">{eur(item.cost)}/ración</span>
               <span className={`badge ${i === 0 ? "green" : i <= 2 ? "amber" : ""}`}>
                 {item.proteinPerEuro}g/€
               </span>
