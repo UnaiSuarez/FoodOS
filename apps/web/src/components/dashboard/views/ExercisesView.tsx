@@ -5,6 +5,7 @@ import { getToday, useFoodOS } from "@/lib/state";
 import { dateFromKey, dateKeyFromDate, uid } from "@/lib/utils";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIRoutine } from "@/lib/ai-provider";
+import { useEscapeToClose } from "@/lib/use-escape-key";
 import type {
   CompletedExercise,
   EquipmentAccess,
@@ -365,7 +366,15 @@ function RoutineCard({
 
   return (
     <div className="routine-card">
-      <div className="routine-card-header" onClick={() => setExpanded((e) => !e)}>
+      {/* E18-03: era un <div onClick> — un toggle de expandir/colapsar solo
+          alcanzable con ratón/touch, invisible para teclado y lectores de
+          pantalla. */}
+      <button
+        type="button"
+        className="routine-card-header"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+      >
         <div className="routine-card-meta">
           <span className="routine-card-name">{routine.name}</span>
           <span className="routine-card-badges">
@@ -375,8 +384,8 @@ function RoutineCard({
             {routine.aiGenerated && <span className="routine-badge ai">IA</span>}
           </span>
         </div>
-        <span className="routine-card-chevron">{expanded ? "▴" : "▾"}</span>
-      </div>
+        <span className="routine-card-chevron" aria-hidden="true">{expanded ? "▴" : "▾"}</span>
+      </button>
 
       {expanded && (
         <div className="routine-card-body">
@@ -620,6 +629,7 @@ function CreateRoutineForm({
             value={dayLabel}
             onChange={(e) => setDayLabel(e.target.value)}
             placeholder="Ej. Día 1 · Pecho y tríceps"
+            aria-label="Nombre del día"
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addDay(); } }}
           />
           <button type="button" className="secondary-button" onClick={addDay}>
@@ -634,6 +644,7 @@ function CreateRoutineForm({
           value={exName}
           onChange={(e) => setExName(e.target.value)}
           placeholder={activeDay !== null ? `Ejercicio para "${days[activeDay]?.label}"` : "Nombre del ejercicio"}
+          aria-label="Nombre del ejercicio"
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addExercise(); } }}
         />
         <input
@@ -706,6 +717,7 @@ function LogSessionModal({
   onClose: () => void;
   onSave: (s: WorkoutSession) => void;
 }) {
+  useEscapeToClose(onClose); // E18-03: ver comentario en BarcodeScannerModal.tsx
   const { state } = useFoodOS();
   const today = getToday(state);
   const defaultDur = routine.estimatedMinutes ?? 45;

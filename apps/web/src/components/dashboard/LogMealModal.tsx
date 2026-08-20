@@ -556,6 +556,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           <input
             className="lm-search"
             placeholder="Filtrar alimentos…"
+            aria-label="Filtrar alimentos"
             value={invFilter}
             onChange={e => setInvFilter(e.target.value)}
           />
@@ -598,6 +599,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
                       <button
                         className="lm-inv-remove"
                         onClick={e => { e.stopPropagation(); toggleItem(item.id, item.qty); }}
+                        aria-label={`Quitar ${item.name} de la selección`}
                       >×</button>
                     </div>
                   ) : null}
@@ -622,6 +624,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           <input
             className="lm-search"
             placeholder="Buscar receta…"
+            aria-label="Buscar receta"
             value={recipeFilter}
             onChange={e => setRecipeFilter(e.target.value)}
           />
@@ -667,6 +670,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           <input
             className="lm-search"
             placeholder="Nombre del plato (opcional)…"
+            aria-label="Nombre del plato"
             value={dishName}
             onChange={e => setDishName(e.target.value)}
           />
@@ -675,6 +679,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
             <input
               className="lm-search"
               placeholder="Añadir ingrediente (inventario o buscar)…"
+              aria-label="Añadir ingrediente"
               value={dishSearch}
               onChange={e => handleDishSearch(e.target.value)}
               onFocus={() => { if (dishSearch.trim().length >= 2) setShowDishSuggestions(true); }}
@@ -730,7 +735,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
                   />
                   <span className="lm-dish-unit">{ing.unit}</span>
                   <span className="lm-dish-kcal">{m.kcal} kcal</span>
-                  <button className="small-action bad" onClick={() => removeDishIngredient(ing.id)}>×</button>
+                  <button className="small-action bad" onClick={() => removeDishIngredient(ing.id)} aria-label={`Quitar ${ing.name}`}>×</button>
                 </li>
               );
             })}
@@ -819,6 +824,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
             placeholder={extPhoto
               ? "Nota opcional para afinar la estimación, ej: con una cucharada extra de aceite…"
               : "Describe qué has comido, ej: menú del día con lentejas, filete y postre, o 2 trozos de pizza margarita…"}
+            aria-label="Descripción de la comida"
             value={extDesc}
             onChange={e => setExtDesc(e.target.value)}
             rows={3}

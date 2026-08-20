@@ -229,6 +229,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
                 <input
                   className="create-ing-name"
                   placeholder="Ingrediente"
+                  aria-label={`Nombre del ingrediente ${i + 1}`}
                   value={ing.name}
                   onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0 })}
                   onBlur={(e) => { if (ing.status === "idle" && e.target.value.trim()) lookupIngredient(i, e.target.value); }}
@@ -260,7 +261,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
                   {ing.status === "loading" ? "…" : ing.status === "found" ? "✓" : ing.status === "manual" ? "?" : ""}
                 </span>
                 {ingredients.length > 1 && (
-                  <button type="button" className="remove-btn" onClick={() => setIngredients((prev) => prev.filter((_, idx) => idx !== i))}>×</button>
+                  <button type="button" className="remove-btn" onClick={() => setIngredients((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Quitar ingrediente">×</button>
                 )}
               </div>
 
@@ -334,10 +335,11 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
               <span className="step-num">{i + 1}.</span>
               <textarea
                 className="create-step-text" rows={2} value={step}
+                aria-label={`Paso ${i + 1}`}
                 onChange={(e) => { const v = e.target.value; setSteps((prev) => { const n = [...prev]; n[i] = v; return n; }); }}
               />
               {steps.length > 1 && (
-                <button type="button" className="remove-btn" onClick={() => setSteps((prev) => prev.filter((_, idx) => idx !== i))}>×</button>
+                <button type="button" className="remove-btn" onClick={() => setSteps((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Quitar paso">×</button>
               )}
             </div>
           ))}

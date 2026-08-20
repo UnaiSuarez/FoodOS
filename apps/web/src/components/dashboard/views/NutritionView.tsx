@@ -722,6 +722,7 @@ function WeightPanel() {
             value={inputKg}
             onChange={(e) => setInputKg(e.target.value)}
             placeholder="kg de hoy"
+            aria-label="Peso de hoy en kilogramos"
             className="weight-input"
           />
           <button

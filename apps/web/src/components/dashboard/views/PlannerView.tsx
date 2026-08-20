@@ -430,6 +430,7 @@ export function PlannerView() {
             className="planner-search"
             type="search"
             placeholder="Buscar…"
+            aria-label="Buscar recetas"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />

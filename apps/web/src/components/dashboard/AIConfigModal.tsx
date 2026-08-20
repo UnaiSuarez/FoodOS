@@ -117,8 +117,9 @@ export function AIConfigModal({ onClose }: { onClose: () => void }) {
               className="icon-button"
               onClick={() => setShowKey((v) => !v)}
               title={showKey ? "Ocultar clave" : "Mostrar clave"}
+              aria-label={showKey ? "Ocultar clave" : "Mostrar clave"}
             >
-              {showKey ? "◉" : "○"}
+              <span aria-hidden="true">{showKey ? "◉" : "○"}</span>
             </button>
           </div>
           <a

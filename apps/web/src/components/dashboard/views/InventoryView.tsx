@@ -647,6 +647,7 @@ export function InventoryView() {
             <input
               type="search"
               placeholder="Buscar producto"
+              aria-label="Buscar producto"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />

@@ -214,6 +214,7 @@ export function SettingsView({
                     value={deleteAccountWord}
                     onChange={(e) => setDeleteAccountWord(e.target.value.toUpperCase())}
                     placeholder={DELETE_ACCOUNT_WORD}
+                    aria-label={`Escribe ${DELETE_ACCOUNT_WORD} para confirmar`}
                     autoComplete="off"
                     autoCorrect="off"
                     spellCheck={false}
@@ -413,7 +414,7 @@ export function SettingsView({
             mutate((draft) => { draft.settings.extraExpenseCategories.push(val); });
             input.value = "";
           }}>
-            <input name="cat" placeholder="Nueva categoría…" />
+            <input name="cat" placeholder="Nueva categoría…" aria-label="Nueva categoría de gasto" />
             <button className="secondary-button" type="submit">Añadir</button>
           </form>
         </div>
@@ -507,6 +508,7 @@ export function SettingsView({
               value={deleteWord}
               onChange={(e) => setDeleteWord(e.target.value.toUpperCase())}
               placeholder={DELETE_WORD}
+              aria-label={`Escribe ${DELETE_WORD} para confirmar`}
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}

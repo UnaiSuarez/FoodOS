@@ -226,6 +226,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
         <input
           className="lm-search"
           placeholder="Nombre del plato (ej. Tortilla de atún)"
+          aria-label="Nombre del plato"
           value={dishName}
           onChange={e => setDishName(e.target.value)}
           style={{ marginBottom: 12 }}
@@ -237,6 +238,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
             ref={inputRef}
             className="lm-search"
             placeholder="Añadir ingrediente (inventario o buscar)…"
+            aria-label="Añadir ingrediente"
             value={search}
             onChange={e => handleSearch(e.target.value)}
             onFocus={() => search.length >= 2 && setShowSuggestions(true)}
@@ -279,7 +281,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
                     <span>{ing.unit}</span>
                   </div>
                   <small className="lm-dish-ing-macro">{m.kcal} kcal · {m.protein}g P</small>
-                  <button className="lm-inv-remove" onClick={() => removeIngredient(ing.id)}>×</button>
+                  <button className="lm-inv-remove" onClick={() => removeIngredient(ing.id)} aria-label={`Quitar ${ing.name}`}>×</button>
                 </li>
               );
             })}

@@ -243,6 +243,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
                 <input
                   className="create-ing-name"
                   placeholder="Nombre del ingrediente"
+                  aria-label={`Nombre del ingrediente ${i + 1}`}
                   value={ing.name}
                   onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0 })}
                   onBlur={(e) => { if (ing.status === "idle" && e.target.value.trim()) lookupIngredient(i, e.target.value); }}
@@ -274,7 +275,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
                   {ing.status === "loading" ? "…" : ing.status === "found" ? "✓" : ing.status === "manual" ? "?" : ""}
                 </span>
                 {ingredients.length > 1 && (
-                  <button type="button" className="remove-btn" onClick={() => setIngredients((prev) => prev.filter((_, idx) => idx !== i))}>×</button>
+                  <button type="button" className="remove-btn" onClick={() => setIngredients((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Quitar ingrediente">×</button>
                 )}
               </div>
 
@@ -347,10 +348,11 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
               <span className="step-num">{i + 1}.</span>
               <textarea
                 className="create-step-text" rows={2} value={step} placeholder={`Paso ${i + 1}…`}
+                aria-label={`Paso ${i + 1}`}
                 onChange={(e) => { const v = e.target.value; setSteps((prev) => { const n = [...prev]; n[i] = v; return n; }); }}
               />
               {steps.length > 1 && (
-                <button type="button" className="remove-btn" onClick={() => setSteps((prev) => prev.filter((_, idx) => idx !== i))}>×</button>
+                <button type="button" className="remove-btn" onClick={() => setSteps((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Quitar paso">×</button>
               )}
             </div>
           ))}

@@ -418,6 +418,7 @@ export function AssistantView() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Escríbeme algo… ej: añade 500g de pollo a la nevera"
+              aria-label="Mensaje para el asistente"
               disabled={loading}
               autoComplete="off"
             />
