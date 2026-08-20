@@ -118,6 +118,13 @@ class RemoteAdapter {
   /** La UI se engancha aquí para avisar al usuario de que un guardado no
       llegó al servidor (queda solo en este dispositivo hasta reintentar). */
   onPushError: ((error: unknown) => void) | null = null;
+  /** E04-07: la UI se engancha aquí para mostrar el estado de sincronización
+      en la cabecera (guardado/sincronizando/error). Se dispara al empezar un
+      push ("syncing"), al terminarlo bien ("saved") o al fallar ("error") —
+      independiente de onPushError, que solo dispara el toast (throttleado)
+      de aviso; este callback sí debe reflejar cada transición para que el
+      indicador no se quede "sincronizando" para siempre tras un error. */
+  onStatusChange: ((status: "syncing" | "saved" | "error") => void) | null = null;
 
   get ready(): boolean {
     return this.client !== null;
@@ -815,6 +822,10 @@ class RemoteAdapter {
       clearTimeout(this.pushRetryTimer);
       this.pushRetryTimer = null;
     }
+    // Aviso inmediato: sin esto el indicador se queda en "guardado" hasta que
+    // vence el debounce (PUSH_DEBOUNCE_MS) y arranca runPush de verdad — una
+    // edición que tarda en confirmarse parecería ya sincronizada.
+    this.onStatusChange?.("syncing");
     this.pushTimer = setTimeout(() => {
       this.pushTimer = null;
       void this.runPush(state);
@@ -827,11 +838,14 @@ class RemoteAdapter {
       return;
     }
     this.pushing = true;
+    this.onStatusChange?.("syncing");
     try {
       await this.pushState(state);
+      this.onStatusChange?.("saved");
     } catch (error) {
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
       this.notifyPushError(error);
+      this.onStatusChange?.("error");
       // Reintenta este mismo guardado tras una pausa, salvo que ya haya una
       // edición más reciente en camino (esa ya lo incluye, al ser snapshot completo).
       this.pushRetryTimer = setTimeout(() => {

@@ -264,6 +264,66 @@
   white-space: nowrap;
 }
 
+/* E04-07: estado de guardado en la cabecera. Icono + texto en cada estado
+   (no solo color, ver E18-13) para que se distinga sin depender de tonos. */
+.sync-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  opacity: 0.85;
+  align-self: center;
+}
+
+.sync-status-badge.local,
+.sync-status-badge.saved {
+  color: var(--muted);
+}
+
+.sync-status-badge.syncing {
+  color: var(--blue);
+}
+
+.sync-status-badge.syncing svg {
+  animation: sync-badge-spin 1s linear infinite;
+}
+
+.sync-status-badge.offline {
+  color: var(--amber);
+}
+
+.sync-status-badge.error {
+  color: var(--red);
+}
+
+@keyframes sync-badge-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 680px) {
+  /* En móvil la cabecera ya está apretada (E04-05) — el texto largo del
+     estado no cabe junto al título sin envolver de forma fea. Se deja solo
+     el icono visible; el texto se oculta con el mismo patrón que .sr-only
+     (globals.css) en vez de display:none, para que un lector de pantalla
+     lo siga anunciando (display:none lo sacaría también del árbol de
+     accesibilidad, no solo de la vista). */
+  .sync-status-badge span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
 .top-actions {
   display: flex;
   align-items: center;
@@ -280,7 +340,10 @@
   .topbar-controls {
     order: 2;
   }
-  .topbar h1 {
+  /* E04-07: el h1 pasó a vivir dentro de .topbar-title-row (para poder poner
+     el indicador de sincronización al lado) — el order tiene que ir en el
+     hijo directo del flex container, ya no en el h1 mismo. */
+  .topbar-title-row {
     order: 1;
   }
 
