@@ -6,3 +6,8 @@ node_modules/
 supabase-config.js
 output/
 apps/web/browser-check-*.png
+
+# E21-01: artefactos de Playwright (informes HTML, trazas, resultados)
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/playwright/.cache/

@@ -28,3 +28,37 @@ jobs:
 
       - name: Tests (vitest)
         run: npm run test --workspace @foodos/web
+
+  # E21-01: flujos críticos con Playwright. Job aparte (no bloquea el
+  # type-check/vitest si tarda más) — corre siempre en modo local-only, sin
+  # NEXT_PUBLIC_SUPABASE_URL/ANON_KEY definidas en el entorno del runner, así
+  # que no necesita secretos ni una cuenta de prueba real (ver
+  # playwright.config.ts).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Instalar navegador de Playwright
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Flujos críticos (Playwright)
+        working-directory: apps/web
+        run: npx playwright test
+
+      - name: Subir informe de Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 14
