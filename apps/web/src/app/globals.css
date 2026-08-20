@@ -26,6 +26,33 @@
   --radius-md: 13px;
   --radius-lg: 19px;
   --radius-xl: 26px;
+
+  /* Roles semánticos (E03-02): separados de la paleta decorativa de arriba
+     para que un cambio de marca no altere sin querer el significado de
+     "éxito" o "peligro" (antes ambos apuntaban directamente a --green /
+     --red). Hoy comparten valor a propósito, pero son variables propias. */
+  --color-brand: var(--green);
+  --color-success: var(--green-dim);
+  --color-info: var(--blue);
+  --color-warning: var(--amber);
+  --color-danger: var(--red);
+
+  /* Alias de compatibilidad (E03-01/04): dashboard.css llevaba usando estos
+     nombres en cientos de sitios sin que existieran nunca — var() con una
+     variable no definida y sin fallback no aplica nada, así que tarjetas,
+     casillas y textos se quedaban silenciosamente sin fondo/color. Se
+     definen aquí en vez de tocar cada selector, para minimizar el diff. */
+  --accent: var(--color-brand);
+  --danger: var(--color-danger);
+  --fg: var(--text);
+  --fg-muted: var(--muted);
+  --bg-card: var(--surface);
+  --bg-elevated: var(--surface-2);
+  --bg-soft: var(--surface-2);
+  --surface-alt: var(--surface);
+  --surface-3: var(--surface-2);
+  --surface2: var(--surface-2);
+  --surface3: var(--surface-2);
 }
 
 * {
@@ -157,8 +184,13 @@ h2 {
   --bg: #f4f8f2;
   --bg-2: #ecf4e8;
   --bg-3: #e2eddc;
-  --surface: #d5e5cc;
-  --surface-2: #c8dcc0;
+  /* E03-03: antes #d5e5cc/#c8dcc0 (verde sage saturado) — con ~20-40
+     usos directos de var(--surface)/var(--surface-2) sin override propio
+     por componente, cualquier tarjeta "de paso" salía verde intenso en
+     vez de neutra. Blanco/casi-blanco cumple el criterio y sigue dejando
+     el acento de marca (--green) para iconos, badges y estados. */
+  --surface: #ffffff;
+  --surface-2: #eef1ea;
   --text: #0e180b;
   --muted: #3b5434;
   --hint: #68825e;
