@@ -7321,7 +7321,81 @@ button.secondary-button.small {
   font-size: clamp(22px, 4vw, 34px);
 }
 
-/* ── Auth checking screen ───────────────────────────────────────── */
+/* ── Auth checking screen (E02-01/02/03/04) ────────────────────────
+   Antes era un "Comprobando sesión…" en texto plano y sin salida — si la
+   comprobación se quedaba colgada (proyecto de Supabase pausado, sin red...)
+   el usuario se quedaba mirando ese texto para siempre. Ahora imita la
+   silueta real del shell (menos salto de layout al terminar) y, pasado un
+   tiempo máximo, cambia a un estado de error con botón para reintentar. */
+
+.auth-skeleton {
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.auth-skeleton-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  padding: 20px 16px;
+  border-right: 1px solid var(--border);
+  display: none;
+}
+
+.auth-skeleton-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-skeleton-topbar {
+  height: 64px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+}
+
+.auth-skeleton-body {
+  flex: 1;
+  padding: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.auth-skeleton-block {
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Pulso sutil en vez de contenido inventado — comunica "cargando algo real",
+   no finge datos que luego desaparecen de golpe. */
+.auth-skeleton-block::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(240, 244, 238, 0.06), transparent);
+  animation: auth-skeleton-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes auth-skeleton-pulse {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-skeleton-block::after {
+    animation: none;
+  }
+}
+
+@media (min-width: 860px) {
+  .auth-skeleton-sidebar {
+    display: block;
+  }
+}
 
 .auth-checking {
   display: flex;
@@ -7329,9 +7403,17 @@ button.secondary-button.small {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  gap: 8px;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
   background: var(--bg);
   color: var(--text);
+}
+
+.auth-checking-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
 }
 
 /* ── Account modal ──────────────────────────────────────────────── */
