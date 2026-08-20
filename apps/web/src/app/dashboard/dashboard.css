@@ -4227,6 +4227,10 @@ select:focus {
 }
 
 .autocomplete-item:hover { background: var(--surface3, rgba(255,255,255,0.06)); }
+/* E18-08: resalta la opción activa por teclado (flechas) igual que el
+   hover del ratón — sin esto, quien navega el combobox con flechas no ve
+   cuál va a elegir al pulsar Enter. */
+.autocomplete-item.active { background: var(--surface3, rgba(255,255,255,0.06)); }
 
 /* Nombre en su propia línea (con elipsis si no cabe) para que la fila de
    abajo (kcal/proteína + badge de fuente) nunca tenga que competir por
@@ -4413,6 +4417,9 @@ select:focus {
 }
 .ac-muted { color: var(--muted) !important; font-style: italic; }
 .ac-loading { pointer-events: none; opacity: 0.7; }
+/* E18-08: resalta la opción activa por teclado (flechas) — sin esto, quien
+   navega este combobox con flechas no ve cuál va a elegir al pulsar Enter. */
+.ac-dropdown li.active { background: rgba(240, 244, 238, 0.07); }
 .ac-divider {
   font-size: 11px;
   font-weight: 600;
@@ -5113,6 +5120,8 @@ select:focus {
   transition: background 0.1s;
 }
 .lm-dish-sug-item:hover { background: rgba(74,222,128,0.08); }
+/* E18-08: resalta la opción activa por teclado (flechas) igual que el hover. */
+.lm-dish-sug-item.active { background: rgba(74,222,128,0.08); }
 .lm-dish-sug-badge { font-size: 14px; flex-shrink: 0; }
 .lm-dish-sug-name { flex: 1; font-size: 13.5px; color: var(--text); }
 .lm-dish-sug-macro { font-size: 11px; color: var(--muted); white-space: nowrap; }
