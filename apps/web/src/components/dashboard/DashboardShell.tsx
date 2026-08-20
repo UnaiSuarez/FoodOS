@@ -143,6 +143,31 @@ function NavButton({
   );
 }
 
+function BottomTabButton({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const Icon = NAV_ICONS[icon];
+  return (
+    <button
+      className={`bottom-tab-item ${active ? "active" : ""}`}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      aria-label={label}
+    >
+      <Icon size={20} aria-hidden="true" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function DashboardInner() {
   const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, showToast, mutate } =
     useFoodOS();
@@ -537,6 +562,27 @@ function DashboardInner() {
           <p className="loading-hint">Cargando tus datos…</p>
         )}
       </main>
+
+      {/* E04-03/09: barra inferior para uso con una mano en móvil (oculta
+          por CSS en pantallas más anchas). 5 accesos directos con el pulgar
+          en vez de depender siempre del drawer; "Más" abre el propio drawer
+          off-canvas ya existente, que ya cubre el resto de secciones y
+          Ajustes — no duplica esa navegación en un componente aparte. */}
+      <nav className="bottom-tab-bar" aria-label="Navegación rápida">
+        <BottomTabButton icon="layout-dashboard" label="Hoy" active={view === "dashboard"} onClick={() => navigateToView("dashboard")} />
+        <BottomTabButton icon="notebook-pen" label="Diario" active={view === "diary"} onClick={() => navigateToView("diary")} />
+        <BottomTabButton icon="package" label="Inventario" active={view === "inventory"} onClick={() => navigateToView("inventory")} />
+        <BottomTabButton icon="calendar-days" label="Plan" active={view === "planner"} onClick={() => navigateToView("planner")} />
+        <button
+          className="bottom-tab-item"
+          onClick={() => setMenuOpen(true)}
+          aria-label="Más opciones"
+          aria-expanded={menuOpen}
+        >
+          <Menu size={20} aria-hidden="true" />
+          <span>Más</span>
+        </button>
+      </nav>
 
       {openRecipeId && <RecipeDetailModal recipeId={openRecipeId} onClose={() => setOpenRecipeId(null)} />}
       {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} />}
