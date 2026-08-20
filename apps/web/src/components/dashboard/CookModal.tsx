@@ -176,7 +176,11 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
             const isOverridden = ing.name in qtyOverrides;
             return (
               <li key={ing.name} className={`cook-ing-item ${ing.status}`}>
-                <span className="cook-ing-dot" />
+                {/* E18-13: el color del punto (verde/ámbar/rojo) es
+                    decorativo — quien no distinga esos tonos se entera del
+                    estado por el texto de abajo ("Te falta parte"/"No lo
+                    tienes"), no por el punto. */}
+                <span className="cook-ing-dot" aria-hidden="true" />
                 <span className="cook-ing-name">{ing.name}</span>
                 <span className="cook-ing-qty-wrap">
                   <input
@@ -197,7 +201,11 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
                     >↺</button>
                   )}
                   {ing.status !== "ok" && (
-                    <small className="cook-ing-avail">(tienes {ing.available})</small>
+                    <small className="cook-ing-avail">
+                      {ing.status === "missing"
+                        ? "No lo tienes"
+                        : `Te falta parte — tienes ${ing.available} ${ing.unit}`}
+                    </small>
                   )}
                 </span>
               </li>
