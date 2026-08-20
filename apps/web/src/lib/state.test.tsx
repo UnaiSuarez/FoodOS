@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { InventoryItem, Recipe } from "@foodos/types";
-import { defaultState, getIngredientStatus, getRecipeMatch } from "./state";
+import type { CartItem, InventoryItem, Recipe } from "@foodos/types";
+import { actions, defaultState, getIngredientStatus, getRecipeMatch } from "./state";
 
 function inv(overrides: Partial<InventoryItem>): InventoryItem {
   return {
@@ -74,5 +74,59 @@ describe("getIngredientStatus — mismo criterio por ingrediente (E08-05/06)", (
     const r = recipe([{ name: "Leche", quantity: 200, unit: "ml" }]);
     const status = getIngredientStatus(state, r);
     expect(status).toEqual([{ name: "Leche", quantity: 200, unit: "ml", has: false }]);
+  });
+});
+
+function cartItem(overrides: Partial<CartItem>): CartItem {
+  return {
+    id: overrides.id ?? "cart-1",
+    name: overrides.name ?? "Yogur",
+    qty: overrides.qty ?? 1,
+    unit: overrides.unit ?? "ud",
+    price: overrides.price ?? 1,
+    store: overrides.store ?? "Mercadona",
+    checked: overrides.checked ?? true,
+    ...overrides,
+  };
+}
+
+// E10-03/05/07: repasar una compra antes de aplicarla — precio real
+// (distinto del estimado del carrito), tienda y caducidad quedan en manos
+// de lo que se confirme en el repaso, no de lo que llevaba el carrito.
+describe("proposePurchaseReview / completePurchase (E10-03/05/07)", () => {
+  it("propone solo los items marcados, con estimatedPrice y price iguales al del carrito", () => {
+    const state = {
+      ...defaultState,
+      cart: [
+        cartItem({ id: "a", name: "Pan", price: 1.2, checked: true }),
+        cartItem({ id: "b", name: "Sin marcar", price: 9, checked: false }),
+      ],
+    };
+    const proposal = actions.proposePurchaseReview(state);
+    expect(proposal).toHaveLength(1);
+    expect(proposal[0].name).toBe("Pan");
+    expect(proposal[0].price).toBe(1.2);
+    expect(proposal[0].estimatedPrice).toBe(1.2);
+  });
+
+  it("registra el gasto con el precio REVISADO, no el estimado del carrito", () => {
+    const state = { ...defaultState, cart: [cartItem({ id: "a", name: "Pan", price: 1.2 })] };
+    const proposal = actions.proposePurchaseReview(state);
+    const reviewed = [{ ...proposal[0], price: 2.5 }]; // el usuario corrige el precio real
+    const draft = structuredClone(state);
+    actions.completePurchase(draft, reviewed);
+    expect(draft.expenses).toHaveLength(1);
+    expect(draft.expenses[0].amount).toBe(2.5);
+  });
+
+  it("da de alta el producto en inventario con la caducidad/tienda/almacén confirmados y vacía el carrito revisado", () => {
+    const state = { ...defaultState, cart: [cartItem({ id: "a", name: "Pan", price: 1.2 })] };
+    const proposal = actions.proposePurchaseReview(state);
+    const reviewed = [{ ...proposal[0], expires: "2030-05-05", store: "Lidl", storage: "Despensa" as const }];
+    const draft = structuredClone(state);
+    actions.completePurchase(draft, reviewed);
+    expect(draft.inventory).toHaveLength(1);
+    expect(draft.inventory[0]).toMatchObject({ name: "Pan", expires: "2030-05-05", storage: "Despensa" });
+    expect(draft.cart).toHaveLength(0);
   });
 });
