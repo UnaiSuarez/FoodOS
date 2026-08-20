@@ -2824,12 +2824,30 @@ select:focus {
 
   /* Tap targets: estos controles median 20-30px de alto — por debajo del
      mínimo táctil razonable. Solo en pantallas pequeñas para no engordar
-     la UI de escritorio. */
+     la UI de escritorio.
+     E18-14: el resto de esta regla ya apuntaba al mínimo de 44px correcto
+     (ver .smart-suggest-toggle) salvo estas dos, que se quedaron en 40 —
+     por debajo del mismo mínimo que esta misma regla dice perseguir. Auditado
+     el resto de la app con un script que mide getBoundingClientRect() de
+     todo botón/enlace/casilla visible en viewport de 375px; se suman aquí
+     mismo las otras clases genéricas que también medían por debajo de 44px
+     (botones primario/secundario/texto, icon-button, chips de filtro,
+     acciones de tarjeta, pestañas de sugerencias del carrito). */
   .bento-water-btn,
-  .savings-toggle {
-    min-height: 40px;
-  }
-
+  .savings-toggle,
+  .icon-button,
+  .primary-button,
+  .secondary-button,
+  .text-button,
+  .filter,
+  .small-action,
+  .suggest-tab,
+  .form-type-tab,
+  .nutrition-tab,
+  .exercises-tab,
+  .quick-chip,
+  .settings-theme-btn,
+  .danger-button,
   .smart-suggest-toggle {
     min-height: 44px;
   }
@@ -7992,8 +8010,10 @@ button.secondary-button.small {
   display: none;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  /* E18-14: era 40×40 — objetivo táctil frecuente (abre el menú en cada
+     visita en móvil) por debajo del mínimo de 44×44px. */
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
