@@ -53,6 +53,44 @@
   --surface-3: var(--surface-2);
   --surface2: var(--surface-2);
   --surface3: var(--surface-2);
+
+  /* Escala tipográfica (E03-06). dashboard.css tiene más de 370 valores de
+     font-size distintos (9px a 42px, más un sub-sistema en rem que no
+     coincide con el de px) — migrar cada uno es un cambio de gran volumen y
+     bajo riesgo individual, propio de una limpieza aparte (E03-16/17), así
+     que aquí solo se deja disponible la escala para lo nuevo. */
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 34px;
+
+  /* Escala de espaciado (E03-09), misma lógica que la tipográfica: se deja
+     disponible, la migración completa de paddings/márgenes/gaps existentes
+     queda para la limpieza de E03-16/17. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Colores de macros (E03-05): ya se usaban de forma más o menos constante
+     (proteína=verde, carbohidratos=ámbar, grasa=azul) pero sin un nombre
+     semántico propio — un componente nuevo no tenía forma de saber qué
+     color "es" cada macro salvo copiando la clase de color genérica. La
+     fibra no tenía color asignado en ningún sitio; se deja definido para
+     cuando se muestre. */
+  --macro-protein: var(--green);
+  --macro-carbs: var(--amber);
+  --macro-fat: var(--blue);
+  --macro-fiber: var(--purple);
 }
 
 * {
@@ -121,7 +159,11 @@ h2 {
   inset: 0;
   z-index: 40;
   pointer-events: none;
-  opacity: 0.04;
+  /* E03-13: la textura cubre toda la pantalla, incluidos formularios y
+     listas densas (tablas, inventario) donde interfiere más con texto
+     pequeño que en superficies vacías. Bajada de 0.04 a 0.025 — se sigue
+     notando en superficies grandes pero deja de "ensuciar" texto denso. */
+  opacity: 0.025;
   background-image: repeating-radial-gradient(
     circle at 0 0,
     rgba(255, 255, 255, 0.45) 0 1px,

@@ -1120,7 +1120,7 @@ select:focus {
 
 .mascot-choice small {
   min-height: 28px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .mascot-selected {
@@ -2243,7 +2243,7 @@ select:focus {
 
 .cycle-day span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
 }
 
@@ -2254,7 +2254,7 @@ select:focus {
 
 .cycle-day small {
   color: var(--hint);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .cycle-note {
@@ -2314,7 +2314,7 @@ select:focus {
 }
 
 .adaptive-diagnostics-grid small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--hint, var(--muted));
   line-height: 1.3;
 }
@@ -2786,7 +2786,7 @@ select:focus {
   background: rgba(74, 222, 128, 0.2);
   color: var(--green);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .suggest-list {
@@ -3071,7 +3071,7 @@ select:focus {
   background: rgba(74, 222, 128, 0.2);
   color: var(--green);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .recipe-filter-panel {
@@ -4039,7 +4039,7 @@ select:focus {
 /* ── Autocomplete: OFF badge + loading + divider ────────────────────────── */
 .ac-badge-off {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   background: rgba(59,130,246,0.18);
@@ -4051,7 +4051,7 @@ select:focus {
 }
 .ac-badge-verified {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   background: rgba(74,222,128,0.14);
@@ -4064,7 +4064,7 @@ select:focus {
 .ac-muted { color: var(--muted) !important; font-style: italic; }
 .ac-loading { pointer-events: none; opacity: 0.7; }
 .ac-divider {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -4076,7 +4076,7 @@ select:focus {
   background: rgba(74,222,128,0.12);
   color: var(--green);
   border-color: rgba(74,222,128,0.25);
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 5px;
 }
 
@@ -4347,13 +4347,13 @@ select:focus {
   flex-wrap: wrap;
 }
 .ing-macro-label {
-  font-size: 10px; color: var(--muted);
+  font-size: 11px; color: var(--muted);
   text-transform: uppercase; letter-spacing: .04em;
   white-space: nowrap; flex-shrink: 0;
 }
 .ing-macro-cell {
   display: flex; align-items: center; gap: 3px;
-  font-size: 10px; color: var(--muted);
+  font-size: 11px; color: var(--muted);
 }
 .ing-macro-cell span { white-space: nowrap; }
 .ing-macro-input { width: 52px; padding: 2px 4px; font-size: 11px; height: 22px; }
@@ -4431,12 +4431,12 @@ select:focus {
   background: rgba(7,10,5,.34);
   gap: 2px;
 }
-.diary-detail-macro-val  { font-size: 16px; font-weight: 700; }
-.diary-detail-macro-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-.diary-detail-macro-pct  { font-size: 10px; color: var(--hint); }
-.diary-detail-macro-prot .diary-detail-macro-val { color: var(--green); }
-.diary-detail-macro-carb .diary-detail-macro-val { color: var(--amber); }
-.diary-detail-macro-fat  .diary-detail-macro-val { color: #60a5fa; }
+.diary-detail-macro-val  { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.diary-detail-macro-lbl  { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.diary-detail-macro-pct  { font-size: 11px; color: var(--hint); }
+.diary-detail-macro-prot .diary-detail-macro-val { color: var(--macro-protein); }
+.diary-detail-macro-carb .diary-detail-macro-val { color: var(--macro-carbs); }
+.diary-detail-macro-fat  .diary-detail-macro-val { color: var(--macro-fat); }
 
 .diary-detail-bar {
   height: 6px;
@@ -4445,9 +4445,9 @@ select:focus {
   background: rgba(255,255,255,.06);
   display: flex;
 }
-.diary-detail-bar-prot { background: var(--green);  transition: width .3s; }
-.diary-detail-bar-carb { background: var(--amber);  transition: width .3s; }
-.diary-detail-bar-fat  { background: #60a5fa;       transition: width .3s; }
+.diary-detail-bar-prot { background: var(--macro-protein);  transition: width .3s; }
+.diary-detail-bar-carb { background: var(--macro-carbs);  transition: width .3s; }
+.diary-detail-bar-fat  { background: var(--macro-fat);       transition: width .3s; }
 
 /* ── HomeView: "¿Qué como ahora?" ──────────────────────────────────────── */
 .quick-action.what-to-eat {
@@ -4998,7 +4998,7 @@ select:focus {
 }
 
 .kcal-ring-center small {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
 }
 
@@ -5042,9 +5042,9 @@ select:focus {
   transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.macro-bar-prot  { background: var(--green); }
-.macro-bar-carbs { background: var(--amber); }
-.macro-bar-fat   { background: var(--blue); }
+.macro-bar-prot  { background: var(--macro-protein); }
+.macro-bar-carbs { background: var(--macro-carbs); }
+.macro-bar-fat   { background: var(--macro-fat); }
 
 .today-ring-hint {
   margin: 4px 0 0;
@@ -5669,7 +5669,7 @@ select:focus {
 }
 
 .planner-cell-meta {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -5972,7 +5972,7 @@ select:focus {
   align-items: flex-start;
   justify-content: flex-end;
   padding: 6px 8px 0 0;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: var(--muted);
   text-transform: uppercase;
@@ -6038,7 +6038,7 @@ select:focus {
   display: flex;
   flex-wrap: wrap;
   gap: 3px 6px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
   line-height: 1.3;
 }
@@ -6124,6 +6124,7 @@ select:focus {
   font-size: 18px;
   font-weight: 600;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .adherence-stat small {
@@ -6140,7 +6141,7 @@ select:focus {
 
 .adherence-heatmap-header {
   text-align: center;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   padding: 2px 0;
@@ -6731,7 +6732,7 @@ select:focus {
   gap: 12px;
   margin-bottom: 12px;
 }
-.finance-balance-num { font-size: 1.6rem; font-weight: 700; }
+.finance-balance-num { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 .finance-balance-num.positive { color: var(--color-success); }
 .finance-balance-num.negative { color: var(--color-danger); }
 
@@ -6749,8 +6750,8 @@ select:focus {
   flex-direction: column;
   gap: 3px;
 }
-.finance-stats span { font-size: 0.75rem; color: var(--fg-muted); }
-.finance-stats strong { font-size: 1rem; font-weight: 600; }
+.finance-stats span { font-size: 0.75rem; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+.finance-stats strong { font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .finance-stats strong.positive { color: var(--color-success); }
 
 .finance-vs {
