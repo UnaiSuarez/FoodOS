@@ -27,7 +27,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
-import { VIEWS, type ViewId } from "@/lib/dashboard-views";
+import { VIEWS, NAV_GROUPS, type ViewId } from "@/lib/dashboard-views";
 
 // E03-12: traduce la clave plana de VIEWS (lib/dashboard-views.ts no puede
 // importar componentes de React, ver el comentario de ese archivo) al icono
@@ -110,6 +110,33 @@ function ToastHost() {
 function SidebarMascotMessage() {
   const { mascotMessage } = useFoodOSUI();
   return <p>{mascotMessage}</p>;
+}
+
+function NavButton({
+  entry,
+  active,
+  onNavigate,
+  setMenuOpen,
+}: {
+  entry: (typeof VIEWS)[number];
+  active: boolean;
+  onNavigate: (id: ViewId) => void;
+  setMenuOpen: (open: boolean) => void;
+}) {
+  const Icon = NAV_ICONS[entry.icon];
+  return (
+    <button
+      className={`nav-item ${active ? "active" : ""}`}
+      onClick={() => { onNavigate(entry.id); setMenuOpen(false); }}
+      // E04-02: la sección activa se comunicaba solo por color (clase
+      // "active") — invisible para lectores de pantalla y para quien
+      // navega por teclado sin ver el resaltado visual.
+      aria-current={active ? "page" : undefined}
+    >
+      <span><Icon size={16} aria-hidden="true" /></span>
+      {entry.label}
+    </button>
+  );
 }
 
 function DashboardInner() {
@@ -378,19 +405,20 @@ function DashboardInner() {
           <span>Food</span>OS
         </button>
         <nav className="app-nav" aria-label="Navegación de la app">
-          {VIEWS.map((entry) => {
-            const Icon = NAV_ICONS[entry.icon];
-            return (
-              <button
-                key={entry.id}
-                className={`nav-item ${view === entry.id ? "active" : ""}`}
-                onClick={() => { navigateToView(entry.id); setMenuOpen(false); }}
-              >
-                <span><Icon size={16} aria-hidden="true" /></span>
-                {entry.label}
-              </button>
-            );
-          })}
+          {/* E04-01: "dashboard" es el punto de entrada, fuera de cualquier
+              grupo. El resto se agrupa por dominio (NAV_GROUPS) en vez de
+              aparecer como once opciones equivalentes. */}
+          {VIEWS.filter((entry) => entry.group === null).map((entry) => (
+            <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} />
+          ))}
+          {NAV_GROUPS.map((group) => (
+            <div className="nav-group" key={group.id}>
+              <span className="nav-group-label">{group.label}</span>
+              {VIEWS.filter((entry) => entry.group === group.id).map((entry) => (
+                <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} />
+              ))}
+            </div>
+          ))}
         </nav>
         <div className="mascot-panel">
           <div className="mascot-avatar">
@@ -405,6 +433,7 @@ function DashboardInner() {
           className="sidebar-user"
           onClick={() => { navigateToView("settings"); setMenuOpen(false); }}
           title="Ir a Ajustes"
+          aria-current={view === "settings" ? "page" : undefined}
         >
           <div className="sidebar-avatar">
             {authUser?.email?.[0]?.toUpperCase() ?? "?"}
