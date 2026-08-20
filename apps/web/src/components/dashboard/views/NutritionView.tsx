@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
+import { Tabs, TabPanel } from "@/components/ui";
 import {
   actions,
   bestRecipe,
@@ -102,49 +103,39 @@ export function NutritionView() {
 
       {state.profile && (
         <>
-          <div className="nutrition-tabs">
-            <button
-              className={`nutrition-tab ${tab === "hoy" ? "active" : ""}`}
-              onClick={() => setTab("hoy")}
-            >
-              Hoy
-            </button>
-            <button
-              className={`nutrition-tab ${tab === "peso" ? "active" : ""}`}
-              onClick={() => setTab("peso")}
-            >
-              Peso
-            </button>
-            <button
-              className={`nutrition-tab ${tab === "adaptativo" ? "active" : ""}`}
-              onClick={() => setTab("adaptativo")}
-            >
-              Adaptativo
-            </button>
-          </div>
+          {/* E03-14/E18-07: antes tres <button> sueltos sin relación entre
+              sí para un lector de pantalla, y sin navegación por flechas —
+              ver el comentario de Tabs.tsx para el patrón ARIA completo. */}
+          <Tabs
+            label="Secciones de Nutrición"
+            idPrefix="nutrition"
+            tabClassName="nutrition-tab"
+            className="nutrition-tabs"
+            activeId={tab}
+            onChange={(id) => setTab(id as NutritionTab)}
+            tabs={[
+              { id: "hoy", label: "Hoy" },
+              { id: "peso", label: "Peso" },
+              { id: "adaptativo", label: "Adaptativo" },
+            ]}
+          />
 
-          {tab === "hoy" && (
-            <>
-              <MacroWeekChart />
-              <MacroAdherencePanel />
-              <ProteinOptimizerPanel />
-            </>
-          )}
+          <TabPanel id="hoy" activeId={tab} idPrefix="nutrition">
+            <MacroWeekChart />
+            <MacroAdherencePanel />
+            <ProteinOptimizerPanel />
+          </TabPanel>
 
-          {tab === "peso" && (
-            <>
-              <WeightPanel />
-              <WeightTrendPanel />
-              <WeightProjectionPanel />
-            </>
-          )}
+          <TabPanel id="peso" activeId={tab} idPrefix="nutrition">
+            <WeightPanel />
+            <WeightTrendPanel />
+            <WeightProjectionPanel />
+          </TabPanel>
 
-          {tab === "adaptativo" && (
-            <>
-              <AdaptiveTdeePanel />
-              <AdjustmentProposalPanel />
-            </>
-          )}
+          <TabPanel id="adaptativo" activeId={tab} idPrefix="nutrition">
+            <AdaptiveTdeePanel />
+            <AdjustmentProposalPanel />
+          </TabPanel>
         </>
       )}
     </section>
