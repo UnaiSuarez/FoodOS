@@ -1,11 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
 import { getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { MASCOTS } from "@/lib/mascots";
+import { useInertBackground } from "@/lib/use-inert-background";
 import {
   ACTIVITY_LABELS,
   GOAL_DESCRIPTIONS,
@@ -37,6 +38,8 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
 
 export function OnboardingFlow({ onDone }: Props) {
   const { state, mutate } = useFoodOS();
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useInertBackground(overlayRef); // E18-09: ver comentario en use-inert-background.ts
   const [step, setStep] = useState(0);
   const [mascotId, setMascotId] = useState("zana");
   const [goal, setGoal] = useState<GoalMode>("fat_loss");
@@ -106,7 +109,7 @@ export function OnboardingFlow({ onDone }: Props) {
   const STEP_LABELS = ["Bienvenida", "Tu compañero", "Tu objetivo"];
 
   return (
-    <div className="ob-overlay" role="dialog" aria-modal="true" aria-label="Configuración inicial de FoodOS">
+    <div ref={overlayRef} className="ob-overlay" role="dialog" aria-modal="true" aria-label="Configuración inicial de FoodOS">
       <div className="ob-card">
 
         {/* Indicador de pasos */}

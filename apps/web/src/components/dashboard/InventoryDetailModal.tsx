@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { InventoryItem } from "@foodos/types";
 import { expiryBadge, matchAllergens, useFoodOS } from "@/lib/state";
 import { daysUntil, eur } from "@/lib/utils";
 import { Modal } from "./Modal";
 import { useEscapeToClose } from "@/lib/use-escape-key";
+import { useInertBackground } from "@/lib/use-inert-background";
 
 interface Props {
   item: InventoryItem;
@@ -26,6 +27,8 @@ function NutrRow({ label, value, unit }: { label: string; value?: number; unit: 
 
 export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props) {
   useEscapeToClose(onClose); // E18-03: ver comentario en BarcodeScannerModal.tsx
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useInertBackground(overlayRef); // E18-09: ver comentario en use-inert-background.ts
   const { state } = useFoodOS();
   const [zoom, setZoom] = useState(false);
   const badge = expiryBadge(item.expires);
@@ -42,7 +45,7 @@ export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props
     item.fiber != null || item.sugars != null;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
+    <div ref={overlayRef} className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="modal-card detail-modal" onClick={(e) => e.stopPropagation()}>
 
         <div className="modal-head">
