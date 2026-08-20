@@ -191,6 +191,7 @@ function MonthlyFinanceChart({
   const BAR_W = Math.max(12, gap * 0.3);
 
   return (
+    <>
     <svg
       viewBox={`0 0 ${W} ${H + 38}`}
       className="macro-week-chart"
@@ -264,6 +265,32 @@ function MonthlyFinanceChart({
         );
       })}
     </svg>
+    {/* E18-12: role="img" trata el <svg> como una imagen opaca para un
+        lector de pantalla — solo el aria-label se anuncia, ni las barras
+        ni las cifras de ahorro. Tabla visualmente oculta con los mismos
+        datos mes a mes. */}
+    <table className="sr-only">
+      <caption>Ingresos, gastos y ahorro por mes</caption>
+      <thead>
+        <tr>
+          <th scope="col">Mes</th>
+          <th scope="col">Ingresos</th>
+          <th scope="col">Gastos</th>
+          <th scope="col">Ahorro</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((m) => (
+          <tr key={m.month}>
+            <td>{m.label}</td>
+            <td>{m.income.toFixed(2)}€</td>
+            <td>{m.expenses.toFixed(2)}€</td>
+            <td>{m.savings >= 0 ? "+" : ""}{m.savings.toFixed(2)}€</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    </>
   );
 }
 
@@ -280,13 +307,20 @@ function StatsWeightChart({ entries }: { entries: WeightEntry[] }) {
     .map((e, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(1)},${yOf(e.kg).toFixed(1)}`)
     .join(" ");
   const last = entries[entries.length - 1];
+  const first = entries[0];
+  const deltaKg = Math.round((last.kg - first.kg) * 10) / 10;
+  const chartSummary =
+    `De ${first.kg} kg (${first.date}) a ${last.kg} kg (${last.date}): ` +
+    `${deltaKg > 0 ? "+" : ""}${deltaKg} kg en ${entries.length} mediciones.`;
 
   return (
+    <>
     <svg
       viewBox={`0 0 ${W} ${H}`}
       className="weight-chart"
       role="img"
       aria-label="Evolución del peso"
+      aria-describedby="stats-weight-chart-summary"
     >
       <path
         d={`${linePath} L${xOf(entries.length - 1).toFixed(1)},${H} L0,${H} Z`}
@@ -305,6 +339,8 @@ function StatsWeightChart({ entries }: { entries: WeightEntry[] }) {
         {last.kg} kg
       </text>
     </svg>
+    <p id="stats-weight-chart-summary" className="sr-only">{chartSummary}</p>
+    </>
   );
 }
 
@@ -324,6 +360,7 @@ function StatsMacroChart({
   const DAY_LABELS = ["D", "L", "M", "X", "J", "V", "S"];
 
   return (
+    <>
     <svg
       viewBox={`0 0 ${W} ${H + 22}`}
       className="macro-week-chart"
@@ -380,5 +417,29 @@ function StatsMacroChart({
         );
       })}
     </svg>
+    <table className="sr-only">
+      <caption>Calorías y proteína de los últimos 28 días, con el % del objetivo diario alcanzado</caption>
+      <thead>
+        <tr>
+          <th scope="col">Día</th>
+          <th scope="col">Calorías</th>
+          <th scope="col">% objetivo calorías</th>
+          <th scope="col">Proteína</th>
+          <th scope="col">% objetivo proteína</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((day) => (
+          <tr key={day.date}>
+            <td>{day.date}</td>
+            <td>{Math.round(day.kcal)} kcal</td>
+            <td>{targetKcal > 0 ? Math.round(Math.min(1, day.kcal / targetKcal) * 100) : 0}%</td>
+            <td>{Math.round(day.protein)} g</td>
+            <td>{targetProtein > 0 ? Math.round(Math.min(1, day.protein / targetProtein) * 100) : 0}%</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    </>
   );
 }

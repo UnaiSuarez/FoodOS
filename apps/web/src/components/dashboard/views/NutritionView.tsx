@@ -826,8 +826,22 @@ function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: num
 
   const last = entries[entries.length - 1];
 
+  // E18-12: role="img" hace que un lector de pantalla trate todo el <svg>
+  // como una sola imagen opaca — ni siquiera los <text> con el peso final
+  // se anuncian, solo el aria-label. Un resumen en texto real (visualmente
+  // oculto, el badge "Último: X kg" de abajo ya cubre lo visible) le da el
+  // mismo dato que transmite la forma de la línea: de dónde a dónde y
+  // cuánto ha cambiado en el periodo mostrado.
+  const first = entries[0];
+  const deltaKg = Math.round((last.kg - first.kg) * 10) / 10;
+  const chartSummary =
+    `De ${first.kg} kg (${first.date}) a ${last.kg} kg (${last.date}): ` +
+    `${deltaKg > 0 ? "+" : ""}${deltaKg} kg en ${entries.length} mediciones` +
+    (target ? `. Objetivo: ${target} kg.` : ".");
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="weight-chart" role="img" aria-label="Evolución del peso">
+    <>
+    <svg viewBox={`0 0 ${W} ${H}`} className="weight-chart" role="img" aria-label="Evolución del peso" aria-describedby="weight-chart-summary">
       {/* Área bajo la línea */}
       <path
         d={`${linePath} L${xOf(entries.length - 1).toFixed(1)},${H} L0,${H} Z`}
@@ -861,6 +875,8 @@ function WeightChart({ entries, target }: { entries: WeightEntry[]; target?: num
         </text>
       )}
     </svg>
+    <p id="weight-chart-summary" className="sr-only">{chartSummary}</p>
+    </>
   );
 }
 
@@ -1486,6 +1502,34 @@ function MacroWeekChart() {
           );
         })}
       </svg>
+      {/* E18-12: role="img" en el <svg> de arriba lo trata como una imagen
+          opaca para un lector de pantalla — ni los <text> con el % ni las
+          barras se anuncian, solo el aria-label genérico. Esta tabla
+          (visualmente oculta, el .chart-legend de abajo ya explica el
+          color a quien sí ve las barras) da el mismo dato día a día. */}
+      <table className="sr-only">
+        <caption>Calorías y proteína de los últimos 7 días, con el % del objetivo diario alcanzado</caption>
+        <thead>
+          <tr>
+            <th scope="col">Día</th>
+            <th scope="col">Calorías</th>
+            <th scope="col">% objetivo calorías</th>
+            <th scope="col">Proteína</th>
+            <th scope="col">% objetivo proteína</th>
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((day) => (
+            <tr key={day.date}>
+              <td>{day.date}</td>
+              <td>{Math.round(day.kcal)} kcal</td>
+              <td>{Math.round(Math.min(1, day.kcal / targetKcal) * 100)}%</td>
+              <td>{Math.round(day.protein)} g</td>
+              <td>{Math.round(Math.min(1, day.protein / targetProtein) * 100)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       <p className="chart-legend">
         Las barras verdes muestran % de proteína alcanzado. Las azules, % de calorías.
       </p>

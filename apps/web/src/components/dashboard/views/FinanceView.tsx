@@ -907,6 +907,26 @@ function FinanceChart() {
   const { state } = useFoodOS();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // E18-12: <canvas> no tiene ningún contenido accesible por su cuenta (a
+  // diferencia de <svg>, no hay nada que un lector de pantalla pueda leer
+  // salvo lo que se le dé explícitamente vía aria-label/contenido) — antes
+  // este gráfico era completamente invisible para quien no lo ve. Se saca
+  // el cálculo de las 4 semanas fuera del efecto de dibujo para poder
+  // reutilizarlo también en el aria-label y en la tabla de abajo.
+  const activeToday = dateFromKey(getToday(state));
+  const weekLabels = ["Hace 4 semanas", "Hace 3 semanas", "Hace 2 semanas", "Esta semana"];
+  const weeks = [3, 2, 1, 0].map((offset) => {
+    const start = new Date(activeToday); start.setDate(activeToday.getDate() - (offset + 1) * 7);
+    const end   = new Date(activeToday); end.setDate(activeToday.getDate() - offset * 7);
+    return state.expenses
+      .filter((e) => e.type === "expense")
+      .filter((e) => { const d = dateFromKey(e.date); return d > start && d <= end; })
+      .reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  });
+  const chartSummary = `Gasto variable por semana: ${weekLabels
+    .map((label, i) => `${label}, ${eur(weeks[i])}`)
+    .join("; ")}.`;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -919,15 +939,6 @@ function FinanceChart() {
     canvas.height = height * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
-    const activeToday = dateFromKey(getToday(state));
-    const weeks = [3, 2, 1, 0].map((offset) => {
-      const start = new Date(activeToday); start.setDate(activeToday.getDate() - (offset + 1) * 7);
-      const end   = new Date(activeToday); end.setDate(activeToday.getDate() - offset * 7);
-      return state.expenses
-        .filter((e) => e.type === "expense")
-        .filter((e) => { const d = dateFromKey(e.date); return d > start && d <= end; })
-        .reduce((sum, e) => sum + Number(e.amount || 0), 0);
-    });
     const max = Math.max(...weeks, 10);
     const pad = 28;
     const gap = (width - pad * 2) / 4;
@@ -947,5 +958,26 @@ function FinanceChart() {
     });
   }, [state.expenses, state.debugDate]);
 
-  return <canvas ref={canvasRef} className="finance-chart" height={220} />;
+  return (
+    <>
+      <canvas ref={canvasRef} className="finance-chart" height={220} role="img" aria-label={chartSummary} />
+      <table className="sr-only">
+        <caption>Gasto variable por semana, últimas 4 semanas</caption>
+        <thead>
+          <tr>
+            <th scope="col">Semana</th>
+            <th scope="col">Gasto</th>
+          </tr>
+        </thead>
+        <tbody>
+          {weekLabels.map((label, i) => (
+            <tr key={label}>
+              <td>{label}</td>
+              <td>{eur(weeks[i])}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
 }
