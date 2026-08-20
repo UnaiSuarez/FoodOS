@@ -58,10 +58,24 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // no protegería nada que Next.js genera por su cuenta. Convierte este
   // layout en dinámico (no se puede pre-renderizar de forma estática), un
   // coste aceptado a cambio de tener nonces reales.
-  await headers();
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html lang="es" className={`${serif.variable} ${sans.variable} ${mono.variable}`}>
       <body>
+        {/* E02-06: evita el parpadeo de tema al cargar — sin este script el
+            tema por defecto ("dark") pintaba primero y, si el usuario tenía
+            "light" guardado, useEffect lo cambiaba un instante después (ya
+            con la página pintada), causando un flash visible. Un <script>
+            síncrono aquí, antes de cualquier otro contenido, bloquea el
+            pintado hasta fijar el atributo correcto — se necesita el mismo
+            nonce que exige script-src en la CSP (ver middleware.ts). */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html:
+              'try{var t=localStorage.getItem("foodos-theme");if(t==="light")document.documentElement.dataset.theme="light";}catch(e){}',
+          }}
+        />
         <div className="noise" aria-hidden="true" />
         {children}
         <ServiceWorkerRegistrar />

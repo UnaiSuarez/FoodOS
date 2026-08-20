@@ -105,11 +105,25 @@ function DashboardInner() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [menuOpen, setMenuOpen] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
+  // E02-03/04/08: sin esto, una comprobación de sesión colgada (proyecto de
+  // Supabase pausado, sin red al cargar...) dejaba al usuario mirando
+  // "Comprobando sesión…" para siempre, sin ninguna salida.
+  const AUTH_CHECK_TIMEOUT_MS = 10_000;
+  const [authCheckTimedOut, setAuthCheckTimedOut] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("foodos-theme") as "dark" | "light" | null;
     if (stored === "light") setTheme("light");
   }, []);
+
+  useEffect(() => {
+    if (!needsAuth || remoteReady) {
+      setAuthCheckTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setAuthCheckTimedOut(true), AUTH_CHECK_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [needsAuth, remoteReady]);
 
   useEffect(() => {
     setIsOnline(navigator.onLine);
@@ -262,12 +276,45 @@ function DashboardInner() {
     setTourActive(true);
   }
 
-  // Pantalla de carga mientras Supabase comprueba la sesión
+  // Pantalla de carga mientras Supabase comprueba la sesión — E02-01: una
+  // silueta del shell real en vez de un "Comprobando sesión…" en texto
+  // plano, para que el salto al terminar sea menor.
   if (needsAuth && !remoteReady) {
+    if (authCheckTimedOut) {
+      return (
+        <div className="auth-checking" role="alert">
+          <p className="eyebrow">FoodOS</p>
+          <p>La comprobación de tu sesión está tardando más de lo normal.</p>
+          <p className="form-intro">
+            Puede ser un problema de conexión o que el servicio no responda ahora mismo.
+          </p>
+          <div className="auth-checking-actions">
+            <button className="primary-button" onClick={() => window.location.reload()}>
+              Reintentar
+            </button>
+          </div>
+        </div>
+      );
+    }
     return (
-      <div className="auth-checking">
-        <p className="eyebrow">FoodOS</p>
-        <p>Comprobando sesión…</p>
+      <div className="auth-skeleton" aria-busy="true" aria-live="polite">
+        <span className="sr-only">Comprobando tu sesión…</span>
+        <div className="auth-skeleton-sidebar">
+          <div className="auth-skeleton-block" style={{ height: 32, width: "60%", marginBottom: 28 }} />
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="auth-skeleton-block" style={{ height: 20, marginBottom: 14 }} />
+          ))}
+        </div>
+        <div className="auth-skeleton-main">
+          <div className="auth-skeleton-topbar">
+            <div className="auth-skeleton-block" style={{ height: 22, width: 160 }} />
+          </div>
+          <div className="auth-skeleton-body">
+            <div className="auth-skeleton-block" style={{ height: 120 }} />
+            <div className="auth-skeleton-block" style={{ height: 200 }} />
+            <div className="auth-skeleton-block" style={{ height: 160 }} />
+          </div>
+        </div>
       </div>
     );
   }
