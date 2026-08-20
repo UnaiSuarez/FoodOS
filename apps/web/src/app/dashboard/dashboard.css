@@ -7920,6 +7920,62 @@ button.secondary-button.small {
   }
 }
 
+/* E04-03: barra inferior de navegación rápida — oculta por defecto (se
+   muestra solo en el breakpoint de teléfono, más abajo). Es un breakpoint
+   propio (680px) más estrecho que el del drawer (1080px): pensada para uso
+   con el pulgar en un teléfono, no para tablet en modo retrato, donde el
+   drawer ya funciona bien con dos manos. */
+.bottom-tab-bar {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .bottom-tab-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    background: rgba(7, 10, 5, 0.92);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border);
+    /* padding-bottom respeta el "home indicator" de iPhone y barras
+       gestuales de Android sin dejar hueco en dispositivos que no lo tienen. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .bottom-tab-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    /* Objetivo táctil >= 44px de alto (E18-14) aunque el contenido visual
+       sea más compacto. */
+    min-height: 54px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .bottom-tab-item.active {
+    color: var(--green);
+  }
+
+  /* Sitio para que la barra fija no tape el final del contenido. */
+  .app-main {
+    padding-bottom: calc(54px + env(safe-area-inset-bottom, 0px) + 24px);
+  }
+}
+
+[data-theme="light"] .bottom-tab-bar {
+  background: rgba(228, 243, 220, 0.94);
+}
+
 /* ============================================
    PLANIFICADOR — tap-to-select (mobile)
    ============================================ */
