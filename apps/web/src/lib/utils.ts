@@ -136,19 +136,49 @@ export function ensureUuid(value: string): string {
   return isUuid(value) ? value : crypto.randomUUID();
 }
 
-/** Compara un nombre de producto/ingrediente con un nombre de item de inventario
-    de forma tolerante: coinciden si son iguales, o si la primera palabra de uno
-    aparece contenida en el otro (ej. "pollo" ↔ "pechuga de pollo"). No distingue
-    mayúsculas/minúsculas. Usado para casar ingredientes de receta con lotes de
-    inventario cuando no hay un ID exacto que los relacione — ver nota en
-    RoutineExercise/InventoryItem sobre por qué este matching es intencionalmente
-    laxo (nombres libres, sin catálogo cerrado de productos). */
+const NAME_MATCH_STOPWORDS = new Set(["de", "del", "la", "el", "los", "las", "con", "sin", "y", "al"]);
+
+/** Palabras con peso de un nombre de producto: en minúsculas, sin las
+    partículas que no aportan (de/del/la...), que si no contarían como
+    "coincidencia" entre dos productos que solo comparten un "de". */
+function significantWords(name: string): string[] {
+  return name.split(/\s+/).filter((w) => w.length > 0 && !NAME_MATCH_STOPWORDS.has(w));
+}
+
+/** ¿Tienen w1 y w2 relación suficiente como para considerarse la misma
+    palabra? Iguales, o una contiene a la otra (para tolerar plural/género:
+    "tomates" ↔ "tomate") — solo si ambas tienen 4+ letras, para no dejar
+    que palabras cortas den falsos positivos por casualidad. */
+function wordsCloseEnough(w1: string, w2: string): boolean {
+  if (w1 === w2) return true;
+  return w1.length >= 4 && w2.length >= 4 && (w1.includes(w2) || w2.includes(w1));
+}
+
+/** Compara un nombre de producto/ingrediente con un nombre de item de
+    inventario de forma tolerante: coinciden si son iguales, o si TODAS las
+    palabras con peso del nombre más corto tienen correspondencia en el más
+    largo (ej. "pollo" ↔ "pechuga de pollo", "tomate" ↔ "tomate cherry").
+    No distingue mayúsculas/minúsculas. Usado para casar ingredientes de
+    receta con lotes de inventario cuando no hay un ID exacto que los
+    relacione — ver nota en RoutineExercise/InventoryItem sobre por qué este
+    matching es intencionalmente laxo (nombres libres, sin catálogo cerrado
+    de productos).
+    E08-07: antes solo comparaba la PRIMERA palabra de uno contra el otro
+    completo — "leche entera" incluye "leche" (primera palabra de "leche de
+    coco"), así que casaban aunque sean productos distintos. Ahora hace
+    falta que TODAS las palabras con peso del lado corto encajen, no solo
+    la primera: "leche entera" vs "leche de coco" comparten "leche" pero no
+    "entera"/"coco", así que ya no coinciden. */
 export function namesMatch(a: string, b: string): boolean {
   const na = a.toLowerCase().trim();
   const nb = b.toLowerCase().trim();
   if (!na || !nb) return false;
   if (na === nb) return true;
-  return na.includes(nb.split(" ")[0]) || nb.includes(na.split(" ")[0]);
+  const wa = significantWords(na);
+  const wb = significantWords(nb);
+  if (wa.length === 0 || wb.length === 0) return false;
+  const [short, long] = wa.length <= wb.length ? [wa, wb] : [wb, wa];
+  return short.every((w) => long.some((lw) => wordsCloseEnough(w, lw)));
 }
 
 /** Convierte una cantidad a gramos/ml según la unidad, usando unitSize (o 60

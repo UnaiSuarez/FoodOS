@@ -47,4 +47,23 @@ describe("namesMatch", () => {
     expect(namesMatch("", "algo")).toBe(false);
     expect(namesMatch("algo", "")).toBe(false);
   });
+
+  // E08-07: antes solo comparaba la primera palabra, así que variantes con
+  // el mismo primer término pero distinto matiz casaban por error.
+  it("no confunde variantes distintas que comparten la primera palabra", () => {
+    expect(namesMatch("Leche entera", "Leche de coco")).toBe(false);
+    expect(namesMatch("Aceite de oliva", "Aceite de girasol")).toBe(false);
+    expect(namesMatch("Yogur griego", "Yogur natural")).toBe(false);
+    expect(namesMatch("Pechuga de pollo", "Muslo de pollo")).toBe(false);
+  });
+
+  it("sigue coincidiendo cuando una variante es realmente un caso concreto de la otra", () => {
+    expect(namesMatch("Leche", "Leche entera")).toBe(true);
+    expect(namesMatch("Tomate", "Tomate cherry")).toBe(true);
+    expect(namesMatch("Arroz", "Arroz integral")).toBe(true);
+  });
+
+  it("tolera plural/género sin necesitar coincidencia exacta de palabra", () => {
+    expect(namesMatch("Tomates", "Tomate cherry")).toBe(true);
+  });
 });
