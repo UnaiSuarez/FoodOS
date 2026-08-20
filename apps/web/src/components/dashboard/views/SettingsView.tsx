@@ -6,6 +6,7 @@ import { remote } from "@/lib/data-layer";
 import { notificationsSupported } from "@/lib/notifications";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { addDaysToDateKey, uid } from "@/lib/utils";
+import { Modal } from "../Modal";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
@@ -101,10 +102,20 @@ export function SettingsView({
     mutate((draft) => { draft.debugDate = null; });
   }
 
+  // E06-14/15: sin confirmación ni deshacer, un click aquí borra comidas,
+  // agua y entrenamiento del día sin aviso — aunque sea una herramienta de
+  // admin, sigue siendo destructivo por accidente mientras se prueba otra
+  // cosa. Mismo patrón que el borrado de una entrada individual del diario.
+  const [confirmingClearToday, setConfirmingClearToday] = useState(false);
+
   /** Borra comidas, agua y entrenamiento del día actual (o simulado); devuelve al inventario
       lo que se consumió de ahí, igual que al borrar una entrada individual. */
   function clearToday() {
     const today = getToday(state);
+    const prevFoodLog = state.foodLog;
+    const prevInventory = state.inventory;
+    const prevWater = state.waterLog[today];
+    const prevWorkoutLog = state.workoutLog;
     mutate((draft) => {
       for (const entry of draft.foodLog) {
         if (entry.date === today) actions.returnEntryToInventory(draft, entry);
@@ -113,7 +124,15 @@ export function SettingsView({
       draft.waterLog[today] = 0;
       draft.workoutLog = (draft.workoutLog ?? []).filter((session) => session.date !== today);
     });
-    showToast(`Registro de ${today} borrado`);
+    showToast(`Registro de ${today} borrado`, {
+      label: "Deshacer",
+      onAction: () => mutate((draft) => {
+        draft.foodLog = structuredClone(prevFoodLog);
+        draft.inventory = structuredClone(prevInventory);
+        draft.waterLog[today] = prevWater;
+        draft.workoutLog = structuredClone(prevWorkoutLog);
+      }),
+    });
   }
 
   /** Rellena los últimos 7 días con comidas, agua, peso y entrenamiento de ejemplo para probar Estadísticas. */
@@ -639,7 +658,7 @@ export function SettingsView({
             <button className="secondary-button" onClick={seedHistorico}>
               📊 Sembrar 7 días de historial
             </button>
-            <button className="secondary-button" onClick={clearToday}>
+            <button className="secondary-button" onClick={() => setConfirmingClearToday(true)}>
               🧹 Limpiar registro del día actual
             </button>
             <button className="secondary-button" onClick={() => setShowStateJson((v) => !v)}>
@@ -662,6 +681,27 @@ export function SettingsView({
             </pre>
           )}
         </article>
+      )}
+
+      {confirmingClearToday && (
+        <Modal title="¿Limpiar el registro de hoy?" onClose={() => setConfirmingClearToday(false)}>
+          <p className="cycle-note">
+            Se borrarán las comidas, el agua y el entrenamiento de {getToday(state)}. Lo que se
+            descontó del inventario al registrar comidas se devuelve. Podrás deshacerlo justo
+            después, desde el aviso.
+          </p>
+          <div className="meta-row" style={{ marginTop: 12 }}>
+            <button className="secondary-button" onClick={() => setConfirmingClearToday(false)}>
+              Cancelar
+            </button>
+            <button
+              className="danger-button"
+              onClick={() => { setConfirmingClearToday(false); clearToday(); }}
+            >
+              Limpiar registro
+            </button>
+          </div>
+        </Modal>
       )}
     </section>
   );

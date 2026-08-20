@@ -98,6 +98,16 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
   const nowTime = () => new Date().toTimeString().slice(0, 5);
   const [mealType, setMealType] = useState<MealType>(() => mealTypeFromTime(new Date().toTimeString().slice(0, 5)));
 
+  // E06-03: Modal.tsx enfoca el primer elemento enfocable al abrir (una
+  // pestaña, no el buscador) — con este efecto, que corre después por ser
+  // del componente padre, el buscador de la pestaña por defecto (Inventario)
+  // se queda con el foco de verdad y se puede escribir sin un clic más.
+  const invFilterRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (tab === "inventory") invFilterRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Tab Inventario ─────────────────────────────────────────────────────────
   const [invFilter, setInvFilter] = useState("");
   const [selectedQtys, setSelectedQtys] = useState<Map<string, number>>(new Map());
@@ -554,6 +564,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
       {tab === "inventory" && (
         <div className="lm-body">
           <input
+            ref={invFilterRef}
             className="lm-search"
             placeholder="Filtrar alimentos…"
             aria-label="Filtrar alimentos"

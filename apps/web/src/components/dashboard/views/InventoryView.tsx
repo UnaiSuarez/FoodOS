@@ -2,7 +2,7 @@
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
 import type { InventoryItem, StorageName } from "@foodos/types";
-import { expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
+import { DEFAULT_SETTINGS, expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
@@ -61,6 +61,10 @@ export function InventoryView() {
   // antes cada clic de filtro pagaba clone completo + localStorage + push a Supabase.
   const [search, setSearch] = useState("");
   const [activeStorage, setActiveStorage] = useState<StorageName | "Todos">("Todos");
+  // E07-13/14: filtros rápidos de "caduca pronto" y "stock bajo" — antes solo
+  // se podían ver agrupados en el Panel (HomeView), no dentro del propio
+  // Inventario mientras se busca/filtra por almacén.
+  const [quickFilter, setQuickFilter] = useState<"all" | "expiring" | "lowstock">("all");
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
@@ -370,6 +374,25 @@ export function InventoryView() {
     );
   }
 
+  if (quickFilter === "expiring") {
+    const warnDays = state.settings?.expiryWarnDays ?? DEFAULT_SETTINGS.expiryWarnDays;
+    items = items.filter((item) => daysUntil(item.expires) <= warnDays);
+  } else if (quickFilter === "lowstock") {
+    // El umbral es por producto (sumando todos sus lotes), no por lote
+    // suelto: dos lotes de 100g con umbral 200g no están "bajos" juntos,
+    // aunque cada lote por separado sí lo pareciera.
+    const thresholds = state.settings?.lowStockThresholds ?? DEFAULT_SETTINGS.lowStockThresholds;
+    const totalsByName = new Map<string, number>();
+    for (const item of state.inventory) {
+      const key = item.name.toLowerCase();
+      totalsByName.set(key, (totalsByName.get(key) ?? 0) + item.qty);
+    }
+    items = items.filter((item) => {
+      const threshold = (thresholds as Record<string, number>)[item.unit] ?? 100;
+      return (totalsByName.get(item.name.toLowerCase()) ?? item.qty) <= threshold;
+    });
+  }
+
   // Agrupa por nombre, ordena cada grupo por caducidad (FIFO), ordena grupos por su lote más próximo
   {
     const groups = new Map<string, InventoryItem[]>();
@@ -669,6 +692,29 @@ export function InventoryView() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
+            <div className="segmented" role="tablist" aria-label="Filtro rápido">
+              <button
+                className={`filter ${quickFilter === "all" ? "active" : ""}`}
+                aria-pressed={quickFilter === "all"}
+                onClick={() => setQuickFilter("all")}
+              >
+                Todo
+              </button>
+              <button
+                className={`filter ${quickFilter === "expiring" ? "active" : ""}`}
+                aria-pressed={quickFilter === "expiring"}
+                onClick={() => setQuickFilter(quickFilter === "expiring" ? "all" : "expiring")}
+              >
+                Caduca pronto
+              </button>
+              <button
+                className={`filter ${quickFilter === "lowstock" ? "active" : ""}`}
+                aria-pressed={quickFilter === "lowstock"}
+                onClick={() => setQuickFilter(quickFilter === "lowstock" ? "all" : "lowstock")}
+              >
+                Stock bajo
+              </button>
+            </div>
           </div>
           <div className="card-list">
             {items.length ? (

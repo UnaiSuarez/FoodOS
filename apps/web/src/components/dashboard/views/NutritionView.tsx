@@ -157,6 +157,30 @@ function NutritionToday() {
   const { state, mutate, showToast } = useFoodOS();
   const consumed = getConsumedToday(state);
   const todayLog = getTodayLog(state);
+  // E06-14/15: "Reiniciar día" borraba TODO el registro de hoy sin avisar ni
+  // dar forma de deshacer — un solo click accidental perdía el diario
+  // entero del día. Ahora pide confirmación explícita (explica qué se borra
+  // y que el inventario se devuelve) y el toast de después ofrece deshacer,
+  // igual que el borrado de una sola entrada.
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  function resetToday() {
+    const prevFoodLog = state.foodLog;
+    const prevInventory = state.inventory;
+    mutate((draft) => {
+      const today = getToday(draft);
+      for (const entry of draft.foodLog) {
+        if (entry.date === today) actions.returnEntryToInventory(draft, entry);
+      }
+      draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
+    });
+    showToast("Día nutricional reiniciado", {
+      label: "Deshacer",
+      onAction: () => mutate((draft) => {
+        draft.foodLog = structuredClone(prevFoodLog);
+        draft.inventory = structuredClone(prevInventory);
+      }),
+    });
+  }
 
   return (
     <>
@@ -217,19 +241,32 @@ function NutritionToday() {
 
       <button
         className="secondary-button"
-        onClick={() => {
-          mutate((draft) => {
-            const today = getToday(draft);
-            for (const entry of draft.foodLog) {
-              if (entry.date === today) actions.returnEntryToInventory(draft, entry);
-            }
-            draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
-          });
-          showToast("Día nutricional reiniciado");
-        }}
+        disabled={todayLog.length === 0}
+        onClick={() => setConfirmingReset(true)}
       >
         Reiniciar día
       </button>
+
+      {confirmingReset && (
+        <Modal title="¿Reiniciar el día?" onClose={() => setConfirmingReset(false)}>
+          <p className="cycle-note">
+            Se borrarán las <strong>{todayLog.length}</strong> comida{todayLog.length !== 1 ? "s" : ""}{" "}
+            registradas hoy. Lo que se descontó del inventario al registrarlas se devuelve.
+            Podrás deshacerlo justo después, desde el aviso.
+          </p>
+          <div className="meta-row" style={{ marginTop: 12 }}>
+            <button className="secondary-button" onClick={() => setConfirmingReset(false)}>
+              Cancelar
+            </button>
+            <button
+              className="danger-button"
+              onClick={() => { setConfirmingReset(false); resetToday(); }}
+            >
+              Reiniciar día
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
