@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { Tabs, TabPanel } from "@/components/ui";
@@ -80,6 +81,18 @@ export function NutritionView() {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
   const [editing, setEditing] = useState(false);
   const [tab, setTab] = useState<NutritionTab>("hoy");
+  const [weightAutoFocus, setWeightAutoFocus] = useState(false);
+
+  // E04-04: acción universal "Añadir" → "Registrar peso" navega aquí y deja
+  // esta señal — cambia a la pestaña Peso y lleva el foco a su campo (que
+  // solo existe una vez esa pestaña está activa, de ahí el estado aparte
+  // en vez de enfocar directamente).
+  useEffect(() => {
+    if (consumeQuickAddSignal("weight")) {
+      setTab("peso");
+      setWeightAutoFocus(true);
+    }
+  }, []);
 
   const showForm = !state.profile || editing;
 
@@ -127,7 +140,7 @@ export function NutritionView() {
           </TabPanel>
 
           <TabPanel id="peso" activeId={tab} idPrefix="nutrition">
-            <WeightPanel />
+            <WeightPanel autoFocus={weightAutoFocus} />
             <WeightTrendPanel />
             <WeightProjectionPanel />
           </TabPanel>
@@ -725,7 +738,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
 
 // ---------- Historial de peso (Feature 1) ----------
 
-function WeightPanel() {
+function WeightPanel({ autoFocus }: { autoFocus?: boolean }) {
   const { state, mutate, showToast } = useFoodOS();
   const latest = getLatestWeight(state);
   const today = getToday(state);
@@ -752,6 +765,7 @@ function WeightPanel() {
             placeholder="kg de hoy"
             aria-label="Peso de hoy en kilogramos"
             className="weight-input"
+            autoFocus={autoFocus}
           />
           <button
             className="secondary-button"

@@ -398,6 +398,50 @@
   color: var(--red);
 }
 
+/* E04-04: acción universal "Añadir" — botón en la cabecera + lista de
+   opciones dentro del Modal compartido (foco/Escape/inert de fondo ya
+   incluidos, ver Modal.tsx). */
+.quick-add-btn {
+  color: var(--green);
+}
+
+.quick-add-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.quick-add-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 244, 238, 0.04);
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.quick-add-option:hover {
+  background: rgba(74, 222, 128, 0.08);
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.quick-add-option svg {
+  color: var(--green);
+  flex-shrink: 0;
+}
+
 .file-button {
   cursor: pointer;
 }
