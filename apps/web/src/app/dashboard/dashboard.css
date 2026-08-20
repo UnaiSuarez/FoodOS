@@ -866,73 +866,6 @@ select:focus {
   border-top: 1px solid var(--border);
 }
 
-/* ---------- Feed ---------- */
-
-.feed-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.feed-card {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: rgba(7, 10, 5, 0.34);
-}
-
-.feed-image {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-
-.feed-image img {
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
-}
-
-.feed-card-body {
-  padding: 14px;
-}
-
-.feed-card-body h3 {
-  margin: 8px 0 6px;
-  font-family: var(--serif);
-  font-size: 26px;
-  line-height: 1;
-}
-
-.feed-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.feed-comments {
-  display: grid;
-  gap: 8px;
-  margin: 12px 0;
-  padding: 12px;
-  border: 1px solid rgba(240, 244, 238, 0.08);
-  border-radius: var(--radius-md);
-  background: rgba(7, 10, 5, 0.32);
-}
-
-.feed-comments p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.feed-comments strong {
-  color: var(--text);
-}
-
 /* ---------- Carrito / finanzas / nutricion ---------- */
 
 .cart-summary,
@@ -2651,7 +2584,6 @@ select:focus {
   .dashboard-grid,
   .work-grid,
   .recipe-grid,
-  .feed-list,
   .assistant-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2674,7 +2606,6 @@ select:focus {
      mínimo táctil razonable. Solo en pantallas pequeñas para no engordar
      la UI de escritorio. */
   .bento-water-btn,
-  .feed-tab,
   .savings-toggle {
     min-height: 40px;
   }
@@ -2722,7 +2653,6 @@ select:focus {
   .dashboard-grid,
   .work-grid,
   .recipe-grid,
-  .feed-list,
   .assistant-grid,
   .form-grid,
   .nutrition-totals {
@@ -3620,52 +3550,6 @@ select:focus {
   color: var(--muted);
   font-size: 12px;
   text-align: right;
-}
-
-/* ── Feed mejorado ──────────────────────────────────────────────── */
-.feed-tabs {
-  display: flex;
-  gap: 6px;
-}
-
-.feed-tab {
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(240, 244, 238, 0.12);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  transition: background 0.15s, color 0.15s;
-}
-
-.feed-tab.active {
-  background: rgba(74, 222, 128, 0.12);
-  border-color: var(--green);
-  color: var(--green);
-}
-
-.feed-card-author {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.feed-caption {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 4px 0 10px;
-}
-
-.feed-recipe-preview {
-  margin-top: 10px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
 }
 
 /* ── Modo ahorro máximo ─────────────────────────────────────────── */
@@ -7604,11 +7488,6 @@ button.secondary-button.small {
 [data-theme="light"] .recipe-section,
 [data-theme="light"] .nutrition-totals div {
   background: rgba(255, 255, 255, 0.65);
-}
-
-[data-theme="light"] .feed-card,
-[data-theme="light"] .feed-comments {
-  background: rgba(255, 255, 255, 0.60);
 }
 
 [data-theme="light"] .recipe-card {

@@ -531,7 +531,7 @@ class RemoteAdapter {
       throw new Error("pullState: shoppingListId no está listo (ensureBaseRows no se completó)");
     }
 
-    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, feedRes, waterRes, weightRes, proposalRes] = await Promise.all([
+    const [profileRes, inventoryRes, cartRes, gastosRes, ingresosRes, goalRes, logRes, waterRes, weightRes, proposalRes] = await Promise.all([
       client
         .from("user_profiles")
         .select(
@@ -563,11 +563,6 @@ class RemoteAdapter {
         .order("log_date", { ascending: false })
         .limit(500),
       client
-        .from("feed_posts")
-        .select("id, title, body, recipe_id, likes_count, user_id, feed_comments(body, user_id)")
-        .eq("visibility", "public")
-        .order("created_at", { ascending: true }),
-      client
         .from("water_log")
         .select("log_date, ml")
         .eq("user_id", userId),
@@ -597,7 +592,6 @@ class RemoteAdapter {
       ["ingresos", ingresosRes],
       ["objetivos nutricionales", goalRes],
       ["diario", logRes],
-      ["feed", feedRes],
       ["agua", waterRes],
       ["peso", weightRes],
       ["propuesta de ajuste", proposalRes],
@@ -807,19 +801,6 @@ class RemoteAdapter {
     });
     // TODO water_log: ejecutar supabase/schema.sql actualizado (tabla water_log)
     // y añadir aqui el pull/push del agua.
-
-    state.feedPosts = (feedRes.data ?? []).map((row) => ({
-      id: row.id,
-      recipeId: row.recipe_id,
-      author: row.user_id === userId ? "tu" : "comunidad",
-      title: row.title ?? "Receta compartida",
-      caption: row.body ?? "",
-      likes: row.likes_count,
-      comments: (row.feed_comments ?? []).map((comment: { body: string; user_id: string }) => ({
-        author: comment.user_id === userId ? "Tú" : "Usuario",
-        text: comment.body,
-      })),
-    }));
 
     return state;
   }
@@ -1061,9 +1042,6 @@ class RemoteAdapter {
       }),
       { user_id: userId }
     );
-
-    // TODO feed: publicar posts propios requiere sembrar antes la tabla
-    // `recipes` con las recetas demo. Ver README.
   }
 
   // Upsert de filas actuales + delete de las que desaparecieron del estado.

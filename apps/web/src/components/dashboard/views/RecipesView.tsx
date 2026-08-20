@@ -277,26 +277,6 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                     >
                       Cocinar
                     </button>
-                    <button
-                      className="small-action"
-                      title="Compartir en feed"
-                      onClick={() => {
-                        mutate((draft) => {
-                          draft.feedPosts.push({
-                            id: uid(),
-                            recipeId: recipe.id,
-                            author: "tu",
-                            title: recipe.title,
-                            caption: `${recipe.protein}g de proteína · ${recipe.time} min · ¡la he cocinado!`,
-                            likes: 0,
-                            comments: [],
-                          });
-                        });
-                        showToast("Compartida en el feed");
-                      }}
-                    >
-                      Compartir
-                    </button>
                   </div>
                 </article>
               );

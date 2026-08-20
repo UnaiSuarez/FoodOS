@@ -39,7 +39,6 @@ export const defaultState: FoodOSState = {
   recurringExpenses: [],
   savingsGoalPct: 20,
   savingsGoal: null,
-  feedPosts: [],
   foodLog: [],
   waterLog: {},
   weightLog: [],
@@ -429,7 +428,6 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), type: "expense", amount: 19.6, category: "Ocio", description: "Cena fuera demo", date: todayMinus(23) },
       { id: uid(), type: "expense", amount: 32.0, category: "Ocio", description: "Fin de semana demo", date: todayMinus(28) },
     ];
-    demo.feedPosts = buildDemoPosts();
     // Historial demo del diario: ayer y anteayer con comidas y agua.
     demo.foodLog = [
       { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe", mealType: "breakfast" },
@@ -511,29 +509,6 @@ export function useFoodOSUI(): FoodOSUIValue {
 }
 
 // ---------- Selectores y helpers de dominio ----------
-
-export function buildDemoPosts() {
-  return [
-    {
-      id: uid(),
-      recipeId: "chicken-rice",
-      author: "zana",
-      title: "Cena de recomposición",
-      caption: "Pollo, arroz y tomate usando lo que caducaba mañana.",
-      likes: 42,
-      comments: [{ author: "María", text: "La voy a probar para después del gym." }],
-    },
-    {
-      id: uid(),
-      recipeId: "lentils",
-      author: "volt",
-      title: "Comida por menos de 2 €",
-      caption: "Lentejas de despensa, saciantes y muy baratas.",
-      likes: 27,
-      comments: [{ author: "Carlos", text: "Esto salva semanas de presupuesto ajustado." }],
-    },
-  ];
-}
 
 export function allRecipes(state: FoodOSState): Recipe[] {
   return [...state.customRecipes, ...DEMO_RECIPES];

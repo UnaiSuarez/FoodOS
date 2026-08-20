@@ -145,21 +145,6 @@ export interface Recipe {
   whyThisRecipe?: string;
 }
 
-export interface FeedComment {
-  author: string;
-  text: string;
-}
-
-export interface FeedPost {
-  id: string;
-  recipeId: string;
-  author: string;
-  title: string;
-  caption: string;
-  likes: number;
-  comments: FeedComment[];
-}
-
 export interface MacroTotals {
   kcal: number;
   protein: number;
@@ -699,7 +684,6 @@ export interface FoodOSState {
   savingsGoalPct: number;
   /** Meta de ahorro con nombre y fecha, opcional (null = no configurada). */
   savingsGoal: SavingsGoal | null;
-  feedPosts: FeedPost[];
   /** Diario de comidas con fecha — la fuente de verdad de lo consumido. */
   foodLog: FoodLogEntry[];
   /** Agua bebida por dia: { "2026-06-12": 1750 } en ml. */

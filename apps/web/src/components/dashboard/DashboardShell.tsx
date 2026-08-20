@@ -20,7 +20,6 @@ const viewLoading = () => <p className="loading-hint">Cargando…</p>;
 const DiaryView     = dynamic(() => import("./views/DiaryView").then((m) => m.DiaryView),         { ssr: false, loading: viewLoading });
 const InventoryView = dynamic(() => import("./views/InventoryView").then((m) => m.InventoryView), { ssr: false, loading: viewLoading });
 const RecipesView   = dynamic(() => import("./views/RecipesView").then((m) => m.RecipesView),     { ssr: false, loading: viewLoading });
-const FeedView      = dynamic(() => import("./views/FeedView").then((m) => m.FeedView),           { ssr: false, loading: viewLoading });
 const CartView      = dynamic(() => import("./views/CartView").then((m) => m.CartView),           { ssr: false, loading: viewLoading });
 const FinanceView   = dynamic(() => import("./views/FinanceView").then((m) => m.FinanceView),     { ssr: false, loading: viewLoading });
 const StatsView     = dynamic(() => import("./views/StatsView").then((m) => m.StatsView),         { ssr: false, loading: viewLoading });
@@ -41,7 +40,6 @@ const VIEWS = [
   { id: "diary",      icon: "≣", label: "Registro",      title: "Registro diario" },
   { id: "inventory",  icon: "□", label: "Inventario",    title: "Inventario" },
   { id: "recipes",    icon: "◌", label: "Recetas",       title: "Recetas" },
-  { id: "feed",       icon: "▶", label: "Feed",          title: "Feed social" },
   { id: "cart",       icon: "✓", label: "Carrito",       title: "Carrito de compra" },
   { id: "finance",    icon: "€", label: "Finanzas",      title: "Finanzas" },
   { id: "stats",      icon: "↗", label: "Estadísticas",  title: "Estadísticas" },
@@ -393,7 +391,6 @@ function DashboardInner() {
             {view === "diary" && <DiaryView />}
             {view === "inventory" && <InventoryView />}
             {view === "recipes" && <RecipesView openRecipe={setOpenRecipeId} />}
-            {view === "feed" && <FeedView openRecipe={setOpenRecipeId} />}
             {view === "cart" && <CartView />}
             {view === "finance" && <FinanceView />}
             {view === "stats" && <StatsView />}
