@@ -5,6 +5,7 @@ import type { MacroTotals, MealPlanDay } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { eur, toGrams, uid } from "@/lib/utils";
+import { useComboboxKeyboard } from "@/lib/use-combobox-keyboard";
 import { Modal } from "./Modal";
 
 type MealSlot = keyof MealPlanDay;
@@ -86,6 +87,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
   }, 0);
 
   function handleSearch(q: string) {
+    ingredientCombobox.reset();
     setSearch(q);
     clearTimeout(timerRef.current);
     if (q.trim().length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
@@ -219,6 +221,14 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
 
   const canConfirm = ingredients.length > 0 || dishName.trim().length > 0;
 
+  // E18-08: patrón ARIA combobox — suggestions ya es una única lista plana
+  // en el orden en que se renderiza.
+  const ingredientCombobox = useComboboxKeyboard(
+    suggestions.length,
+    (index) => addIngredient(suggestions[index]),
+    () => setShowSuggestions(false),
+  );
+
   return (
     <Modal title="Añadir plato al planificador" onClose={onClose}>
       <div className="lm-body">
@@ -243,17 +253,30 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
             onChange={e => handleSearch(e.target.value)}
             onFocus={() => search.length >= 2 && setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+            onKeyDown={ingredientCombobox.onKeyDown}
+            role="combobox"
+            aria-expanded={showSuggestions}
+            aria-controls="planner-ingredient-listbox"
+            aria-autocomplete="list"
+            aria-activedescendant={ingredientCombobox.activeIndex >= 0 ? `planner-ingredient-option-${ingredientCombobox.activeIndex}` : undefined}
           />
           {showSuggestions && suggestions.length > 0 && (
-            <ul className="lm-dish-suggestions">
-              {suggestions.map(s => (
-                <li key={s.key} onMouseDown={() => addIngredient(s)} className={`lm-dish-sug-item ${s.type === "inventory" ? "inv" : "off"}`}>
+            <ul className="lm-dish-suggestions" role="listbox" id="planner-ingredient-listbox" aria-label="Sugerencias de ingrediente">
+              {suggestions.map((s, i) => (
+                <li
+                  key={s.key}
+                  id={`planner-ingredient-option-${i}`}
+                  role="option"
+                  aria-selected={i === ingredientCombobox.activeIndex}
+                  onMouseDown={() => addIngredient(s)}
+                  className={`lm-dish-sug-item ${s.type === "inventory" ? "inv" : "off"}${i === ingredientCombobox.activeIndex ? " active" : ""}`}
+                >
                   <span className="lm-dish-sug-badge">{s.type === "inventory" ? "📦" : "🌍"}</span>
                   <span className="lm-dish-sug-name">{s.name}</span>
                   <small className="lm-dish-sug-macro">{s.kcalPer100} kcal · {s.proteinPer100}g P</small>
                 </li>
               ))}
-              {loading && <li className="lm-dish-sug-loading">Buscando más…</li>}
+              {loading && <li className="lm-dish-sug-loading" aria-hidden="true">Buscando más…</li>}
             </ul>
           )}
         </div>

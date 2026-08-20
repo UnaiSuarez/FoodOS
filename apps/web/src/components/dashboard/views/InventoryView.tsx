@@ -10,6 +10,7 @@ import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-i
 import { loadAIConfig } from "@/lib/ai-config";
 import { searchOFFSuggestions, type ExternalFoodSuggestion } from "@/lib/food-lookup";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
+import { useComboboxKeyboard } from "@/lib/use-combobox-keyboard";
 import { ConsumeModal } from "../ConsumeModal";
 import { ImagePickerField } from "../ImagePickerField";
 import { BarcodeScannerModal, type ProductData } from "../BarcodeScannerModal";
@@ -113,6 +114,7 @@ export function InventoryView() {
   }
 
   function handleNameChange(value: string) {
+    nameCombobox.reset();
     setField("name", value);
     setItemExtras({});
     const hits = searchFoodDB(value, 5);
@@ -419,6 +421,20 @@ export function InventoryView() {
 
   const hasAI = typeof window !== "undefined" && !!loadAIConfig();
 
+  // E18-08: patrón ARIA combobox — lista plana en el MISMO orden que se
+  // renderiza (primero la base local, luego Open Food Facts) para que el
+  // índice resaltado por teclado coincida con el que se ve.
+  const nameFlatOptions = [...suggestions, ...offSuggestions];
+  const nameCombobox = useComboboxKeyboard(
+    nameFlatOptions.length,
+    (index) => {
+      const option = nameFlatOptions[index];
+      if (index < suggestions.length) applySuggestion(option as FoodEntry);
+      else applyOFFSuggestion(option as ExternalFoodSuggestion);
+    },
+    () => setShowSuggestions(false),
+  );
+
   return (
     <section className="view">
       <div className="work-grid">
@@ -486,15 +502,24 @@ export function InventoryView() {
                   onChange={(e) => handleNameChange(e.target.value)}
                   onFocus={() => { if (form.name.trim()) setShowSuggestions(true); }}
                   onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                  onKeyDown={nameCombobox.onKeyDown}
                   autoComplete="off"
+                  role="combobox"
+                  aria-expanded={showSuggestions}
+                  aria-controls="inv-name-listbox"
+                  aria-autocomplete="list"
+                  aria-activedescendant={nameCombobox.activeIndex >= 0 ? `inv-name-option-${nameCombobox.activeIndex}` : undefined}
                 />
                 {showSuggestions && (suggestions.length > 0 || offLoading || offSuggestions.length > 0) && (
-                  <ul className="autocomplete-dropdown">
-                    {suggestions.map((entry) => (
+                  <ul className="autocomplete-dropdown" role="listbox" id="inv-name-listbox" aria-label="Sugerencias de nombre">
+                    {suggestions.map((entry, i) => (
                       <li
                         key={entry.name}
+                        id={`inv-name-option-${i}`}
+                        role="option"
+                        aria-selected={i === nameCombobox.activeIndex}
                         onMouseDown={() => applySuggestion(entry)}
-                        className="autocomplete-item"
+                        className={`autocomplete-item${i === nameCombobox.activeIndex ? " active" : ""}`}
                       >
                         <span className="ac-name">{entry.name}</span>
                         <span className="ac-item-meta-row">
@@ -504,26 +529,32 @@ export function InventoryView() {
                       </li>
                     ))}
                     {offLoading && (
-                      <li className="autocomplete-item ac-loading">
+                      <li className="autocomplete-item ac-loading" aria-hidden="true">
                         <span className="ac-name ac-muted">Buscando en Open Food Facts…</span>
                       </li>
                     )}
                     {!offLoading && offSuggestions.length > 0 && (
                       <>
-                        {suggestions.length > 0 && <li className="ac-divider">Open Food Facts</li>}
-                        {offSuggestions.map((s) => (
-                          <li
-                            key={s.name}
-                            onMouseDown={() => applyOFFSuggestion(s)}
-                            className="autocomplete-item"
-                          >
-                            <span className="ac-name">{s.name}</span>
-                            <span className="ac-item-meta-row">
-                              <span className="ac-meta">{s.kcal} kcal · {s.protein}g prot</span>
-                              <span className="ac-badge-off">OFF</span>
-                            </span>
-                          </li>
-                        ))}
+                        {suggestions.length > 0 && <li className="ac-divider" aria-hidden="true">Open Food Facts</li>}
+                        {offSuggestions.map((s, i) => {
+                          const flatIndex = suggestions.length + i;
+                          return (
+                            <li
+                              key={s.name}
+                              id={`inv-name-option-${flatIndex}`}
+                              role="option"
+                              aria-selected={flatIndex === nameCombobox.activeIndex}
+                              onMouseDown={() => applyOFFSuggestion(s)}
+                              className={`autocomplete-item${flatIndex === nameCombobox.activeIndex ? " active" : ""}`}
+                            >
+                              <span className="ac-name">{s.name}</span>
+                              <span className="ac-item-meta-row">
+                                <span className="ac-meta">{s.kcal} kcal · {s.protein}g prot</span>
+                                <span className="ac-badge-off">OFF</span>
+                              </span>
+                            </li>
+                          );
+                        })}
                       </>
                     )}
                   </ul>

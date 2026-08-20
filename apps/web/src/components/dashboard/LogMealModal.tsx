@@ -8,6 +8,7 @@ import { estimateMealFromPhoto, estimateMealMacros } from "@/lib/ai-inventory";
 import { searchFoodDB } from "@/lib/food-db";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { mealTypeFromTime, toGrams, todayPlus, uid } from "@/lib/utils";
+import { useComboboxKeyboard } from "@/lib/use-combobox-keyboard";
 import { Modal } from "./Modal";
 
 type Tab = "inventory" | "recipe" | "dish" | "external";
@@ -208,6 +209,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
   );
 
   function handleDishSearch(q: string) {
+    dishCombobox.reset();
     setDishSearch(q);
     clearTimeout(dishTimerRef.current);
 
@@ -545,6 +547,19 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     );
   }
 
+  // E18-08: patrón ARIA combobox — lista plana en el MISMO orden en que se
+  // renderiza (inventario, base local, luego OFF) para que el índice
+  // resaltado por teclado coincida con el que se ve.
+  const dishInvSuggestions = dishSuggestions.filter((s) => s.type === "inventory");
+  const dishLocalSuggestions = dishSuggestions.filter((s) => s.type === "local");
+  const dishOffSuggestions = dishSuggestions.filter((s) => s.type === "off");
+  const dishFlatOptions = [...dishInvSuggestions, ...dishLocalSuggestions, ...dishOffSuggestions];
+  const dishCombobox = useComboboxKeyboard(
+    dishFlatOptions.length,
+    (index) => addDishIngredient(dishFlatOptions[index]),
+    () => setShowDishSuggestions(false),
+  );
+
   return (
     <Modal title="¿Qué has comido?" onClose={onClose}>
       {/* Tab bar */}
@@ -695,33 +710,66 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
               onChange={e => handleDishSearch(e.target.value)}
               onFocus={() => { if (dishSearch.trim().length >= 2) setShowDishSuggestions(true); }}
               onBlur={() => setTimeout(() => setShowDishSuggestions(false), 150)}
+              onKeyDown={dishCombobox.onKeyDown}
+              role="combobox"
+              aria-expanded={showDishSuggestions}
+              aria-controls="lm-dish-listbox"
+              aria-autocomplete="list"
+              aria-activedescendant={dishCombobox.activeIndex >= 0 ? `lm-dish-option-${dishCombobox.activeIndex}` : undefined}
             />
             {showDishSuggestions && (
-              <ul className="ac-dropdown">
-                {dishSuggestions.filter(s => s.type === "inventory").map(s => (
-                  <li key={s.key} onMouseDown={() => addDishIngredient(s)}>
+              <ul className="ac-dropdown" role="listbox" id="lm-dish-listbox" aria-label="Sugerencias de ingrediente">
+                {dishInvSuggestions.map((s, i) => (
+                  <li
+                    key={s.key}
+                    id={`lm-dish-option-${i}`}
+                    role="option"
+                    aria-selected={i === dishCombobox.activeIndex}
+                    onMouseDown={() => addDishIngredient(s)}
+                    className={i === dishCombobox.activeIndex ? "active" : undefined}
+                  >
                     <span>{s.name}</span>
                     <span className="ac-badge">📦 inv</span>
                     <span className="ac-muted">{s.kcalPer100} kcal/100{s.unit}</span>
                   </li>
                 ))}
-                {dishSuggestions.filter(s => s.type === "local").map(s => (
-                  <li key={s.key} onMouseDown={() => addDishIngredient(s)}>
-                    <span>{s.name}</span>
-                    <span className="ac-badge-verified">✓ Verificado</span>
-                    <span className="ac-muted">{s.kcalPer100} kcal/100{s.unit}</span>
-                  </li>
-                ))}
+                {dishLocalSuggestions.map((s, i) => {
+                  const flatIndex = dishInvSuggestions.length + i;
+                  return (
+                    <li
+                      key={s.key}
+                      id={`lm-dish-option-${flatIndex}`}
+                      role="option"
+                      aria-selected={flatIndex === dishCombobox.activeIndex}
+                      onMouseDown={() => addDishIngredient(s)}
+                      className={flatIndex === dishCombobox.activeIndex ? "active" : undefined}
+                    >
+                      <span>{s.name}</span>
+                      <span className="ac-badge-verified">✓ Verificado</span>
+                      <span className="ac-muted">{s.kcalPer100} kcal/100{s.unit}</span>
+                    </li>
+                  );
+                })}
                 {dishLoading && (
-                  <li className="ac-loading">Buscando en Open Food Facts…</li>
+                  <li className="ac-loading" aria-hidden="true">Buscando en Open Food Facts…</li>
                 )}
-                {dishSuggestions.filter(s => s.type === "off").map(s => (
-                  <li key={s.key} onMouseDown={() => addDishIngredient(s)}>
-                    <span>{s.name}</span>
-                    <span className="ac-badge ac-badge-off">OFF</span>
-                    <span className="ac-muted">{s.kcalPer100} kcal/100g</span>
-                  </li>
-                ))}
+                {dishOffSuggestions.map((s, i) => {
+                  const flatIndex = dishInvSuggestions.length + dishLocalSuggestions.length + i;
+                  return (
+                    <li
+                      key={s.key}
+                      id={`lm-dish-option-${flatIndex}`}
+                      role="option"
+                      aria-selected={flatIndex === dishCombobox.activeIndex}
+                      onMouseDown={() => addDishIngredient(s)}
+                      className={flatIndex === dishCombobox.activeIndex ? "active" : undefined}
+                    >
+                      <span>{s.name}</span>
+                      <span className="ac-badge ac-badge-off">OFF</span>
+                      <span className="ac-muted">{s.kcalPer100} kcal/100g</span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
