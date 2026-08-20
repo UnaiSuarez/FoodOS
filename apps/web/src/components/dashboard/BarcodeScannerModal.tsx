@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { parseQuantityString } from "@/lib/food-lookup";
 import { useEscapeToClose } from "@/lib/use-escape-key";
+import { useInertBackground } from "@/lib/use-inert-background";
 
 export interface ProductData {
   name: string;
@@ -39,6 +40,8 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
   // E18-03: este modal es previo a Modal.tsx y no lo usa (tiene su propia UI
   // de escáner) — le falta el cierre por teclado que Modal.tsx ya trae.
   useEscapeToClose(onClose);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useInertBackground(overlayRef); // E18-09: ver comentario en use-inert-background.ts
   const [barcode, setBarcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
@@ -175,7 +178,7 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
   }
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
+    <div ref={overlayRef} className="modal-overlay" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="modal-card barcode-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h2>Escanear código de barras</h2>

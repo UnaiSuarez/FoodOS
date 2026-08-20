@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { useInertBackground } from "@/lib/use-inert-background";
 
 const FOCUSABLE_SELECTOR =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
@@ -16,6 +17,10 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
       (el) => !el.hasAttribute("disabled") && el.offsetParent !== null
     );
   }
+
+  // E18-09: bloquea de verdad (foco, puntero y árbol de accesibilidad) todo
+  // lo que quede fuera del modal — ver el comentario de use-inert-background.ts.
+  useInertBackground(overlayRef);
 
   // Gestión de foco: al abrir, entra al modal; al cerrar, vuelve al elemento
   // que lo abrió. Solo al montar/desmontar — si se re-ejecutara en cada
