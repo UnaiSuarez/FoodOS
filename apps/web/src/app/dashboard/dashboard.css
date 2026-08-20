@@ -2435,7 +2435,7 @@ select:focus {
 }
 
 .money.negative {
-  color: var(--red);
+  color: var(--color-danger);
 }
 
 .projection-card {
@@ -2992,7 +2992,7 @@ select:focus {
 }
 
 .success-hint {
-  color: var(--green);
+  color: var(--color-success);
   font-size: 13px;
 }
 
@@ -4970,7 +4970,11 @@ select:focus {
   position: absolute;
   inset: 18px;
   border-radius: 50%;
-  background: var(--surface2, #111a0d);
+  /* E03-04: antes var(--surface2, #111a0d) — "--surface2" (sin guion)
+     nunca existió como token, así que siempre caía al fallback fijo
+     #111a0d, oscuro en cualquier tema. Con el token real, el centro del
+     anillo respeta el tema claro/oscuro como el resto de tarjetas. */
+  background: var(--surface-2);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -5743,7 +5747,7 @@ select:focus {
 .planner-quickadd-modal {
   background: var(--surface);
   border: 1px solid rgba(255,255,255,0.1);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   width: 420px;
   max-width: calc(100vw - 32px);
   box-shadow: 0 24px 48px rgba(0,0,0,0.5);
@@ -6728,8 +6732,8 @@ select:focus {
   margin-bottom: 12px;
 }
 .finance-balance-num { font-size: 1.6rem; font-weight: 700; }
-.finance-balance-num.positive { color: var(--green); }
-.finance-balance-num.negative { color: var(--red, #f87171); }
+.finance-balance-num.positive { color: var(--color-success); }
+.finance-balance-num.negative { color: var(--color-danger); }
 
 .finance-stats {
   display: grid;
@@ -6747,7 +6751,7 @@ select:focus {
 }
 .finance-stats span { font-size: 0.75rem; color: var(--fg-muted); }
 .finance-stats strong { font-size: 1rem; font-weight: 600; }
-.finance-stats strong.positive { color: var(--green); }
+.finance-stats strong.positive { color: var(--color-success); }
 
 .finance-vs {
   font-size: 0.72rem;
@@ -7061,7 +7065,7 @@ button.secondary-button.small {
   background: rgba(74, 222, 128, 0.04);
 }
 .money { font-weight: 600; font-size: 0.9rem; font-family: var(--mono); color: var(--text); }
-.money.positive { color: var(--green); }
+.money.positive { color: var(--color-success); }
 
 /* ── Regla 50/30/20 — cubetas detalladas ─────────────────────── */
 .rule-buckets-section {
@@ -7930,15 +7934,15 @@ button.secondary-button.small {
 }
 
 .settings-danger-zone h2 {
-  color: #ef4444;
+  color: var(--color-danger);
 }
 
 .danger-button {
   padding: 10px 20px;
-  border: 1px solid #ef4444;
+  border: 1px solid var(--color-danger);
   border-radius: 8px;
   background: transparent;
-  color: #ef4444;
+  color: var(--color-danger);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -7947,7 +7951,7 @@ button.secondary-button.small {
 }
 
 .danger-button:hover:not(:disabled) {
-  background: #ef4444;
+  background: var(--color-danger);
   color: #fff;
 }
 
@@ -7973,7 +7977,7 @@ button.secondary-button.small {
 }
 
 .delete-confirm-label strong {
-  color: #ef4444;
+  color: var(--color-danger);
   font-family: monospace;
   letter-spacing: 0.05em;
 }
@@ -7983,7 +7987,7 @@ button.secondary-button.small {
   border: 1px solid rgba(239, 68, 68, 0.5);
   border-radius: 8px;
   background: rgba(239, 68, 68, 0.05);
-  color: #ef4444;
+  color: var(--color-danger);
   font-family: monospace;
   font-size: 16px;
   font-weight: 700;
@@ -7994,7 +7998,7 @@ button.secondary-button.small {
 }
 
 .delete-confirm-input:focus {
-  border-color: #ef4444;
+  border-color: var(--color-danger);
   box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
 }
 
