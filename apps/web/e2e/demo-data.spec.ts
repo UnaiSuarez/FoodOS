@@ -19,7 +19,10 @@ test("cargar datos demo puebla inventario y muestra confirmación", async ({ pag
   await page.goto("/dashboard/settings");
 
   await page.getByRole("button", { name: "Cargar datos demo" }).click();
-  await expect(page.getByRole("status")).toHaveText("Datos demo cargados");
+  // E04-07 añadió otro role="status" persistente en la cabecera (el
+  // indicador de sincronización) — getByRole("status") a secas ya no es
+  // único, se acota a la clase del toast.
+  await expect(page.locator(".toast")).toHaveText("Datos demo cargados");
 
   await page.goto("/dashboard/inventory");
   await expect(page.getByText("Pechuga de pollo")).toBeVisible();
