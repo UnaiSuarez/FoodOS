@@ -7,6 +7,16 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // El tsconfig del proyecto usa jsx:"preserve" (correcto para Next.js, que
+  // transforma el JSX con su propio compilador SWC/webpack) — pero oxc, el
+  // transformador que usa esta versión de Vitest, no sabe "preservar" JSX y
+  // necesita que se le diga explícitamente cómo transformarlo. Sin esto,
+  // cualquier test que importe (aunque sea transitivamente) un .tsx con JSX
+  // real fallaba al cargar con "Failed to parse source... jsx to preserve"
+  // — nunca se notó hasta ahora porque ningún test tocaba un .tsx con JSX.
+  oxc: {
+    jsx: { runtime: "automatic" },
+  },
   test: {
     environment: "node",
     // E21-01: e2e/*.spec.ts son tests de Playwright, no de vitest — el
