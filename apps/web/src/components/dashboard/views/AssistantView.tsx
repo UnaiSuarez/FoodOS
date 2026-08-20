@@ -105,7 +105,7 @@ function buildContextualTips(
   const dataFacts: string[] = [];
   if (pending.kcal > 0) dataFacts.push(`te quedan ${Math.round(pending.kcal)} kcal y ${Math.round(pending.protein)}g de proteína para hoy`);
   if (pctKcal > 0)      dataFacts.push(`llevas el ${pctKcal}% de tu objetivo calórico hoy`);
-  if (budgetLeft > 0)   dataFacts.push(`tu presupuesto disponible es €${budgetLeft.toFixed(2)}`);
+  if (budgetLeft > 0)   dataFacts.push(`tu presupuesto disponible es ${eur(budgetLeft)}`);
   if (expiringSoon.length > 0) dataFacts.push(`${expiringSoon[0].name} caduca en ${Math.max(0, Math.ceil((new Date(expiringSoon[0].expires).getTime() - Date.now()) / 86400000))} días — úsalo pronto`);
   if (inv.length > 0)   dataFacts.push(`tienes ${inv.length} alimentos en el inventario`);
   if (goal === "muscle_gain") dataFacts.push("estás en modo volumen — prioriza proteína en cada comida");

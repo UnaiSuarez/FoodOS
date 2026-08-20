@@ -92,9 +92,13 @@ export function DiaryView() {
       {/* Diario por dias */}
       {days.length === 0 && (
         <article className="panel">
+          {/* E06-02: antes mencionaba "el botón ↻ arriba" (cargar datos demo) —
+              ese botón es solo de admin y ya no vive en la cabecera (E04-06),
+              así que un usuario normal recibía instrucciones sobre algo que
+              nunca podía ver. */}
           <div className="empty">
-            Tu diario está vacío. Cocina una receta, usa un alimento del inventario o carga los
-            datos demo (botón ↻ arriba).
+            Tu diario está vacío. Cocina una receta o usa un alimento del inventario para
+            registrar tu primera comida.
           </div>
         </article>
       )}
@@ -147,13 +151,15 @@ export function DiaryView() {
                             <span className="diary-icon">{SOURCE_ICONS[entry.source] ?? "🍽"}</span>
                             <div className="diary-meal">
                               <div className="diary-meal-head">
-                                <strong
+                                {/* E06-01: era un <strong onClick> — inalcanzable por teclado. */}
+                                <button
+                                  type="button"
                                   className="diary-entry-name-link"
                                   onClick={() => setDetailEntry(entry)}
                                   title="Ver detalle"
                                 >
                                   {entry.name}
-                                </strong>
+                                </button>
                                 {editingMealTypeId === entry.id ? (
                                   <span className="meal-type-picker">
                                     {(Object.keys(MEAL_CHIPS) as MealType[]).map((type) => (

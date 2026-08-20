@@ -104,8 +104,15 @@ export function dateOffset(base: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+// E08-01: antes `${n.toFixed(2)} €` — con miles usaba punto y coma como en
+// inglés ("1234.50 €") en vez de la convención española ("1.234,50 €").
+// Intl.NumberFormat lo resuelve de forma correcta y consistente en toda la
+// app (Finanzas, Inventario, Recetas, Carrito...), ya que eur() es el único
+// punto de formateo de dinero.
+const EUR_FORMAT = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" });
+
 export function eur(value: number | undefined | null): string {
-  return `${Number(value ?? 0).toFixed(2)} €`;
+  return EUR_FORMAT.format(Number(value ?? 0));
 }
 
 export function clampPct(value: number, max: number): number {

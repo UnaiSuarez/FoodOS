@@ -209,6 +209,12 @@ export function HomeView({
               )}
             </div>
           </div>
+          {/* E05-02: "estado del día" en una frase clara, no solo implícito en
+              barras/badges — reutiliza mascotInsight (antes solo vivía en la
+              tarjeta de la mascota) como la afirmación de estado principal.
+              E05-05: al mostrarla aquí, la tarjeta de la mascota deja de
+              repetir el mismo texto por duplicado (ver más abajo). */}
+          <p className="bento-status-line">{mascotInsight}</p>
           <div className="bento-macros-body">
             <div
               className="macro-ring"
@@ -331,6 +337,17 @@ export function HomeView({
                 );
               })}
             </ul>
+          ) : state.inventory.length === 0 ? (
+            // E05-09: "Nada en riesgo" sugería que ya estaba todo revisado y en
+            // orden — con el inventario vacío, lo real es que todavía no hay
+            // nada que vigilar, no que esté "todo bien".
+            <p className="bento-empty">
+              Tu inventario está vacío.{" "}
+              <button className="text-button" onClick={() => goTo("inventory")}>
+                Añade tus primeros alimentos
+              </button>
+              {" "}para que FoodOS vigile caducidades.
+            </p>
           ) : (
             <p className="bento-empty">Nada en riesgo ✓</p>
           )}
@@ -459,14 +476,17 @@ export function HomeView({
           </article>
         )}
 
-        {/* Mascota con insight contextual */}
+        {/* E05-05: el insight contextual (mascotInsight) ya se muestra como
+            "estado del día" arriba, en la tarjeta principal — mostrarlo aquí
+            también era la misma frase por duplicado. La mascota se queda
+            como presencia/personalidad, no como segunda fuente de estado. */}
         <article className="panel bento-mascot">
           <div className="bento-mascot-avatar">
             <Image src={mascot.image} alt={mascot.name} width={120} height={134} />
           </div>
           <div>
             <strong>{mascot.name}</strong>
-            <p>{mascotInsight}</p>
+            <p>Aquí para ayudarte a llegar a tus objetivos de hoy.</p>
           </div>
         </article>
 

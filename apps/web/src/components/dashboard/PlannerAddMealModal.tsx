@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import type { MacroTotals, MealPlanDay } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
-import { toGrams, uid } from "@/lib/utils";
+import { eur, toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 type MealSlot = keyof MealPlanDay;
@@ -295,7 +295,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
             <span><strong>{macros.protein}g</strong> prot</span>
             <span><strong>{macros.carbs}g</strong> carb</span>
             <span><strong>{macros.fat}g</strong> grasa</span>
-            {cost > 0 && <span><strong>€{cost.toFixed(2)}</strong></span>}
+            {cost > 0 && <span><strong>{eur(cost)}</strong></span>}
           </div>
         )}
 
