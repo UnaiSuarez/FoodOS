@@ -160,6 +160,27 @@ h2 {
   letter-spacing: 0;
 }
 
+/* E18-06: foco visible consistente. Antes cada componente definía (o no) su
+   propio tratamiento de foco — muchos botones, enlaces, chips y tabs no
+   tenían ninguno propio y dependían del outline por defecto del navegador,
+   que varía entre Chrome/Firefox/Safari y a veces queda oculto por un
+   overflow:hidden del contenedor. Se define un anillo por defecto único
+   aquí, aplicado solo a :focus-visible (foco por teclado, no por clic de
+   ratón — evita el "anillo feo al hacer clic" sin dejar de cumplir WCAG
+   2.4.7 para quien navega con teclado). Un selector más específico (p. ej.
+   "input:focus" o ".card-info:focus-visible", ambos ya existentes) sigue
+   ganando por especificidad y no se ve afectado por este valor por
+   defecto. */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .noise {
   position: fixed;
   inset: 0;
