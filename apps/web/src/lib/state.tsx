@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { User } from "@supabase/supabase-js";
-import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, WeightEntry } from "@foodos/types";
 import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced } from "./data-layer";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
@@ -159,6 +159,27 @@ export const UNDO_TOAST_MS = 5000;
 export interface ToastAction {
   label: string;
   onAction: () => void;
+}
+
+/** E10-03: fila editable del repaso de compra, antes de darla por buena. Ver
+    actions.proposePurchaseReview (propuesta inicial) y
+    actions.completePurchase (aplica lo confirmado/editado). */
+export interface PurchaseReviewItem {
+  cartItemId: string;
+  name: string;
+  qty: number;
+  unit: string;
+  unitSize?: number;
+  storage: StorageName;
+  store: string;
+  /** Precio tal cual estaba en el carrito — puede llevar ahí días y no ser
+      lo que se pagó de verdad. Se muestra distinto de `price` mientras el
+      usuario no lo confirme/edite (E10-07). */
+  estimatedPrice: number;
+  /** Precio real a registrar en Finanzas — arranca igual a estimatedPrice,
+      editable en el repaso. */
+  price: number;
+  expires: string;
 }
 
 interface FoodOSContextValue {
@@ -1570,10 +1591,41 @@ export const actions = {
     });
   },
 
-  completeCart(draft: FoodOSState): number {
-    const checked = draft.cart.filter((item) => item.checked);
-    const total = checked.reduce((sum, item) => sum + Number(item.price), 0);
-    if (!checked.length) return 0;
+  /** E10-03/05/07: propuesta inicial para revisar antes de confirmar una
+      compra — mismo cálculo que antes hacía completeCart() en silencio
+      (precio del carrito tal cual, caducidad adivinada de food-db), pero
+      ahora como PROPUESTA editable en vez de aplicarse directo. El precio
+      del carrito puede llevar ahí desde que se añadió el item (a veces
+      días) y no es necesariamente lo que se pagó de verdad. */
+  proposePurchaseReview(state: FoodOSState): PurchaseReviewItem[] {
+    const today = getToday(state);
+    return state.cart
+      .filter((item) => item.checked)
+      .map((item) => {
+        const foodData = findExactFood(item.name);
+        const existing = state.inventory.find((i) => i.name.toLowerCase() === item.name.toLowerCase());
+        return {
+          cartItemId: item.id,
+          name: item.name,
+          qty: item.qty,
+          unit: item.unit || existing?.unit || foodData?.unit || "g",
+          unitSize: item.unitSize ?? existing?.unitSize,
+          storage: existing?.storage ?? foodData?.storage ?? "Despensa",
+          store: item.store,
+          estimatedPrice: item.price,
+          price: item.price,
+          expires: addDaysToDateKey(today, existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
+        };
+      });
+  },
+
+  /** Aplica una compra ya revisada (ver proposePurchaseReview): registra el
+      gasto con el precio REAL confirmado por el usuario, no el estimado del
+      carrito, y da de alta cada producto con la caducidad/tienda/almacén
+      que se confirmaron o editaron en el repaso. */
+  completePurchase(draft: FoodOSState, reviewed: PurchaseReviewItem[]): number {
+    if (!reviewed.length) return 0;
+    const total = reviewed.reduce((sum, item) => sum + Number(item.price), 0);
     draft.expenses.push({
       id: uid(),
       type: "expense",
@@ -1582,24 +1634,22 @@ export const actions = {
       description: "Compra completada desde carrito",
       date: getToday(draft),
     });
-    checked.forEach((item) => {
+    for (const item of reviewed) {
       const foodData = findExactFood(item.name);
       const existing = draft.inventory.find((i) => i.name.toLowerCase() === item.name.toLowerCase());
       draft.inventory.push({
         id: uid(),
         name: item.name,
         qty: item.qty,
-        unit: item.unit || existing?.unit || foodData?.unit || "g",
-        storage: existing?.storage ?? foodData?.storage ?? "Despensa",
-        expires: addDaysToDateKey(getToday(draft), existing ? Math.max(7, foodData?.expiryDays ?? 14) : (foodData?.expiryDays ?? 14)),
+        unit: item.unit,
+        storage: item.storage,
+        expires: item.expires,
         price: item.price,
         kcal: existing?.kcal ?? foodData?.kcal ?? 100,
         protein: existing?.protein ?? foodData?.protein ?? 5,
         carbs: existing?.carbs ?? foodData?.carbs,
         fat: existing?.fat ?? foodData?.fat,
-        // Sin esto, un item "ud" (ej. lata de 250ml) restockeado vía carrito
-        // perdía su tamaño real y volvía a caer en el default de 60.
-        unitSize: item.unitSize ?? existing?.unitSize,
+        unitSize: item.unitSize,
         salt: existing?.salt,
         fiber: existing?.fiber,
         sugars: existing?.sugars,
@@ -1607,9 +1657,10 @@ export const actions = {
         imageUrl: existing?.imageUrl,
         allergenTags: existing?.allergenTags,
       });
-    });
-    draft.cart = draft.cart.filter((item) => !item.checked);
-    return checked.length;
+    }
+    const reviewedIds = new Set(reviewed.map((item) => item.cartItemId));
+    draft.cart = draft.cart.filter((item) => !reviewedIds.has(item.id));
+    return reviewed.length;
   },
 
   moveCheckedToInventory(draft: FoodOSState): number {

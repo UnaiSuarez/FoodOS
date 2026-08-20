@@ -9,10 +9,12 @@ import {
   getLowStockSuggestions,
   getPlanShoppingList,
   useFoodOS,
+  type PurchaseReviewItem,
 } from "@/lib/state";
 import { eur, uid } from "@/lib/utils";
 import { EditCartItemModal } from "../EditCartItemModal";
 import { Modal } from "../Modal";
+import { ReviewPurchaseModal } from "../ReviewPurchaseModal";
 
 type SuggestTab = "lowstock" | "plan";
 
@@ -34,7 +36,12 @@ export function CartView() {
   // antes de decidir. Superar el presupuesto es una decisión real, no algo
   // para un aviso efímero: ahora es un diálogo persistente (mismo patrón
   // que N10 en NutritionView, "Revisa tu déficit antes de continuar").
-  const [pendingOverBudget, setPendingOverBudget] = useState<{ total: number; over: number } | null>(null);
+  const [pendingOverBudget, setPendingOverBudget] = useState<
+    { total: number; over: number; reviewed: PurchaseReviewItem[] } | null
+  >(null);
+  // E10-03: propuesta de repaso abierta (productos/precio real/tienda/
+  // caducidad editables) antes de confirmar la compra.
+  const [reviewingPurchase, setReviewingPurchase] = useState<PurchaseReviewItem[] | null>(null);
 
   const checkedCount  = state.cart.filter((i) => i.checked).length;
   const checkedTotal  = state.cart.filter((i) => i.checked).reduce((sum, i) => sum + Number(i.price || 0), 0);
@@ -110,9 +117,9 @@ export function CartView() {
     form.reset();
   }
 
-  function finishPurchase() {
+  function finishPurchase(reviewed: PurchaseReviewItem[]) {
     let completed = 0;
-    mutate((draft) => { completed = actions.completeCart(draft); });
+    mutate((draft) => { completed = actions.completePurchase(draft, reviewed); });
     if (completed) {
       triggerMascot("success_buy", "Compra completada. Finanzas e inventario sincronizados.");
       showToast("Compra completada");
@@ -124,14 +131,21 @@ export function CartView() {
       showToast("Marca items como comprados primero");
       return;
     }
-    // Aviso preventivo: si lo marcado ya se come el presupuesto semanal que
-    // queda, frenamos antes de tocar Finanzas/Inventario en vez de avisar
-    // después — el usuario decide con una interacción real, no se bloquea.
-    if (checkedTotal > budgetLeft) {
-      setPendingOverBudget({ total: checkedTotal, over: checkedTotal - budgetLeft });
+    // E10-03: antes de tocar Finanzas/Inventario, siempre se repasa
+    // producto por producto (precio real, tienda, caducidad) — el aviso de
+    // presupuesto (más abajo) se comprueba DESPUÉS de ese repaso, con el
+    // total ya corregido, no con la estimación del carrito.
+    setReviewingPurchase(actions.proposePurchaseReview(state));
+  }
+
+  function handleReviewConfirmed(reviewed: PurchaseReviewItem[]) {
+    setReviewingPurchase(null);
+    const total = reviewed.reduce((sum, item) => sum + Number(item.price || 0), 0);
+    if (total > budgetLeft) {
+      setPendingOverBudget({ total, over: total - budgetLeft, reviewed });
       return;
     }
-    finishPurchase();
+    finishPurchase(reviewed);
   }
 
   return (
@@ -412,6 +426,13 @@ export function CartView() {
         )}
       </article>
       {editCartItem && <EditCartItemModal item={editCartItem} onClose={() => setEditCartItem(null)} />}
+      {reviewingPurchase && (
+        <ReviewPurchaseModal
+          items={reviewingPurchase}
+          onClose={() => setReviewingPurchase(null)}
+          onConfirm={handleReviewConfirmed}
+        />
+      )}
       {pendingOverBudget && (
         <Modal title="Revisa el presupuesto antes de completar" onClose={() => setPendingOverBudget(null)}>
           <p className="cycle-note">
@@ -419,14 +440,22 @@ export function CartView() {
             {eur(pendingOverBudget.over)}.
           </p>
           <div className="meta-row" style={{ marginTop: 12 }}>
-            <button className="secondary-button" onClick={() => setPendingOverBudget(null)}>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                // Vuelve al repaso con lo ya editado, en vez de perderlo.
+                setReviewingPurchase(pendingOverBudget.reviewed);
+                setPendingOverBudget(null);
+              }}
+            >
               ← Revisar la compra
             </button>
             <button
               className="primary-button"
               onClick={() => {
+                const reviewed = pendingOverBudget.reviewed;
                 setPendingOverBudget(null);
-                finishPurchase();
+                finishPurchase(reviewed);
               }}
             >
               Completar igualmente
