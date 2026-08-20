@@ -19,6 +19,13 @@
   backdrop-filter: blur(16px);
 }
 
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .sidebar .brand {
   color: var(--text);
   font-family: var(--serif);
@@ -29,10 +36,33 @@
   cursor: pointer;
   text-align: left;
   width: fit-content;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.sidebar .brand span {
+.sidebar .brand .brand-food {
   color: var(--green);
+}
+
+/* E04-08: botón para colapsar el sidebar a solo iconos — oculto en móvil
+   (el sidebar ya es un drawer off-canvas ahí, ver el breakpoint de abajo). */
+.sidebar-collapse-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--surface);
+  color: var(--text);
 }
 
 .sidebar-user {
@@ -252,6 +282,40 @@
   }
   .topbar h1 {
     order: 1;
+  }
+
+  /* E04-08: colapsar a solo iconos. La clase la controla React (persistida
+     en localStorage) pero el efecto visual solo se aplica en escritorio a
+     propósito — en móvil el sidebar es un drawer off-canvas (ver el
+     breakpoint de max-width:1080px más abajo) y el botón para activarlo ya
+     está oculto ahí, pero por si el estado queda guardado de una sesión de
+     escritorio previa, esto evita que "colapse" un drawer que no debería. */
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+  .sidebar-collapsed .sidebar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .sidebar-collapsed .brand-suffix,
+  .sidebar-collapsed .nav-item-label,
+  .sidebar-collapsed .nav-group-label,
+  .sidebar-collapsed .sidebar-user-info,
+  .sidebar-collapsed .sidebar-user-caret,
+  .sidebar-collapsed .mascot-panel {
+    display: none;
+  }
+  .sidebar-collapsed .sidebar-brand-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .sidebar-collapsed .nav-item {
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar-collapsed .sidebar-user {
+    justify-content: center;
+    padding: 10px;
   }
 }
 
@@ -7830,17 +7894,28 @@ button.secondary-button.small {
     display: flex;
   }
 
-  /* Topbar: hamburger row encima, h1 grande debajo */
+  /* E04-08: colapsar a solo iconos no aplica en móvil — el sidebar ya es un
+     drawer off-canvas aquí (ver .sidebar más arriba), así que el botón para
+     activarlo se oculta. */
+  .sidebar-collapse-btn {
+    display: none;
+  }
+
+  /* Topbar: hamburger row encima, título debajo */
   .topbar {
     flex-direction: column;
     align-items: stretch;
     gap: 2px;
-    margin-bottom: 18px;
+    margin-bottom: 14px;
   }
 
+  /* E04-05: antes clamp(38px, 9vw, 56px) — en un móvil típico (375-430px)
+     el título ocupaba una franja notable del viewport antes de llegar al
+     contenido. Un tamaño de titular de app (no de portada) deja más sitio
+     útil sin dejar de leerse como cabecera. */
   .topbar h1 {
-    font-size: clamp(38px, 9vw, 56px);
-    line-height: 0.95;
+    font-size: clamp(22px, 6vw, 32px);
+    line-height: 1.15;
     margin-bottom: 0;
   }
 }

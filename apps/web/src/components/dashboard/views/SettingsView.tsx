@@ -17,13 +17,30 @@ interface Props {
   aiConfigured: boolean;
   onShowOnboarding?: () => void;
   onStartTour?: () => void;
+  // E04-06: exportar/importar/restaurar backup viven en DashboardShell.tsx
+  // (necesitan leer/escribir el estado completo antes de que useFoodOS()
+  // hidrate esta vista) — se pasan como props en vez de duplicar la lógica.
+  onExportData?: () => void;
+  onImportData?: (file: File | undefined) => void;
+  onRestoreImportBackup?: () => void;
 }
 
 const DELETE_WORD = "BORRAR";
 const DELETE_ACCOUNT_WORD = "ELIMINAR";
 
-export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfigured, onShowOnboarding, onStartTour }: Props) {
-  const { state, mutate, showToast, authUser, resetAll } = useFoodOS();
+export function SettingsView({
+  isAdmin,
+  theme,
+  onToggleTheme,
+  onOpenAI,
+  aiConfigured,
+  onShowOnboarding,
+  onStartTour,
+  onExportData,
+  onImportData,
+  onRestoreImportBackup,
+}: Props) {
+  const { state, mutate, showToast, authUser, resetAll, seedDemo } = useFoodOS();
   const s = state.settings;
 
   const now = new Date();
@@ -536,6 +553,47 @@ export function SettingsView({ isAdmin, theme, onToggleTheme, onOpenAI, aiConfig
                 ◎ Tour por la app
               </button>
             )}
+            {/* E04-06: antes vivían en la cabecera del dashboard, visibles
+                (aunque solo para admin) en el uso habitual de la app. */}
+            {onExportData && (
+              <button className="secondary-button" onClick={onExportData}>
+                Exportar datos (JSON)
+              </button>
+            )}
+            {onImportData && (
+              <label className="secondary-button file-button">
+                Importar datos (JSON)
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  hidden
+                  onChange={(event) => {
+                    onImportData(event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+            {onRestoreImportBackup && (
+              <button
+                className="secondary-button"
+                onClick={onRestoreImportBackup}
+                title="Restaurar copia de seguridad de la última importación"
+              >
+                Restaurar backup de importación
+              </button>
+            )}
+            <button className="secondary-button" onClick={seedDemo}>
+              Cargar datos demo
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
+              }}
+            >
+              Borrar datos locales
+            </button>
             <button className="secondary-button" onClick={() => {
               mutate((draft) => { draft.settings = { ...DEFAULT_SETTINGS }; });
               showToast("Ajustes restaurados a valores por defecto");

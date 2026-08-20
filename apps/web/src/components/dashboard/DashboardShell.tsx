@@ -19,11 +19,8 @@ import {
   Menu,
   X,
   ChevronRight,
-  Download,
-  Upload,
-  Undo2,
-  RefreshCw,
-  Trash2,
+  ChevronsLeft,
+  ChevronsRight,
   type LucideIcon,
 } from "lucide-react";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
@@ -132,15 +129,22 @@ function NavButton({
       // "active") — invisible para lectores de pantalla y para quien
       // navega por teclado sin ver el resaltado visual.
       aria-current={active ? "page" : undefined}
+      // E04-08/E18-04: con el sidebar colapsado la etiqueta se oculta por
+      // CSS, así que el nombre accesible del botón dependía solo de texto
+      // que deja de estar en el árbol de accesibilidad. aria-label no hace
+      // daño expandido (coincide con el texto visible) y es necesario
+      // colapsado. title da además una tooltip nativa con el ratón.
+      aria-label={entry.label}
+      title={entry.label}
     >
       <span><Icon size={16} aria-hidden="true" /></span>
-      {entry.label}
+      <span className="nav-item-label">{entry.label}</span>
     </button>
   );
 }
 
 function DashboardInner() {
-  const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
+  const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, showToast, mutate } =
     useFoodOS();
   const router = useRouter();
   const pathname = usePathname();
@@ -170,6 +174,29 @@ function DashboardInner() {
   const [tourActive, setTourActive] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [menuOpen, setMenuOpen] = useState(false);
+  // E04-08: colapsar el sidebar a solo iconos en escritorio. Arranca en
+  // false (coincide con lo que renderiza el servidor, que no tiene acceso a
+  // localStorage) y se corrige en un efecto tras montar — un initializer
+  // perezoso que lee localStorage directamente produce un mismatch de
+  // hidratación entre servidor y cliente para esta página (se sirve con
+  // SSR). El coste es un parpadeo breve si el usuario lo tenía colapsado;
+  // aceptable frente a pelear la hidratación por una preferencia de UI.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  useEffect(() => {
+    setSidebarCollapsed(localStorage.getItem("foodos-sidebar-collapsed") === "1");
+  }, []);
+  // Escribe junto al propio toggle (no en un efecto aparte con
+  // [sidebarCollapsed] como dependencia): ese efecto se dispara también en
+  // el montaje, en la misma pasada que el de arriba, y con batching de
+  // estado podía "ganar la carrera" y sobrescribir la lectura inicial con
+  // el valor por defecto (false) antes de que se aplicara la corrección.
+  function toggleSidebarCollapsed() {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("foodos-sidebar-collapsed", next ? "1" : "0");
+      return next;
+    });
+  }
   const [isOnline, setIsOnline] = useState(true);
   // E02-03/04/08: sin esto, una comprobación de sesión colgada (proyecto de
   // Supabase pausado, sin red al cargar...) dejaba al usuario mirando
@@ -393,17 +420,31 @@ function DashboardInner() {
     {hydrated && showOnboarding && (
       <OnboardingFlow onDone={handleOnboardingDone} />
     )}
-    <div className={`app-shell ${menuOpen ? "menu-open" : ""}`}>
+    <div className={`app-shell ${menuOpen ? "menu-open" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       {/* Overlay para cerrar el menú en móvil */}
       <div className="menu-overlay" onClick={() => setMenuOpen(false)} aria-hidden="true" />
       <aside className="sidebar">
-        <button
-          className="brand"
-          onClick={() => { navigateToView("dashboard"); setMenuOpen(false); }}
-          aria-label="Ir al panel principal"
-        >
-          <span>Food</span>OS
-        </button>
+        <div className="sidebar-brand-row">
+          <button
+            className="brand"
+            onClick={() => { navigateToView("dashboard"); setMenuOpen(false); }}
+            aria-label="Ir al panel principal"
+          >
+            <span className="brand-food">Food</span>
+            <span className="brand-suffix">OS</span>
+          </button>
+          {/* E04-08: colapsar a solo iconos en escritorio — en móvil el
+              sidebar ya es un drawer off-canvas, así que este botón se
+              oculta por CSS bajo el breakpoint de 1080px. */}
+          <button
+            className="sidebar-collapse-btn"
+            onClick={toggleSidebarCollapsed}
+            aria-label={sidebarCollapsed ? "Expandir menú lateral" : "Colapsar menú lateral"}
+            title={sidebarCollapsed ? "Expandir menú" : "Colapsar menú"}
+          >
+            {sidebarCollapsed ? <ChevronsRight size={16} aria-hidden="true" /> : <ChevronsLeft size={16} aria-hidden="true" />}
+          </button>
+        </div>
         <nav className="app-nav" aria-label="Navegación de la app">
           {/* E04-01: "dashboard" es el punto de entrada, fuera de cualquier
               grupo. El resto se agrupa por dominio (NAV_GROUPS) en vez de
@@ -433,6 +474,7 @@ function DashboardInner() {
           className="sidebar-user"
           onClick={() => { navigateToView("settings"); setMenuOpen(false); }}
           title="Ir a Ajustes"
+          aria-label="Ir a Ajustes"
           aria-current={view === "settings" ? "page" : undefined}
         >
           <div className="sidebar-avatar">
@@ -459,46 +501,6 @@ function DashboardInner() {
             >
               {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
-            <div className="top-actions">
-              {isAdmin && (
-                <>
-                  <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
-                    <Download size={16} aria-hidden="true" />
-                  </button>
-                  <label className="icon-button file-button" title="Importar datos desde JSON">
-                    <Upload size={16} aria-hidden="true" />
-                    <input
-                      type="file"
-                      accept="application/json,.json"
-                      hidden
-                      onChange={(event) => {
-                        void importData(event.target.files?.[0]);
-                        event.target.value = "";
-                      }}
-                    />
-                  </label>
-                  <button
-                    className="icon-button"
-                    onClick={restoreImportBackup}
-                    title="Restaurar copia de seguridad de la última importación"
-                  >
-                    <Undo2 size={16} aria-hidden="true" />
-                  </button>
-                  <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
-                    <RefreshCw size={16} aria-hidden="true" />
-                  </button>
-                  <button
-                    className="icon-button danger"
-                    title="Borrar datos locales"
-                    onClick={() => {
-                      if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
-                    }}
-                  >
-                    <Trash2 size={16} aria-hidden="true" />
-                  </button>
-                </>
-              )}
-            </div>
           </div>
           <h1>{currentTitle}</h1>
         </header>
@@ -525,6 +527,9 @@ function DashboardInner() {
                 aiConfigured={aiConfigured}
                 onShowOnboarding={() => setShowOnboarding(true)}
                 onStartTour={startTour}
+                onExportData={exportData}
+                onImportData={importData}
+                onRestoreImportBackup={restoreImportBackup}
               />
             )}
           </ViewErrorBoundary>
