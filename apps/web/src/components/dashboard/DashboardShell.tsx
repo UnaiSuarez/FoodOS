@@ -4,8 +4,47 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import {
+  LayoutDashboard,
+  NotebookPen,
+  Package,
+  ChefHat,
+  ShoppingCart,
+  Wallet,
+  TrendingUp,
+  Apple,
+  Sparkles,
+  CalendarDays,
+  Dumbbell,
+  Menu,
+  X,
+  ChevronRight,
+  Download,
+  Upload,
+  Undo2,
+  RefreshCw,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
 import { VIEWS, type ViewId } from "@/lib/dashboard-views";
+
+// E03-12: traduce la clave plana de VIEWS (lib/dashboard-views.ts no puede
+// importar componentes de React, ver el comentario de ese archivo) al icono
+// de lucide-react real.
+const NAV_ICONS: Record<string, LucideIcon> = {
+  "layout-dashboard": LayoutDashboard,
+  "notebook-pen": NotebookPen,
+  package: Package,
+  "chef-hat": ChefHat,
+  "shopping-cart": ShoppingCart,
+  wallet: Wallet,
+  "trending-up": TrendingUp,
+  apple: Apple,
+  sparkles: Sparkles,
+  "calendar-days": CalendarDays,
+  dumbbell: Dumbbell,
+};
 // Re-exportado por compatibilidad: HomeView.tsx y AppTour.tsx ya importaban
 // ViewId desde aquí antes de que se moviera VIEWS a lib/dashboard-views.ts.
 export type { ViewId };
@@ -339,16 +378,19 @@ function DashboardInner() {
           <span>Food</span>OS
         </button>
         <nav className="app-nav" aria-label="Navegación de la app">
-          {VIEWS.map((entry) => (
-            <button
-              key={entry.id}
-              className={`nav-item ${view === entry.id ? "active" : ""}`}
-              onClick={() => { navigateToView(entry.id); setMenuOpen(false); }}
-            >
-              <span>{entry.icon}</span>
-              {entry.label}
-            </button>
-          ))}
+          {VIEWS.map((entry) => {
+            const Icon = NAV_ICONS[entry.icon];
+            return (
+              <button
+                key={entry.id}
+                className={`nav-item ${view === entry.id ? "active" : ""}`}
+                onClick={() => { navigateToView(entry.id); setMenuOpen(false); }}
+              >
+                <span><Icon size={16} aria-hidden="true" /></span>
+                {entry.label}
+              </button>
+            );
+          })}
         </nav>
         <div className="mascot-panel">
           <div className="mascot-avatar">
@@ -373,7 +415,7 @@ function DashboardInner() {
             </span>
             <span className="sidebar-user-action">Ajustes</span>
           </div>
-          <span className="sidebar-user-caret" aria-hidden="true">→</span>
+          <span className="sidebar-user-caret" aria-hidden="true"><ChevronRight size={16} /></span>
         </button>
       </aside>
 
@@ -386,16 +428,16 @@ function DashboardInner() {
               aria-label={menuOpen ? "Cerrar menú" : "Abrir menú"}
               aria-expanded={menuOpen}
             >
-              {menuOpen ? "✕" : "☰"}
+              {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
             <div className="top-actions">
               {isAdmin && (
                 <>
                   <button className="icon-button" onClick={exportData} title="Exportar datos a JSON">
-                    ⇩
+                    <Download size={16} aria-hidden="true" />
                   </button>
                   <label className="icon-button file-button" title="Importar datos desde JSON">
-                    ⇧
+                    <Upload size={16} aria-hidden="true" />
                     <input
                       type="file"
                       accept="application/json,.json"
@@ -411,10 +453,10 @@ function DashboardInner() {
                     onClick={restoreImportBackup}
                     title="Restaurar copia de seguridad de la última importación"
                   >
-                    ⟲
+                    <Undo2 size={16} aria-hidden="true" />
                   </button>
                   <button className="icon-button" onClick={seedDemo} title="Cargar datos demo">
-                    ↻
+                    <RefreshCw size={16} aria-hidden="true" />
                   </button>
                   <button
                     className="icon-button danger"
@@ -423,7 +465,7 @@ function DashboardInner() {
                       if (confirm("¿Borrar todos los datos locales de FoodOS?")) resetAll();
                     }}
                   >
-                    ×
+                    <Trash2 size={16} aria-hidden="true" />
                   </button>
                 </>
               )}
