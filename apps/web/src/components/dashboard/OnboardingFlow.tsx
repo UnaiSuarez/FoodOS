@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ActivityLevel, GoalMode, PhysicalProfile, Sex } from "@foodos/types";
 import { getToday, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
@@ -41,6 +41,17 @@ export function OnboardingFlow({ onDone }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null);
   useInertBackground(overlayRef); // E18-09: ver comentario en use-inert-background.ts
   const [step, setStep] = useState(0);
+
+  // E18-10: al cambiar de paso (incluido el primero, al abrir), el foco va
+  // al título del paso — sin esto, quien navega con teclado o lector de
+  // pantalla no se entera de que el contenido cambió (el clic en "Empezar"/
+  // "Atrás" deja el foco en el botón anterior, que ya no representa lo que
+  // se ve en pantalla) y tiene que explorar a tientas para encontrar el
+  // paso nuevo. Un único selector porque los tres pasos son mutuamente
+  // excluyentes (step === N &&) — solo hay un .ob-headline montado a la vez.
+  useEffect(() => {
+    overlayRef.current?.querySelector<HTMLElement>(".ob-headline")?.focus();
+  }, [step]);
   const [mascotId, setMascotId] = useState("zana");
   const [goal, setGoal] = useState<GoalMode>("fat_loss");
   // Días de gym: si se dejan sin tocar, [1,3,5] (L/X/V) es un valor de
@@ -128,7 +139,7 @@ export function OnboardingFlow({ onDone }: Props) {
         {step === 0 && (
           <div className="ob-step ob-welcome">
             <p className="ob-brand"><span>Food</span>OS</p>
-            <h1 className="ob-headline">Tu cocina, inteligente.</h1>
+            <h1 className="ob-headline" tabIndex={-1}>Tu cocina, inteligente.</h1>
             <p className="ob-sub">
               Gestiona tu despensa, sigue tus macros y controla el gasto —
               todo en un lugar. La IA decide qué cocinar hoy.
@@ -155,7 +166,7 @@ export function OnboardingFlow({ onDone }: Props) {
         {step === 1 && (
           <div className="ob-step ob-mascot-step">
             <p className="eyebrow">Paso 1 de 2</p>
-            <h2 className="ob-headline">Elige tu compañero</h2>
+            <h2 className="ob-headline" tabIndex={-1}>Elige tu compañero</h2>
             <p className="ob-sub">
               Te acompañará, te recordará lo que caduca y celebrará tus logros.
               Puedes cambiarlo en Ajustes en cualquier momento.
@@ -195,7 +206,7 @@ export function OnboardingFlow({ onDone }: Props) {
         {step === 2 && (
           <div className="ob-step ob-profile-step">
             <p className="eyebrow">Paso 2 de 2</p>
-            <h2 className="ob-headline">Tu objetivo</h2>
+            <h2 className="ob-headline" tabIndex={-1}>Tu objetivo</h2>
             <p className="ob-sub">
               FoodOS calculará tus calorías y macros diarios (fórmula Mifflin-St Jeor).
               Puedes editar estos datos en la sección Nutrición.
