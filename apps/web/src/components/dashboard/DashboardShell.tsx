@@ -3,8 +3,12 @@
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
+import { VIEWS, type ViewId } from "@/lib/dashboard-views";
+// Re-exportado por compatibilidad: HomeView.tsx y AppTour.tsx ya importaban
+// ViewId desde aquí antes de que se moviera VIEWS a lib/dashboard-views.ts.
+export type { ViewId };
 import { maybeNotifyExpiring } from "@/lib/notifications";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { HomeView } from "./views/HomeView";
@@ -35,26 +39,10 @@ const AIConfigModal     = dynamic(() => import("./AIConfigModal").then((m) => m.
 const OnboardingFlow    = dynamic(() => import("./OnboardingFlow").then((m) => m.OnboardingFlow),       { ssr: false });
 const AppTour           = dynamic(() => import("./AppTour").then((m) => m.AppTour),                     { ssr: false });
 
-const VIEWS = [
-  { id: "dashboard",  icon: "⌂", label: "Panel",        title: "Panel diario" },
-  { id: "diary",      icon: "≣", label: "Registro",      title: "Registro diario" },
-  { id: "inventory",  icon: "□", label: "Inventario",    title: "Inventario" },
-  { id: "recipes",    icon: "◌", label: "Recetas",       title: "Recetas" },
-  { id: "cart",       icon: "✓", label: "Carrito",       title: "Carrito de compra" },
-  { id: "finance",    icon: "€", label: "Finanzas",      title: "Finanzas" },
-  { id: "stats",      icon: "↗", label: "Estadísticas",  title: "Estadísticas" },
-  { id: "nutrition",  icon: "%", label: "Nutrición",     title: "Nutrición" },
-  { id: "assistant",  icon: "✦", label: "Asistente",     title: "Asistente FoodOS" },
-  { id: "planner",    icon: "⊞", label: "Planificador",  title: "Planificador semanal" },
-  { id: "ejercicios", icon: "⊙", label: "Ejercicios",    title: "Ejercicios" },
-] as const;
-
 // E17-03/04: versión del formato de export/import y clave de la copia de
 // seguridad que se guarda automáticamente antes de cada importación.
 const EXPORT_FORMAT_VERSION = 1;
 const IMPORT_BACKUP_KEY = "foodos-import-backup-v1";
-
-export type ViewId = (typeof VIEWS)[number]["id"] | "settings";
 
 export function DashboardShell() {
   return (
@@ -89,10 +77,22 @@ function DashboardInner() {
   const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, seedDemo, resetAll, showToast, mutate } =
     useFoodOS();
   const router = useRouter();
+  const pathname = usePathname();
   const needsAuth = hasSupabaseConfig();
   const adminEmails = (process.env.NEXT_PUBLIC_ADMIN_EMAILS ?? "").split(",").map((e) => e.trim()).filter(Boolean);
   const isAdmin = authUser ? adminEmails.includes(authUser.email ?? "") : !needsAuth;
-  const [view, setView] = useState<ViewId>("dashboard");
+  // E01-01/02/03: la vista activa sale de la URL (/dashboard, /dashboard/inventory...),
+  // no de un useState — así cada sección tiene una dirección real que puede
+  // abrirse directamente, Atrás/Adelante del navegador funcionan solos (los
+  // da gratis el historial del navegador) y recargar la página mantiene la
+  // misma vista en vez de volver siempre a "Panel". navigateToView()
+  // sustituye a la llamada directa a un setView() de estado que había antes.
+  const segment = pathname.split("/")[2];
+  const view: ViewId =
+    segment === "settings" || VIEWS.some((entry) => entry.id === segment) ? (segment as ViewId) : "dashboard";
+  function navigateToView(id: ViewId) {
+    router.push(id === "dashboard" ? "/dashboard" : `/dashboard/${id}`);
+  }
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
@@ -286,7 +286,7 @@ function DashboardInner() {
       <aside className="sidebar">
         <button
           className="brand"
-          onClick={() => { setView("dashboard"); setMenuOpen(false); }}
+          onClick={() => { navigateToView("dashboard"); setMenuOpen(false); }}
           aria-label="Ir al panel principal"
         >
           <span>Food</span>OS
@@ -296,7 +296,7 @@ function DashboardInner() {
             <button
               key={entry.id}
               className={`nav-item ${view === entry.id ? "active" : ""}`}
-              onClick={() => { setView(entry.id); setMenuOpen(false); }}
+              onClick={() => { navigateToView(entry.id); setMenuOpen(false); }}
             >
               <span>{entry.icon}</span>
               {entry.label}
@@ -314,7 +314,7 @@ function DashboardInner() {
         </div>
         <button
           className="sidebar-user"
-          onClick={() => { setView("settings"); setMenuOpen(false); }}
+          onClick={() => { navigateToView("settings"); setMenuOpen(false); }}
           title="Ir a Ajustes"
         >
           <div className="sidebar-avatar">
@@ -387,7 +387,7 @@ function DashboardInner() {
 
         {hydrated ? (
           <ViewErrorBoundary key={view}>
-            {view === "dashboard" && <HomeView goTo={setView} openRecipe={setOpenRecipeId} />}
+            {view === "dashboard" && <HomeView goTo={navigateToView} openRecipe={setOpenRecipeId} />}
             {view === "diary" && <DiaryView />}
             {view === "inventory" && <InventoryView />}
             {view === "recipes" && <RecipesView openRecipe={setOpenRecipeId} />}
@@ -427,7 +427,7 @@ function DashboardInner() {
       )}
 
       {tourActive && !showOnboarding && (
-        <AppTour setView={setView} onDone={() => setTourActive(false)} />
+        <AppTour setView={navigateToView} onDone={() => setTourActive(false)} />
       )}
 
       <MascotWidget />
