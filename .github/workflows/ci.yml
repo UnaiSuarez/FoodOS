@@ -29,6 +29,18 @@ jobs:
       - name: Tests (vitest)
         run: npm run test --workspace @foodos/web
 
+      # E21-19: build de producción real (sin NEXT_PUBLIC_SUPABASE_URL/
+      # ANON_KEY en el entorno del runner, igual que el job e2e — la app
+      # arranca en modo local-only) + comprobación de que el JS del cliente
+      # no ha crecido de forma excesiva desde el último cambio.
+      - name: Build de producción
+        working-directory: apps/web
+        run: npx next build
+
+      - name: Comprobar tamaño de bundle
+        working-directory: apps/web
+        run: npm run check:bundle-size
+
   # E21-01: flujos críticos con Playwright. Job aparte (no bloquea el
   # type-check/vitest si tarda más) — corre siempre en modo local-only, sin
   # NEXT_PUBLIC_SUPABASE_URL/ANON_KEY definidas en el entorno del runner, así
