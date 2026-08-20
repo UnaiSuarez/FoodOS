@@ -586,55 +586,7 @@ export function InventoryView() {
                 onChange={(e) => setField("expires", e.target.value)}
               />
             </label>
-
-            <label>
-              Precio €
-              <input
-                name="price"
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.price}
-                onChange={(e) => setField("price", Number(e.target.value))}
-              />
-            </label>
-
-            <label>
-              kcal/100g
-              <input
-                name="kcal"
-                type="number"
-                min="0"
-                step="0.1"
-                value={form.kcal}
-                onChange={(e) => setField("kcal", Number(e.target.value))}
-              />
-            </label>
-
-            <label>
-              Proteína/100g
-              <input
-                name="protein"
-                type="number"
-                min="0"
-                step="0.1"
-                value={form.protein}
-                onChange={(e) => setField("protein", Number(e.target.value))}
-              />
-            </label>
           </div>
-
-          <ImagePickerField
-            imageUrl={itemExtras.imageUrl}
-            brand={itemExtras.brand}
-            onChange={(url) => setItemExtras((prev) => ({ ...prev, imageUrl: url }))}
-          />
-
-          {form.dataSource === "ai" && (
-            <p className="ai-estimate-warning" role="alert">
-              ⚠ Kcal/proteína estimadas por IA, no de una base de datos verificada — revísalas antes de guardar.
-            </p>
-          )}
 
           {allergenWarnings.length > 0 && (
             <p className="allergen-warning" role="alert">
@@ -642,17 +594,74 @@ export function InventoryView() {
             </p>
           )}
 
-          {totalKcal !== null && (
-            <p className="form-total-hint">
-              Total lote: <strong>{totalKcal} kcal</strong> ·{" "}
-              <strong>
-                {Math.round(form.protein * (form.unit === "ud" ? form.qty * form.unitSize : form.qty) / 100)}g prot
-              </strong>{" "}
-              · <strong>{eur(form.price)}</strong>
-            </p>
-          )}
+          {/* E07-05/06: "Añadir rápido" solo pide nombre/cantidad/lugar/
+              caducidad (arriba) — precio, macros, marca e imagen quedan
+              colapsados aquí. Elegir una sugerencia del autocompletado
+              sigue rellenando estos campos en silencio (applySuggestion),
+              así que no hace falta abrir esto para que queden bien; es
+              para cuando se quiere revisarlos o completarlos a mano. */}
+          <details className="form-advanced">
+            <summary>Datos avanzados (precio, macros, imagen)</summary>
+            <div className="form-grid">
+              <label>
+                Precio €
+                <input
+                  name="price"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={form.price}
+                  onChange={(e) => setField("price", Number(e.target.value))}
+                />
+              </label>
 
-          <div className="form-actions-row">
+              <label>
+                kcal/100g
+                <input
+                  name="kcal"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={form.kcal}
+                  onChange={(e) => setField("kcal", Number(e.target.value))}
+                />
+              </label>
+
+              <label>
+                Proteína/100g
+                <input
+                  name="protein"
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={form.protein}
+                  onChange={(e) => setField("protein", Number(e.target.value))}
+                />
+              </label>
+            </div>
+
+            <ImagePickerField
+              imageUrl={itemExtras.imageUrl}
+              brand={itemExtras.brand}
+              onChange={(url) => setItemExtras((prev) => ({ ...prev, imageUrl: url }))}
+            />
+
+            {form.dataSource === "ai" && (
+              <p className="ai-estimate-warning" role="alert">
+                ⚠ Kcal/proteína estimadas por IA, no de una base de datos verificada — revísalas antes de guardar.
+              </p>
+            )}
+
+            {totalKcal !== null && (
+              <p className="form-total-hint">
+                Total lote: <strong>{totalKcal} kcal</strong> ·{" "}
+                <strong>
+                  {Math.round(form.protein * (form.unit === "ud" ? form.qty * form.unitSize : form.qty) / 100)}g prot
+                </strong>{" "}
+                · <strong>{eur(form.price)}</strong>
+              </p>
+            )}
+
             <button
               className="secondary-button fill-btn"
               type="button"
@@ -662,6 +671,9 @@ export function InventoryView() {
             >
               {filling ? "Buscando…" : "✦ Completar datos"}
             </button>
+          </details>
+
+          <div className="form-actions-row">
             <button className="primary-button" type="submit">
               Guardar alimento
             </button>
