@@ -573,6 +573,64 @@
   grid-template-columns: 1fr;
 }
 
+/* E07-05/06: sección colapsable de "datos avanzados" en el formulario de
+   Inventario — precio/macros/imagen quedan ocultos hasta que se abren a
+   propósito, para que "Añadir rápido" (nombre/cantidad/lugar/caducidad)
+   no compita visualmente con ellos. */
+.form-advanced {
+  margin: 4px 0 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 14px;
+}
+
+.form-advanced summary {
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* El navegador oculta los hijos de un <details> cerrado vía su hoja de
+   estilos de usuario — pero un CSS de autor con la misma o mayor
+   precedencia (aquí, .form-grid trae su propio "display: grid") gana esa
+   pelea sin necesidad de ganar por especificidad: el origen "autor" del
+   CSS siempre pesa más que el del navegador. Sin esto, .form-advanced se
+   veía "cerrado" (la flecha cambia) pero el contenido seguía visible. */
+.form-advanced:not([open]) > *:not(summary) {
+  display: none;
+}
+
+.form-advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.form-advanced summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  color: var(--hint);
+}
+
+.form-advanced[open] summary::before {
+  content: "▾";
+}
+
+.form-advanced[open] summary {
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.form-advanced .form-grid {
+  margin-top: 12px;
+}
+
+.form-advanced .fill-btn {
+  margin-bottom: 14px;
+}
+
 label {
   display: grid;
   gap: 6px;
