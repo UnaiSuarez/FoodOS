@@ -7992,6 +7992,25 @@ button.secondary-button.small {
   background: var(--green);
 }
 
+/* E21-10: --green/--accent son bastante más oscuros en tema claro (para
+   que el TEXTO en ese color siga leyéndose sobre fondo claro, ver el
+   comentario de --green en globals.css) — pero varios componentes los
+   usan como FONDO SÓLIDO con texto negro fijo (color: #000), asumiendo
+   que --green siempre sería lo bastante claro para que el negro contraste.
+   axe (color-contrast, ver theme.spec.ts) confirmó que en tema claro ya
+   no lo es: incumple el contraste mínimo. Mismo arreglo que ya tenía
+   .filter.active un poco más arriba — texto blanco en su lugar. */
+[data-theme="light"] .sidebar-avatar,
+[data-theme="light"] .settings-theme-btn.active,
+[data-theme="light"] .planner-selection-banner,
+[data-theme="light"] .planner-selection-banner button,
+[data-theme="light"] .exercises-tab.active,
+[data-theme="light"] .nutrition-tab.active,
+[data-theme="light"] .explore-category-btn.active,
+[data-theme="light"] .log-sets-btn:hover:not(:disabled) {
+  color: #fff;
+}
+
 [data-theme="light"] input,
 [data-theme="light"] select {
   color: var(--text);
