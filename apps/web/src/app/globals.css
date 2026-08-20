@@ -9,7 +9,13 @@
   --surface-2: #1e2a18;
   --text: #f0f4ee;
   --muted: #95a18f;
-  --hint: #53604d;
+  /* E18-02: antes #53604d — 2.25:1 contra --surface-2, muy por debajo del
+     4.5:1 de AA (WCAG 2.2) que exige cualquier texto funcional, no solo el
+     decorativo. --hint se usa en horas, porcentajes y otros textos de 11-12px
+     reales (ver dashboard.css), así que necesita el mínimo de texto normal,
+     no el 3:1 de texto grande. 8a9880 da 4.92:1 contra --surface-2 (el fondo
+     oscuro más claro donde aparece) y sigue siendo más recesivo que --muted. */
+  --hint: #8a9880;
   --green: #4ade80;
   --green-dim: #22c55e;
   --green-dark: #15803d;
@@ -235,7 +241,10 @@ h2 {
   --surface-2: #eef1ea;
   --text: #0e180b;
   --muted: #3b5434;
-  --hint: #68825e;
+  /* E18-02: antes #68825e — 3.96:1 contra --bg, por debajo del 4.5:1 de AA
+     para texto normal (--hint se usa en textos funcionales de 11-12px, no
+     decorativos). 527049 da 5.18:1 contra --bg y 5.57:1 contra --surface. */
+  --hint: #527049;
   --border: rgba(14, 24, 11, 0.13);
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.09);
   --green: #15803d;

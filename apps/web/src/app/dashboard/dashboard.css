@@ -8725,6 +8725,14 @@ button.secondary-button.small {
   cursor: pointer;
   user-select: none;
   gap: 12px;
+  /* E18-03: era un <div onClick>, ahora es un <button> — reset de los
+     estilos por defecto del navegador para que se siga viendo igual. */
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .routine-card-header:hover {

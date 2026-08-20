@@ -6,6 +6,7 @@ import type { ScannedItem } from "@/lib/ai-inventory";
 import { getToday, matchAllergens, useFoodOS } from "@/lib/state";
 import { eur, uid, todayPlus } from "@/lib/utils";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
+import { useEscapeToClose } from "@/lib/use-escape-key";
 
 interface Props {
   items: ScannedItem[];
@@ -15,6 +16,7 @@ interface Props {
 const STORAGES: StorageName[] = ["Nevera", "Congelador", "Despensa"];
 
 export function BulkImportModal({ items, onClose }: Props) {
+  useEscapeToClose(onClose); // E18-03: ver comentario en BarcodeScannerModal.tsx
   const { state, mutate, showToast } = useFoodOS();
   const [selected, setSelected] = useState<Set<number>>(new Set(items.map((_, i) => i)));
   const [editedItems, setEditedItems] = useState<ScannedItem[]>(items);
@@ -146,6 +148,7 @@ export function BulkImportModal({ items, onClose }: Props) {
                       value={item.name}
                       onChange={(e) => updateItem(i, "name", e.target.value)}
                       placeholder="Nombre del producto"
+                      aria-label="Nombre del producto"
                     />
                     {allergenWarnings[i]?.length > 0 && (
                       <p className="allergen-warning" role="alert">
@@ -160,6 +163,7 @@ export function BulkImportModal({ items, onClose }: Props) {
                         onChange={(e) => updateItem(i, "qty", Number(e.target.value))}
                         min="0"
                         title="Cantidad"
+                        aria-label="Cantidad"
                       />
                       <select
                         className="bulk-unit"
@@ -186,6 +190,7 @@ export function BulkImportModal({ items, onClose }: Props) {
                         onChange={(e) => updateItem(i, "kcal", Number(e.target.value))}
                         min="0"
                         title="kcal por 100g"
+                        aria-label="kcal por 100g"
                         placeholder="kcal"
                       />
                       <span className="bulk-label">kcal</span>
@@ -196,6 +201,7 @@ export function BulkImportModal({ items, onClose }: Props) {
                         onChange={(e) => updateItem(i, "protein", Number(e.target.value))}
                         min="0"
                         title="Proteína g por 100g"
+                        aria-label="Proteína g por 100g"
                         placeholder="prot"
                       />
                       <span className="bulk-label">g prot</span>
@@ -207,6 +213,7 @@ export function BulkImportModal({ items, onClose }: Props) {
                         min="0"
                         step="0.01"
                         title="Precio €"
+                        aria-label="Precio en euros"
                         placeholder="€"
                       />
                       <span className="bulk-label">€</span>

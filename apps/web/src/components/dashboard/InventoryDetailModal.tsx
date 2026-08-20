@@ -5,6 +5,7 @@ import type { InventoryItem } from "@foodos/types";
 import { expiryBadge, matchAllergens, useFoodOS } from "@/lib/state";
 import { daysUntil, eur } from "@/lib/utils";
 import { Modal } from "./Modal";
+import { useEscapeToClose } from "@/lib/use-escape-key";
 
 interface Props {
   item: InventoryItem;
@@ -24,6 +25,7 @@ function NutrRow({ label, value, unit }: { label: string; value?: number; unit: 
 }
 
 export function InventoryDetailModal({ item, onClose, onEdit, onConsume }: Props) {
+  useEscapeToClose(onClose); // E18-03: ver comentario en BarcodeScannerModal.tsx
   const { state } = useFoodOS();
   const [zoom, setZoom] = useState(false);
   const badge = expiryBadge(item.expires);

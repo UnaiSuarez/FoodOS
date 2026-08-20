@@ -141,6 +141,7 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
             className="recipe-search-input"
             type="search"
             placeholder="Buscar por nombre o ingrediente…"
+            aria-label="Buscar recetas por nombre o ingrediente"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />

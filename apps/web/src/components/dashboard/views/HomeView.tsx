@@ -286,6 +286,7 @@ export function HomeView({
                 min="0"
                 className="bento-steps-input"
                 placeholder="Pasos de hoy"
+                aria-label="Pasos de hoy"
                 value={stepsInput}
                 onChange={(e) => setStepsInput(e.target.value)}
               />

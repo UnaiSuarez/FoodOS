@@ -88,6 +88,7 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
           <input
             type="url"
             placeholder="https://…"
+            aria-label="URL de la imagen"
             autoFocus
             value={imageUrl ?? ""}
             onChange={(e) => onChange(e.target.value || undefined)}

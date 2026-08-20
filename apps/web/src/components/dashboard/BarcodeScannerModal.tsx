@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { parseQuantityString } from "@/lib/food-lookup";
+import { useEscapeToClose } from "@/lib/use-escape-key";
 
 export interface ProductData {
   name: string;
@@ -35,6 +36,9 @@ declare class BarcodeDetector {
 }
 
 export function BarcodeScannerModal({ onFill, onClose }: Props) {
+  // E18-03: este modal es previo a Modal.tsx y no lo usa (tiene su propia UI
+  // de escáner) — le falta el cierre por teclado que Modal.tsx ya trae.
+  useEscapeToClose(onClose);
   const [barcode, setBarcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
@@ -202,6 +206,7 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
               inputMode="numeric"
               pattern="[0-9]*"
               placeholder="Ej: 8410188052028"
+              aria-label="Código de barras"
               value={barcode}
               onChange={(e) => setBarcode(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void fetchProduct(barcode)}

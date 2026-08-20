@@ -146,6 +146,7 @@ export function ImportRecipeModal({ onClose }: Props) {
                   className="lm-search"
                   type="url"
                   placeholder="https://ejemplo.com/mi-receta-favorita"
+                  aria-label="URL de la receta"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                 />
@@ -167,6 +168,7 @@ export function ImportRecipeModal({ onClose }: Props) {
                 <textarea
                   className="import-textarea"
                   placeholder="Tortilla de atún:\n- 3 huevos\n- 1 lata de atún\n- ½ cebolla…"
+                  aria-label="Texto de la receta"
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   rows={8}
