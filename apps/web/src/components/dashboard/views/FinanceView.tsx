@@ -5,6 +5,7 @@ import type { IncomeFrequency } from "@foodos/types";
 import { getFoodSpend, getSavingsStreak, getToday, useFoodOS } from "@/lib/state";
 import { monthlyAmountOf, projectSavings } from "@/lib/nutrition";
 import { dateFromKey, eur, uid } from "@/lib/utils";
+import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 
 const FREQUENCY_LABELS: Record<IncomeFrequency, string> = {
   weekly: "Semanal",
@@ -91,6 +92,14 @@ export function FinanceView() {
   const [formCategory, setFormCategory] = useState("Comida");
   const [incomeOpen, setIncomeOpen]   = useState(false);
   const [showAllMovements, setShowAllMovements] = useState(false);
+  const amountInputRef = useRef<HTMLInputElement>(null);
+
+  // E04-04: acción universal "Añadir" → "Añadir gasto" navega aquí y deja
+  // esta señal — el formulario ya está siempre visible, solo falta llevar
+  // el foco al importe en vez de dejar al usuario buscándolo.
+  useEffect(() => {
+    if (consumeQuickAddSignal("expense")) amountInputRef.current?.focus();
+  }, []);
 
   // ── Cálculos base ────────────────────────────────────────────
   const activeToday = getToday(state);
@@ -366,7 +375,7 @@ export function FinanceView() {
                 Importe €
                 {/* E13-03: sin importe por defecto — un 12€ inventado podía
                     guardarse sin que el usuario lo notara. */}
-                <input name="amount" type="number" min="0" step="0.01" placeholder="ej. 12,50" required />
+                <input ref={amountInputRef} name="amount" type="number" min="0" step="0.01" placeholder="ej. 12,50" required />
               </label>
               <label>
                 Categoría

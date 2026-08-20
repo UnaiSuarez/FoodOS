@@ -9,6 +9,7 @@ import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
 import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
 import { loadAIConfig } from "@/lib/ai-config";
 import { searchOFFSuggestions, type ExternalFoodSuggestion } from "@/lib/food-lookup";
+import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 import { ConsumeModal } from "../ConsumeModal";
 import { ImagePickerField } from "../ImagePickerField";
 import { BarcodeScannerModal, type ProductData } from "../BarcodeScannerModal";
@@ -69,6 +70,7 @@ export function InventoryView() {
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [detailItem, setDetailItem] = useState<InventoryItem | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [suggestions, setSuggestions] = useState<FoodEntry[]>([]);
   const [offSuggestions, setOffSuggestions] = useState<ExternalFoodSuggestion[]>([]);
@@ -92,6 +94,13 @@ export function InventoryView() {
   const offTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => () => clearTimeout(offTimerRef.current), []);
+
+  // E04-04: acción universal "Añadir" → "Añadir alimento" navega aquí y deja
+  // esta señal — el formulario rápido ya está siempre visible arriba, solo
+  // falta llevar el foco al nombre en vez de dejar al usuario buscándolo.
+  useEffect(() => {
+    if (consumeQuickAddSignal("food")) nameInputRef.current?.focus();
+  }, []);
 
   function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((prev) => ({
@@ -469,6 +478,7 @@ export function InventoryView() {
               Nombre
               <div className="autocomplete-wrapper">
                 <input
+                  ref={nameInputRef}
                   name="name"
                   required
                   placeholder="Pechuga de pollo"

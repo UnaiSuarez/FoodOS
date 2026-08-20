@@ -26,6 +26,7 @@ import {
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
 import { VIEWS, NAV_GROUPS, type ViewId } from "@/lib/dashboard-views";
 import { SyncStatusBadge } from "./SyncStatusBadge";
+import { QuickAddButton } from "./QuickAddButton";
 
 // E03-12: traduce la clave plana de VIEWS (lib/dashboard-views.ts no puede
 // importar componentes de React, ver el comentario de ese archivo) al icono
@@ -527,6 +528,7 @@ function DashboardInner() {
             >
               {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
+            <QuickAddButton />
           </div>
           <div className="topbar-title-row">
             <h1>{currentTitle}</h1>

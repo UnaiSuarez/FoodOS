@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FoodLogEntry, MealType } from "@foodos/types";
 import { actions, getLogByDay, getToday, getWaterToday, useFoodOS } from "@/lib/state";
 import { dateOffset } from "@/lib/utils";
+import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 import { DiaryEntryDetailModal } from "../DiaryEntryDetailModal";
 import { EditLogModal } from "../EditLogModal";
 import { LogMealModal } from "../LogMealModal";
@@ -41,6 +42,13 @@ export function DiaryView() {
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
   const [detailEntry, setDetailEntry] = useState<FoodLogEntry | null>(null);
   const [showLogMeal, setShowLogMeal] = useState(false);
+
+  // E04-04: acción universal "Añadir" → "Registrar comida" navega aquí y
+  // deja esta señal para abrir el modal sin que el usuario tenga que
+  // encontrar y pulsar el botón otra vez.
+  useEffect(() => {
+    if (consumeQuickAddSignal("meal")) setShowLogMeal(true);
+  }, []);
 
   return (
     <section className="view">
