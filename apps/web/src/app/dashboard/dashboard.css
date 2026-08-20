@@ -4544,6 +4544,10 @@ select:focus {
 .cook-ing-reset { background: none; border: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 0 2px; }
 .cook-ing-reset:hover { color: var(--text); }
 .cook-ing-avail { font-size: 11px; color: var(--amber); white-space: nowrap; }
+/* E18-13: "no lo tienes" ya lo dice el texto, pero un tono distinto del de
+   "te falta parte" (mismo rojo que el punto) ayuda a quien sí distingue
+   color a la vez que no depende de él para saber cuál es cuál. */
+.cook-ing-item.missing .cook-ing-avail { color: var(--red); }
 .cook-cart-btn { width: 100%; margin-bottom: 12px; text-align: center; }
 
 .cook-deduct-toggle {
