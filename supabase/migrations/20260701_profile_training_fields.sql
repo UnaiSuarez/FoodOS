@@ -2,6 +2,11 @@
 -- Nuevos campos del perfil físico usados por el asistente de generación de
 -- rutinas con IA, para ajustar volumen/complejidad y qué ejercicios sugerir.
 -- Idempotente: usa ADD COLUMN IF NOT EXISTS.
+--
+-- NOTA (2026-08-21, reconciliación de historial CLI): mismo caso que
+-- 20260630_inventory_extra_fields.sql — sin versión propia en remoto,
+-- absorbida en "initial_schema" (20260629120159). Ver esa nota para el
+-- detalle completo.
 
 alter table public.user_profiles
   add column if not exists experience_level text
