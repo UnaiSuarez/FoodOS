@@ -190,6 +190,59 @@
   background: rgba(240, 244, 238, 0.07);
 }
 
+/* E04-13: fila que envuelve cada entrada del nav + su estrella de fijar.
+   .nav-item sigue siendo el <button> real (todo su estilo previo no
+   cambia), esto solo los coloca uno junto al otro. */
+.nav-item-row {
+  display: flex;
+  align-items: center;
+}
+
+.nav-item-row .nav-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-item-favorite {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+/* Siempre visible si ya está fijado (para poder quitarlo sin pasar el
+   ratón), o al pasar el ratón/foco por la fila entera — no depende solo
+   de :hover en la propia estrella, que sería casi imposible de alcanzar
+   con un objetivo de 32px pegado al borde. */
+.nav-item-row:hover .nav-item-favorite,
+.nav-item-favorite:focus-visible,
+.nav-item-favorite.active {
+  opacity: 1;
+}
+
+.nav-item-favorite.active {
+  color: var(--amber);
+}
+
+.nav-item-favorite:hover {
+  color: var(--amber);
+}
+
+@media (max-width: 1080px) {
+  /* En el drawer móvil no hay ":hover" real — la estrella se queda
+     siempre visible en vez de depender de un gesto que no existe ahí. */
+  .nav-item-favorite {
+    opacity: 1;
+  }
+}
+
 .mascot-panel {
   margin-top: auto;
   display: grid;
@@ -363,6 +416,7 @@
   .sidebar-collapsed .brand-suffix,
   .sidebar-collapsed .nav-item-label,
   .sidebar-collapsed .nav-group-label,
+  .sidebar-collapsed .nav-item-favorite,
   .sidebar-collapsed .sidebar-user-info,
   .sidebar-collapsed .sidebar-user-caret,
   .sidebar-collapsed .mascot-panel {
@@ -8041,6 +8095,31 @@ button.secondary-button.small {
    donde SÍ hay un .primary-button visible con datos demo. */
 [data-theme="light"] .primary-button {
   color: #fff;
+}
+
+/* E21-10 (segunda pasada): --green/--amber/--red en tema claro se calibraron
+   contra --bg y --surface (ver comentarios junto a esas variables en
+   globals.css), pero varios textos de Finanzas se apoyan en tarjetas
+   anidadas con fondo --surface-2 — un gris algo más oscuro que --surface,
+   así que el mismo color de texto pierde contraste ahí. axe lo encontró en
+   /dashboard/finance con datos que disparaban las clases .warn/.overrun/
+   .goal-reached/.neg (solo visibles con ciertos importes, por eso no salía
+   en todas las pasadas). #166534/#92400e/#b91c1c dan ~6:1+ incluso contra
+   --surface-2, con margen de sobra. */
+[data-theme="light"] .badge.green,
+[data-theme="light"] .savings-rate-pct {
+  color: #166534;
+}
+
+[data-theme="light"] .budget-bar-label.warn,
+[data-theme="light"] .budget-alert.warn {
+  color: #92400e;
+}
+
+[data-theme="light"] .budget-bar-label.overrun,
+[data-theme="light"] .budget-alert,
+[data-theme="light"] .savings-rate-pct.neg {
+  color: #b91c1c;
 }
 
 [data-theme="light"] .secondary-button {

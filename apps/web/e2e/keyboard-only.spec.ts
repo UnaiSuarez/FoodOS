@@ -19,12 +19,12 @@ test("navegar entre secciones del nav solo con Tab/Enter (E18-17)", async ({ pag
   await page.goto("/dashboard");
   const nav = page.getByRole("navigation", { name: "Navegación de la app" });
 
-  await nav.getByRole("button", { name: "Inventario" }).focus();
+  await nav.getByRole("button", { name: "Inventario", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/dashboard\/inventory$/);
-  await expect(nav.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("button", { name: "Inventario", exact: true })).toHaveAttribute("aria-current", "page");
 
-  await nav.getByRole("button", { name: "Recetas" }).focus();
+  await nav.getByRole("button", { name: "Recetas", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/dashboard\/recipes$/);
 });
