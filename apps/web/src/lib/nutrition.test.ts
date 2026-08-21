@@ -481,13 +481,22 @@ describe("calcDailyTargets — caso real verificado en la app (120kg/177cm/24añ
 // kcalFactor("muscle_gain") devolvía 0.90 (déficit real ~10%) con
 // IMC>=27, con el objetivo etiquetado "ganancia muscular".
 
-describe("calcDailyTargets — muscle_gain nunca propone un déficit, cualquiera que sea el IMC", () => {
-  it("goal=muscle_gain → targetKcal siempre >= TDEE estimado, incluso con IMC alto (invariante del contrato)", () => {
+// ALCANCE (corregido tras auditoría externa de fdf0f4d): el invariante
+// "muscle_gain nunca déficit" es sobre el FACTOR BASE (kcalFactor), antes
+// de sumar adaptiveKcalOffsetKcal — NO una promesa sobre
+// calcDailyTargets().kcal final para cualquier entrada. Un offset
+// adaptativo negativo ACEPTADO explícitamente por el usuario sí puede
+// bajar el target final por debajo del TDEE de la fórmula, y eso es
+// intencional (ver comentario junto a kcalFactor en nutrition.ts) — el
+// primer test de este describe llegó a prometer lo contrario, corregido
+// aquí junto con un test que documenta el comportamiento real.
+describe("calcDailyTargets — muscle_gain: el FACTOR BASE nunca es un déficit, cualquiera que sea el IMC", () => {
+  it("goal=muscle_gain SIN offset adaptativo → targetKcal siempre >= TDEE estimado, incluso con IMC alto", () => {
     const imcCases = [
       { weightKg: 70, heightCm: 178 },  // IMC ~22, normopeso
       { weightKg: 85, heightCm: 178 },  // IMC ~26.8, justo debajo del umbral
       { weightKg: 90, heightCm: 178 },  // IMC ~28.4, por encima del umbral
-      { weightKg: 110, heightCm: 175 }, // IMC ~35.9, obesidad — el caso que falló en la auditoría
+      { weightKg: 110, heightCm: 175 }, // IMC ~35.9, obesidad — el caso que falló en la auditoría manual original
     ];
     for (const { weightKg, heightCm } of imcCases) {
       const profile = baseProfile({ weightKg, heightCm, goal: "muscle_gain", activityLevel: "moderate" });
@@ -497,18 +506,36 @@ describe("calcDailyTargets — muscle_gain nunca propone un déficit, cualquiera
     }
   });
 
-  it("con IMC>=27 el factor es exactamente mantenimiento (1.0), no superávit ni déficit", () => {
+  it("con IMC>=27 el factor base es exactamente mantenimiento (1.0), no superávit ni déficit", () => {
     const profile = baseProfile({ weightKg: 110, heightCm: 175, goal: "muscle_gain", activityLevel: "moderate" });
     const { tdee } = calcSummary(profile);
     const targets = calcDailyTargets(profile, false);
     expect(targets.kcal).toBe(tdee);
   });
 
-  it("con IMC<27 se mantiene el pequeño superávit del 5%", () => {
+  it("con IMC<27 se mantiene el pequeño superávit base del 5%", () => {
     const profile = baseProfile({ weightKg: 70, heightCm: 178, goal: "muscle_gain", activityLevel: "moderate" });
     const { tdee } = calcSummary(profile);
     const targets = calcDailyTargets(profile, false);
     expect(targets.kcal).toBe(Math.round(tdee * 1.05));
+  });
+
+  it("un offset adaptativo negativo ACEPTADO por el usuario SÍ puede bajar el target final por debajo del TDEE — comportamiento intencional, no el bug de §2.6 reaparecido", () => {
+    // Hallazgo de la auditoría externa de fdf0f4d: evaluateAdaptiveState()
+    // puede proponer -100 kcal para muscle_gain si la trayectoria observada
+    // está por encima de la banda (gana más rápido de lo esperado). Una vez
+    // ACEPTADO explícitamente ese offset, el target final puede caer por
+    // debajo del TDEE de la fórmula — el controlador está corrigiendo la
+    // ESTIMACIÓN de TDEE con datos reales, con aceptación explícita, no
+    // reintroduciendo un déficit oculto por debajo del usuario.
+    const profile = baseProfile({
+      weightKg: 110, heightCm: 175, goal: "muscle_gain", activityLevel: "moderate",
+      adaptiveKcalOffsetKcal: -100,
+    });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(tdee - 100);
+    expect(targets.kcal).toBeLessThan(tdee); // intencional, ver comentario arriba
   });
 });
 
@@ -1356,6 +1383,31 @@ describe("buildAdjustmentProfileFingerprint / isProposalStale", () => {
     const original = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: null }), "balanced");
     const current = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: "dxa" }), "balanced");
     expect(isProposalStale(original, current)).toBe(false);
+  });
+
+  it("gymDays NO forma parte del fingerprint — evaluateAdaptiveState() ni siquiera recibe gymDay, el offset es independiente del tipo de día (§6.11)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ gymDays: [1, 3, 5] }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ gymDays: [0, 2, 4, 6] }), "balanced");
+    expect(isProposalStale(original, current)).toBe(false);
+  });
+
+  it("un fingerprint persistido entre PR9 y PR4 (sin age/sex/heightCm/bodyFatPct) se trata como obsoleto al compararlo — degradación segura, no un crash", () => {
+    // Simula una propuesta ya guardada en DB antes de que existieran estos
+    // campos: el objeto existe (no es undefined, ese caso ya lo cubre "sin
+    // fingerprint original"), pero le faltan las claves nuevas. undefined
+    // !== valor actual siempre es true, así que la propuesta se invalida
+    // — el comportamiento correcto por defecto (bloquear una aceptación
+    // sobre datos incompletos), documentado explícitamente aquí para que
+    // no sorprenda si aparece en producción tras desplegar PR4.
+    const legacyFingerprint = {
+      goal: "recomp", weightKg: 80, activityLevel: "moderate", activityModelVersion: "legacy_total_pal",
+      trainingActivity: null, macroPreference: "balanced", adaptiveKcalOffsetKcal: 0,
+    } as unknown as ReturnType<typeof buildAdjustmentProfileFingerprint>;
+    const current = buildAdjustmentProfileFingerprint(
+      baseProfile({ goal: "recomp", weightKg: 80, activityModelVersion: "legacy_total_pal" }),
+      "balanced"
+    );
+    expect(isProposalStale(legacyFingerprint, current)).toBe(true);
   });
 });
 

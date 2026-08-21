@@ -1862,8 +1862,12 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
       {warnMuscle && (
         <div className="nutrition-warn-banner">
           Tu IMC actual es superior a 27. Un superávit calórico en este punto favorecería la
-          acumulación de grasa más que el músculo, así que FoodOS te mantiene en mantenimiento
-          (sin superávit ni déficit) en vez de subirte las calorías. Te recomendamos{" "}
+          acumulación de grasa más que el músculo, así que FoodOS parte de mantenimiento (sin
+          superávit) en vez de subirte las calorías por encima de tu gasto estimado.
+          {/* No decimos "nunca déficit": si has aceptado un ajuste adaptativo, tu
+              objetivo final puede quedar por debajo del mantenimiento de la fórmula
+              — ver comentario junto a kcalFactor en nutrition.ts. */}
+          {" "}Te recomendamos{" "}
           <strong>Recomposición</strong> o <strong>Pérdida de grasa</strong> primero.
         </div>
       )}

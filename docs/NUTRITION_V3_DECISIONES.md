@@ -241,14 +241,36 @@ ingesta a lo largo de semanas — nunca al revés.
   como cerrada en la primera sesión de diseño de v3, pero **nunca se
   implementó** hasta que la auditoría final de PR4 la encontró todavía
   activa en producción (`kcalFactor` seguía devolviendo `0.90` con
-  IMC≥27). PR4 corrige la mitad del problema: `kcalFactor("muscle_gain")`
-  con IMC≥27 pasa a `1.0` (mantenimiento exacto, nunca déficit) — el
-  invariante `goal=muscle_gain → targetKcal >= estimatedTdeeKcal` queda
-  protegido por test. **Sigue sin implementarse** la segunda mitad: el
-  banner de `shouldWarnMuscleGain` solo informa/recomienda en texto, no
-  ofrece un flujo real de "usar recomendación" con confirmación explícita
-  (queda como mejora futura, no bloqueante — el objetivo ya no cambia de
-  significado por debajo del usuario, que era el problema central).
+  IMC≥27). PR4 corrige `kcalFactor("muscle_gain")` con IMC≥27 a `1.0`
+  (mantenimiento exacto, nunca déficit). **Sigue sin implementarse** el
+  flujo real de "usar recomendación" con confirmación explícita del
+  banner de `shouldWarnMuscleGain` (solo informa/recomienda en texto —
+  mejora futura, no bloqueante).
+- **Alcance exacto del invariante (corregido tras una segunda auditoría
+  externa del propio commit de PR4, `fdf0f4d`)**: el primer borrador de
+  PR4 prometía `goal=muscle_gain → targetKcal >= estimatedTdeeKcal` como
+  propiedad de `calcDailyTargets()` sin matizar — **incorrecto**, porque
+  `calcDailyTargets` suma `adaptiveKcalOffsetKcal` DESPUÉS de aplicar
+  `kcalFactor`, y un offset negativo aceptado explícitamente por el
+  usuario (Adaptive v3, §6) sí puede bajar el target final por debajo del
+  TDEE de la fórmula. El invariante correcto y ya protegido por test es
+  más estrecho:
+
+  ```
+  kcalFactor("muscle_gain", ...) >= 1.0   // SIEMPRE, cualquier IMC — el
+                                            // factor base nunca decide
+                                            // un déficit por sí solo
+  ```
+
+  No es una promesa sobre el target final para cualquier entrada de
+  `calcDailyTargets`. Un offset adaptativo negativo, una vez aceptado, es
+  el controlador corrigiendo la ESTIMACIÓN de TDEE de la fórmula con
+  datos reales — no el bug original de §2.6 reapareciendo (ese era la
+  fórmula decidiendo un déficit sin que el usuario lo viera ni aceptara).
+  Un `Math.max(tdee, rawKcal)` habría "arreglado" esto haciendo que las
+  propuestas negativas del adaptativo fueran inertes solo para
+  `muscle_gain` — inconsistente con los otros tres objetivos, y por eso
+  descartado.
 
 ---
 
@@ -724,6 +746,19 @@ ya acumulada. `isRelevantCalibrationChange()` no se tocó en PR4; sigue
 cubriendo solo `goal`/`activityLevel`/`activityModelVersion`/
 `trainingActivity`, revisión pendiente y separada si hiciera falta.
 
+**Compatibilidad con propuestas persistidas entre PR9 y PR4** (señalado en
+la auditoría externa del commit): una propuesta guardada en ese rango
+tiene un `AdjustmentProfileFingerprint` real (no `undefined` — ese caso
+ya lo cubre "sin fingerprint original, nunca obsoleta"), pero sin las
+claves `age`/`sex`/`heightCm`/`bodyFatPct`. Al comparar, `undefined !==
+valor actual` es siempre `true`, así que **cualquier propuesta pendiente
+de ese rango se trata como obsoleta al primer intento de aceptarla tras
+desplegar PR4** — degradación segura (bloquea aceptar sobre datos
+incompletos en vez de asumir que sigue siendo válida), no un crash.
+Impacto esperado bajo (pocos usuarios, propuestas pendientes raras en la
+práctica), pero documentado explícitamente y cubierto por test para que
+no sorprenda si aparece en producción.
+
 ---
 
 ## 7. Bugs obligatorios de v3
@@ -854,11 +889,15 @@ placeholder para que no se pierda como paso explícito del refactor)*
    hallazgos reales corregidos:
    - `kcalFactor("muscle_gain")` con IMC≥27 seguía devolviendo `0.90`
      (déficit real) pese a que §2.6 lo daba por cerrado desde la primera
-     sesión de diseño — nunca se había implementado. Corregido a `1.0`
-     (mantenimiento, nunca déficit), invariante `targetKcal >=
-     estimatedTdeeKcal` protegido por test. Banner de aviso actualizado
-     para no seguir hablando de "el superávit calórico" cuando ya no lo
-     hay.
+     sesión de diseño — nunca se había implementado. Corregido a `1.0`;
+     invariante protegido por test es sobre el **factor base**
+     (`kcalFactor("muscle_gain", ...) >= 1.0` siempre), no una promesa
+     sin matizar sobre el target final — una segunda auditoría externa
+     del propio commit de PR4 encontró que el primer borrador prometía
+     de más (`adaptiveKcalOffsetKcal` negativo y aceptado sí puede bajar
+     el target final del TDEE, intencionalmente — ver §2.6, corregido en
+     el mismo PR4). Banner de aviso actualizado para no prometer "sin
+     déficit" de forma absoluta.
    - Fingerprint de propuesta completado (§6.11): `age`/`sex`/`heightCm`/
      `bodyFatPct` añadidos; `bodyFatSource`/`gymDays` excluidos con
      justificación explícita, no por omisión.

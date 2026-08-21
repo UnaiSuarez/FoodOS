@@ -558,6 +558,22 @@ export const MACRO_PREFERENCE_LABELS: Record<MacroPreference, string> = {
  *              déficit encubierto — el aviso de shouldWarnMuscleGain()
  *              sigue recomendando recomp/pérdida de grasa, nunca cambia
  *              el objetivo por debajo del usuario.
+ *
+ *              ALCANCE DEL INVARIANTE (auditoría PR4, corregido tras
+ *              revisión externa): "muscle_gain nunca déficit" se refiere
+ *              a ESTE factor base — kcalFactor("muscle_gain", ...) >= 1.0
+ *              siempre. NO es una promesa sobre calcDailyTargets().kcal
+ *              final, que además suma adaptiveKcalOffsetKcal. Un offset
+ *              negativo ACEPTADO EXPLÍCITAMENTE por el usuario (Adaptive
+ *              v3, ver §6) SÍ puede bajar el target final por debajo del
+ *              TDEE de la fórmula — eso no es el bug de §2.6 reaparecido:
+ *              es el controlador corrigiendo la ESTIMACIÓN de TDEE de la
+ *              fórmula con datos reales, con aceptación explícita, igual
+ *              que para cualquier otro objetivo. Forzar un clamp aquí
+ *              (Math.max(tdee, rawKcal)) haría que las propuestas
+ *              negativas del adaptativo fueran inertes solo para
+ *              muscle_gain, rompiendo la universalidad del controlador
+ *              frente a los otros tres objetivos.
  * recomp:      IMC≥30 → 0.83 gym / 0.80 descanso
  *              IMC<30  → 0.90 gym / 0.83 descanso
  * maintain:    1.0
