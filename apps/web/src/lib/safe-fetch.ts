@@ -18,11 +18,21 @@
 // SNI de TLS se fijan al hostname original para que el vhost y el
 // certificado del servidor de destino sigan siendo correctos; solo la
 // conexión de bajo nivel usa la IP fija.
+//
+// Deadline total (revisión externa, 2026-08-21): el timeout de socket que se
+// pasaba antes (http.request({ timeout })) mide INACTIVIDAD, no tiempo
+// total — un servidor que manda un byte cada pocos segundos indefinidamente
+// (slow-drip) resetea ese contador para siempre y nunca corta. Además no
+// cubría la resolución DNS, que puede colgarse sin límite propio. Por eso
+// todo el flujo (DNS + conexión + cada redirección + lectura del cuerpo)
+// comparte un único AbortSignal con un deadline absoluto fijado UNA vez al
+// principio de la petición completa (ver fetchPublicUrl en route.ts) — se
+// aborta a esa hora exacta pase lo que pase, haya o no actividad.
 import http from "node:http";
 import https from "node:https";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { isPrivateOrReservedIp } from "./ssrf-guard";
+import { isPrivateOrReservedIp, stripIPv6Brackets } from "./ssrf-guard";
 
 export interface SafeFetchResult {
   statusCode: number;
@@ -30,19 +40,39 @@ export interface SafeFetchResult {
   bodyStream: NodeJS.ReadableStream;
 }
 
+/** Corre una promesa que no soporta cancelación nativa (dns.lookup no acepta
+    AbortSignal) contra un signal ya existente — si el signal se aborta
+    primero, esta función deja de esperar (la operación original puede
+    seguir en segundo plano en el thread pool de libuv, pero la petición ya
+    no depende de su resultado). */
+function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("TIMEOUT"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("TIMEOUT"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e) => { signal.removeEventListener("abort", onAbort); reject(e); }
+    );
+  });
+}
+
 /** Resuelve DNS del host UNA sola vez, exige que TODAS las direcciones
     resultantes sean públicas y devuelve la que se usará para conectar. No
     hay una segunda resolución en ningún punto posterior del flujo — por
     diseño, para cerrar la ventana de DNS rebinding descrita arriba. */
-export async function resolvePinnedAddress(hostname: string): Promise<string> {
-  if (net.isIP(hostname)) {
-    if (isPrivateOrReservedIp(hostname)) throw new Error("PRIVATE_TARGET");
-    return hostname;
+export async function resolvePinnedAddress(hostname: string, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) throw new Error("TIMEOUT"); // comprobar ANTES de llamar a dns.lookup — sus argumentos se evalúan igual aunque luego se descarte la promesa
+  const bare = stripIPv6Brackets(hostname); // URL.hostname conserva los corchetes en IPv6 ("[::1]"); net.isIP no los reconoce
+  if (net.isIP(bare)) {
+    if (isPrivateOrReservedIp(bare)) throw new Error("PRIVATE_TARGET");
+    return bare;
   }
   let addresses: Array<{ address: string }>;
   try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-  } catch {
+    addresses = await raceWithAbort(dns.lookup(bare, { all: true, verbatim: true }), signal);
+  } catch (err) {
+    if (err instanceof Error && err.message === "TIMEOUT") throw err;
     throw new Error("PRIVATE_TARGET"); // no resuelve -> no se puede validar con seguridad
   }
   if (addresses.length === 0) throw new Error("PRIVATE_TARGET");
@@ -53,11 +83,13 @@ export async function resolvePinnedAddress(hostname: string): Promise<string> {
 /** Conecta directamente a `pinnedAddress` (nunca al hostname) usando
     http.request/https.request de bajo nivel, para que Node no repita la
     resolución DNS por su cuenta. */
-function requestPinned(params: { url: URL; pinnedAddress: string; timeoutMs: number }): Promise<SafeFetchResult> {
-  const { url, pinnedAddress, timeoutMs } = params;
+function requestPinned(params: { url: URL; pinnedAddress: string; signal: AbortSignal }): Promise<SafeFetchResult> {
+  const { url, pinnedAddress, signal } = params;
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === "https:";
     const transport = isHttps ? https : http;
+    const bareHostname = stripIPv6Brackets(url.hostname);
+    const isIpLiteralTarget = net.isIP(bareHostname) !== 0;
     const req = transport.request(
       {
         host: pinnedAddress, // conexión TCP: siempre la IP ya validada, nunca el hostname
@@ -65,53 +97,81 @@ function requestPinned(params: { url: URL; pinnedAddress: string; timeoutMs: num
         path: `${url.pathname}${url.search}`,
         method: "GET",
         headers: {
-          Host: url.hostname, // vhost correcto en el servidor de destino
+          Host: url.host, // vhost correcto en el destino, incluido el puerto si no es el estándar (url.host, no url.hostname)
           "User-Agent": "Mozilla/5.0 (compatible; FoodOS/1.0; +https://github.com/UnaiSuarez/FoodOS)",
           Accept: "text/html,application/xhtml+xml",
         },
-        ...(isHttps ? { servername: url.hostname } : {}), // SNI + verificación de certificado contra el hostname real, no la IP
-        timeout: Math.max(1, timeoutMs),
+        // SNI: solo tiene sentido para un nombre de dominio — RFC 6066 excluye
+        // explícitamente las IPs literales del campo server_name. Mandar un
+        // literal IP (o su forma con corchetes) como SNI es inválido y algunos
+        // servidores TLS lo rechazan.
+        ...(isHttps && !isIpLiteralTarget ? { servername: bareHostname } : {}),
+        signal, // aborta esta conexión/petición en el mismo instante que el deadline total del request.ts
       },
       (res) => {
         resolve({ statusCode: res.statusCode ?? 0, headers: res.headers, bodyStream: res });
       }
     );
-    req.on("timeout", () => req.destroy(new Error("TIMEOUT")));
     req.on("error", (err) => reject(err instanceof Error && err.message ? err : new Error("FETCH_FAILED")));
     req.end();
   });
 }
 
 /** Resuelve + valida + conecta a una URL concreta, sin seguir redirecciones
-    (eso lo gestiona fetchPublicUrlPinned salto a salto, revalidando cada
-    vez — ver route.ts). */
-export async function safeFetch(url: URL, timeoutMs: number): Promise<SafeFetchResult> {
+    (eso lo gestiona fetchPublicUrl salto a salto, revalidando cada vez — ver
+    route.ts). Todo el trabajo (DNS incluida) corre bajo el mismo signal. */
+export async function safeFetch(url: URL, signal: AbortSignal): Promise<SafeFetchResult> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("PROTOCOL_NOT_ALLOWED");
   }
-  const pinnedAddress = await resolvePinnedAddress(url.hostname);
-  return requestPinned({ url, pinnedAddress, timeoutMs });
+  if (signal.aborted) throw new Error("TIMEOUT");
+  const pinnedAddress = await resolvePinnedAddress(url.hostname, signal);
+  return requestPinned({ url, pinnedAddress, signal });
 }
 
 /** Lee un stream de Node con límite real de bytes durante la descarga (no
     tras cargarlo entero en memoria) — corta la conexión en cuanto se supera
-    el límite, en vez de seguir descargando y truncar después. */
-export function readNodeStreamLimited(stream: NodeJS.ReadableStream, maxBytes: number): Promise<string> {
+    el límite, en vez de seguir descargando y truncar después. También
+    respeta `signal`: si el deadline total expira a mitad de la descarga
+    (p.ej. un servidor que manda datos goteando indefinidamente para eludir
+    un timeout de inactividad), se corta ahí igualmente aunque siga habiendo
+    actividad en el stream. */
+export function readNodeStreamLimited(stream: NodeJS.ReadableStream, maxBytes: number, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    const destroyable = stream as unknown as { destroy: () => void };
+    if (signal?.aborted) {
+      destroyable.destroy();
+      reject(new Error("TIMEOUT"));
+      return;
+    }
     let received = 0;
     const chunks: Buffer[] = [];
+    const onAbort = () => {
+      destroyable.destroy();
+      reject(new Error("TIMEOUT"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+
     stream.on("data", (chunk: Buffer) => {
       received += chunk.length;
       if (received > maxBytes) {
         const allowed = maxBytes - (received - chunk.length);
         if (allowed > 0) chunks.push(chunk.subarray(0, allowed));
-        (stream as unknown as { destroy: () => void }).destroy();
+        destroyable.destroy();
+        cleanup();
         resolve(Buffer.concat(chunks).toString("utf-8"));
         return;
       }
       chunks.push(chunk);
     });
-    stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    stream.on("error", (err) => reject(err));
+    stream.on("end", () => {
+      cleanup();
+      resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    stream.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
   });
 }

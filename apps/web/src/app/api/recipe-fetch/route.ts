@@ -28,9 +28,12 @@ const MAX_HTML_BYTES = 1_500_000; // defensivo: páginas enormes no aportan más
 const MAX_TEXT_CHARS = 8_000;
 const MAX_JSONLD_CHARS = 6_000;
 const MAX_REDIRECTS = 5;
-// Presupuesto TOTAL para toda la cadena de redirecciones, no por salto — con
-// un límite por salto, 5 redirecciones podían sumar hasta 5x el timeout
-// nominal. Cada hop recibe el tiempo que quede del presupuesto.
+// Presupuesto TOTAL para toda la petición — DNS + conexión + cada
+// redirección + lectura del cuerpo, no un timeout por salto ni de inactividad
+// de socket (ver el comentario grande sobre deadline en lib/safe-fetch.ts:
+// un timeout de inactividad nunca corta un servidor que gotea datos sin
+// parar). Un único AbortController con este deadline se crea en GET() y se
+// pasa a todo el flujo.
 const TOTAL_FETCH_TIMEOUT_MS = 10_000;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -111,15 +114,13 @@ function extractTitle(html: string): string | undefined {
     que cada salto sigue apuntando a una IP pública — una URL pública puede
     redirigir a localhost/metadata igual de bien que apuntar ahí directamente.
     Cada salto usa safeFetch(), que resuelve y fija la conexión a esa única
-    IP validada (ver lib/safe-fetch.ts). El presupuesto de tiempo es total
-    para toda la cadena: cada hop recibe lo que quede del deadline. */
-async function fetchPublicUrl(startUrl: URL, totalTimeoutMs: number): Promise<SafeFetchResult> {
-  const deadline = Date.now() + totalTimeoutMs;
+    IP validada (ver lib/safe-fetch.ts). `signal` es EL MISMO para toda la
+    cadena (lo crea GET() una sola vez, con un único deadline absoluto) — así
+    el presupuesto de tiempo es total para toda la petición, no por salto. */
+async function fetchPublicUrl(startUrl: URL, signal: AbortSignal): Promise<SafeFetchResult> {
   let current = startUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("TIMEOUT");
-    const res = await safeFetch(current, remaining);
+    const res = await safeFetch(current, signal);
     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
       res.bodyStream.resume?.(); // descarta el cuerpo de la redirección, no lo necesitamos
       current = new URL(String(res.headers.location), current);
@@ -159,8 +160,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Solo se admiten URLs http/https" }, { status: 400 });
   }
 
+  // Un único deadline absoluto para TODA la petición — DNS, conexión, cada
+  // redirección y la lectura del cuerpo comparten este mismo signal (ver
+  // safe-fetch.ts). El timer se limpia en el finally de más abajo, DESPUÉS
+  // de leer el cuerpo, no nada más terminar fetchPublicUrl — si se limpiara
+  // antes, el deadline dejaría de proteger la fase de lectura del cuerpo,
+  // que es justo donde un servidor "slow-drip" intentaría explotar un
+  // timeout basado en inactividad.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TOTAL_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetchPublicUrl(target, TOTAL_FETCH_TIMEOUT_MS);
+    const res = await fetchPublicUrl(target, controller.signal);
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
       res.bodyStream.resume?.();
@@ -173,7 +183,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Esa URL no apunta a una página web (¿es un PDF o una imagen?)" }, { status: 415 });
     }
 
-    const html = await readNodeStreamLimited(res.bodyStream, MAX_HTML_BYTES);
+    const html = await readNodeStreamLimited(res.bodyStream, MAX_HTML_BYTES, controller.signal);
 
     const jsonLd = extractRecipeJsonLd(html);
     const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
@@ -195,5 +205,7 @@ export async function GET(request: NextRequest) {
       { error: "No se pudo descargar la página (tardó demasiado o bloqueó la petición)" },
       { status: 502 }
     );
+  } finally {
+    clearTimeout(timer);
   }
 }

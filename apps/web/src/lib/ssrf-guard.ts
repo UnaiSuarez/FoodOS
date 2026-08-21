@@ -37,16 +37,85 @@ export function isPrivateOrReservedIp(ip: string): boolean {
     return false;
   }
   if (net.isIPv6(ip)) {
-    const lower = ip.toLowerCase();
-    if (lower === "::1" || lower === "::") return true;            // loopback / unspecified
-    if (/^fe[89ab]/.test(lower)) return true;                      // fe80::/10 link-local
-    if (/^f[cd]/.test(lower)) return true;                         // fc00::/7 unique local
-    if (lower.startsWith("ff")) return true;                       // ff00::/8 multicast
-    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);   // IPv4-mapped
-    if (mapped) return isPrivateOrReservedIp(mapped[1]);
-    return false;
+    return isPrivateOrReservedIpv6(ip);
   }
   return true; // no se pudo interpretar como IP — rechazar por seguridad
+}
+
+/** Descompone una IPv6 válida en sus 8 grupos de 16 bits, expandiendo "::" y
+    la notación IPv4 final (p.ej. "::ffff:127.0.0.1"). Se hace ESTRUCTURALMENTE
+    (aritmética sobre los grupos), no con una regex sobre el texto — una regex
+    solo reconoce la forma decimal con "::" al principio, y deja pasar como
+    "pública" cualquier otra representación textual válida de la misma
+    dirección: "::ffff:7f00:1" (hex en vez de decimal), "0:0:0:0:0:ffff:7f00:1"
+    (sin comprimir), "::ffff:a9fe:a9fe" (link-local de nube en hex)... IPv6
+    tiene muchas formas de escribir el mismo valor y todas tienen que acabar
+    en el mismo resultado. */
+function ipv6ToGroups(ip: string): number[] | null {
+  const withoutZone = ip.split("%")[0].toLowerCase();
+  const halves = withoutZone.split("::");
+  if (halves.length > 2) return null; // "::" no puede aparecer más de una vez
+
+  function parseSide(side: string): string[] | null {
+    if (side === "") return [];
+    const groups = side.split(":");
+    const last = groups[groups.length - 1];
+    if (last.includes(".")) {
+      const octets = last.split(".").map(Number);
+      if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return null;
+      const hi = ((octets[0] << 8) | octets[1]).toString(16);
+      const lo = ((octets[2] << 8) | octets[3]).toString(16);
+      groups.splice(groups.length - 1, 1, hi, lo);
+    }
+    if (groups.some((g) => g.length === 0 || g.length > 4 || !/^[0-9a-f]+$/.test(g))) return null;
+    return groups;
+  }
+
+  const head = parseSide(halves[0]);
+  if (head === null) return null;
+  let full: string[];
+  if (halves.length === 2) {
+    const tail = parseSide(halves[1]);
+    if (tail === null) return null;
+    const missing = 8 - head.length - tail.length;
+    if (missing < 0) return null;
+    full = [...head, ...new Array(missing).fill("0"), ...tail];
+  } else {
+    if (head.length !== 8) return null;
+    full = head;
+  }
+  if (full.length !== 8) return null;
+  return full.map((g) => parseInt(g, 16));
+}
+
+function isPrivateOrReservedIpv6(ip: string): boolean {
+  const groups = ipv6ToGroups(ip);
+  if (!groups) return true; // no se pudo interpretar -> rechazar por seguridad
+  if (groups.every((g) => g === 0)) return true;                              // "::" unspecified
+  if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return true; // "::1" loopback
+  if ((groups[0] & 0xffc0) === 0xfe80) return true;                           // fe80::/10 link-local
+  if ((groups[0] & 0xfe00) === 0xfc00) return true;                           // fc00::/7 unique local
+  if ((groups[0] & 0xff00) === 0xff00) return true;                           // ff00::/8 multicast
+  // IPv4-mapped ::ffff:0:0/96 — los primeros 5 grupos a 0, el 6º = ffff,
+  // los 2 últimos son la IPv4 embebida. Se valida esa IPv4 recursivamente,
+  // sin importar en qué forma textual venía escrita la IPv6 de entrada.
+  if (groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff) {
+    const a = (groups[6] >> 8) & 0xff;
+    const b = groups[6] & 0xff;
+    const c = (groups[7] >> 8) & 0xff;
+    const d = groups[7] & 0xff;
+    return isPrivateOrReservedIp(`${a}.${b}.${c}.${d}`);
+  }
+  return false;
+}
+
+/** Quita los corchetes de un hostname IPv6 literal tomado de URL.hostname
+    ("[::1]" -> "::1") — net.isIP/isPrivateOrReservedIp no reconocen la forma
+    con corchetes, y hace falta la forma "pelada" también para decidir si se
+    manda SNI (ver safe-fetch.ts: nunca se manda SNI cuando el destino es un
+    literal IP, sea IPv4 o IPv6). */
+export function stripIPv6Brackets(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────

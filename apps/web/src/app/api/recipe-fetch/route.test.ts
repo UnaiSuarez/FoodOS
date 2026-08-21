@@ -24,7 +24,7 @@ interface FakeResponse {
   body: string;
 }
 let responseTable: Map<string, FakeResponse>;
-const requestMock = vi.fn((options: { headers: Record<string, string>; host: string }, callback: (res: unknown) => void) => {
+const requestMock = vi.fn((options: { headers: Record<string, string>; host: string; servername?: string }, callback: (res: unknown) => void) => {
   const hostHeader = options.headers.Host;
   const fake = responseTable.get(hostHeader);
   const stream = new Readable({ read() {} }) as Readable & { statusCode: number; headers: Record<string, string> };
@@ -180,6 +180,67 @@ describe("GET /api/recipe-fetch — SSRF vía redirección y rebinding", () => {
     const json = (await res.json()) as { error?: string };
     expect(res.status).toBe(400);
     expect(json.error).toMatch(/redirecciones/i);
+  });
+});
+
+describe("GET /api/recipe-fetch — IPv6 y puertos no estándar", () => {
+  it("un objetivo IPv6 literal público se pinnea directamente, sin dns.lookup y sin SNI", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "u1" } }, error: null });
+    responseTable.set("[2606:4700:4700::1111]", {
+      statusCode: 200,
+      headers: { "content-type": "text/html" },
+      body: "<html><title>ok</title><body>receta con contenido suficiente</body></html>",
+    });
+    const res = await GET(
+      makeRequest("/api/recipe-fetch?url=https://[2606:4700:4700::1111]/receta", { authorization: "Bearer x" })
+    );
+    expect(res.status).toBe(200);
+    expect(lookupMock).not.toHaveBeenCalled(); // literal IP: no hace falta resolver
+    const optionsUsed = requestMock.mock.calls[0][0] as { host: string; headers: Record<string, string>; servername?: string };
+    expect(optionsUsed.host).toBe("2606:4700:4700::1111"); // sin corchetes al conectar (net.connect espera la IP pelada)
+    expect(optionsUsed.headers.Host).toBe("[2606:4700:4700::1111]"); // con corchetes en el header Host, como exige HTTP
+    expect(optionsUsed.servername).toBeUndefined(); // RFC 6066: SNI no se manda para un literal IP
+  });
+
+  it("un objetivo IPv6 literal privado (::1) se bloquea sin dns.lookup", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "u1" } }, error: null });
+    const res = await GET(
+      makeRequest("/api/recipe-fetch?url=https://[::1]/receta", { authorization: "Bearer x" })
+    );
+    expect(res.status).toBe(400);
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+
+  it("el header Host incluye el puerto cuando no es el estándar", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "u1" } }, error: null });
+    lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    responseTable.set("publica.example.com:8443", {
+      statusCode: 200,
+      headers: { "content-type": "text/html" },
+      body: "<html><title>ok</title><body>receta con contenido suficiente</body></html>",
+    });
+    const res = await GET(
+      makeRequest("/api/recipe-fetch?url=https://publica.example.com:8443/receta", { authorization: "Bearer x" })
+    );
+    expect(res.status).toBe(200);
+    const optionsUsed = requestMock.mock.calls[0][0] as { host: string; port: number; headers: Record<string, string> };
+    expect(optionsUsed.headers.Host).toBe("publica.example.com:8443");
+    expect(optionsUsed.port).toBe(8443);
+    expect(optionsUsed.host).toBe("93.184.216.34"); // conecta a la IP fijada, el puerto va aparte
+  });
+
+  it("un objetivo con hostname normal SÍ manda SNI (servername) con el hostname real", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "u1" } }, error: null });
+    lookupMock.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    responseTable.set("publica.example.com", {
+      statusCode: 200,
+      headers: { "content-type": "text/html" },
+      body: "<html><title>ok</title><body>receta con contenido suficiente</body></html>",
+    });
+    await GET(makeRequest("/api/recipe-fetch?url=https://publica.example.com/receta", { authorization: "Bearer x" }));
+    const optionsUsed = requestMock.mock.calls[0][0] as { servername?: string };
+    expect(optionsUsed.servername).toBe("publica.example.com");
   });
 });
 
