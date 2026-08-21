@@ -5,6 +5,7 @@ import type { Recipe } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { importRecipeFromImage, importRecipeFromText } from "@/lib/ai-provider";
+import { getSupabase } from "@/lib/supabase";
 import { uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
@@ -33,7 +34,14 @@ export function ImportRecipeModal({ onClose }: Props) {
     if (!config) { showToast("Configura la IA en Ajustes para importar recetas"); return; }
     setUrlLoading(true);
     try {
-      const res = await fetch(`/api/recipe-fetch?url=${encodeURIComponent(trimmed)}`);
+      // /api/recipe-fetch exige sesión cuando Supabase está configurado
+      // (ver isAuthorized en la propia ruta) — en modo local-only (sin
+      // Supabase) getSession() devuelve null y el header simplemente no se
+      // manda, que es lo que la ruta espera en ese modo.
+      const session = (await getSupabase()?.auth.getSession())?.data.session;
+      const res = await fetch(`/api/recipe-fetch?url=${encodeURIComponent(trimmed)}`, {
+        headers: session ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+      });
       const data = (await res.json()) as { text?: string; jsonLd?: string | null; title?: string | null; error?: string };
       if (!res.ok || data.error) {
         showToast(data.error ?? "No se pudo descargar esa página");
