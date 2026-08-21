@@ -278,6 +278,150 @@ weeklyMaintenance =
 > no una medición del gasto contrafactual real de esa hora. Ver
 > justificación completa en §2.5.
 
+### 3.1 PR3 — mapeo confirmado, sin reabrir la fórmula
+
+Mapeo completo (código real, no hipótesis) antes de tocar `nutrition.ts`:
+
+- **Dos pipelines ya separadas**, y correctamente — PR3 solo toca la A:
+  - **A (Nutrición)**: `STRENGTH_MET`/`CARDIO_MET` (5.0/7.0 fijos) →
+    `calcHabitualTrainingAllowanceKcal` (bruto, sin restar nada) →
+    `calcTDEE` (rama `lifestyle_plus_training`) → `calcDailyTargets`/
+    `calcSummary`. `calcTDEE` no se llama desde ningún sitio fuera de
+    `nutrition.ts`.
+  - **B (Ejercicios)**: `metForMuscleGroups` (MET contextual 3.5/5.0/6.0)
+    → `estimateWorkoutKcal` (ya usa `MET−1`, es decir, ya calcula
+    `netAboveRestKcal` aunque no se llame así) → `kcalBurned` por sesión
+    logueada → `ExercisesView.tsx`. Confirmado por
+    [state.tsx:734-739](../apps/web/src/lib/state.tsx) que `kcalBurned`
+    **nunca** se suma de vuelta a `getPendingMacros` — no hay fuga entre
+    pipelines hoy.
+- **Persistencia**: `nutrition_calculation_snapshots.tdee`/
+  `.resting_energy` son `jsonb` sin esquema fijo — sin migración SQL.
+  `trainingActivity` y `workoutLog` viven en `extra_state` — tampoco.
+- **Tests**: solo un bloque pina la fórmula bruta exacta (`nutrition.test.ts`,
+  `describe("calcTDEE")`, caso `"lifestyle_plus_training: suma..."`) — se
+  reescribe completo. El resto del `describe` (fallback legacy,
+  monotonía) debería sobrevivir, se re-verifica al implementar.
+
+No hay nada en este mapeo que obligue a reabrir
+`baselineDisplaced = lifestyleTdee / 1440 × minutos` — se mantiene tal
+cual quedó cerrado.
+
+### 3.2 Tres correcciones sobre lo encontrado en el mapeo
+
+1. **El comentario de `state.tsx` queda desactualizado por el modelo v3**
+   y debe corregirse en este PR. Dice hoy: *"el PAL/perfil ya se elige en
+   función de la actividad habitual, y sumar además el gasto de cada
+   sesión concreta duplicaría ese mismo entrenamiento"* — pero
+   `LIFESTYLE_ONLY_FACTORS` (vida cotidiana) **no** incluye el
+   entrenamiento deliberado; la razón correcta es que el entrenamiento
+   habitual ya entra en el TDEE nutricional vía `replacementIncrementKcal`,
+   así que sumar además la sesión registrada volvería a contar ese
+   componente. Corregir el comentario, no solo el código.
+
+2. **Hacer explícita la semántica de `estimateWorkoutKcal()`** — hoy
+   devuelve un `number` cuyo significado real es `netAboveRestKcal`, sin
+   decirlo. Se conserva como wrapper de compatibilidad si conviene, pero
+   la API interna debe distinguir explícitamente `grossKcal` /
+   `netAboveRestKcal` / `replacementIncrementKcal` — para que dentro de
+   unos meses nadie reutilice ese número pensando que es gasto bruto o
+   incremento de TDEE.
+
+3. **Eliminar la duplicación de cálculo en `NutritionView.tsx`** — el
+   panel "Tu plan diario" reconstruye el desglose lifestyle/entreno
+   llamando directamente a `LIFESTYLE_ONLY_FACTORS` y
+   `calcHabitualTrainingAllowanceKcal` por su cuenta, en vez de leerlo de
+   `calcTDEE`. No es scope creep: se está cambiando precisamente cómo se
+   compone el TDEE, y dejar una segunda implementación manual del mismo
+   desglose es un bug preparado para el día en que una de las dos cambie
+   y la otra no. `calcTDEE()` pasa a ser un wrapper delgado:
+
+   ```ts
+   interface TdeeBreakdown {
+     restingEnergyKcal: number;
+     lifestyleTdeeKcal: number;
+     habitualTrainingGrossKcalPerDay: number;
+     baselineDisplacedKcalPerDay: number;
+     replacementIncrementKcalPerDay: number;
+     totalTdeeKcal: number;
+   }
+
+   function calcTdeeBreakdown(profile, rmr): TdeeBreakdown { ... }
+
+   function calcTDEE(profile, rmr): number {
+     return calcTdeeBreakdown(profile, rmr).totalTdeeKcal;
+   }
+   ```
+
+   La UI consume `calcTdeeBreakdown()` directamente en vez de
+   reimplementar la fórmula. Nombres de campos no cerrados al detalle —
+   la estructura y el principio (una sola fuente) sí.
+
+### 3.3 Invariantes (a proteger con tests antes de tocar código de producción)
+
+```
+grossKcal = MET × 3.5 × weightKg / 200 × minutes
+grossKcal → independiente del lifestyle
+
+netAboveRestKcal = max(0, grossKcal − standard1MetKcal)
+netAboveRestKcal → independiente del lifestyle
+
+baselineDisplaced = lifestyleTdee / 1440 × minutes
+
+replacementIncrementKcal = max(0, grossKcal − baselineDisplaced)
+replacementIncrementKcal → depende del lifestyle
+```
+
+Estructurales:
+
+```
+mismo ejercicio + mismo peso + misma duración
+  → mismo grossKcal aunque cambie lifestyle
+
+mismo ejercicio, lifestyle mayor
+  → baselineDisplaced mayor → replacementIncrement menor o igual
+
+replacementIncrement >= 0
+replacementIncrement <= grossKcal
+
+sin entrenamiento → replacementIncrement = 0 → TDEE = lifestyleTdee
+
+añadir entrenamiento con incremento > 0 → TDEE no disminuye
+
+cambiar solo duración de cardio → no cambia el componente de fuerza
+```
+
+Unidades temporales (para no volver a mezclar semanal/diario, el tipo de
+bug que ya nos costó una sesión entera):
+
+```
+weeklyTrainingIncrement = Σ replacementIncrement de las sesiones semanales
+TDEE = lifestyleTdee + weeklyTrainingIncrement / 7
+```
+
+Específico del módulo de Ejercicios (protege la separación de
+responsabilidades — cambiar cómo vive alguien fuera del gimnasio no debe
+alterar retroactivamente las calorías mostradas de una sesión concreta ya
+registrada):
+
+```
+cambiar lifestyleActivity → NO cambia grossKcal ni netAboveRestKcal
+                              de una sesión registrada
+```
+
+### 3.4 Limitación conocida, documentada y explícitamente aplazada
+
+`STRENGTH_MET = 5` y `CARDIO_MET = 7` son heurísticas agregadas, no
+valores fisiológicos precisos — el Compendium of Physical Activities 2024
+muestra variación real incluso dentro de una misma familia de ejercicios
+(p.ej. calistenia moderada ≈3.8 MET, vigorosa ≈7.5 MET) y advierte
+explícitamente que el MET estándar no está pensado para estimar con
+precisión el gasto individual, y que "1 MET" puede no coincidir con el
+RMR real de una persona concreta. PR3 **no** toca estos valores — mezclar
+"arreglar el doble conteo" con "mejorar la estimación de intensidad" en
+el mismo cambio dificultaría saber qué modificación produjo qué
+resultado. Queda como mejora futura, explícitamente no resuelta aquí.
+
 ---
 
 ## 4. Modelo de proteína
@@ -661,6 +805,13 @@ placeholder para que no se pierda como paso explícito del refactor)*
    `nutrition-v2` a propósito — el bump a `nutrition-v3` se reserva para
    el cierre de PR3, cuando el identificador signifique la migración
    completa, no solo una parte.
-3. **PR3** — Actividad/TDEE v3: modelo `replacementIncrementKcal` (§2.5 y
-   §3), tras confirmar que el modelo conceptual (este documento) no
-   necesita más ajustes antes de tocar código.
+3. **PR3** — ✅ **Diseño cerrado en documentación (§3.1-3.4), pendiente de
+   implementar.** Actividad/TDEE v3: modelo `replacementIncrementKcal`
+   (§2.5, §3), mapeo confirmado sin reabrir la fórmula, tres correcciones
+   sobre lo encontrado (comentario de `state.tsx`, semántica explícita de
+   `estimateWorkoutKcal`, `calcTdeeBreakdown` como fuente única para
+   `calcTDEE`/UI), invariantes de `grossKcal`/`netAboveRestKcal`/
+   `replacementIncrementKcal`, y `STRENGTH_MET=5`/`CARDIO_MET=7` como
+   limitación conocida explícitamente aplazada (no se toca en PR3). Al
+   cerrar la implementación: subir `NUTRITION_ENGINE_VERSION` a
+   `nutrition-v3`.
