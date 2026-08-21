@@ -68,6 +68,23 @@ export function uid(): string {
     : String(Date.now() + Math.random());
 }
 
+/** PRNG determinista (mulberry32) para datos de ejemplo que necesitan verse
+ * "naturales" (algo de ruido) pero no pueden depender de Math.random() —
+ * ver el comentario en seedDemo (E21-20): los tests e2e cargan datos demo y
+ * comprueban valores concretos, y un peso demo distinto en cada carga (antes,
+ * el ruido del historial de peso usaba Math.random()) los haría inestables
+ * sin previo aviso. La misma seed produce siempre la misma secuencia. */
+export function seededJitter(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export function dateKeyFromDate(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");

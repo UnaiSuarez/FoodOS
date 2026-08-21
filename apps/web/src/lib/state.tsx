@@ -18,7 +18,7 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, todayMinus, todayPlus, toGrams, uid } from "./utils";
+import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -503,9 +503,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     ];
     demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
     // Historial de peso demo: últimas 2 semanas con tendencia descendente ligera.
+    // E21-20: ruido determinista (seed fija), no Math.random() — los tests
+    // e2e que cargan datos demo necesitan el mismo resultado en cada carga.
+    const weightJitter = seededJitter(20260101);
     demo.weightLog = Array.from({ length: 14 }, (_, i) => ({
       date: todayMinus(13 - i),
-      kg: Math.round((78.4 - i * 0.12 + (Math.random() - 0.5) * 0.3) * 10) / 10,
+      kg: Math.round((78.4 - i * 0.12 + (weightJitter() - 0.5) * 0.3) * 10) / 10,
     }));
     saveLocalState(demo);
     remote.schedulePush(demo);
