@@ -801,17 +801,18 @@ placeholder para que no se pierda como paso explícito del refactor)*
    siquiera acepta `avgIntakeKcal`), arquitectura de tres capas
    (trajectory/suggestedDelta/eligibility) y fuente única. Ventana mínima
    cerrada en 21 días (§6.7), guardarraíl de producto explícito, no
-   hallazgo científico. `NUTRITION_ENGINE_VERSION` se mantiene en
-   `nutrition-v2` a propósito — el bump a `nutrition-v3` se reserva para
-   el cierre de PR3, cuando el identificador signifique la migración
-   completa, no solo una parte.
-3. **PR3** — ✅ **Diseño cerrado en documentación (§3.1-3.4), pendiente de
-   implementar.** Actividad/TDEE v3: modelo `replacementIncrementKcal`
-   (§2.5, §3), mapeo confirmado sin reabrir la fórmula, tres correcciones
-   sobre lo encontrado (comentario de `state.tsx`, semántica explícita de
-   `estimateWorkoutKcal`, `calcTdeeBreakdown` como fuente única para
-   `calcTDEE`/UI), invariantes de `grossKcal`/`netAboveRestKcal`/
-   `replacementIncrementKcal`, y `STRENGTH_MET=5`/`CARDIO_MET=7` como
-   limitación conocida explícitamente aplazada (no se toca en PR3). Al
-   cerrar la implementación: subir `NUTRITION_ENGINE_VERSION` a
-   `nutrition-v3`.
+   hallazgo científico.
+3. **PR3** — ✅ **Implementado.** Actividad/TDEE v3: `calcTdeeBreakdown`
+   como fuente única (`grossExerciseKcal`/`baselineDisplacedKcal`/
+   `replacementIncrementKcal`, clampados por sesión antes de sumar —
+   §2.5, §3.3), `calcTDEE()` reducido a wrapper delgado sobre
+   `.totalTdeeKcal`, `estimateWorkoutKcal` con semántica explícita de
+   `netAboveRestKcal` (pipeline B, Ejercicios, sin tocar su
+   comportamiento), duplicación eliminada en `NutritionView.tsx`
+   (`ProfileSummary` consume `calcTdeeBreakdown` en vez de reimplementar
+   el desglose), comentario de `state.tsx` corregido para citar
+   `replacementIncrementKcal` como razón real de no sumar `kcalBurned` de
+   vuelta al presupuesto. `STRENGTH_MET=5`/`CARDIO_MET=7` quedan sin
+   tocar, limitación conocida explícitamente aplazada (§3.4).
+   **`NUTRITION_ENGINE_VERSION` sube a `nutrition-v3`** — los tres PR
+   quedan cubiertos por el identificador, tal como prometía el documento.

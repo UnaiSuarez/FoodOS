@@ -27,7 +27,6 @@ import {
   BODY_FAT_SOURCE_LABELS,
   buildAdjustmentEvidence,
   calcAdaptiveTdee,
-  calcHabitualTrainingAllowanceKcal,
   calcIntakeCoverage,
   EQUIPMENT_LABELS,
   EXPERIENCE_LABELS,
@@ -36,6 +35,7 @@ import {
   calcDailyTargets,
   calcProteinRange,
   calcSummary,
+  calcTdeeBreakdown,
   calculateFiberTarget,
   calcWeightTrend,
   evaluateNutritionSafety,
@@ -45,7 +45,6 @@ import {
   isGymDay,
   isProposalStale,
   isRelevantCalibrationChange,
-  LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
   NUTRITION_ENGINE_VERSION,
   buildAdjustmentProfileFingerprint,
@@ -1799,12 +1798,11 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const safety = evaluateNutritionSafety({ targetKcal: today.kcal, estimatedTdeeKcal: tdee, restingEnergyKcal: tmb });
 
   const usesNewActivityModel = profile.activityModelVersion === "lifestyle_plus_training" && !!profile.trainingActivity;
-  const lifestyleTdee = usesNewActivityModel
-    ? Math.round(tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity!.lifestyleActivity])
-    : null;
-  const trainingAllowance = usesNewActivityModel
-    ? calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity!)
-    : null;
+  // Fuente única (nutrition-v3 §3.2) — antes este panel reconstruía el
+  // desglose llamando por su cuenta a LIFESTYLE_ONLY_FACTORS/
+  // calcHabitualTrainingAllowanceKcal, una segunda implementación del
+  // mismo cálculo que calcTDEE() ya hacía internamente.
+  const tdeeBreakdown = calcTdeeBreakdown(profile, tmb);
 
   return (
     <article className="panel form-panel">
@@ -1841,7 +1839,7 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           <strong>{tdee}</strong>
           <small>
             {usesNewActivityModel
-              ? `${lifestyleTdee} vida diaria + ${trainingAllowance} entreno`
+              ? `${tdeeBreakdown.lifestyleTdeeKcal} vida diaria + ${tdeeBreakdown.replacementIncrementKcalPerDay} entreno`
               : "kcal de mantenimiento"}
           </small>
         </div>

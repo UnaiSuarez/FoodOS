@@ -732,10 +732,15 @@ export function getLogByDay(state: FoodOSState): Array<{
 }
 
 /** Macros que quedan por consumir hoy.
- *  El gasto de entrenamiento (getKcalBurnedToday) NO se suma aquí: el PAL/perfil
- *  ya se elige en función de la actividad habitual, y sumar además el gasto de
- *  cada sesión concreta duplicaría ese mismo entrenamiento en el balance
- *  energético. El gasto se muestra en la UI como dato informativo, no como
+ *  El gasto de entrenamiento (getKcalBurnedToday) NO se suma aquí — pero OJO
+ *  con la razón correcta (nutrition-v3 §3.2): NO es que "el PAL/perfil ya
+ *  incluya la actividad habitual" — LIFESTYLE_ONLY_FACTORS (modelo
+ *  lifestyle_plus_training) cubre solo trabajo/desplazamientos/tareas, el
+ *  entrenamiento deliberado NO está ahí. La razón real es que el
+ *  entrenamiento habitual ya entra en calcTDEE() vía
+ *  replacementIncrementKcal (calcTdeeBreakdown en nutrition.ts) — sumar
+ *  además el gasto de la sesión registrada volvería a contar ese mismo
+ *  componente. El gasto se muestra en la UI como dato informativo, no como
  *  presupuesto extra — ver TodayRingPanel. */
 export function getPendingMacros(state: FoodOSState): MacroTotals {
   const consumed = getConsumedToday(state);

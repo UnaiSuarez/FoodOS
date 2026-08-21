@@ -6,8 +6,10 @@ import {
   buildAdjustmentProfileFingerprint,
   calcAdaptiveTdee,
   calcDailyTargets,
+  calcHabitualTrainingAllowanceKcal,
   calcIMC,
   calcIntakeCoverage,
+  calcTdeeBreakdown,
   calcProteinBase,
   calcProteinRange,
   calcTDEE,
@@ -56,10 +58,11 @@ describe("calcTDEE", () => {
     expect(withLevel("very_active")).toBe(Math.round(tmb * 1.9));
   });
 
-  it("lifestyle_plus_training: suma el TDEE de vida cotidiana + el gasto medio de entreno", () => {
+  it("lifestyle_plus_training (nutrition-v3 §2.5/§3): suma lifestyleTdee + replacementIncrementKcal, NO el gasto bruto del entreno", () => {
     const tmb = 1500;
+    const weightKg = 80;
     const profile = baseProfile({
-      weightKg: 80,
+      weightKg,
       activityModelVersion: "lifestyle_plus_training",
       trainingActivity: {
         lifestyleActivity: "sedentary",
@@ -70,11 +73,26 @@ describe("calcTDEE", () => {
         habitualSteps: null,
       },
     });
-    const strengthWeekly = 3 * 60 * ((5.0 * 3.5 * 80) / 200);
-    const cardioWeekly = 2 * 60 * ((7.0 * 3.5 * 80) / 200);
-    const expectedAllowance = Math.round((strengthWeekly + cardioWeekly) / 7);
-    const expected = Math.round(tmb * 1.2 + expectedAllowance);
+
+    const lifestyleTdee = tmb * 1.2; // sedentary
+    // grossKcal = MET × 3.5 × peso / 200 × minutos
+    const strengthGross = ((5.0 * 3.5 * weightKg) / 200) * 60;
+    const cardioGross   = ((7.0 * 3.5 * weightKg) / 200) * 60;
+    // baselineDisplaced = lifestyleTdee / 1440 × minutos (misma duración fuerza/cardio aquí)
+    const baselineDisplaced = (lifestyleTdee / 1440) * 60;
+    // replacementIncrement = max(0, gross - baselineDisplaced), clampado POR SESIÓN
+    const strengthIncrement = Math.max(0, strengthGross - baselineDisplaced);
+    const cardioIncrement   = Math.max(0, cardioGross - baselineDisplaced);
+    const weeklyIncrement = 3 * strengthIncrement + 2 * cardioIncrement;
+    const expectedIncrementPerDay = Math.round(weeklyIncrement / 7);
+    const expected = Math.round(lifestyleTdee) + expectedIncrementPerDay;
+
     expect(calcTDEE(profile, tmb)).toBe(expected);
+    // El bruto (lo que daba v2) habría sido mayor — confirma que NO estamos
+    // sumando gross, sino el incremento neto tras descontar el baseline.
+    const grossOnlyWeekly = 3 * strengthGross + 2 * cardioGross;
+    const grossOnlyAllowance = Math.round(grossOnlyWeekly / 7);
+    expect(expectedIncrementPerDay).toBeLessThan(grossOnlyAllowance);
   });
 
   it("lifestyle_plus_training sin trainingActivity relleno cae de vuelta al modelo legacy", () => {
@@ -94,6 +112,123 @@ describe("calcTDEE", () => {
       trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, strengthAvgDurationMin: 75, cardioAvgDurationMin: 75, habitualSteps: null },
     });
     expect(calcTDEE(heavy, tmb)).toBeGreaterThan(calcTDEE(light, tmb));
+  });
+});
+
+// ─── nutrition-v3 §2.5/§3.3 — invariantes de grossKcal/netAboveRestKcal/replacementIncrementKcal ──
+
+describe("calcTdeeBreakdown — invariantes PR3", () => {
+  const tmb = 1500;
+  const training = (overrides: Partial<TrainingActivityProfile> = {}): TrainingActivityProfile => ({
+    lifestyleActivity: "sedentary",
+    strengthDaysPerWeek: 4,
+    cardioDaysPerWeek: 3,
+    strengthAvgDurationMin: 60,
+    cardioAvgDurationMin: 45,
+    habitualSteps: null,
+    ...overrides,
+  });
+  const profileWith = (t: TrainingActivityProfile, overrides: Partial<PhysicalProfile> = {}) =>
+    baseProfile({
+      weightKg: 80,
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: t,
+      ...overrides,
+    });
+
+  it("grossKcal (habitualTrainingGrossKcalPerDay) es independiente del lifestyle — mismo entreno, mismo peso", () => {
+    const sedentary = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "sedentary" })), tmb);
+    const veryActive = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "very_active" })), tmb);
+    expect(sedentary.habitualTrainingGrossKcalPerDay).toBe(veryActive.habitualTrainingGrossKcalPerDay);
+  });
+
+  it("baselineDisplaced depende del lifestyle — a más lifestyle, más baseline ya 'reservado'", () => {
+    const sedentary = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "sedentary" })), tmb);
+    const veryActive = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "very_active" })), tmb);
+    expect(veryActive.baselineDisplacedKcalPerDay).toBeGreaterThan(sedentary.baselineDisplacedKcalPerDay);
+  });
+
+  it("replacementIncrement es monótono NO creciente según sube el lifestyle (mismo entreno)", () => {
+    const levels: PhysicalProfile["activityLevel"][] = ["sedentary", "light", "moderate", "active", "very_active"];
+    const increments = levels.map(
+      (lifestyleActivity) => calcTdeeBreakdown(profileWith(training({ lifestyleActivity })), tmb).replacementIncrementKcalPerDay
+    );
+    for (let i = 1; i < increments.length; i++) {
+      expect(increments[i]).toBeLessThanOrEqual(increments[i - 1]);
+    }
+  });
+
+  it("replacementIncrement siempre >= 0 y <= grossKcal, incluso en lifestyle muy activo con entreno ligero", () => {
+    const lightTraining = training({
+      lifestyleActivity: "very_active", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0,
+      strengthAvgDurationMin: 10, cardioAvgDurationMin: 10,
+    });
+    const breakdown = calcTdeeBreakdown(profileWith(lightTraining), tmb);
+    expect(breakdown.replacementIncrementKcalPerDay).toBeGreaterThanOrEqual(0);
+    expect(breakdown.replacementIncrementKcalPerDay).toBeLessThanOrEqual(breakdown.habitualTrainingGrossKcalPerDay);
+  });
+
+  it("sin entrenamiento (0 días fuerza y cardio): replacementIncrement = 0, TDEE = lifestyleTdee", () => {
+    const noTraining = training({ strengthDaysPerWeek: 0, cardioDaysPerWeek: 0 });
+    const breakdown = calcTdeeBreakdown(profileWith(noTraining), tmb);
+    expect(breakdown.replacementIncrementKcalPerDay).toBe(0);
+    expect(breakdown.totalTdeeKcal).toBe(breakdown.lifestyleTdeeKcal);
+  });
+
+  it("añadir entrenamiento con incremento > 0 nunca hace bajar el TDEE respecto a no entrenar", () => {
+    const noTraining = calcTdeeBreakdown(profileWith(training({ strengthDaysPerWeek: 0, cardioDaysPerWeek: 0 })), tmb);
+    const withTraining = calcTdeeBreakdown(profileWith(training()), tmb);
+    expect(withTraining.totalTdeeKcal).toBeGreaterThanOrEqual(noTraining.totalTdeeKcal);
+  });
+
+  it("cambiar solo la duración de cardio no cambia el componente de fuerza (cardioDays=0 → cardioAvgDuration es irrelevante)", () => {
+    const onlyStrength = (cardioAvgDurationMin: number) =>
+      calcTdeeBreakdown(profileWith(training({ cardioDaysPerWeek: 0, cardioAvgDurationMin })), tmb);
+    const a = onlyStrength(20);
+    const b = onlyStrength(120);
+    expect(a).toEqual(b); // con 0 días de cardio, la duración de cardio no puede afectar a nada del desglose
+  });
+
+  it("weeklyTrainingIncrement/7 == replacementIncrementKcalPerDay (no se mezclan ventanas semanal/diaria)", () => {
+    const t = training();
+    const profile = profileWith(t);
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    // Reconstruye el incremento semanal a partir de calcHabitualTrainingAllowanceKcal
+    // (misma fuente que calcTdeeBreakdown, ver calcHabitualTrainingBreakdown interno)
+    // multiplicando de vuelta por 7 con margen de redondeo de ±1.
+    const impliedWeekly = breakdown.replacementIncrementKcalPerDay * 7;
+    const allowance = calcHabitualTrainingAllowanceKcal(profile.weightKg, t, breakdown.lifestyleTdeeKcal);
+    expect(allowance).toBe(breakdown.replacementIncrementKcalPerDay);
+    expect(Math.abs(impliedWeekly - allowance * 7)).toBeLessThanOrEqual(1);
+  });
+
+  it("calcTDEE() coincide exactamente con calcTdeeBreakdown().totalTdeeKcal (wrapper delgado)", () => {
+    const profile = profileWith(training());
+    expect(calcTDEE(profile, tmb)).toBe(calcTdeeBreakdown(profile, tmb).totalTdeeKcal);
+  });
+
+  it("modelo legacy_total_pal: sin desglose — lifestyleTdeeKcal === totalTdeeKcal y los campos de entreno quedan a 0", () => {
+    const profile = baseProfile({ activityLevel: "moderate", activityModelVersion: "legacy_total_pal" });
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    expect(breakdown.lifestyleTdeeKcal).toBe(breakdown.totalTdeeKcal);
+    expect(breakdown.habitualTrainingGrossKcalPerDay).toBe(0);
+    expect(breakdown.baselineDisplacedKcalPerDay).toBe(0);
+    expect(breakdown.replacementIncrementKcalPerDay).toBe(0);
+  });
+});
+
+describe("estimateWorkoutKcal / netAboveRestKcal — independiente del lifestyle (pipeline B, Ejercicios)", () => {
+  it("cambiar lifestyleActivity no puede alterar retroactivamente las kcal de una sesión ya registrada — garantizado por la firma, no solo por comportamiento", () => {
+    // No existe forma de escribir "misma sesión con lifestyle A" vs "con
+    // lifestyle B" porque estimateWorkoutKcal(peso, min, met) no acepta
+    // perfil/lifestyle como parámetro — es estructuralmente imposible que
+    // ese dato se cuele (ver docs/NUTRITION_V3_DECISIONES.md §3.3). Esta
+    // prueba documenta esa garantía y protege que nadie añada un
+    // parámetro de lifestyle a esta función en el futuro sin darse cuenta
+    // de que rompería la separación de responsabilidades entre pipelines.
+    const sessionKcal = estimateWorkoutKcal(80, 45, 5.0);
+    expect(estimateWorkoutKcal(80, 45, 5.0)).toBe(sessionKcal);
+    expect(estimateWorkoutKcal.length).toBe(2); // (weightKg, durationMin) — met tiene default, no cuenta
   });
 });
 
@@ -970,8 +1105,8 @@ describe("evaluateAdaptiveState — test anti-7700 (prueba ejecutable del desaco
 // ─── PR8: versionado del motor + evidencia de propuestas (N1/N13) ──────────
 
 describe("NUTRITION_ENGINE_VERSION", () => {
-  it("sigue en v2 hasta que PR3 (actividad/TDEE) cierre nutrition-v3 por completo — PR1/PR2 ya cambiaron fórmulas sin subir el identificador todavía, ver comentario en nutrition.ts", () => {
-    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v2");
+  it("es la constante v3 — PR1 (bugs obligatorios + proteína) + PR2 (adaptativo por ritmo) + PR3 (replacementIncrementKcal) ya cerrados", () => {
+    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v3");
   });
 });
 

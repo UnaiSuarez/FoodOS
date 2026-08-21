@@ -628,6 +628,36 @@ export interface DailyTargets extends MacroTotals {
   dayType: DayType;
 }
 
+/**
+ * Desglose de calcTDEE() (ver calcTdeeBreakdown en nutrition.ts) — fuente
+ * única para que la UI muestre "vida diaria + entreno" sin reimplementar
+ * la fórmula por su cuenta (nutrition-v3 §3.2). En el modelo
+ * "legacy_total_pal", habitualTrainingGrossKcalPerDay/
+ * baselineDisplacedKcalPerDay/replacementIncrementKcalPerDay son 0 — el
+ * PAL clásico ya mezcla vida cotidiana y entreno en un único factor, no
+ * hay desglose que mostrar.
+ */
+export interface TdeeBreakdown {
+  restingEnergyKcal: number;
+  /** "lifestyle_plus_training": solo trabajo/desplazamientos/tareas (RMR ×
+      LIFESTYLE_ONLY_FACTORS). "legacy_total_pal": el TDEE total, porque no
+      hay desglose. */
+  lifestyleTdeeKcal: number;
+  /** Gasto bruto medio diario del entreno declarado (MET estándar, sin
+      ajustar) — diagnóstico, nunca se suma directamente al mantenimiento. */
+  habitualTrainingGrossKcalPerDay: number;
+  /** Gasto que lifestyleTdeeKcal ya asignaba a esos minutos — convención
+      contable, no medición del gasto contrafactual real de esa hora. */
+  baselineDisplacedKcalPerDay: number;
+  /** Lo único que realmente incrementa el mantenimiento respecto al
+      lifestyle ya modelado — max(0, gross − baselineDisplaced) por sesión,
+      sumado semanalmente y dividido entre 7. */
+  replacementIncrementKcalPerDay: number;
+  /** lifestyleTdeeKcal + replacementIncrementKcalPerDay — igual a
+      calcTDEE(). */
+  totalTdeeKcal: number;
+}
+
 export interface Mascot {
   id: string;
   name: string;

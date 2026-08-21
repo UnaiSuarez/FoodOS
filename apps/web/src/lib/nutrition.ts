@@ -19,6 +19,7 @@ import type {
   PhysicalProfile,
   Recipe,
   SafetyWarning,
+  TdeeBreakdown,
   TrainingActivityProfile,
   WeightEntry,
   WeightTrajectoryAssessment,
@@ -38,22 +39,22 @@ import type {
  * - nutrition-v2: añade modelo de actividad lifestyle_plus_training, tendencia
  *   de peso suavizada (mediana+EWMA+regresión), TDEE adaptativo combinado,
  *   propuestas de ajuste explícitas con guardarraíl de discrepancia >30%,
- *   diagnóstico completo, y aceptación transaccional vía RPC (PR8). Incluye
- *   también, sin haber subido el identificador todavía (deuda reconocida,
- *   no oculta): los bugs obligatorios y la proteína por base de PR1, y el
- *   controlador adaptativo por ritmo de PR2 — ver
- *   docs/NUTRITION_V3_DECISIONES.md.
- *
- * NOTA sobre nutrition-v3: PR1 y PR2 YA cambiaron fórmulas de forma que
- * afecta al resultado, pero el identificador se mantiene en "nutrition-v2"
- * hasta que PR3 (actividad/TDEE — replacementIncrementKcal) esté también
- * implementado. Subirlo ahora etiquetaría snapshots de "v3 con Adaptive
- * nuevo pero TDEE todavía v2" igual que futuros snapshots de v3 completa —
- * indistinguibles después. El bump se hace una sola vez, al cerrar PR3,
- * cuando el identificador signifique exactamente lo que promete el
- * documento de decisiones.
+ *   diagnóstico completo, y aceptación transaccional vía RPC (PR8).
+ * - nutrition-v3 (ver docs/NUTRITION_V3_DECISIONES.md): duración fuerza/
+ *   cardio separada, edad mínima 18, cobertura histórica por fecha real,
+ *   proteína por base+tipo (peso real/ajustado/masa magra, tabla propia
+ *   por objetivo) — PR1. Controlador adaptativo por RITMO
+ *   (weeklyChangePercent contra banda por objetivo) sustituyendo el uso
+ *   decisorio de 7700 kcal/kg, que pasa a diagnóstico puro — PR2. TDEE de
+ *   entrenamiento habitual vía replacementIncrementKcal (gross − baseline
+ *   desplazado por el lifestyle, nunca el gasto bruto) en vez del doble
+ *   conteo de v2, con calcTdeeBreakdown como fuente única para
+ *   calcTDEE() y la UI — PR3. Los tres PR ya estaban implementados antes
+ *   de subir este identificador (deuda reconocida en su momento, no
+ *   oculta) — el bump se hizo aquí, al cerrar PR3, cuando por fin
+ *   significa exactamente lo que promete el documento de decisiones.
  */
-export const NUTRITION_ENGINE_VERSION = "nutrition-v2";
+export const NUTRITION_ENGINE_VERSION = "nutrition-v3";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
 
@@ -139,18 +140,111 @@ function metKcalPerMin(met: number, weightKg: number): number {
   return (met * 3.5 * weightKg) / 200;
 }
 
+// ─── grossKcal / netAboveRestKcal / replacementIncrementKcal (PR3 —────────
+// ver docs/NUTRITION_V3_DECISIONES.md §2.5/§3) ─────────────────────────────
+//
+// Tres preguntas distintas, tres campos distintos — nunca confundir uno
+// por otro:
+//   grossKcal                 ¿cuánta energía estimamos que gastó la sesión?
+//   netAboveRestKcal          ¿cuánto por encima de estar en reposo?
+//   replacementIncrementKcal  ¿cuánto añade esto al mantenimiento, que ya
+//                             incluía parte de ese tiempo vía lifestyleTdee?
+// grossKcal/netAboveRestKcal son independientes del lifestyle por
+// construcción (no reciben lifestyleTdee como parámetro — la firma
+// misma impide que dependan de él). Solo replacementIncrementKcal
+// depende del lifestyle, porque es la única pregunta que necesita saber
+// qué había ya "reservado" ese tiempo.
+
+/** Gasto total estimado (MET estándar, sin ajustar) de un intervalo de
+    ejercicio. Independiente del lifestyle. */
+function grossExerciseKcal(met: number, weightKg: number, minutes: number): number {
+  return metKcalPerMin(met, weightKg) * minutes;
+}
+
+/** grossKcal por encima de 1 MET de reposo estándar durante esos mismos
+    minutos — "cuánto gastó la sesión por encima de estar sentado".
+    Independiente del lifestyle. Uso: mostrar el gasto de UNA sesión
+    concreta (módulo Ejercicios) — NUNCA para modificar el mantenimiento
+    nutricional, esa es una pregunta distinta (replacementIncrementKcal). */
+function netAboveRestKcal(met: number, weightKg: number, minutes: number): number {
+  const gross = grossExerciseKcal(met, weightKg, minutes);
+  const restKcal = metKcalPerMin(1, weightKg) * minutes;
+  return Math.max(0, gross - restKcal);
+}
+
+/** kcal que lifestyleTdee ya asignaba a esos minutos, asumiendo reparto
+    uniforme sobre 1440 min/día. CONVENCIÓN CONTABLE para evitar doble
+    conteo entre el modelo de actividad cotidiana y el ejercicio explícito
+    — NO una medición del gasto contrafactual real de esa hora concreta
+    (mezcla sueño, trabajo, desplazamientos repartidos uniformemente; una
+    hora de gimnasio normalmente sustituye una hora despierta, no una
+    fracción proporcional del día completo). Depende del lifestyle: a
+    mismo ejercicio, más lifestyle → más baseline ya "reservado" → menos
+    incremento real que aporta la sesión. */
+function baselineDisplacedKcal(lifestyleTdeeKcal: number, minutes: number): number {
+  return (lifestyleTdeeKcal / 1440) * minutes;
+}
+
+/** Lo único que debe modificar el mantenimiento estimado — nunca negativo:
+    si el baseline ya "reservado" para esos minutos supera el gasto bruto
+    de la sesión (lifestyle muy activo, sesión muy ligera), el incremento
+    es 0, no negativo — un entrenamiento nunca debe BAJAR el TDEE. */
+function replacementIncrementKcal(grossKcal: number, lifestyleTdeeKcal: number, minutes: number): number {
+  return Math.max(0, grossKcal - baselineDisplacedKcal(lifestyleTdeeKcal, minutes));
+}
+
+/**
+ * Desglose medio diario (kcal) del entrenamiento declarado en
+ * trainingActivity, repartido sobre los 7 días de la semana — fuente única
+ * interna para calcHabitualTrainingAllowanceKcal Y calcTdeeBreakdown, así
+ * nunca hay dos implementaciones de la misma suma semanal fuerza+cardio
+ * (el mismo tipo de duplicación que motivó todo el §3.2 de
+ * docs/NUTRITION_V3_DECISIONES.md). replacementIncrementPerDay es la suma
+ * de replacementIncrementKcal de cada sesión semanal, cada una clampada a
+ * >=0 ANTES de sumar — una sesión con incremento 0 nunca "resta" al
+ * incremento real de otra sesión distinta.
+ */
+function calcHabitualTrainingBreakdown(
+  weightKg: number,
+  training: TrainingActivityProfile,
+  lifestyleTdeeKcal: number,
+): { grossPerDay: number; baselineDisplacedPerDay: number; replacementIncrementPerDay: number } {
+  const strengthGross = grossExerciseKcal(STRENGTH_MET, weightKg, training.strengthAvgDurationMin);
+  const cardioGross   = grossExerciseKcal(CARDIO_MET, weightKg, training.cardioAvgDurationMin);
+  const strengthBaseline = baselineDisplacedKcal(lifestyleTdeeKcal, training.strengthAvgDurationMin);
+  const cardioBaseline   = baselineDisplacedKcal(lifestyleTdeeKcal, training.cardioAvgDurationMin);
+
+  const weeklyGross = training.strengthDaysPerWeek * strengthGross + training.cardioDaysPerWeek * cardioGross;
+  const weeklyBaseline = training.strengthDaysPerWeek * strengthBaseline + training.cardioDaysPerWeek * cardioBaseline;
+  // Cada sesión se clampa a >=0 INDIVIDUALMENTE antes de sumar — de ahí
+  // llamar a replacementIncrementKcal() por sesión en vez de restar los
+  // totales semanales ya sumados (weeklyGross - weeklyBaseline sería
+  // incorrecto: una sesión con incremento 0 no debe "restar" al
+  // incremento real de otra sesión distinta).
+  const weeklyIncrement =
+    training.strengthDaysPerWeek * replacementIncrementKcal(strengthGross, lifestyleTdeeKcal, training.strengthAvgDurationMin) +
+    training.cardioDaysPerWeek * replacementIncrementKcal(cardioGross, lifestyleTdeeKcal, training.cardioAvgDurationMin);
+
+  return {
+    grossPerDay: Math.round(weeklyGross / 7),
+    baselineDisplacedPerDay: Math.round(weeklyBaseline / 7),
+    replacementIncrementPerDay: Math.round(weeklyIncrement / 7),
+  };
+}
+
 /**
  * Gasto medio diario (kcal) que aporta el entrenamiento declarado en
- * trainingActivity, repartido sobre los 7 días de la semana — se suma al
- * TDEE de "solo vida cotidiana" en el modelo lifestyle_plus_training.
+ * trainingActivity — solo el incremento real (replacementIncrementKcal),
+ * lo único que se suma al TDEE de "solo vida cotidiana" en el modelo
+ * lifestyle_plus_training. Ver calcTdeeBreakdown para el desglose
+ * completo (gross/baseline/incremento).
  */
 export function calcHabitualTrainingAllowanceKcal(
   weightKg: number,
   training: TrainingActivityProfile,
+  lifestyleTdeeKcal: number,
 ): number {
-  const strengthWeekly = training.strengthDaysPerWeek * training.strengthAvgDurationMin * metKcalPerMin(STRENGTH_MET, weightKg);
-  const cardioWeekly   = training.cardioDaysPerWeek   * training.cardioAvgDurationMin   * metKcalPerMin(CARDIO_MET, weightKg);
-  return Math.round((strengthWeekly + cardioWeekly) / 7);
+  return calcHabitualTrainingBreakdown(weightKg, training, lifestyleTdeeKcal).replacementIncrementPerDay;
 }
 
 /**
@@ -182,21 +276,50 @@ export function migrateLegacyTrainingActivity(
 }
 
 /**
- * TDEE según el modelo de actividad del perfil (ver ActivityModelVersion):
+ * Desglose completo del TDEE — FUENTE ÚNICA (nutrition-v3 §3.2): antes la
+ * UI (NutritionView.tsx) reconstruía "vida diaria + entreno" llamando por
+ * su cuenta a LIFESTYLE_ONLY_FACTORS/calcHabitualTrainingAllowanceKcal —
+ * dos implementaciones del mismo cálculo, un bug preparado para el día en
+ * que una cambiara y la otra no. Ahora calcTDEE() es un wrapper delgado
+ * sobre esto, y la UI consume calcTdeeBreakdown() directamente.
+ *
  * - "legacy_total_pal" (por defecto): TMB × ACTIVITY_FACTORS[activityLevel],
- *   donde el PAL ya mezcla vida cotidiana y entrenamiento habitual.
+ *   donde el PAL ya mezcla vida cotidiana y entrenamiento habitual — no hay
+ *   desglose que mostrar, así que lifestyleTdeeKcal === totalTdeeKcal y los
+ *   campos de entreno quedan a 0.
  * - "lifestyle_plus_training": TMB × LIFESTYLE_ONLY_FACTORS[lifestyleActivity]
- *   + el gasto medio diario del entrenamiento declarado, calculado aparte.
- *   Si el perfil dice usar este modelo pero no ha rellenado trainingActivity
+ *   + replacementIncrementKcalPerDay del entrenamiento declarado. Si el
+ *   perfil dice usar este modelo pero no ha rellenado trainingActivity
  *   todavía (transición a medias), cae de vuelta al cálculo legacy.
  */
-export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
+export function calcTdeeBreakdown(profile: PhysicalProfile, restingEnergyKcal: number): TdeeBreakdown {
   if (profile.activityModelVersion === "lifestyle_plus_training" && profile.trainingActivity) {
-    const lifestyleTdee = tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity.lifestyleActivity];
-    const trainingAllowance = calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity);
-    return Math.round(lifestyleTdee + trainingAllowance);
+    const training = profile.trainingActivity;
+    const lifestyleTdeeKcal = Math.round(restingEnergyKcal * LIFESTYLE_ONLY_FACTORS[training.lifestyleActivity]);
+    const breakdown = calcHabitualTrainingBreakdown(profile.weightKg, training, lifestyleTdeeKcal);
+    return {
+      restingEnergyKcal,
+      lifestyleTdeeKcal,
+      habitualTrainingGrossKcalPerDay: breakdown.grossPerDay,
+      baselineDisplacedKcalPerDay: breakdown.baselineDisplacedPerDay,
+      replacementIncrementKcalPerDay: breakdown.replacementIncrementPerDay,
+      totalTdeeKcal: lifestyleTdeeKcal + breakdown.replacementIncrementPerDay,
+    };
   }
-  return Math.round(tmb * ACTIVITY_FACTORS[profile.activityLevel]);
+
+  const totalTdeeKcal = Math.round(restingEnergyKcal * ACTIVITY_FACTORS[profile.activityLevel]);
+  return {
+    restingEnergyKcal,
+    lifestyleTdeeKcal: totalTdeeKcal,
+    habitualTrainingGrossKcalPerDay: 0,
+    baselineDisplacedKcalPerDay: 0,
+    replacementIncrementKcalPerDay: 0,
+    totalTdeeKcal,
+  };
+}
+
+export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
+  return calcTdeeBreakdown(profile, tmb).totalTdeeKcal;
 }
 
 // ─── Nivel de experiencia / material (perfil, asistente de rutinas IA) ──────
@@ -1359,15 +1482,24 @@ export function distributeWeeklyCalories(params: {
   };
 }
 
-// ─── Estimación kcal quemadas por ejercicio (MET) ────────────────────────────
+// ─── Estimación kcal de una sesión de Ejercicios (MET) ───────────────────────
+// Pipeline B (ver docs/NUTRITION_V3_DECISIONES.md §3.1) — separada de la
+// pipeline de Nutrición (calcTdeeBreakdown). Estas kcal NUNCA se suman de
+// vuelta al presupuesto de hoy (getPendingMacros en state.tsx) ni a
+// calcTDEE — solo describen el gasto estimado de una sesión ya registrada.
 
 /**
- * Estimación neta de kcal quemadas (excluyendo gasto basal).
- * Usa MET 5.0 para entrenamiento de fuerza moderado.
- * Fórmula: (MET − 1) × 3.5 × peso_kg / 200 × minutos
+ * Estimación neta de kcal quemadas por una sesión registrada, excluyendo
+ * el gasto basal equivalente (netAboveRestKcal — ver definición completa
+ * junto a grossExerciseKcal, más arriba). Usa MET 5.0 por defecto
+ * (entrenamiento de fuerza moderado). Se mantiene como wrapper de
+ * compatibilidad para ExercisesView.tsx; el nombre "estimateWorkoutKcal"
+ * es legado — su significado real es netAboveRestKcal, nunca grossKcal ni
+ * replacementIncrementKcal (esos son conceptos de la pipeline de
+ * Nutrición, no de esta).
  */
 export function estimateWorkoutKcal(weightKg: number, durationMin: number, met = 5.0): number {
-  return Math.round((met - 1) * 3.5 * weightKg / 200 * durationMin);
+  return Math.round(netAboveRestKcal(met, weightKg, durationMin));
 }
 
 // ─── Escalado de recetas (§5.3) ──────────────────────────────────────────────
