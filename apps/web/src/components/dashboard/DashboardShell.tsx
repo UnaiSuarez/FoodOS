@@ -21,13 +21,16 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Search,
   type LucideIcon,
 } from "lucide-react";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
 import { VIEWS, NAV_GROUPS, type ViewId } from "@/lib/dashboard-views";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 import { QuickAddButton } from "./QuickAddButton";
+import { GlobalSearchModal } from "./GlobalSearchModal";
 import { getSavedTourStep } from "@/lib/tour-progress";
+import { consumeOpenRecipeSignal } from "@/lib/open-recipe-signal";
 
 // E03-12: traduce la clave plana de VIEWS (lib/dashboard-views.ts no puede
 // importar componentes de React, ver el comentario de ese archivo) al icono
@@ -192,6 +195,34 @@ function DashboardInner() {
     router.push(id === "dashboard" ? "/dashboard" : `/dashboard/${id}`);
   }
   const [openRecipeId, setOpenRecipeId] = useState<string | null>(null);
+  // E04-10: retoma la receta que el buscador global pidió abrir — la
+  // navegación a /dashboard/recipes remonta la página (ver
+  // open-recipe-signal.ts, mismo caso que el tour) y perdería el
+  // openRecipeId puesto justo antes de navegar si no se leyera aquí.
+  useEffect(() => {
+    const pending = consumeOpenRecipeSignal();
+    if (pending) setOpenRecipeId(pending);
+  }, []);
+  const [searchOpen, setSearchOpen] = useState(false);
+  // E04-11/12: Ctrl/Cmd+K siempre abre el buscador; "/" también, salvo con
+  // el foco en un campo de texto (donde "/" es un carácter normal a
+  // escribir, no un atajo).
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const isTypingTarget =
+        event.target instanceof HTMLElement &&
+        (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchOpen(true);
+      } else if (event.key === "/" && !isTypingTarget) {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
   const [accountOpen, setAccountOpen] = useState(false);
   const [aiConfigOpen, setAiConfigOpen] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(() => loadAIConfig() !== null);
@@ -536,6 +567,15 @@ function DashboardInner() {
               {menuOpen ? <X size={20} aria-hidden="true" /> : <Menu size={20} aria-hidden="true" />}
             </button>
             <QuickAddButton />
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Buscar (Ctrl/Cmd+K)"
+              title="Buscar (Ctrl/Cmd+K o /)"
+              onClick={() => setSearchOpen(true)}
+            >
+              <Search size={18} aria-hidden="true" />
+            </button>
           </div>
           <div className="topbar-title-row">
             <h1>{currentTitle}</h1>
@@ -598,6 +638,7 @@ function DashboardInner() {
       </nav>
 
       {openRecipeId && <RecipeDetailModal recipeId={openRecipeId} onClose={() => setOpenRecipeId(null)} />}
+      {searchOpen && <GlobalSearchModal onClose={() => setSearchOpen(false)} />}
       {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} />}
       {aiConfigOpen && (
         <AIConfigModal

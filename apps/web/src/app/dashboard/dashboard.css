@@ -442,6 +442,76 @@
   flex-shrink: 0;
 }
 
+/* E04-10/11/12: buscador global, dentro del Modal compartido. */
+.global-search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 244, 238, 0.04);
+  color: var(--muted);
+}
+
+.global-search-input-wrap input {
+  flex: 1;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 14.5px;
+  outline: none;
+}
+
+.global-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.global-search-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.global-search-item:hover,
+.global-search-item.active {
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.global-search-item svg {
+  color: var(--green);
+  flex-shrink: 0;
+}
+
+.global-search-item-label {
+  flex: 1;
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-search-item-section {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
 .file-button {
   cursor: pointer;
 }

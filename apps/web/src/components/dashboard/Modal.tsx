@@ -25,9 +25,19 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   // Gestión de foco: al abrir, entra al modal; al cerrar, vuelve al elemento
   // que lo abrió. Solo al montar/desmontar — si se re-ejecutara en cada
   // render robaría el foco al usuario mientras escribe en un campo del modal.
+  //
+  // El botón "×" de cerrar es siempre el primer elemento enfocable del DOM
+  // (va en la cabecera, antes del contenido) — sin este matiz, cualquier
+  // hijo que quisiera empezar con el foco en OTRO sitio (ej. el campo de
+  // texto de GlobalSearchModal) lo perdía en cuanto este efecto lo
+  // devolvía al botón de cerrar. data-modal-autofocus, no el prop
+  // autoFocus de React: React implementa autoFocus llamando a .focus() en
+  // el commit, sin reflejar ningún atributo "autofocus" real en el DOM —
+  // buscar [autofocus] aquí nunca encontraría nada.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    focusables()[0]?.focus();
+    const autofocusTarget = overlayRef.current?.querySelector<HTMLElement>("[data-modal-autofocus]");
+    (autofocusTarget ?? focusables()[0])?.focus();
     return () => opener?.focus?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
