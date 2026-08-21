@@ -20,6 +20,7 @@ import {
   getAdaptiveDiagnostics,
   isProposalStale,
   isRelevantCalibrationChange,
+  metForMuscleGroups,
   monthlyAmountOf,
   NUTRITION_ENGINE_VERSION,
   projectSavings,
@@ -252,6 +253,37 @@ describe("estimateWorkoutKcal", () => {
   it("resta 1 MET para excluir el gasto basal (neto, no bruto)", () => {
     // (5 - 1) * 3.5 * 80 / 200 * 45 = 252
     expect(estimateWorkoutKcal(80, 45, 5.0)).toBe(252);
+  });
+});
+
+describe("metForMuscleGroups", () => {
+  it("sin grupos musculares (rutina manual sin split), cae al MET moderado de siempre", () => {
+    expect(metForMuscleGroups(undefined)).toBe(5.0);
+    expect(metForMuscleGroups([])).toBe(5.0);
+  });
+
+  it("día de pierna/glúteo/espalda → MET vigoroso (6.0), compuesto multiarticular", () => {
+    expect(metForMuscleGroups(["piernas"])).toBe(6.0);
+    expect(metForMuscleGroups(["glúteos", "cuádriceps"])).toBe(6.0);
+    expect(metForMuscleGroups(["espalda"])).toBe(6.0);
+  });
+
+  it("día de brazo/abdomen → MET ligero (3.5), aislamiento", () => {
+    expect(metForMuscleGroups(["bíceps", "tríceps"])).toBe(3.5);
+    expect(metForMuscleGroups(["abdomen"])).toBe(3.5);
+  });
+
+  it("día de pecho/hombro (no vigoroso ni ligero) → MET moderado de siempre", () => {
+    expect(metForMuscleGroups(["pecho", "hombros"])).toBe(5.0);
+  });
+
+  it("mezcla de grupos vigorosos y ligeros en el mismo día → MET moderado (sin sesgo hacia ninguno)", () => {
+    expect(metForMuscleGroups(["piernas", "bíceps"])).toBe(5.0);
+  });
+
+  it("no distingue mayúsculas/tildes al comparar", () => {
+    expect(metForMuscleGroups(["PIERNAS"])).toBe(6.0);
+    expect(metForMuscleGroups(["Gluteo"])).toBe(6.0);
   });
 });
 

@@ -250,6 +250,7 @@ No deben crearse tickets nuevos para estos puntos salvo regresiones:
 | E07-20 | P2 |    M | Mejorar experiencia de cámara no compatible | Ofrece entrada manual y explicación sin callejón sin salida.   |
 | E07-21 | P2 |    L | Añadir historial de precios por producto    | Cada compra actualiza precio y tienda.                          |
 | E07-22 | P3 |    L | Añadir comparador de precio por unidad      | Compara formatos, tiendas y compras anteriores.                |
+| E07-23 | P3 |    S | Mostrar NOVA/Nutri-Score como dato neutro   | Se muestra la letra/grupo tal cual en la ficha de producto, sin semáforo de color ni juicio de valor — ver `INVESTIGACION_VISION_Y_ENTRENAMIENTO.md` (riesgo Noom) y E11-12/E23 (lenguaje no moralizante). Preferir NOVA sobre Nutri-Score si solo se implementa uno: Nutri-Score penaliza por densidad calórica y clasifica mal grasas saludables (aceite de oliva, frutos secos). |
 
 ---
 

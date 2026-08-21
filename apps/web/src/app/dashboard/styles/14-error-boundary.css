@@ -791,6 +791,16 @@
   flex: 1;
 }
 
+.exercise-card-muscle-img {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--bg-subtle, var(--border));
+  padding: 2px;
+}
+
 .exercise-card-add {
   flex-shrink: 0;
   padding: 5px 12px;
@@ -806,6 +816,24 @@
 .exercise-card-meta span {
   font-size: 12px;
   color: var(--muted);
+}
+
+.exercise-card-instructions {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.exercise-card-instructions summary {
+  cursor: pointer;
+  color: var(--accent, var(--text));
+  font-weight: 500;
+}
+
+.exercise-card-instructions p {
+  margin: 6px 0 0;
+  white-space: pre-line;
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 .exercise-routine-select {
@@ -846,6 +874,78 @@
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+/* Series por músculo esta semana (weeklySetsByMuscle) — solo cuenta
+   ejercicios añadidos desde el explorador de wger, ver ExercisesView.tsx */
+.muscle-volume-section {
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.muscle-volume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.muscle-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.muscle-volume-name {
+  font-size: 12px;
+  color: var(--text);
+  width: 96px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muscle-volume-bar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.muscle-volume-bar-fill {
+  height: 100%;
+  background: var(--muted);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* Dentro del rango de consenso para hipertrofia (10-20 series/semana) —
+   ver docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md §2.4 */
+.muscle-volume-bar-fill.in-range {
+  background: var(--accent);
+}
+
+.muscle-volume-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.muscle-volume-hint {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
 }
 
 .sessions-list {

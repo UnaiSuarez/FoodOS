@@ -328,19 +328,32 @@ Si no hay alimentos visibles devuelve [].`;
 
 /**
  * Analiza una foto de un alimento (o su etiqueta nutricional) con visión IA.
- * Devuelve nombre + macros para rellenar el formulario de inventario con un solo clic.
+ * Devuelve hasta 3 candidatos (el más probable primero) para que el usuario
+ * elija antes de rellenar el formulario, en vez de aceptar ciegamente el
+ * primer resultado.
+ *
+ * Por qué: un estudio comparativo de 7 plataformas de reconocimiento de
+ * alimentos (JMIR, https://pmc.ncbi.nlm.nih.gov/articles/PMC7752530/) mide
+ * top-1 vs top-5 y encuentra una diferencia de ~25 puntos porcentuales de
+ * precisión (ej. Foodvisor: 46,2% top-1 → 71,5% top-5) — el propio salto de
+ * calidad viene casi gratis con solo mostrar varios candidatos en vez de
+ * uno. Ver docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md §1.2.
+ * Cuando el modelo solo devuelve un candidato (caso claro, ej. una manzana
+ * sola en la foto) el llamador puede seguir rellenando sin fricción extra.
  */
 export async function identifyFoodFromPhoto(
   config: AIConfig,
   imageBase64: string,
   mimeType: string
-): Promise<IdentifiedFood | null> {
+): Promise<IdentifiedFood[]> {
   checkRateLimit();
   const prompt =
     `Identifica el alimento o producto de la imagen y proporciona sus datos nutricionales por 100g (o 100ml si es líquido).
-Solo JSON, sin texto extra. Formato exacto:
-{"name":"Manzana","kcal":52,"protein":0.3,"unit":"g","defaultQty":200,"storage":"Nevera","expiryDays":14}
-Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador | Despensa`;
+Si hay ambigüedad razonable sobre qué alimento es (ej. podría ser dos variedades distintas, o el envase no deja verlo con certeza), devuelve HASTA 3 candidatos posibles, el más probable primero. Si está claro, devuelve solo 1.
+Responde ÚNICAMENTE con un array JSON, sin texto extra, sin markdown. Formato exacto:
+[{"name":"Manzana","kcal":52,"protein":0.3,"unit":"g","defaultQty":200,"storage":"Nevera","expiryDays":14}]
+Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador | Despensa
+Si no se identifica nada devuelve [].`;
 
   let text = "";
 
@@ -352,7 +365,7 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
         headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
         body: JSON.stringify({
           contents: [{ parts: [{ inlineData: { mimeType, data: imageBase64 } }, { text: prompt }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 256 },
+          generationConfig: { temperature: 0, maxOutputTokens: 600 },
         }),
       });
       if (!res.ok) {
@@ -373,7 +386,7 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
             { type: "image_url", image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
             { type: "text", text: prompt },
           ]}],
-          max_tokens: 256,
+          max_tokens: 600,
         }),
       });
       if (!res.ok) {
@@ -395,7 +408,7 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
         } as Record<string, string>,
         body: JSON.stringify({
           model: config.model,
-          max_tokens: 256,
+          max_tokens: 600,
           messages: [{ role: "user", content: [
             { type: "image", source: { type: "base64", media_type: mimeType, data: imageBase64 } },
             { type: "text", text: prompt },
@@ -431,8 +444,10 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
   }
 
   try {
-    const parsed = JSON.parse(extractJSON(text)) as Partial<FoodNutriData> & { name?: string };
-    return {
+    const raw = JSON.parse(extractJSONArray(text));
+    if (!Array.isArray(raw)) return [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return raw.slice(0, 3).map((parsed: any) => ({
       name: String(parsed.name ?? "Alimento"),
       kcal: Number(parsed.kcal ?? 0),
       protein: Number(parsed.protein ?? 0),
@@ -440,10 +455,10 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
       defaultQty: Number(parsed.defaultQty ?? 100),
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(parsed.storage)) ? parsed.storage : "Nevera") as StorageName,
       expiryDays: Number(parsed.expiryDays ?? 7),
-      source: "ai",
-    };
+      source: "ai" as const,
+    }));
   } catch {
-    return null;
+    return [];
   }
 }
 

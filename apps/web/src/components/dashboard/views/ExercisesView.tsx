@@ -8,32 +8,74 @@ import { generateAIRoutine } from "@/lib/ai-provider";
 import { useEscapeToClose } from "@/lib/use-escape-key";
 import type {
   CompletedExercise,
+  CompletedSet,
   EquipmentAccess,
   ExperienceLevel,
   GoalMode,
   Routine,
   RoutineDay,
   RoutineExercise,
+  SetType,
   SplitTemplate,
   WorkoutSession,
 } from "@foodos/types";
-import { estimateWorkoutKcal, EQUIPMENT_LABELS, EXPERIENCE_LABELS } from "@/lib/nutrition";
+import { estimateWorkoutKcal, metForMuscleGroups, EQUIPMENT_LABELS, EXPERIENCE_LABELS } from "@/lib/nutrition";
+import { bestE1RM, weeklySetsByMuscle } from "@/lib/strength";
+
+// Traducción de los name_en de wger que más aparecen — el resto se muestra
+// tal cual (mejor un nombre en inglés que nada) en vez de mantener una tabla
+// exhaustiva de las ~40 entradas del catálogo de músculos de wger.
+const MUSCLE_LABELS_ES: Record<string, string> = {
+  Chest: "Pecho", Back: "Espalda", Lats: "Dorsal", Shoulders: "Hombros",
+  Biceps: "Bíceps", Triceps: "Tríceps", Abs: "Abdomen", Quads: "Cuádriceps",
+  Hamstrings: "Isquiotibiales", Glutes: "Glúteos", Calves: "Gemelos",
+  Traps: "Trapecio", Forearms: "Antebrazos",
+};
+function muscleLabel(name: string): string {
+  return MUSCLE_LABELS_ES[name] ?? name;
+}
 
 // ─── wger API types ─────────────────────────────────────────────────────────
+// wger identifica el idioma de cada traducción con un entero plano (no un
+// objeto {id, short_name} como parecía sugerir la forma anterior de este
+// tipo) — comprobado contra la API real: 1=de, 2=en, 4=es, 12=fr, etc.
+// Bug preexistente: el filtro por "en" nunca coincidía contra este campo
+// (comparaba un string con un número), así que siempre caía en trans[0].
+const WGER_LANG_ES = 4;
+const WGER_LANG_EN = 2;
+
 interface WgerTranslation {
-  language: { id: number; short_name: string } | null;
+  language: number | null;
   name: string;
+  description: string | null;
+}
+interface WgerMuscle {
+  id: number;
+  name_en: string;
+  image_url_main: string | null;
 }
 interface WgerExerciseInfo {
   id: number;
   equipment: Array<{ id: number; name: string }> | null;
-  muscles: Array<{ id: number; name_en: string }> | null;
+  muscles: WgerMuscle[] | null;
+  // Músculos que asisten al movimiento sin ser el objetivo principal — sin
+  // esto, un ejercicio como el press de banca solo contaría para "pecho" y
+  // nunca para tríceps/hombro en un futuro cálculo de volumen semanal.
+  muscles_secondary: WgerMuscle[] | null;
   translations: WgerTranslation[] | null;
 }
 interface WgerResponse {
   count: number;
   results: WgerExerciseInfo[];
 }
+
+const SET_TYPE_LABELS: Record<SetType, string> = {
+  normal:   "Normal",
+  warmup:   "Calent.",
+  dropset:  "Dropset",
+  failure:  "Fallo",
+};
+const SET_TYPES: SetType[] = ["normal", "warmup", "dropset", "failure"];
 
 const WGER_CATEGORIES = [
   { id: 10, label: "Abdomen" },
@@ -708,6 +750,36 @@ function CreateRoutineForm({
 }
 
 // ─── Log session modal ───────────────────────────────────────────────────────
+
+/**
+ * Construye el registro de series reales a partir del plan de la rutina:
+ * cada serie planeada (peso × reps) se pre-rellena como punto de partida y
+ * arranca marcada como hecha — igual de rápido que antes para quien solo
+ * quiere confirmar que siguió el plan, pero editable serie a serie para
+ * quien levantó distinto peso o hizo más/menos repeticiones. Antes esto solo
+ * guardaba un conteo agregado (setsCompleted/totalSets) sin peso ni reps
+ * reales, así que no había datos con los que calcular e1RM, PRs ni volumen.
+ */
+function buildCompletedFromExercises(exercises: RoutineExercise[]): CompletedExercise[] {
+  return exercises.map((ex) => {
+    const sets: CompletedSet[] = (ex.sets ?? []).map((s) => ({
+      reps: s.reps,
+      weight: s.weight ?? null,
+      done: true,
+      type: "normal",
+      rir: null,
+    }));
+    return {
+      exerciseId: ex.exerciseId,
+      name: ex.name,
+      setsCompleted: sets.length,
+      totalSets: sets.length,
+      sets,
+      ...(ex.muscles && ex.muscles.length > 0 && { muscles: ex.muscles }),
+    };
+  });
+}
+
 function LogSessionModal({
   routine,
   onClose,
@@ -722,13 +794,16 @@ function LogSessionModal({
   const today = getToday(state);
   const defaultDur = routine.estimatedMinutes ?? 45;
 
-  // Auto-estimate kcal using MET 5.0 (fuerza moderada) + peso del perfil
-  const weightKg = state.profile?.weightKg ?? 75;
-  const defaultKcal = estimateWorkoutKcal(weightKg, defaultDur);
-
   const days = routine.days ?? [];
   const hasDays = days.length > 0;
   const [selectedDay, setSelectedDay] = useState(0);
+
+  // Auto-estimate kcal usando el MET del grupo muscular del día seleccionado
+  // (ej. pierna/espalda pesan más que brazo/abdomen a la misma duración) +
+  // peso del perfil. Sin días con split, cae al MET moderado de siempre.
+  const weightKg = state.profile?.weightKg ?? 75;
+  const sessionMet = metForMuscleGroups(hasDays ? days[selectedDay]?.muscleGroups : undefined);
+  const defaultKcal = estimateWorkoutKcal(weightKg, defaultDur, sessionMet);
 
   const [date, setDate]       = useState(today);
   const [duration, setDur]    = useState(defaultDur);
@@ -739,42 +814,75 @@ function LogSessionModal({
   // Exercicios del día seleccionado (o de la rutina completa si no tiene split).
   const exercises = hasDays ? (days[selectedDay]?.exercises ?? []) : (routine.exercises ?? []);
   const [completed, setCompleted] = useState<CompletedExercise[]>(() =>
-    exercises.map((ex) => ({
-      exerciseId: ex.exerciseId,
-      name: ex.name,
-      setsCompleted: (ex.sets ?? []).length,
-      totalSets: (ex.sets ?? []).length,
-    })),
+    buildCompletedFromExercises(exercises),
   );
 
-  // Al cambiar de día, la checklist de ejercicios completados se reinicia al nuevo día.
+  // Temporizador de descanso: arranca solo al marcar una serie como hecha,
+  // con la duración planeada de ESA serie (ExerciseSet.rest, 60s si no se
+  // definió) — el mismo patrón que Hevy/Strong, para no tener que mirar el
+  // reloj entre series. `restTotal` se usa para la barra de progreso.
+  const [restSeconds, setRestSeconds] = useState<number | null>(null);
+  const [restTotal, setRestTotal]     = useState(60);
+
+  useEffect(() => {
+    if (restSeconds == null || restSeconds <= 0) return;
+    const id = setTimeout(() => setRestSeconds((s) => (s == null ? null : s - 1)), 1000);
+    return () => clearTimeout(id);
+  }, [restSeconds]);
+
+  // Vibración corta al llegar a 0 (si el dispositivo lo soporta) — feedback
+  // sin tener que mirar la pantalla, igual que el resto de apps de logging.
+  useEffect(() => {
+    if (restSeconds !== 0) return;
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      navigator.vibrate(200);
+    }
+  }, [restSeconds]);
+
+  // Al cambiar de día, el registro de series se reinicia al nuevo día — y la
+  // estimación de kcal se recalcula con el MET de ESE día (ej. pasar de
+  // "Pecho" a "Piernas" sube el gasto estimado), salvo que el usuario ya la
+  // haya corregido a mano.
   function handleSelectDay(idx: number) {
     setSelectedDay(idx);
-    const dayExercises = days[idx]?.exercises ?? [];
-    setCompleted(
-      dayExercises.map((ex) => ({
-        exerciseId: ex.exerciseId,
-        name: ex.name,
-        setsCompleted: (ex.sets ?? []).length,
-        totalSets: (ex.sets ?? []).length,
-      })),
-    );
+    setCompleted(buildCompletedFromExercises(days[idx]?.exercises ?? []));
+    if (!kcalEdited) {
+      const met = metForMuscleGroups(days[idx]?.muscleGroups);
+      setKcal(estimateWorkoutKcal(weightKg, duration, met));
+    }
   }
 
   // Re-estimate kcal when duration changes (unless user overrode it manually)
   function handleDurChange(val: number) {
     setDur(val);
     if (!kcalEdited) {
-      setKcal(estimateWorkoutKcal(weightKg, val));
+      setKcal(estimateWorkoutKcal(weightKg, val, sessionMet));
     }
   }
 
-  function setSetsCompleted(idx: number, val: number) {
+  /** Edita una serie concreta (peso, reps o si se hizo) y recalcula el
+      conteo agregado setsCompleted/totalSets a partir de las series reales,
+      para que siga siendo consistente con lo que ya lee el resto de la app.
+      Marcar una serie como hecha (false → true) arranca el temporizador de
+      descanso con la duración planeada de esa serie. */
+  function updateSet(exIdx: number, setIdx: number, patch: Partial<CompletedSet>) {
+    const wasDone = completed[exIdx]?.sets?.[setIdx]?.done ?? false;
     setCompleted((prev) =>
-      prev.map((ex, i) =>
-        i === idx ? { ...ex, setsCompleted: Math.max(0, Math.min(val, ex.totalSets)) } : ex,
-      ),
+      prev.map((ex, i) => {
+        if (i !== exIdx) return ex;
+        const sets = (ex.sets ?? []).map((s, j) => (j === setIdx ? { ...s, ...patch } : s));
+        return { ...ex, sets, setsCompleted: sets.filter((s) => s.done).length, totalSets: sets.length };
+      }),
     );
+    if (patch.done === true && !wasDone) {
+      const plannedRest = exercises[exIdx]?.sets?.[setIdx]?.rest ?? 60;
+      setRestTotal(plannedRest);
+      setRestSeconds(plannedRest);
+    }
+  }
+
+  function adjustRest(deltaSeconds: number) {
+    setRestSeconds((s) => (s == null ? null : Math.max(0, s + deltaSeconds)));
   }
 
   function handleSave() {
@@ -854,38 +962,90 @@ function LogSessionModal({
           </label>
         </div>
 
-        {/* Exercise completion checklist */}
+        {/* Registro de series reales: peso × reps por serie, no solo un conteo */}
         {completed.length > 0 && (
           <div className="log-exercises-section">
-            <p className="log-exercises-title">Ejercicios realizados</p>
+            <p className="log-exercises-title">Series realizadas</p>
             <ul className="log-exercises-list">
-              {completed.map((ex, i) => (
-                <li key={i} className="log-exercise-row">
-                  <span className="log-exercise-name">{ex.name}</span>
-                  <div className="log-sets-control">
-                    <button
-                      type="button"
-                      className="log-sets-btn"
-                      onClick={() => setSetsCompleted(i, ex.setsCompleted - 1)}
-                      disabled={ex.setsCompleted === 0}
-                    >
-                      −
-                    </button>
-                    <span className={`log-sets-count ${ex.setsCompleted === ex.totalSets ? "done" : ex.setsCompleted === 0 ? "zero" : "partial"}`}>
-                      {ex.setsCompleted}/{ex.totalSets}
-                    </span>
-                    <button
-                      type="button"
-                      className="log-sets-btn"
-                      onClick={() => setSetsCompleted(i, ex.setsCompleted + 1)}
-                      disabled={ex.setsCompleted >= ex.totalSets}
-                    >
-                      +
-                    </button>
-                    <span className="log-sets-label">series</span>
-                  </div>
-                </li>
-              ))}
+              {completed.map((ex, exIdx) => {
+                const e1rm = bestE1RM(ex.sets);
+                return (
+                  <li key={exIdx} className="log-exercise-card">
+                    <div className="log-exercise-header">
+                      <span className="log-exercise-name">{ex.name}</span>
+                      {e1rm != null && (
+                        <span className="log-exercise-e1rm" title="1RM estimado (Epley) de la mejor serie">
+                          e1RM ~{e1rm} kg
+                        </span>
+                      )}
+                    </div>
+                    <div className="log-sets-rows">
+                      {(ex.sets ?? []).map((s, setIdx) => (
+                        <div key={setIdx} className={`log-set-row ${s.done ? "done" : ""}`}>
+                          <span className="log-set-index">{setIdx + 1}</span>
+                          <input
+                            type="number"
+                            className="form-input form-input--small log-set-weight"
+                            value={s.weight ?? ""}
+                            min={0}
+                            step="0.5"
+                            placeholder="corporal"
+                            aria-label={`Peso serie ${setIdx + 1} de ${ex.name} (kg)`}
+                            onChange={(e) =>
+                              updateSet(exIdx, setIdx, {
+                                weight: e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                          />
+                          <span className="log-set-x">kg ×</span>
+                          <input
+                            type="number"
+                            className="form-input form-input--small log-set-reps"
+                            value={s.reps}
+                            min={0}
+                            aria-label={`Repeticiones serie ${setIdx + 1} de ${ex.name}`}
+                            onChange={(e) => updateSet(exIdx, setIdx, { reps: Number(e.target.value) })}
+                          />
+                          <span className="log-set-x">reps</span>
+                          <select
+                            className="form-input form-input--small log-set-type"
+                            value={s.type ?? "normal"}
+                            aria-label={`Tipo de serie ${setIdx + 1} de ${ex.name}`}
+                            onChange={(e) => updateSet(exIdx, setIdx, { type: e.target.value as SetType })}
+                          >
+                            {SET_TYPES.map((t) => (
+                              <option key={t} value={t}>{SET_TYPE_LABELS[t]}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            className="form-input form-input--small log-set-rir"
+                            value={s.rir ?? ""}
+                            min={0}
+                            max={10}
+                            placeholder="RIR"
+                            title="Repeticiones en reserva (0 = al fallo) — opcional"
+                            aria-label={`RIR serie ${setIdx + 1} de ${ex.name} (opcional)`}
+                            onChange={(e) =>
+                              updateSet(exIdx, setIdx, {
+                                rir: e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                          />
+                          <label className="log-set-done">
+                            <input
+                              type="checkbox"
+                              checked={s.done}
+                              onChange={(e) => updateSet(exIdx, setIdx, { done: e.target.checked })}
+                            />
+                            hecha
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}
@@ -899,6 +1059,32 @@ function LogSessionModal({
             placeholder="Opcional"
           />
         </label>
+
+        {restSeconds != null && (
+          <div className="rest-timer" role="status" aria-live="polite">
+            <div className="rest-timer-bar">
+              <div
+                className="rest-timer-fill"
+                style={{ width: `${restTotal > 0 ? Math.max(0, (restSeconds / restTotal) * 100) : 0}%` }}
+              />
+            </div>
+            <div className="rest-timer-row">
+              <span className="rest-timer-label">
+                {restSeconds > 0 ? "Descanso" : "¡Listo!"}
+              </span>
+              <span className="rest-timer-clock">
+                {Math.floor(restSeconds / 60)}:{String(restSeconds % 60).padStart(2, "0")}
+              </span>
+              <div className="rest-timer-controls">
+                <button type="button" className="rest-timer-btn" onClick={() => adjustRest(-15)}>−15s</button>
+                <button type="button" className="rest-timer-btn" onClick={() => adjustRest(15)}>+15s</button>
+                <button type="button" className="rest-timer-btn rest-timer-skip" onClick={() => setRestSeconds(null)}>
+                  Saltar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="modal-actions">
           <button className="primary-button" onClick={handleSave}>
@@ -946,7 +1132,12 @@ function ExploreTab() {
     setExercises([]);
 
     fetch(
-      `https://wger.de/api/v2/exerciseinfo/?format=json&language=2&category=${categoryId}&limit=20`,
+      // language=2 (inglés) da la cobertura de catálogo más amplia — casi todo
+      // ejercicio de wger tiene traducción en inglés, no todos en español.
+      // getExName() ya prioriza la traducción en español cuando existe.
+      // limit=250: la categoría más grande (Piernas) tiene 206 ejercicios;
+      // wger pagina a 20 por defecto si no se pide explícitamente más.
+      `https://wger.de/api/v2/exerciseinfo/?format=json&language=2&category=${categoryId}&limit=250`,
       { signal: abortRef.current.signal },
     )
       .then((r) => r.json() as Promise<WgerResponse>)
@@ -968,14 +1159,44 @@ function ExploreTab() {
   function getExName(ex: WgerExerciseInfo): string {
     const trans = ex.translations ?? [];
     return (
-      trans.find((t) => t.language?.short_name === "en")?.name ??
+      trans.find((t) => t.language === WGER_LANG_ES)?.name ??
+      trans.find((t) => t.language === WGER_LANG_EN)?.name ??
       trans[0]?.name ??
       `Ejercicio ${ex.id}`
     );
   }
 
+  // Las descripciones de wger vienen como HTML simple (<p>, <ul><li>) y a
+  // veces con mojibake (UTF-8 mal reinterpretado) en traducciones no
+  // inglesas — problema de origen en los datos de wger, no de este parseo.
+  // Aquí solo se limpian las etiquetas para poder mostrarlo como texto plano.
+  function stripHtml(html: string): string {
+    return html
+      .replace(/<\/(p|li|div)>/gi, "\n")
+      .replace(/<li>/gi, "• ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function getExDescription(ex: WgerExerciseInfo): string | null {
+    const trans = ex.translations ?? [];
+    const raw =
+      trans.find((t) => t.language === WGER_LANG_ES)?.description ??
+      trans.find((t) => t.language === WGER_LANG_EN)?.description ??
+      trans[0]?.description ??
+      null;
+    if (!raw) return null;
+    const text = stripHtml(raw);
+    return text || null;
+  }
+
   function addToRoutine(ex: WgerExerciseInfo, routineId: string) {
     const name = getExName(ex);
+    // name_en viene vacío en algunas entradas de wger (dato incompleto en su
+    // propia base) — se descartan esas para no guardar cadenas vacías.
+    const muscles          = (ex.muscles ?? []).map((m) => m.name_en).filter(Boolean);
+    const musclesSecondary = (ex.muscles_secondary ?? []).map((m) => m.name_en).filter(Boolean);
     const newEx: RoutineExercise = {
       exerciseId: String(ex.id),
       name,
@@ -984,6 +1205,8 @@ function ExploreTab() {
         { reps: 10, weight: null, rest: 60 },
         { reps: 10, weight: null, rest: 60 },
       ],
+      ...(muscles.length > 0 && { muscles }),
+      ...(musclesSecondary.length > 0 && { musclesSecondary }),
     };
     mutate((d) => {
       const r = (d.routines ?? []).find((r) => r.id === routineId);
@@ -1016,14 +1239,28 @@ function ExploreTab() {
 
       <div className="explore-list">
         {exercises.map((ex) => {
-          const name      = getExName(ex);
-          const muscles   = (ex.muscles   ?? []).map((m) => m.name_en).join(", ");
-          const equipment = (ex.equipment ?? []).map((e) => e.name).join(", ");
-          const isAdding  = addTarget === ex.id;
+          const name             = getExName(ex);
+          const muscleList        = ex.muscles ?? [];
+          const muscles           = muscleList.map((m) => m.name_en).join(", ");
+          const secondaryMuscles  = (ex.muscles_secondary ?? []).map((m) => m.name_en).join(", ");
+          const muscleImage       = muscleList.find((m) => m.image_url_main)?.image_url_main ?? null;
+          const equipment         = (ex.equipment ?? []).map((e) => e.name).join(", ");
+          const description       = getExDescription(ex);
+          const isAdding          = addTarget === ex.id;
 
           return (
             <div key={ex.id} className="exercise-card">
               <div className="exercise-card-header">
+                {muscleImage && (
+                  <img
+                    className="exercise-card-muscle-img"
+                    src={muscleImage}
+                    alt={`Músculo trabajado: ${muscles}`}
+                    loading="lazy"
+                    width={32}
+                    height={32}
+                  />
+                )}
                 <span className="exercise-card-name">{name}</span>
                 {!isAdding ? (
                   <button
@@ -1064,9 +1301,16 @@ function ExploreTab() {
                 )}
               </div>
               <div className="exercise-card-meta">
-                {muscles   && <span>Músculo: {muscles}</span>}
-                {equipment && <span>Equipo: {equipment}</span>}
+                {muscles          && <span>Músculo: {muscles}</span>}
+                {secondaryMuscles && <span>Asisten: {secondaryMuscles}</span>}
+                {equipment        && <span>Equipo: {equipment}</span>}
               </div>
+              {description && (
+                <details className="exercise-card-instructions">
+                  <summary>Cómo hacerlo</summary>
+                  <p>{description}</p>
+                </details>
+              )}
             </div>
           );
         })}
@@ -1090,6 +1334,13 @@ function HistoryTab() {
   const thisWeek = sessions.filter((s) => s.date >= weekStartStr);
   const weekKcal = thisWeek.reduce((sum, s) => sum + (s.kcalBurned ?? 0), 0);
   const weekMins = thisWeek.reduce((sum, s) => sum + s.durationMin, 0);
+  // Series de trabajo por músculo esta semana — solo cuenta ejercicios
+  // añadidos desde el explorador de wger (los únicos con músculo capturado,
+  // ver addToRoutine). El consenso de la investigación para hipertrofia es
+  // 10-20 series/músculo/semana — se usa como referencia visual del gráfico.
+  const weekSetsByMuscle = Object.entries(weeklySetsByMuscle(thisWeek))
+    .sort((a, b) => b[1] - a[1]);
+  const maxMuscleSets = weekSetsByMuscle.length > 0 ? Math.max(...weekSetsByMuscle.map(([, n]) => n), 20) : 20;
 
   function deleteSession(id: string) {
     mutate((d) => {
@@ -1119,6 +1370,27 @@ function HistoryTab() {
         </div>
       )}
 
+      {weekSetsByMuscle.length > 0 && (
+        <div className="muscle-volume-section">
+          <p className="log-exercises-title">Series por músculo esta semana</p>
+          <div className="muscle-volume-list">
+            {weekSetsByMuscle.map(([muscle, count]) => (
+              <div key={muscle} className="muscle-volume-row">
+                <span className="muscle-volume-name">{muscleLabel(muscle)}</span>
+                <div className="muscle-volume-bar-track">
+                  <div
+                    className={`muscle-volume-bar-fill ${count >= 10 && count <= 20 ? "in-range" : ""}`}
+                    style={{ width: `${Math.min(100, (count / maxMuscleSets) * 100)}%` }}
+                  />
+                </div>
+                <span className="muscle-volume-count">{count}</span>
+              </div>
+            ))}
+          </div>
+          <p className="muscle-volume-hint">Referencia habitual para hipertrofia: 10-20 series/músculo/semana.</p>
+        </div>
+      )}
+
       {sessions.length === 0 ? (
         <div className="exercises-empty">
           <p className="exercises-empty-icon">⊙</p>
@@ -1129,7 +1401,16 @@ function HistoryTab() {
         </div>
       ) : (
         <div className="sessions-list">
-          {sessions.map((s) => (
+          {sessions.map((s) => {
+            // Mejor 1RM estimado entre todos los ejercicios de la sesión —
+            // solo existe para sesiones registradas con el nuevo formato de
+            // series (peso × reps); sesiones antiguas (solo conteo agregado)
+            // devuelven null y simplemente no muestran esta pastilla.
+            const sessionE1RM = (s.completedExercises ?? []).reduce<number | null>((best, ex) => {
+              const e1rm = bestE1RM(ex.sets);
+              return e1rm != null && (best == null || e1rm > best) ? e1rm : best;
+            }, null);
+            return (
             <div key={s.id} className="session-item">
               <div className="session-item-main">
                 <span className="session-item-name">
@@ -1147,6 +1428,11 @@ function HistoryTab() {
               <div className="session-item-meta">
                 <span>{s.durationMin} min</span>
                 {s.kcalBurned ? <span>{s.kcalBurned} kcal</span> : null}
+                {sessionE1RM != null && (
+                  <span title="1RM estimado (Epley) más alto de la sesión, entre todas las series registradas">
+                    🏋 e1RM {sessionE1RM} kg
+                  </span>
+                )}
                 {s.notes ? <span className="session-item-notes">{s.notes}</span> : null}
               </div>
               <button
@@ -1157,7 +1443,8 @@ function HistoryTab() {
                 ×
               </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

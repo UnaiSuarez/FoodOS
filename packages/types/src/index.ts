@@ -630,6 +630,12 @@ export interface RoutineExercise {
   name: string;
   sets: ExerciseSet[];
   notes?: string;
+  /** Músculo(s) principal(es), capturados de wger al añadir el ejercicio
+      (name_en, ej. "Chest", "Quads") — permite agrupar volumen por músculo
+      sin volver a consultar la API. Ausente en ejercicios añadidos antes de
+      este campo o creados a mano/por IA sin pasar por el explorador. */
+  muscles?: string[];
+  musclesSecondary?: string[];
 }
 
 /** Un día de entrenamiento dentro de una rutina con split (ej. "Día 1 · Pecho y tríceps"). */
@@ -653,11 +659,36 @@ export interface Routine {
   createdAt: string; // ISO
 }
 
+/** Tipo de serie — afecta a qué cuenta como volumen "de trabajo" y a qué
+    serie sirve para estimar el 1RM. "normal" es el valor por defecto e
+    implícito cuando el campo no está (sesiones guardadas antes de esto). */
+export type SetType = "normal" | "warmup" | "dropset" | "failure";
+
+/** Una serie realmente ejecutada durante la sesión — no la serie planeada. */
+export interface CompletedSet {
+  reps: number;
+  weight?: number | null; // kg, null para ejercicios de peso corporal
+  done: boolean;
+  type?: SetType;
+  /** Repeticiones en reserva (0 = al fallo). Opcional — no todo el mundo
+      quiere registrarlo serie a serie. */
+  rir?: number | null;
+}
+
 export interface CompletedExercise {
   exerciseId: string;
   name: string;
   setsCompleted: number;
   totalSets: number;
+  /** Registro real serie a serie (peso × reps × completada). Opcional por
+      compatibilidad con sesiones guardadas antes de este campo, que solo
+      tienen el conteo agregado setsCompleted/totalSets. Con esto se puede
+      calcular e1RM, PRs y volumen real — el conteo agregado no basta. */
+  sets?: CompletedSet[];
+  /** Copia de RoutineExercise.muscles en el momento de registrar la sesión
+      — así el histórico no depende de que la rutina siga existiendo o sin
+      cambios. Ausente si el ejercicio no tenía músculo capturado. */
+  muscles?: string[];
 }
 
 export interface WorkoutSession {

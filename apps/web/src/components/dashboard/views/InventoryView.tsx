@@ -80,6 +80,10 @@ export function InventoryView() {
   const [filling, setFilling] = useState(false);
   const [scanLoading, setScanLoading] = useState(false);
   const [bulkItems, setBulkItems] = useState<import("@/lib/ai-inventory").ScannedItem[] | null>(null);
+  // E?? (top-5 en vez de top-1): candidatos ambiguos de "Foto alimento" —
+  // solo se rellena cuando el usuario elige uno; vacío cuando la IA solo
+  // devolvió un candidato claro (ya aplicado directamente) o ninguno.
+  const [photoCandidates, setPhotoCandidates] = useState<import("@/lib/ai-inventory").IdentifiedFood[]>([]);
   // Datos extra de escaneo/OFF (nutrientes, marca, foto, alérgenos) — se guardan con el item
   const [itemExtras, setItemExtras] = useState<
     Pick<InventoryItem, "carbs" | "fat" | "salt" | "fiber" | "sugars" | "brand" | "imageUrl" | "allergenTags">
@@ -293,29 +297,44 @@ export function InventoryView() {
     setMascotMessage(`${data.name} listo para añadir al inventario.`);
   }
 
+  function applyIdentifiedFood(result: import("@/lib/ai-inventory").IdentifiedFood) {
+    prevQtyRef.current = result.defaultQty;
+    setForm((prev) => ({
+      ...prev,
+      name: result.name || prev.name,
+      kcal: result.kcal,
+      protein: result.protein,
+      unit: result.unit,
+      qty: result.defaultQty,
+      storage: result.storage,
+      expires: todayPlus(result.expiryDays),
+      dataSource: "ai",
+    }));
+    setItemExtras({});
+    setPhotoCandidates([]);
+    showToast(`Identificado: ${result.name} — datos estimados por IA, revísalos`);
+    setMascotMessage(`${result.name} detectado. Revisa los datos y guarda.`);
+  }
+
   async function handleFoodPhoto(file: File) {
     const config = loadAIConfig();
     if (!config) { showToast("Configura la IA en Ajustes para usar esta función"); return; }
     setScanLoading(true);
+    setPhotoCandidates([]);
     try {
       const base64 = await fileToBase64(file);
-      const result = await identifyFoodFromPhoto(config, base64, file.type || "image/jpeg");
-      if (result) {
-        prevQtyRef.current = result.defaultQty;
-        setForm((prev) => ({
-          ...prev,
-          name: result.name || prev.name,
-          kcal: result.kcal,
-          protein: result.protein,
-          unit: result.unit,
-          qty: result.defaultQty,
-          storage: result.storage,
-          expires: todayPlus(result.expiryDays),
-          dataSource: "ai",
-        }));
-        setItemExtras({});
-        showToast(`Identificado: ${result.name} — datos estimados por IA, revísalos`);
-        setMascotMessage(`${result.name} detectado. Revisa los datos y guarda.`);
+      const results = await identifyFoodFromPhoto(config, base64, file.type || "image/jpeg");
+      if (results.length === 1) {
+        // Caso claro: un único candidato, se rellena directamente sin
+        // fricción extra — igual que antes de este cambio.
+        applyIdentifiedFood(results[0]);
+      } else if (results.length > 1) {
+        // Ambigüedad real detectada por el propio modelo: se pide al
+        // usuario que elija en vez de aceptar ciegamente el primero (ver
+        // docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md §1.2 — mostrar
+        // varios candidatos sube ~25 puntos de precisión frente a top-1).
+        setPhotoCandidates(results);
+        showToast("Varios alimentos posibles — elige el correcto");
       } else {
         showToast("No se pudo identificar el alimento. Completa los datos manualmente.");
       }
@@ -488,6 +507,32 @@ export function InventoryView() {
               }}
             />
           </div>
+
+          {photoCandidates.length > 1 && (
+            <div className="photo-candidates" role="group" aria-label="Elige el alimento correcto">
+              <p className="photo-candidates-hint">La IA no está segura — elige el alimento correcto:</p>
+              <div className="photo-candidates-list">
+                {photoCandidates.map((c, i) => (
+                  <button
+                    key={`${c.name}-${i}`}
+                    type="button"
+                    className="photo-candidate-btn"
+                    onClick={() => applyIdentifiedFood(c)}
+                  >
+                    <span className="photo-candidate-name">{c.name}</span>
+                    <span className="photo-candidate-meta">{c.kcal} kcal · {c.protein}g prot / 100{c.unit === "ml" ? "ml" : "g"}</span>
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="photo-candidates-dismiss"
+                onClick={() => setPhotoCandidates([])}
+              >
+                Ninguno — completar a mano
+              </button>
+            </div>
+          )}
 
           <div className="form-grid">
             <label className="name-label">

@@ -241,8 +241,7 @@
 [data-theme="light"] .planner-selection-banner button,
 [data-theme="light"] .exercises-tab.active,
 [data-theme="light"] .nutrition-tab.active,
-[data-theme="light"] .explore-category-btn.active,
-[data-theme="light"] .log-sets-btn:hover:not(:disabled) {
+[data-theme="light"] .explore-category-btn.active {
   color: #fff;
 }
 

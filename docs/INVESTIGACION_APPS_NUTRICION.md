@@ -212,3 +212,7 @@ Priorizadas por impacto/esfuerzo, mapeadas contra `docs/BACKLOG.md` donde ya exi
 - [Apps compatibles con Google Fit — Lifestack](https://lifestack.ai/blog/apps-to-use-with-google-fit)
 - [Fitia — sincronización con wearables](https://fitia.app/learn/article/best-calorie-tracking-apps-sync-fitness-tracker-2025)
 - [TDEE, BMR y Mifflin-St Jeor — Nutrola](https://nutrola.app/en/blog/understanding-tdee-bmr-mifflin-st-jeor-equation-calorie-goals)
+
+---
+
+**Continuación**: el pipeline de registro por foto (BitePal, Foodvisor, Cal AI, SnapCalorie) y todo el análisis de apps de entrenamiento están en [`docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md`](INVESTIGACION_VISION_Y_ENTRENAMIENTO.md).
