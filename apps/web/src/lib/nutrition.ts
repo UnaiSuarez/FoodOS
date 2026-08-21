@@ -567,9 +567,10 @@ export const MACRO_PREFERENCE_LABELS: Record<MacroPreference, string> = {
  *              negativo ACEPTADO EXPLÍCITAMENTE por el usuario (Adaptive
  *              v3, ver §6) SÍ puede bajar el target final por debajo del
  *              TDEE de la fórmula — eso no es el bug de §2.6 reaparecido:
- *              es el controlador corrigiendo la ESTIMACIÓN de TDEE de la
- *              fórmula con datos reales, con aceptación explícita, igual
- *              que para cualquier otro objetivo. Forzar un clamp aquí
+ *              evaluateAdaptiveState() no recibe ni recalcula el TDEE —
+ *              es el controlador corrigiendo el OBJETIVO respecto al
+ *              modelo estimado, con datos reales y aceptación explícita,
+ *              igual que para cualquier otro objetivo. Forzar un clamp aquí
  *              (Math.max(tdee, rawKcal)) haría que las propuestas
  *              negativas del adaptativo fueran inertes solo para
  *              muscle_gain, rompiendo la universalidad del controlador

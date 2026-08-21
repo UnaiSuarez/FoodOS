@@ -264,9 +264,14 @@ ingesta a lo largo de semanas — nunca al revés.
 
   No es una promesa sobre el target final para cualquier entrada de
   `calcDailyTargets`. Un offset adaptativo negativo, una vez aceptado, es
-  el controlador corrigiendo la ESTIMACIÓN de TDEE de la fórmula con
-  datos reales — no el bug original de §2.6 reapareciendo (ese era la
-  fórmula decidiendo un déficit sin que el usuario lo viera ni aceptara).
+  el controlador corrigiendo el OBJETIVO respecto al modelo estimado con
+  datos reales — precisión terminológica: `evaluateAdaptiveState()` no
+  recibe ni recalcula el TDEE en sí, así que "corrige el TDEE" es
+  impreciso; lo correcto es "corrige el objetivo energético según la
+  trayectoria observada", manteniendo la separación estricta entre TDEE
+  diagnóstico (`calcAdaptiveTdee`, 7700) y el controlador (§6). No es el
+  bug original de §2.6 reapareciendo (ese era la fórmula decidiendo un
+  déficit sin que el usuario lo viera ni aceptara).
   Un `Math.max(tdee, rawKcal)` habría "arreglado" esto haciendo que las
   propuestas negativas del adaptativo fueran inertes solo para
   `muscle_gain` — inconsistente con los otros tres objetivos, y por eso
