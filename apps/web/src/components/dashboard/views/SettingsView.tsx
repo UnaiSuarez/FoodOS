@@ -7,6 +7,7 @@ import { notificationsSupported } from "@/lib/notifications";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { addDaysToDateKey, uid } from "@/lib/utils";
 import { Modal } from "../Modal";
+import { StyleGuideModal } from "../StyleGuideModal";
 
 const STORES = ["Mercadona", "Lidl", "Carrefour", "Aldi", "Alcampo", "Frutería", "Carnicería", "Online"];
 
@@ -53,6 +54,7 @@ export function SettingsView({
   const [deleteAccountWord, setDeleteAccountWord] = useState("");
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [showStateJson, setShowStateJson] = useState(false);
+  const [showStyleGuide, setShowStyleGuide] = useState(false);
 
   function set<K extends keyof typeof s>(key: K, value: (typeof s)[K]) {
     mutate((draft) => { draft.settings[key] = value; });
@@ -664,6 +666,9 @@ export function SettingsView({
             <button className="secondary-button" onClick={() => setShowStateJson((v) => !v)}>
               {showStateJson ? "Ocultar estado JSON" : "🔍 Ver estado JSON"}
             </button>
+            <button className="secondary-button" onClick={() => setShowStyleGuide(true)}>
+              🎨 Documentación de componentes
+            </button>
           </div>
           {showStateJson && (
             <pre
@@ -682,6 +687,8 @@ export function SettingsView({
           )}
         </article>
       )}
+
+      {showStyleGuide && <StyleGuideModal onClose={() => setShowStyleGuide(false)} />}
 
       {confirmingClearToday && (
         <Modal title="¿Limpiar el registro de hoy?" onClose={() => setConfirmingClearToday(false)}>
