@@ -43,6 +43,19 @@ function today(): string {
   return todayPlus(0);
 }
 
+/** Extrae un mensaje legible de cualquier error, sin asumir que sea una
+    instancia de Error — un PostgrestError de supabase-js trae `.message`
+    pero no siempre puede darse por hecho que sea `instanceof Error` en
+    todas las versiones/builds. Sin este fallback, un error que no lo fuera
+    se convertía en el inútil "[object Object]" al concatenarlo con String(). */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
 // ---------- Local ----------
 
 export function loadLocalState(defaults: FoodOSState): FoodOSState {
@@ -131,11 +144,21 @@ class RemoteAdapter {
     return this.client !== null;
   }
 
-  /** true si hay un guardado local programado, en curso, o en cola de reintento.
-      Se usa para que un refresco en tiempo real no pise con datos desactualizados
-      un cambio local que aún no ha llegado al servidor (condición de carrera). */
+  /** true si hay un guardado local programado, en curso, en cola, o
+      esperando su reintento tras un fallo. Se usa para que un refresco en
+      tiempo real no pise con datos remotos desactualizados (o, tras un
+      fallo parcial, directamente INCOMPLETOS) un cambio local que aún no ha
+      llegado al servidor (condición de carrera).
+      B2 (revisión externa, 2026-08-22): antes NO incluía pushRetryTimer —
+      mientras un push fallido esperaba su reintento (hasta PUSH_RETRY_MS =
+      10s), esta función ya devolvía false, así que un refresco en tiempo
+      real de OTRA fila podía disparar una hidratación completa que pisara
+      el estado local con el resultado a medias del push que aún no se
+      había reintentado. Ver state.tsx (scheduleHydrate/onStatusChange) para
+      la otra mitad del arreglo: ahora, mientras esto sea true, un refresco
+      en tiempo real se difiere en vez de forzarse tras un margen fijo. */
   hasPendingPush(): boolean {
-    return this.pushTimer !== null || this.pushing || this.pushQueued !== null;
+    return this.pushTimer !== null || this.pushing || this.pushQueued !== null || this.pushRetryTimer !== null;
   }
 
   async init(): Promise<boolean> {
@@ -518,7 +541,16 @@ class RemoteAdapter {
     const client = this.client!;
     const userId = this.user!.id;
 
-    await client.from("user_profiles").upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });
+    // B2 (revisión externa, 2026-08-22): sin comprobar el error aquí, un
+    // fallo creando la fila base del perfil (RLS, constraint...) pasaba
+    // desapercibido y todo lo que dependiera de que esa fila existe fallaría
+    // más tarde con un error mucho más confuso (o, peor, un pushState()
+    // posterior que actualiza 0 filas sin avisar — ver el comentario grande
+    // sobre el upsert de perfil en pushState()).
+    const { error: baseProfileError } = await client
+      .from("user_profiles")
+      .upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });
+    if (baseProfileError) throw baseProfileError;
 
     const { data: almacenes } = await client.from("almacenes").select("id, name, type").eq("owner_id", userId);
     const existing = almacenes ?? [];
@@ -877,6 +909,28 @@ class RemoteAdapter {
     }, PUSH_DEBOUNCE_MS);
   }
 
+  /** B2 (revisión externa, 2026-08-21 y 2026-08-22): el bug original era
+      que pushState() nunca lanzaba en la mayoría de sus escrituras (ver el
+      comentario grande sobre pushState), así que el try/catch de aquí
+      nunca se disparaba para esos casos y "saved" se marcaba con datos
+      perdidos en el servidor. Ya arreglado — pero quedaba una segunda
+      carrera, más sutil, en ESTA función: "saved" se emitía en cuanto ESTE
+      push individual terminaba bien, sin comprobar si mientras tanto había
+      quedado otra escritura pendiente (una edición nueva del usuario en
+      pushQueued/pushTimer, o un reintento en pushRetryTimer). Como
+      RealtimeHydrationGate libera un refresco en tiempo real diferido en
+      cuanto ve "saved" (ver realtime-hydration-gate.ts), ese "saved"
+      prematuro podía disparar una hidratación que pisara la edición más
+      reciente (aún sin confirmar) con el snapshot ANTERIOR ya persistido.
+      Secuencia exacta que esto cierra: push A en curso, llega un evento
+      realtime (se difiere), el usuario edita y crea el snapshot B mientras
+      A sigue en vuelo (B queda en pushQueued o pushTimer), A termina bien
+      — ese éxito de A NO debe soltar el refresco diferido, porque B sigue
+      sin confirmar; solo cuando B (el ÚLTIMO snapshot) termina bien Y no
+      queda nada más pendiente se emite "saved" de verdad.
+      "saved" pasa a significar "el último snapshot programado está
+      confirmado y no queda ninguna escritura pendiente", no "este push
+      concreto terminó". */
   private async runPush(state: FoodOSState): Promise<void> {
     if (this.pushing) {
       this.pushQueued = state;
@@ -884,25 +938,47 @@ class RemoteAdapter {
     }
     this.pushing = true;
     this.onStatusChange?.("syncing");
+    let succeeded = false;
     try {
       await this.pushState(state);
-      this.onStatusChange?.("saved");
+      succeeded = true; // se registra aquí; el "saved" real se decide en el finally (ver arriba)
     } catch (error) {
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
       this.notifyPushError(error);
       this.onStatusChange?.("error");
-      // Reintenta este mismo guardado tras una pausa, salvo que ya haya una
-      // edición más reciente en camino (esa ya lo incluye, al ser snapshot completo).
-      this.pushRetryTimer = setTimeout(() => {
-        this.pushRetryTimer = null;
-        if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
-      }, PUSH_RETRY_MS);
+      // Reintenta este mismo guardado tras una pausa — PERO solo si no hay
+      // YA una edición más reciente en camino (esa ya lo incluye, al ser
+      // snapshot completo). B2 (revisión externa, 2026-08-22, ronda 4): este
+      // chequeo antes solo se hacía DENTRO del propio callback del retry,
+      // 10s más tarde — nunca al programarlo. Si `state` (B) ya estaba en
+      // pushTimer en ESTE momento (el usuario editó mientras A seguía en
+      // vuelo, y B aún no había disparado su debounce), el retry de A se
+      // programaba de todos modos, sin nada que lo cancelara mientras
+      // tanto: B se ejecutaba y tenía éxito, pero 10s después el retry de A
+      // disparaba igual (pushQueued/pushTimer ya estaban limpios para
+      // entonces) y reenviaba el snapshot VIEJO, sobrescribiendo el de B ya
+      // persistido. El caso "B ya está en pushQueued" no tenía este problema
+      // — el finally de más abajo llama a schedulePush(queued), que cancela
+      // cualquier pushRetryTimer existente — pero el caso "B en pushTimer"
+      // sí, porque ese branch nunca toca pushRetryTimer.
+      if (!this.pushQueued && !this.pushTimer) {
+        this.pushRetryTimer = setTimeout(() => {
+          this.pushRetryTimer = null;
+          if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
+        }, PUSH_RETRY_MS);
+      }
     } finally {
       this.pushing = false;
       if (this.pushQueued) {
+        // Hay una edición más reciente esperando: se encadena sin emitir
+        // "saved" todavía — ese snapshot (state, el que acaba de terminar)
+        // ya está obsoleto frente a `queued`.
         const queued = this.pushQueued;
         this.pushQueued = null;
         this.schedulePush(queued);
+      } else if (succeeded && !this.pushTimer && !this.pushRetryTimer) {
+        // Nada más pendiente: este SÍ era el último snapshot, y tuvo éxito.
+        this.onStatusChange?.("saved");
       }
     }
   }
@@ -917,13 +993,53 @@ class RemoteAdapter {
     this.onPushError(error);
   }
 
+  /**
+   * Sincroniza el snapshot completo del estado local con Supabase.
+   *
+   * Fail-closed frente a errores de escritura (B2, revisión externa,
+   * 2026-08-21): antes, NINGUNA de las llamadas de este método comprobaba
+   * `{ error }` en la respuesta de Supabase-js — salvo el upsert dentro de
+   * syncTable(), que sí lanzaba. Supabase-js NO lanza excepciones en
+   * fallos de escritura (permiso denegado por RLS, columna inválida,
+   * violación de constraint...): los reporta como `{ data: null, error }`
+   * con la promesa resuelta igualmente. Sin comprobar ese campo, un
+   * pushState() que fallara a medias (p.ej. el perfil no se pudo guardar
+   * por RLS, pero el resto de tablas sí) terminaba SIN lanzar, así que
+   * runPush() lo trataba como éxito total: onStatusChange?.("saved") y el
+   * indicador de la UI decía "guardado" con el perfil realmente perdido en
+   * el servidor.
+   *
+   * Cada escritura relevante (perfil, pesos + su borrado, objetivos
+   * nutricionales, y cada syncTable) se intenta con mejor esfuerzo — un
+   * fallo en una no impide intentar las demás, porque son tablas
+   * independientes sin relación entre sí. Los fallos se acumulan y, si hay
+   * alguno, se lanza al final UN error agregado: eso es lo que hace que
+   * runPush() (que si envuelve pushState en try/catch) NO marque
+   * onStatusChange?.("saved") y programe un reintento (ver runPush más
+   * abajo). El reintento reenvía el MISMO snapshot completo: como cada
+   * operación es upsert (onConflict) + delete del complemento, repetir una
+   * escritura que ya tuvo éxito es un no-op idempotente — no duplica filas
+   * ni pierde las que sí se guardaron a la primera. Solo lo que de verdad
+   * falló necesita reintentarse, y reintentarlo junto con lo que ya
+   * funcionó no tiene coste de corrección, solo un poco de red de más.
+   */
   async pushState(state: FoodOSState): Promise<void> {
     const client = this.client!;
     const userId = this.user!.id;
+    const failures: string[] = [];
 
-    await client
+    // upsert(onConflict: "user_id"), NO update().eq("user_id", userId) (B2,
+    // revisión externa, 2026-08-22): un UPDATE que no encuentra ninguna fila
+    // que coincida (RLS que filtra la fila sin marcarlo como error, o la
+    // fila base todavía no existe pese a ensureBaseRows()) devuelve
+    // { error: null } de todos modos — "éxito" con CERO filas afectadas.
+    // pushState() daría el perfil por guardado sin haberse escrito nada. Un
+    // upsert con la fila garantiza que, si no existía, se crea; si existía,
+    // se actualiza — no hay ningún resultado silencioso de "no hice nada".
+    const { error: profileError } = await client
       .from("user_profiles")
-      .update({
+      .upsert({
+        user_id: userId,
         mascot_id: state.mascotId,
         weekly_food_budget: state.weeklyBudget,
         extra_state: {
@@ -968,26 +1084,47 @@ class RemoteAdapter {
               onboarding_completed: true,
             }
           : {}),
-      })
-      .eq("user_id", userId);
+      }, { onConflict: "user_id" });
+    if (profileError) failures.push(`perfil: ${profileError.message}`);
 
     // water_log: se gestiona exclusivamente via fn_water_increment (RPC atómica).
     // No se incluye en el push completo para evitar conflictos de concurrencia entre tabs.
 
-    // weight_log: upsert + delete de entradas borradas
-    if ((state.weightLog ?? []).length > 0) {
-      const weightRows = state.weightLog.map((e) => ({ user_id: userId, log_date: e.date, kg: e.kg }));
-      await client.from("weight_log").upsert(weightRows, { onConflict: "user_id,log_date" });
-      // Borrar entradas que ya no están en el estado
-      const { data: existingWeights } = await client.from("weight_log").select("log_date").eq("user_id", userId);
-      const keepDates = new Set(state.weightLog.map((e) => e.date));
-      const toDeleteDates = (existingWeights ?? []).map((r) => r.log_date).filter((d) => !keepDates.has(d as string));
-      if (toDeleteDates.length) {
-        await client.from("weight_log").delete().eq("user_id", userId).in("log_date", toDeleteDates);
+    // weight_log: upsert de lo que hay + borrado de lo que ya no está. El
+    // chequeo de borrado corre SIEMPRE, incluso si el estado local se quedó
+    // sin ninguna entrada — antes el bloque entero se saltaba cuando
+    // weightLog estaba vacío, así que borrar la ÚLTIMA entrada de peso local
+    // nunca se propagaba: la fila quedaba huérfana en remoto para siempre.
+    // Si el upsert falla, se salta el borrado de esta pasada — sin saber qué
+    // filas llegaron a persistirse de verdad, borrar por diferencia podría
+    // eliminar datos válidos; el reintento completo (mismo snapshot) lo
+    // resuelve limpiamente en el siguiente intento.
+    {
+      const weightRows = (state.weightLog ?? []).map((e) => ({ user_id: userId, log_date: e.date, kg: e.kg }));
+      let weightUpsertOk = true;
+      if (weightRows.length > 0) {
+        const { error: weightUpsertError } = await client.from("weight_log").upsert(weightRows, { onConflict: "user_id,log_date" });
+        if (weightUpsertError) {
+          failures.push(`peso (guardado): ${weightUpsertError.message}`);
+          weightUpsertOk = false;
+        }
+      }
+      if (weightUpsertOk) {
+        const { data: existingWeights, error: weightSelectError } = await client.from("weight_log").select("log_date").eq("user_id", userId);
+        if (weightSelectError) {
+          failures.push(`peso (lectura para borrado): ${weightSelectError.message}`);
+        } else {
+          const keepDates = new Set(weightRows.map((r) => r.log_date));
+          const toDeleteDates = (existingWeights ?? []).map((r) => r.log_date as string).filter((d) => !keepDates.has(d));
+          if (toDeleteDates.length) {
+            const { error: weightDeleteError } = await client.from("weight_log").delete().eq("user_id", userId).in("log_date", toDeleteDates);
+            if (weightDeleteError) failures.push(`peso (borrado): ${weightDeleteError.message}`);
+          }
+        }
       }
     }
 
-    await client.from("nutrition_goals").upsert(
+    const { error: goalError } = await client.from("nutrition_goals").upsert(
       {
         user_id: userId,
         goal_date: state.debugDate ?? today(),
@@ -999,109 +1136,142 @@ class RemoteAdapter {
       },
       { onConflict: "user_id,goal_date" }
     );
+    if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
 
-    await this.syncTable(
-      "inventory_items",
-      state.inventory,
-      (item) => ({
-        id: ensureUuid(item.id),
-        owner_id: userId,
-        almacen_id: this.almacenIdByName[item.storage] ?? this.almacenIdByName.Despensa,
-        name: item.name,
-        quantity: item.qty,
-        unit: item.unit,
-        expiry_date: item.expires || null,
-        price_estimate: item.price || null,
-        kcal_per_100: item.kcal || null,
-        protein_per_100: item.protein || null,
-        carbs_per_100: item.carbs ?? null,
-        fat_per_100: item.fat ?? null,
-        salt_per_100: item.salt ?? null,
-        fiber_per_100: item.fiber ?? null,
-        sugars_per_100: item.sugars ?? null,
-        unit_size: item.unitSize ?? null,
-        brand: item.brand ?? null,
-        image_url: item.imageUrl ?? null,
-        allergen_tags: item.allergenTags ?? null,
-      }),
-      { owner_id: userId }
+    // Cada syncTable() es independiente de las demás (tablas sin relación
+    // entre sí) — un fallo en una no impide intentar el resto; se recoge el
+    // error para el agregado final en vez de dejar que aborte todo pushState.
+    await this.trySyncTable(failures, "inventario", () =>
+      this.syncTable(
+        "inventory_items",
+        state.inventory,
+        (item) => ({
+          id: ensureUuid(item.id),
+          owner_id: userId,
+          almacen_id: this.almacenIdByName[item.storage] ?? this.almacenIdByName.Despensa,
+          name: item.name,
+          quantity: item.qty,
+          unit: item.unit,
+          expiry_date: item.expires || null,
+          price_estimate: item.price || null,
+          kcal_per_100: item.kcal || null,
+          protein_per_100: item.protein || null,
+          carbs_per_100: item.carbs ?? null,
+          fat_per_100: item.fat ?? null,
+          salt_per_100: item.salt ?? null,
+          fiber_per_100: item.fiber ?? null,
+          sugars_per_100: item.sugars ?? null,
+          unit_size: item.unitSize ?? null,
+          brand: item.brand ?? null,
+          image_url: item.imageUrl ?? null,
+          allergen_tags: item.allergenTags ?? null,
+        }),
+        { owner_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "shopping_items",
-      state.cart,
-      (item) => ({
-        id: ensureUuid(item.id),
-        list_id: this.shoppingListId,
-        user_id: userId,
-        name: item.name,
-        quantity: item.qty,
-        unit: item.unit,
-        estimated_price: item.price || null,
-        store: item.store || null,
-        checked: Boolean(item.checked),
-        unit_size: item.unitSize ?? null,
-      }),
-      { user_id: userId, list_id: this.shoppingListId! }
+    await this.trySyncTable(failures, "carrito", () =>
+      this.syncTable(
+        "shopping_items",
+        state.cart,
+        (item) => ({
+          id: ensureUuid(item.id),
+          list_id: this.shoppingListId,
+          user_id: userId,
+          name: item.name,
+          quantity: item.qty,
+          unit: item.unit,
+          estimated_price: item.price || null,
+          store: item.store || null,
+          checked: Boolean(item.checked),
+          unit_size: item.unitSize ?? null,
+        }),
+        { user_id: userId, list_id: this.shoppingListId! }
+      )
     );
 
-    await this.syncTable(
-      "gastos",
-      state.expenses,
-      (entry) => ({
-        id: ensureUuid(entry.id),
-        user_id: userId,
-        amount: entry.type === "income" ? -Math.abs(entry.amount) : Math.abs(entry.amount),
-        description: entry.description || null,
-        category: entry.category,
-        txn_date: entry.date || today(),
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "gastos", () =>
+      this.syncTable(
+        "gastos",
+        state.expenses,
+        (entry) => ({
+          id: ensureUuid(entry.id),
+          user_id: userId,
+          amount: entry.type === "income" ? -Math.abs(entry.amount) : Math.abs(entry.amount),
+          description: entry.description || null,
+          category: entry.category,
+          txn_date: entry.date || today(),
+        }),
+        { user_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "ingresos_fuentes",
-      state.incomeSources,
-      (source) => ({
-        id: ensureUuid(source.id),
-        user_id: userId,
-        name: source.name,
-        amount: source.amount,
-        frequency: source.frequency,
-        day_of_month: source.dayOfMonth,
-        active: source.active,
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "ingresos", () =>
+      this.syncTable(
+        "ingresos_fuentes",
+        state.incomeSources,
+        (source) => ({
+          id: ensureUuid(source.id),
+          user_id: userId,
+          name: source.name,
+          amount: source.amount,
+          frequency: source.frequency,
+          day_of_month: source.dayOfMonth,
+          active: source.active,
+        }),
+        { user_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "food_log",
-      state.foodLog,
-      (entry) => ({
-        id: ensureUuid(entry.id),
-        user_id: userId,
-        log_date: entry.date,
-        item_name: entry.name,
-        quantity_g: entry.unit === "g" || entry.unit === "ml" ? entry.qty : null,
-        kcal: entry.kcal,
-        protein_g: entry.protein,
-        carbs_g: entry.carbs,
-        fat_g: entry.fat,
-        source: entry.source,
-        // Metadata no tabular: qty/unit reales (para "ud"), hora, y los datos que
-        // permiten devolver al inventario al borrar (item origen o ingredientes).
-        client_meta: {
-          qty: entry.qty,
-          unit: entry.unit,
-          time: entry.time,
-          mealType: entry.mealType,
-          ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
-          ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
-          ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
-        },
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "diario", () =>
+      this.syncTable(
+        "food_log",
+        state.foodLog,
+        (entry) => ({
+          id: ensureUuid(entry.id),
+          user_id: userId,
+          log_date: entry.date,
+          item_name: entry.name,
+          quantity_g: entry.unit === "g" || entry.unit === "ml" ? entry.qty : null,
+          kcal: entry.kcal,
+          protein_g: entry.protein,
+          carbs_g: entry.carbs,
+          fat_g: entry.fat,
+          source: entry.source,
+          // Metadata no tabular: qty/unit reales (para "ud"), hora, y los datos que
+          // permiten devolver al inventario al borrar (item origen o ingredientes).
+          client_meta: {
+            qty: entry.qty,
+            unit: entry.unit,
+            time: entry.time,
+            mealType: entry.mealType,
+            ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
+            ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
+            ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
+          },
+        }),
+        { user_id: userId }
+      )
     );
+
+    // Fail-closed: si CUALQUIER escritura falló, se lanza aquí — esto es lo
+    // que hace que runPush() (ver más abajo) NO marque onStatusChange?.("saved")
+    // y programe un reintento con el mismo snapshot en vez de darlo por bueno.
+    if (failures.length > 0) {
+      throw new Error(`pushState: fallo(s) sincronizando — ${failures.join(" | ")}`);
+    }
+  }
+
+  /** Ejecuta un syncTable() capturando su error (si lo lanza) en `failures`
+      en vez de dejar que se propague — así el resto de tablas de pushState
+      se siguen intentando aunque esta falle (ver el comentario grande de
+      pushState). */
+  private async trySyncTable(failures: string[], label: string, run: () => Promise<void>): Promise<void> {
+    try {
+      await run();
+    } catch (err) {
+      failures.push(`${label}: ${errorMessage(err)}`);
+    }
   }
 
   // Upsert de filas actuales + delete de las que desaparecieron del estado.
@@ -1123,15 +1293,25 @@ class RemoteAdapter {
       if (error) throw error;
     }
 
+    // El chequeo de borrado (lectura de ids existentes + delete del
+    // complemento) también tiene que lanzar en error — antes ninguno de los
+    // dos se comprobaba, así que un fallo aquí dejaba filas borradas
+    // localmente pero nunca borradas en remoto, y pushState() lo daba por
+    // sincronizado igualmente (B2, revisión externa 2026-08-21). Si la
+    // LECTURA falla no sabemos qué ids existen de verdad en remoto — lanzar
+    // aquí y no intentar el delete evita borrar de más con un `existing`
+    // incompleto o vacío por error.
     let query = client.from(table).select("id");
     for (const [column, value] of Object.entries(ownershipFilter)) {
       query = query.eq(column, value);
     }
-    const { data: existing } = await query;
+    const { data: existing, error: selectError } = await query;
+    if (selectError) throw selectError;
     const keep = new Set(rows.map((row) => row.id));
     const toDelete = (existing ?? []).map((row) => row.id).filter((id) => !keep.has(id));
     if (toDelete.length) {
-      await client.from(table).delete().in("id", toDelete);
+      const { error: deleteError } = await client.from(table).delete().in("id", toDelete);
+      if (deleteError) throw deleteError;
     }
   }
 }

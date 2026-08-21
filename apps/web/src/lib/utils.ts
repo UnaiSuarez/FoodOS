@@ -149,8 +149,55 @@ export function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
+/** FNV-1a de 32 bits — hash rápido y determinista, no criptográfico (no hace
+    falta: solo migra ids legacy de forma estable, no protege nada sensible
+    a colisiones maliciosas). `seed` distinto en cada llamada de
+    deterministicUuidFrom() para cubrir los 128 bits de una UUID a partir de
+    un único hash de 32 bits. */
+function fnv1a(value: string, seed: number): number {
+  let hash = seed >>> 0;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/** Deriva una UUID v5-like DETERMINISTA a partir de un string arbitrario: el
+    mismo `value` de entrada produce SIEMPRE la misma UUID de salida, sin
+    importar cuándo ni en qué sesión se calcule.
+    Por qué hace falta (B2, revisión externa, 2026-08-22): antes,
+    ensureUuid() llamaba a crypto.randomUUID() para cualquier id legacy no-
+    UUID — una función distinta cada vez. syncTable() mutaba item.id en el
+    propio estado para que un REINTENTO EN LA MISMA SESIÓN (mismo objeto JS)
+    reutilizara la id ya generada, pero esa mutación se pierde en cualquier
+    punto donde el estado se reconstruya desde cero con la id legacy
+    original — recargar la página entre el guardado local (que ocurre ANTES
+    del push debounced) y que el push llegue a completarse, o simplemente
+    abrir la app en otro dispositivo antes de que ese primer push tenga
+    éxito. Cada vez que eso pasa, el mismo item legacy genera una fila
+    NUEVA en vez de actualizar la que ya existía — duplicados que además
+    pueden no limpiarse solos si el borrado de la fila huérfana también
+    falla. Una derivación determinista por el VALOR del id legacy (no por
+    sesión) hace que esto sea imposible estructuralmente: no depende de que
+    ninguna mutación sobreviva a nada. */
+function deterministicUuidFrom(value: string): string {
+  const words = [0, 1, 2, 3].map((i) => fnv1a(`${i}:${value}`, 0x811c9dc5));
+  const bytes = new Uint8Array(16);
+  words.forEach((w, i) => {
+    bytes[i * 4] = (w >>> 24) & 0xff;
+    bytes[i * 4 + 1] = (w >>> 16) & 0xff;
+    bytes[i * 4 + 2] = (w >>> 8) & 0xff;
+    bytes[i * 4 + 3] = w & 0xff;
+  });
+  bytes[6] = (bytes[6] & 0x0f) | 0x50; // versión 5 (derivada por nombre, no aleatoria)
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variante RFC 4122
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function ensureUuid(value: string): string {
-  return isUuid(value) ? value : crypto.randomUUID();
+  return isUuid(value) ? value : deterministicUuidFrom(value);
 }
 
 const NAME_MATCH_STOPWORDS = new Set(["de", "del", "la", "el", "los", "las", "con", "sin", "y", "al"]);
