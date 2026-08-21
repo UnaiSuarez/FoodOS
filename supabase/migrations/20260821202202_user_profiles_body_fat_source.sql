@@ -8,6 +8,13 @@
 -- usuario no lo indicó) — no se añade un valor 'unknown' porque NULL ya
 -- expresa exactamente eso; tener ambos crearía dos estados equivalentes.
 -- Idempotente: ADD COLUMN IF NOT EXISTS.
+--
+-- Aplicada ya en remoto vía MCP apply_migration (2026-08-21) antes de
+-- renombrar este archivo — mismo motivo que en
+-- 20260821202150_user_profiles_age_min18.sql: el timestamp del nombre se
+-- ajustó para coincidir con la versión registrada en el historial remoto,
+-- no con la fecha de creación del archivo. El SQL no se re-ejecuta al
+-- renombrar.
 
 alter table public.user_profiles
   add column if not exists body_fat_source text
