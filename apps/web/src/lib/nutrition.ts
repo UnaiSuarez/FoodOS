@@ -6,6 +6,7 @@ import type {
   AdjustmentDecision,
   AdjustmentProfileFingerprint,
   AdjustmentProposalEvidence,
+  BodyFatSource,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
@@ -198,6 +199,18 @@ export const EQUIPMENT_LABELS: Record<EquipmentAccess, string> = {
   bodyweight:     "Sin material",
 };
 
+/** Etiquetas de BodyFatSource para el <select> del formulario — ver
+    docs/NUTRITION_V3_DECISIONES.md §2.4/§9. El orden refleja fiabilidad
+    decreciente, de más a menos precisa. */
+export const BODY_FAT_SOURCE_LABELS: Record<BodyFatSource, string> = {
+  dxa:              "DEXA / DXA",
+  bia_professional: "Báscula/analizador profesional (clínica, gimnasio)",
+  smart_scale:      "Báscula inteligente doméstica",
+  skinfold:         "Plicómetro / pliegues cutáneos",
+  visual_estimate:  "Estimación visual",
+  other:            "Otro método",
+};
+
 // ─── IMC ─────────────────────────────────────────────────────────────────────
 
 export function calcIMC(weightKg: number, heightCm: number): number {
@@ -245,19 +258,44 @@ export function usesEspenAdjustedWeight(profile: PhysicalProfile): boolean {
   return profile.weightKg > idealWeight * 1.25;
 }
 
-export function calcProteinBase(profile: PhysicalProfile): number {
+/**
+ * Qué tipo de peso de referencia se usó para proteína — nutrition-v3
+ * (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4): antes calcProteinBase
+ * devolvía un `number` desnudo y calcDailyTargets aplicaba EL MISMO
+ * multiplicador g/kg a las tres bases indiscriminadamente. Efecto
+ * observable del bug: introducir el % de grasa (un dato "más preciso")
+ * podía BAJAR la proteína recomendada, porque 2.0 g/kg de masa magra da un
+ * número mucho menor que 2.0 g/kg de peso ajustado/real. resolveProteinBase
+ * nunca pierde de qué tipo es la base antes de aplicar el multiplicador —
+ * ver PROTEIN_PER_KG_BY_BASE_AND_GOAL, que tiene una fila propia para
+ * fat_free_mass.
+ */
+export type ProteinBaseKind = "actual_weight" | "adjusted_weight" | "fat_free_mass";
+
+export interface ProteinBase {
+  kind: ProteinBaseKind;
+  kg: number;
+}
+
+export function resolveProteinBase(profile: PhysicalProfile): ProteinBase {
   if (profile.bodyFatPct != null) {
-    return profile.weightKg * (1 - profile.bodyFatPct / 100);
+    return { kind: "fat_free_mass", kg: profile.weightKg * (1 - profile.bodyFatPct / 100) };
   }
 
   const heightM     = profile.heightCm / 100;
   const idealWeight = 25 * heightM * heightM; // IMC 25
 
   if (usesEspenAdjustedWeight(profile)) {
-    return idealWeight + (profile.weightKg - idealWeight) * 0.33;
+    return { kind: "adjusted_weight", kg: idealWeight + (profile.weightKg - idealWeight) * 0.33 };
   }
 
-  return profile.weightKg;
+  return { kind: "actual_weight", kg: profile.weightKg };
+}
+
+/** Compatibilidad: solo el kg de la base, sin el tipo — usar
+    resolveProteinBase() en código nuevo que necesite ramificar por tipo. */
+export function calcProteinBase(profile: PhysicalProfile): number {
+  return resolveProteinBase(profile).kg;
 }
 
 // ─── Modos de objetivo ───────────────────────────────────────────────────────
@@ -277,17 +315,73 @@ export const GOAL_DESCRIPTIONS: Record<GoalMode, string> = {
 };
 
 interface GoalConfig {
-  /** g/kg sobre calcProteinBase() — ver comentario en calcDailyTargets. */
-  proteinPerKg: number;
   /** Fracción de kcal para grasa. */
   fatPct: number;
 }
 
 const GOAL_CONFIG: Record<GoalMode, GoalConfig> = {
-  fat_loss:    { proteinPerKg: 2.0, fatPct: 0.25 },
-  muscle_gain: { proteinPerKg: 1.8, fatPct: 0.25 },
-  recomp:      { proteinPerKg: 2.0, fatPct: 0.25 },
-  maintain:    { proteinPerKg: 1.8, fatPct: 0.28 },
+  fat_loss:    { fatPct: 0.25 },
+  muscle_gain: { fatPct: 0.25 },
+  recomp:      { fatPct: 0.25 },
+  maintain:    { fatPct: 0.28 },
+};
+
+/**
+ * g/kg de proteína por (tipo de base × objetivo) — nutrition-v3, ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.4/§4. Heurísticas de producto con
+ * distinto grado de respaldo directo en literatura, documentado fila por
+ * fila para no venderlas todas como igual de "científicas":
+ *
+ * actual_weight / adjusted_weight — conservan los multiplicadores de v2
+ * como decisión de compatibilidad y heurística de producto, no como una
+ * equivalencia validada. El ajuste ESPEN (0.33, ver resolveProteinBase)
+ * reduce el riesgo de sobreestimar necesidades en perfiles con obesidad,
+ * pero ese coeficiente procede de contextos clínicos (obesidad, enfermedad
+ * renal, hospitalización) — no hay respaldo para afirmar que se diseñó
+ * específicamente para poder reutilizar sin más el multiplicador deportivo
+ * de 2.0 g/kg de esta app. Comparten fila porque es una decisión de FoodOS
+ * de mantener continuidad con v2, no porque ESPEN certifique esa cifra.
+ *
+ * fat_free_mass — la fila nueva, con respaldo desigual (jerarquía explícita,
+ *   de más a menos anclada en evidencia directa):
+ *   - fat_loss (2.6): EXTRAPOLACIÓN CONSERVADORA dentro de evidencia
+ *     específica. Helms et al. 2014 sitúa 2.3–3.1 g/kg FFM para atletas de
+ *     fuerza NATURALES, MAGROS y EN RESTRICCIÓN CALÓRICA — y dentro de ese
+ *     rango, recomienda subir hacia el extremo alto cuanto menor sea el %
+ *     graso, mayor el déficit y mayor la prioridad de preservar masa magra.
+ *     Eso respalda que la rama FFM de fat_loss use un valor más alto que
+ *     las ramas por peso corporal — NO que 2.6 sea la recomendación
+ *     universal para cualquier usuario que seleccione "pérdida de grasa"
+ *     (la mayoría no es un atleta de fuerza magro en ese contexto
+ *     específico). 2.6 se eligió en la mitad-baja del rango, no en el
+ *     extremo alto (3.1), para no convertir una cifra de ese contexto
+ *     concreto en el default de cualquier perfil con un dato de grasa
+ *     corporal.
+ *   - recomp (2.4): HEURÍSTICA DE PRODUCTO, explícitamente no una cifra
+ *     prescrita por ninguna guía — interpolación deliberada entre
+ *     mantenimiento y el déficit más marcado de fat_loss, para un objetivo
+ *     que por diseño cicla entre ambos (ver kcalFactor).
+ *   - muscle_gain / maintain (2.0): REGLA PRAGMÁTICA DEL MOTOR, no una
+ *     conversión directa desde ninguna recomendación por peso corporal. El
+ *     ISSN sitúa 1.4–2.0 g/kg de PESO CORPORAL para población activa en
+ *     general, pero ese rango no se puede trasladar sin más a g/kg de FFM
+ *     — son denominadores distintos (FFM < peso total). 2.0 es un punto
+ *     conservador elegido para esta base, no una traducción del rango ISSN.
+ *
+ * No hay garantía matemática de que fat_free_mass produzca siempre un
+ * resultado ≥ el que darían actual_weight/adjusted_weight para un % de
+ * grasa cualquiera (se comprobó en extremos >45% de grasa corporal y no se
+ * sostiene siempre) — y no se fuerza subiendo más los multiplicadores: en
+ * esos extremos, un % de grasa fiable es más preciso que la aproximación
+ * ESPEN que sustituye, así que un resultado más bajo ahí no es
+ * necesariamente el mismo bug que motivó este cambio. El caso que sí motivó
+ * el cambio (90 kg, 20% grasa, recomp: 144 g con la tabla vieja vs. 180 g
+ * — igual que sin declarar % de grasa — con esta tabla) queda resuelto.
+ */
+export const PROTEIN_PER_KG_BY_BASE_AND_GOAL: Record<ProteinBaseKind, Record<GoalMode, number>> = {
+  actual_weight:   { fat_loss: 2.0, recomp: 2.0, muscle_gain: 1.8, maintain: 1.8 },
+  adjusted_weight: { fat_loss: 2.0, recomp: 2.0, muscle_gain: 1.8, maintain: 1.8 },
+  fat_free_mass:   { fat_loss: 2.6, recomp: 2.4, muscle_gain: 2.0, maintain: 2.0 },
 };
 
 /**
@@ -385,9 +479,10 @@ export function evaluateNutritionSafety(params: {
  * Objetivos diarios según perfil y tipo de día.
  *
  * 1. Calorías = TDEE × kcalFactor(goal, gymDay, IMC)
- * 2. Proteína = calcProteinBase × proteinPerKg
- *    - En obesidad: adjusted_ESPEN = ideal_IMC25 + (actual − ideal) × 0.33
- *    - Multiplier: 2.0 fat_loss/recomp · 1.8 maintain/muscle_gain
+ * 2. Proteína = resolveProteinBase(profile).kg × PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][goal]
+ *    - El tipo de base (peso real / ajustado ESPEN / masa magra) decide qué
+ *      fila de la tabla se usa — nunca se pierde el tipo antes de aplicar
+ *      el multiplicador (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4).
  * 3. Grasa = kcal × fatPct (fatPct del objetivo, desplazado por macroPreference
  *    y recortado al rango EFSA 20-35%; "balanced"/sin especificar no cambia nada)
  * 4. Carbos = resto
@@ -407,8 +502,9 @@ export function calcDailyTargets(
   const rawKcal = tdee * kcalFactor(profile.goal, gymDay, imc) + (profile.adaptiveKcalOffsetKcal ?? 0);
   const kcal = Math.max(1200, Math.round(rawKcal));
 
-  const protBase = calcProteinBase(profile);
-  const proteinG = Math.round(config.proteinPerKg * protBase);
+  const proteinBase = resolveProteinBase(profile);
+  const proteinPerKg = PROTEIN_PER_KG_BY_BASE_AND_GOAL[proteinBase.kind][profile.goal];
+  const proteinG = Math.round(proteinPerKg * proteinBase.kg);
 
   const fatPct = Math.min(FAT_PCT_MAX, Math.max(FAT_PCT_MIN, config.fatPct + FAT_PCT_DELTA[macroPreference]));
   const proteinKcal = proteinG * 4;
@@ -434,20 +530,29 @@ export function calcSummary(profile: PhysicalProfile) {
 }
 
 /**
- * Rango de proteína en 5 puntos.
+ * Rango de proteína en 5 puntos, centrado en el target real de
+ * PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal] — nutrition-v3
+ * (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4). Antes el rango usaba
+ * offsets fijos [1.6...2.4] sin importar de qué base venía el número
+ * central; con fat_free_mass en fat_loss (2.6) eso habría puesto el target
+ * POR ENCIMA del broadMax (2.4) — un rango que no contiene su propio punto
+ * central. Los offsets (±0.2 recomendado, ±0.4 amplio) son los mismos que
+ * antes, pero aplicados alrededor del target de cada base/objetivo, no
+ * como una escala absoluta fija.
  *
- * broadMin / broadMax (×1.6 / ×2.4): rango amplio de seguridad — útil para
- * validaciones, sliders, alertas de adherencia semanal. No mostrar en UI principal.
+ * broadMin / broadMax (target ∓0.4): rango amplio de seguridad — útil para
+ * validaciones, sliders, alertas de adherencia semanal. No mostrar en UI
+ * principal.
  *
- * recommendedMin / recommendedMax (×1.8 / ×2.2): rango clínico recomendado —
- * este es el que el usuario ve. Está dentro del óptimo para fat_loss / recomp.
+ * recommendedMin / recommendedMax (target ∓0.2): rango que el usuario ve.
  *
- * target (×2.0): objetivo diario de la app.
+ * target: PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal] × base.kg.
  *
- * Ejemplo: base ESPEN 92.1 kg
- *   broad:       147–221 g  (interno)
- *   recommended: 166–203 g  (UI)
- *   target:      184 g      (UI, número principal)
+ * Ejemplo: fat_free_mass, fat_loss, base 72 kg (90 kg, 20% grasa)
+ *   target: 72 × 2.6 = 187 g
+ *   recommended: 72×2.4=173 – 72×2.8=202 g
+ *   broad:       72×2.2=158 – 72×3.0=216 g (contenido en el 2.3–3.1 de Helms,
+ *                sin vender 3.1 como objetivo rutinario)
  */
 export function calcProteinRange(profile: PhysicalProfile): {
   broadMin:       number;
@@ -456,13 +561,14 @@ export function calcProteinRange(profile: PhysicalProfile): {
   recommendedMax: number;
   broadMax:       number;
 } {
-  const base = calcProteinBase(profile);
+  const base = resolveProteinBase(profile);
+  const perKg = PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal];
   return {
-    broadMin:       Math.round(base * 1.6),
-    recommendedMin: Math.round(base * 1.8),
-    target:         Math.round(base * 2.0),
-    recommendedMax: Math.round(base * 2.2),
-    broadMax:       Math.round(base * 2.4),
+    broadMin:       Math.round((perKg - 0.4) * base.kg),
+    recommendedMin: Math.round((perKg - 0.2) * base.kg),
+    target:         Math.round(perKg * base.kg),
+    recommendedMax: Math.round((perKg + 0.2) * base.kg),
+    broadMax:       Math.round((perKg + 0.4) * base.kg),
   };
 }
 

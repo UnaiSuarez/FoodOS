@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
-import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, BodyFatSource, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { Tabs, TabPanel } from "@/components/ui";
 import {
@@ -24,6 +24,7 @@ import {
 import {
   ACTIVITY_LABELS,
   adjustmentCooldownDaysLeft,
+  BODY_FAT_SOURCE_LABELS,
   buildAdjustmentEvidence,
   calcAdaptiveTdee,
   calcHabitualTrainingAllowanceKcal,
@@ -407,6 +408,16 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     const bodyFatRaw = String(data.get("bodyFat")).trim();
     const targetWeightRaw = String(data.get("targetWeight")).trim();
 
+    // Procedencia del % graso (nutrition-v3 §2.4/§9): solo se exige fuente
+    // para un dato NUEVO — si el % cambia respecto al perfil guardado (o
+    // aparece por primera vez). Un % antiguo que el usuario no toca se
+    // conserva tal cual, sin forzar retroactivamente una fuente que nunca
+    // se pidió cuando se guardó — se queda marcado como procedencia
+    // desconocida hasta que el propio usuario lo revise.
+    const bodyFatSourceRaw = String(data.get("bodyFatSource") ?? "").trim();
+    const nextBodyFatPct = bodyFatRaw ? Number(bodyFatRaw) : null;
+    const bodyFatChanged = nextBodyFatPct !== (profile?.bodyFatPct ?? null);
+
     const trainingActivity: TrainingActivityProfile | undefined = isNewActivityModel
       ? {
           lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
@@ -425,7 +436,10 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       sex: String(data.get("sex")) as Sex,
       heightCm: Number(data.get("height")),
       weightKg: Number(data.get("weight")),
-      bodyFatPct: bodyFatRaw ? Number(bodyFatRaw) : null,
+      bodyFatPct: nextBodyFatPct,
+      bodyFatSource: bodyFatSourceRaw
+        ? (bodyFatSourceRaw as BodyFatSource)
+        : (bodyFatChanged ? null : (profile?.bodyFatSource ?? null)),
       // En el modelo nuevo, activityLevel deja de usarse para calcular el TDEE
       // (ver calcTDEE) — se rellena con la actividad cotidiana declarada solo
       // para que el campo no quede vacío en el resto de la app.
@@ -476,6 +490,13 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     // explícito, ese perfil se guardaría igual.
     if (next.age < 18) {
       showToast("FoodOS calcula objetivos para adultos (18+) — revisa la edad introducida.");
+      return;
+    }
+    // % graso nuevo o modificado sin procedencia (nutrition-v3 §2.4/§9) —
+    // un dato antiguo sin fuente NO dispara esto (bodyFatChanged es false
+    // si el usuario no tocó el campo).
+    if (bodyFatRaw && bodyFatChanged && !bodyFatSourceRaw) {
+      showToast("Indica de dónde viene tu % de grasa (báscula, DEXA, plicómetro...) — es un dato nuevo.");
       return;
     }
     if (!safety.automaticPlanAllowed) {
@@ -534,6 +555,23 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         <label>
           % graso <small>(opcional)</small>
           <input name="bodyFat" type="number" min="3" max="60" step="0.1" defaultValue={profile?.bodyFatPct ?? ""} placeholder="—" />
+        </label>
+        <label>
+          Procedencia del % graso <small>(obligatoria solo si cambias el % de arriba)</small>
+          {/* nutrition-v3 §2.4/§9: si ya tenías un % guardado de antes y no
+              lo tocas, no se exige fuente — se mantiene marcado como
+              procedencia desconocida hasta que lo revises tú mismo (ver
+              validación en save()). Solo es obligatoria para un dato NUEVO. */}
+          <select name="bodyFatSource" defaultValue={profile?.bodyFatSource ?? ""}>
+            <option value="">
+              {profile?.bodyFatPct != null && !profile?.bodyFatSource ? "Desconocida (dato antiguo)" : "—"}
+            </option>
+            {(Object.keys(BODY_FAT_SOURCE_LABELS) as BodyFatSource[]).map((source) => (
+              <option key={source} value={source}>
+                {BODY_FAT_SOURCE_LABELS[source]}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           Peso objetivo kg <small>(opcional)</small>

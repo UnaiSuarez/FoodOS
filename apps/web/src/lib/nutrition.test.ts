@@ -8,6 +8,7 @@ import {
   calcIMC,
   calcIntakeCoverage,
   calcProteinBase,
+  calcProteinRange,
   calcTDEE,
   calcTMB,
   calcWeightTrend,
@@ -24,6 +25,8 @@ import {
   monthlyAmountOf,
   NUTRITION_ENGINE_VERSION,
   projectSavings,
+  PROTEIN_PER_KG_BY_BASE_AND_GOAL,
+  resolveProteinBase,
   scaleByCalories,
   scaleByRatio,
   usesEspenAdjustedWeight,
@@ -134,6 +137,131 @@ describe("calcProteinBase / usesEspenAdjustedWeight", () => {
     expect(usesEspenAdjustedWeight(profile)).toBe(true);
     expect(calcProteinBase(profile)).toBeCloseTo(expectedAdjusted, 5);
     expect(calcProteinBase(profile)).toBeCloseTo(92.1, 0);
+  });
+});
+
+// ─── nutrition-v3 §2.4/§4: proteína por base + tipo, tabla FFM propia ──────
+
+describe("resolveProteinBase (nunca pierde el tipo de base antes del multiplicador)", () => {
+  it("con % graso conocido, kind es fat_free_mass", () => {
+    const profile = baseProfile({ weightKg: 90, bodyFatPct: 20 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("fat_free_mass");
+    expect(base.kg).toBeCloseTo(72, 5);
+  });
+
+  it("sin % graso y sin obesidad, kind es actual_weight", () => {
+    const profile = baseProfile({ heightCm: 175, weightKg: 75 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("actual_weight");
+    expect(base.kg).toBe(75);
+  });
+
+  it("sin % graso y con obesidad, kind es adjusted_weight", () => {
+    const profile = baseProfile({ heightCm: 177, weightKg: 120 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("adjusted_weight");
+    expect(base.kg).toBeCloseTo(92.1, 0);
+  });
+});
+
+describe("PROTEIN_PER_KG_BY_BASE_AND_GOAL — caso motivador del bug (90kg, 20% grasa, recomp)", () => {
+  it("declarar % de grasa reduce muchísimo la magnitud de la caída del bug original, sin eliminarla del todo en recomp", () => {
+    // Bug original (v2): la misma fila (2.0 g/kg) se aplicaba a
+    // actual_weight Y fat_free_mass → 90×2.0=180g sin %graso, pero
+    // 72×2.0=144g con %graso (−36g, −20%). Con la tabla v3, fat_free_mass
+    // tiene su propia fila (2.4 en recomp, no 2.0) → 72×2.4=173g: la caída
+    // baja a −7g (−3.9%), muy por debajo del −20% original. No llega a
+    // igualar del todo (a diferencia de fat_loss, ver siguiente test) — es
+    // la heurística deliberada documentada en PROTEIN_PER_KG_BY_BASE_AND_GOAL,
+    // no un objetivo de igualdad exacta para todos los goals.
+    const withoutBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "recomp", bodyFatPct: null });
+    const withBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "recomp", bodyFatPct: 20 });
+    const targetsWithout = calcDailyTargets(withoutBodyFat, false);
+    const targetsWith = calcDailyTargets(withBodyFat, false);
+    expect(targetsWithout.protein).toBe(180); // 90 × 2.0 (actual_weight, recomp)
+    expect(targetsWith.protein).toBe(173);    // 72 × 2.4 (fat_free_mass, recomp)
+    const dropFraction = (targetsWithout.protein - targetsWith.protein) / targetsWithout.protein;
+    expect(dropFraction).toBeLessThan(0.05); // bug original era ~0.20 (20%)
+  });
+
+  it("en fat_loss, declarar % de grasa NO baja la proteína (la fila fat_free_mass ya supera a actual_weight en este caso)", () => {
+    const withoutBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: null });
+    const withBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: 20 });
+    const targetsWithout = calcDailyTargets(withoutBodyFat, false);
+    const targetsWith = calcDailyTargets(withBodyFat, false);
+    expect(targetsWithout.protein).toBe(180); // 90 × 2.0 (actual_weight, fat_loss)
+    expect(targetsWith.protein).toBe(187);    // 72 × 2.6 (fat_free_mass, fat_loss)
+    expect(targetsWith.protein).toBeGreaterThanOrEqual(targetsWithout.protein);
+  });
+
+  // No se exige como invariante que fat_free_mass sea siempre >= la fila
+  // actual/adjusted (no es fisiológicamente obligatorio, se comprobó que no
+  // se sostiene en extremos >45% de grasa corporal). Lo que sí debe
+  // cumplirse: introducir un % de grasa PLAUSIBLE (rango típico de adulto
+  // no obeso, 10-30%) no debe producir un salto extremo/inexplicable del
+  // target de proteína en ningún objetivo — ni un colapso como el del bug
+  // original (que llegaba a −20% o más para pesos/objetivos concretos) ni
+  // una subida desproporcionada por error de la tabla.
+  it("introducir un % de grasa plausible (10-30%) no produce un salto extremo de proteína en ningún objetivo", () => {
+    const goals = ["fat_loss", "recomp", "muscle_gain", "maintain"] as const;
+    const plausibleBodyFatPct = [10, 15, 20, 25, 30];
+    for (const goal of goals) {
+      const withoutBodyFat = baseProfile({ weightKg: 85, heightCm: 175, goal, bodyFatPct: null });
+      const baseline = calcDailyTargets(withoutBodyFat, false).protein;
+      for (const bf of plausibleBodyFatPct) {
+        const withBodyFat = baseProfile({ weightKg: 85, heightCm: 175, goal, bodyFatPct: bf });
+        const withProtein = calcDailyTargets(withBodyFat, false).protein;
+        const relativeChange = (withProtein - baseline) / baseline;
+        // Ningún objetivo debería moverse más de un 35% en ninguna
+        // dirección solo por declarar un % de grasa típico — el bug
+        // original no tenía ningún límite (podía superar el −20% con
+        // facilidad, más aún a pesos altos).
+        expect(Math.abs(relativeChange)).toBeLessThan(0.35);
+      }
+    }
+  });
+
+  it("actual_weight y adjusted_weight comparten fila (sin cambios respecto a v2)", () => {
+    expect(PROTEIN_PER_KG_BY_BASE_AND_GOAL.actual_weight).toEqual(PROTEIN_PER_KG_BY_BASE_AND_GOAL.adjusted_weight);
+  });
+
+  it("fat_free_mass es siempre >= a la fila actual/adjusted para el mismo objetivo (la base es más exigente, no más laxa)", () => {
+    for (const goal of ["fat_loss", "recomp", "muscle_gain", "maintain"] as const) {
+      expect(PROTEIN_PER_KG_BY_BASE_AND_GOAL.fat_free_mass[goal]).toBeGreaterThanOrEqual(
+        PROTEIN_PER_KG_BY_BASE_AND_GOAL.actual_weight[goal]
+      );
+    }
+  });
+});
+
+describe("calcProteinRange — centrado en el target real (nunca deja el target fuera del rango)", () => {
+  it("fat_free_mass + fat_loss: target dentro de [broadMin, broadMax], y el broad queda contenido en el 2.2-3.0 g/kg FFM (dentro del contexto 2.3-3.1 de Helms, sin vender 3.1 como rutinario)", () => {
+    const profile = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: 20 });
+    const range = calcProteinRange(profile);
+    // base = 72kg, perKg = 2.6 (fat_loss, fat_free_mass) → target=72×2.6=187.2→187
+    expect(range.target).toBe(187);
+    expect(range.broadMin).toBe(158);       // 72 × (2.6-0.4) = 72×2.2 = 158.4 → 158
+    expect(range.recommendedMin).toBe(173); // 72 × (2.6-0.2) = 72×2.4 = 172.8 → 173
+    expect(range.recommendedMax).toBe(202); // 72 × (2.6+0.2) = 72×2.8 = 201.6 → 202
+    expect(range.broadMax).toBe(216);       // 72 × (2.6+0.4) = 72×3.0 = 216
+    expect(range.broadMin).toBeLessThanOrEqual(range.recommendedMin);
+    expect(range.recommendedMin).toBeLessThanOrEqual(range.target);
+    expect(range.target).toBeLessThanOrEqual(range.recommendedMax);
+    expect(range.recommendedMax).toBeLessThanOrEqual(range.broadMax);
+  });
+
+  it("para cualquier base/objetivo, el target siempre cae dentro de [broadMin, broadMax]", () => {
+    const profiles = [
+      baseProfile({ weightKg: 75, heightCm: 175, goal: "maintain" }), // actual_weight
+      baseProfile({ weightKg: 120, heightCm: 177, goal: "fat_loss" }), // adjusted_weight
+      baseProfile({ weightKg: 90, heightCm: 175, goal: "muscle_gain", bodyFatPct: 15 }), // fat_free_mass
+    ];
+    for (const profile of profiles) {
+      const range = calcProteinRange(profile);
+      expect(range.target).toBeGreaterThanOrEqual(range.broadMin);
+      expect(range.target).toBeLessThanOrEqual(range.broadMax);
+    }
   });
 });
 
