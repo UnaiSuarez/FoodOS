@@ -1,0 +1,646 @@
+/* ---------- Carrito / finanzas / nutricion ---------- */
+
+.cart-summary,
+.finance-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.cart-summary div,
+.finance-stats div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.cart-summary span,
+.finance-stats span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cart-summary strong,
+.finance-stats strong {
+  font-family: var(--mono);
+  font-size: 22px;
+}
+
+.money {
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 24px;
+}
+
+.chart-card,
+.category-breakdown,
+.budget-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.chart-card h3 {
+  margin-bottom: 10px;
+}
+
+.finance-chart {
+  width: 100%;
+  height: 220px;
+  display: block;
+}
+
+.category-breakdown {
+  display: grid;
+  gap: 10px;
+}
+
+.category-row {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) 80px;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.category-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(240, 244, 238, 0.08);
+}
+
+.category-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+
+.budget-card {
+  display: grid;
+  gap: 8px;
+}
+
+.nutrition-totals {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.nutrition-totals div {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.nutrition-totals strong {
+  display: block;
+  font-family: var(--mono);
+  font-size: 26px;
+}
+
+.nutrition-totals small {
+  color: var(--muted);
+}
+
+.meal-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.meal-item {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.meal-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.meal-item h3,
+.meal-item p {
+  margin: 0;
+}
+
+.meal-item p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- Asistente ---------- */
+
+.assistant-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.mascot-settings {
+  grid-column: 2;
+}
+
+.mascot-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mascot-choice {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: rgba(7, 10, 5, 0.36);
+}
+
+.mascot-choice.active {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.18);
+}
+
+.mascot-token {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: #0a0d08;
+}
+
+.mascot-token img {
+  width: 100%;
+  height: auto;
+}
+
+.mascot-choice strong {
+  font-size: 12px;
+}
+
+.mascot-choice small,
+.mascot-selected {
+  color: var(--muted);
+  text-align: center;
+}
+
+.mascot-choice small {
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.mascot-selected {
+  margin: 14px 0 0;
+}
+
+/* ---------- Pantalla de inicio (bento) ---------- */
+
+/* E05-01: cuando hay una sugerencia de "siguiente acción" (qué cocinar
+   ahora), antes vivía abajo del todo (fila 3, junto a los accesos rápidos)
+   mientras que el presupuesto semanal — información relevante pero no la
+   "acción siguiente" de hoy — ocupaba el hueco preferente de arriba a la
+   derecha. Se intercambian: la sugerencia sube junto al estado del día
+   (macros/expiry), el presupuesto baja. Sin sugerencia activa (.no-suggest)
+   se mantiene el orden anterior, que ya tenía sentido para ese caso. */
+.bento-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr;
+  grid-template-areas:
+    "macros expiry suggest"
+    "macros expiry mascot"
+    "actions budget mascot";
+  gap: 12px;
+}
+
+.bento-grid.no-suggest {
+  grid-template-areas:
+    "macros expiry budget"
+    "macros expiry mascot"
+    "actions actions mascot";
+}
+
+.bento-macros { grid-area: macros; }
+.bento-expiry { grid-area: expiry; }
+.bento-budget { grid-area: budget; }
+.bento-actions { grid-area: actions; }
+.bento-mascot { grid-area: mascot; }
+.bento-suggest { grid-area: suggest; }
+
+.bento-grid .panel h3 {
+  margin-bottom: 0;
+  font-size: 18px;
+}
+
+/* Macros */
+
+.bento-macros {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background:
+    linear-gradient(145deg, rgba(74, 222, 128, 0.08), transparent 55%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-macros-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.bento-macros-head h2 {
+  margin-bottom: 0;
+  font-family: var(--mono);
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 500;
+}
+
+.bento-macros-head h2 small {
+  color: var(--muted);
+  font-size: 0.5em;
+}
+
+.bento-day-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* E05-02: frase de estado del día, entre la cabecera y el anillo de kcal —
+   suficientemente destacada para leerse de un vistazo, sin competir en
+   tamaño con el número de kcal (que sigue siendo lo primero que se ve). */
+.bento-status-line {
+  margin: -6px 0 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.bento-macros-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.bento-macros-body .macro-ring {
+  width: min(190px, 40vw);
+}
+
+.bento-macros-body .macro-ring span {
+  font-size: 34px;
+}
+
+.bars label.accent em {
+  background: var(--green);
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.5);
+}
+
+.bars-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bars-note strong {
+  color: var(--green);
+}
+
+/* Agua en panel principal */
+.bento-water {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.bento-water-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+
+.bento-water-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bento-water-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.bento-water-value em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.bento-water-track {
+  width: 100%;
+  height: 6px;
+  background: rgba(96, 165, 250, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.bento-water-fill {
+  height: 100%;
+  background: #60a5fa;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.bento-water-btns {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bento-water-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: var(--radius-sm);
+  color: #60a5fa;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.bento-water-btn:hover { background: rgba(96, 165, 250, 0.22); }
+.bento-water-btn.dim {
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+}
+.bento-water-btn.dim:hover { background: rgba(255,255,255,0.05); }
+
+/* ── Pasos: mismo layout que Agua, tono ámbar para diferenciar ─────── */
+.bento-steps .bento-water-value { color: var(--amber); }
+.bento-steps .bento-water-track { background: rgba(245, 158, 11, 0.15); }
+.bento-steps .bento-water-fill { background: var(--amber); }
+.bento-steps-input {
+  flex: 1;
+  min-width: 90px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+.bento-steps .bento-water-btn {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: var(--amber);
+}
+.bento-steps .bento-water-btn:hover { background: rgba(245, 158, 11, 0.22); }
+
+/* Separador de sección en tarjeta alertas */
+.bento-section-divider {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 12px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* Dot azul para stock bajo */
+.expiry-dot.blue {
+  background: #60a5fa;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
+}
+
+/* Caducidades */
+
+.expiry-list {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.expiry-list li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.expiry-list strong {
+  display: block;
+  font-size: 14px;
+}
+
+.expiry-list small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.expiry-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.expiry-dot.red { background: var(--red); }
+.expiry-dot.amber { background: var(--amber); }
+
+.bento-empty {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* Presupuesto */
+
+.bento-budget .budget-big {
+  display: block;
+  margin-top: 12px;
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: clamp(26px, 3vw, 36px);
+}
+
+.budget-sub {
+  display: block;
+  margin: 2px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.budget-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(240, 244, 238, 0.08);
+}
+
+.budget-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 240ms ease;
+}
+
+.budget-track.warn i {
+  background: var(--amber);
+}
+
+/* Accesos rapidos */
+
+.bento-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-content: center;
+}
+
+.quick-action {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: rgba(7, 10, 5, 0.36);
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.quick-action:hover {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.quick-action span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.quick-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #071005;
+  background: var(--amber);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Mascota */
+
+.bento-mascot {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.bento-mascot-avatar {
+  width: 120px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: #0a0d08;
+}
+
+.bento-mascot strong {
+  font-family: var(--serif);
+  font-size: 22px;
+}
+
+.bento-mascot p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* Sugerencia con motivo */
+
+.bento-suggest {
+  border-color: rgba(74, 222, 128, 0.25);
+  background:
+    linear-gradient(135deg, rgba(74, 222, 128, 0.09), transparent 60%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-suggest h3 {
+  margin: 4px 0 8px;
+  font-family: var(--serif);
+  font-size: 24px;
+}
+
+.suggest-why {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.suggest-why strong {
+  color: var(--text);
+}
+
+.bento-suggest .card-actions {
+  margin-top: 12px;
+  justify-content: flex-start;
+}
+
+.bento-suggest.dinner {
+  border-color: rgba(99, 102, 241, 0.3);
+  background:
+    linear-gradient(135deg, rgba(99, 102, 241, 0.1), transparent 60%),
+    rgba(19, 26, 15, 0.78);
+}
+
+.bento-suggest.dinner .eyebrow {
+  color: #818cf8;
+}
+

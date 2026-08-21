@@ -1,0 +1,166 @@
+/* ── Log session modal – ejercicios completados ─────────────────────────── */
+
+.log-session-panel {
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.log-kcal-hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.log-exercises-section {
+  background: var(--surface-alt, rgba(255,255,255,0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.log-exercises-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.log-exercises-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-exercise-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.log-exercise-name {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-sets-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.log-sets-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.log-sets-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+.log-sets-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.log-sets-count {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 32px;
+  text-align: center;
+}
+
+.log-sets-count.done    { color: var(--accent); }
+.log-sets-count.partial { color: var(--text); }
+.log-sets-count.zero    { color: var(--muted); }
+
+.log-sets-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---------- Documentación de componentes (E03-15) ---------- */
+
+.style-guide-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.style-guide-section:first-of-type {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.style-guide-section h3 {
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.style-guide-desc {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.style-guide-desc code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+}
+
+.style-guide-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.style-guide-row:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------- Utilidades de espaciado (E03-17) ---------- */
+/* Antes cada vista repetía el mismo `style={{ marginTop: 12 }}` (u otro
+   valor) suelto en vez de una clase — solo se cubren los valores que de
+   verdad se repetían varias veces (ver PR). Al final del archivo a
+   propósito: algunas de las clases que las usan (.meta-row, .summary-grid,
+   .settings-grid) ya fijan su propio margin-top/bottom con la misma
+   especificidad (0,0,1,0) — para que la utilidad gane ese empate tiene que
+   ser la última declaración del archivo, no solo estar "después" en el
+   JSX. */
+.mt-8  { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; }
+.mt-16 { margin-top: 16px; }
+.mb-14 { margin-bottom: 14px; }

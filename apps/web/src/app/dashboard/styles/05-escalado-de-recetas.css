@@ -1,0 +1,637 @@
+/* ---------- Escalado de recetas ---------- */
+
+.scale-card {
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.scale-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.scale-controls label {
+  width: 120px;
+}
+
+.scale-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scale-note strong {
+  color: var(--green);
+}
+
+.ing-qty {
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* ---------- Receta IA editable ---------- */
+
+.ai-recipe-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ai-recipe-why {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.ai-field {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+}
+
+.ai-field textarea {
+  border: 1px solid rgba(240, 244, 238, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: var(--text);
+  background: rgba(7, 10, 5, 0.65);
+  font: inherit;
+  resize: vertical;
+}
+
+.ai-field textarea:focus {
+  border-color: var(--green);
+  outline: none;
+}
+
+.ai-ingredients {
+  display: grid;
+  gap: 8px;
+}
+
+.ai-ingredient-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px 34px 38px;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-ing-unit {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ---------- Finanzas: ahorro ---------- */
+
+.stack-panels {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  position: sticky;
+  top: 24px;
+}
+
+.income-list {
+  margin-top: 14px;
+}
+
+.card.inactive {
+  opacity: 0.55;
+}
+
+.money.negative {
+  color: var(--color-danger);
+}
+
+.projection-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(74, 222, 128, 0.05);
+}
+
+.projection-card h3 {
+  margin-bottom: 0;
+  font-size: 18px;
+}
+
+.projection-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.projection-grid div {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.projection-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.projection-grid strong {
+  font-family: var(--mono);
+  font-size: 17px;
+}
+
+.projection-grid strong.highlight {
+  color: var(--green);
+}
+
+.projection-disclaimer {
+  margin: 12px 0 0;
+  color: var(--hint);
+  font-size: 11.5px;
+}
+
+/* ---------- Offline banner ---------- */
+
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1a1a1a;
+  background: var(--amber, #f59e0b);
+  letter-spacing: 0.01em;
+}
+
+.cart-item-reason {
+  display: block;
+  margin-top: 2px;
+  color: var(--green);
+  font-size: 12px;
+}
+
+/* ---------- Toast ---------- */
+
+.toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 60;
+  max-width: min(360px, calc(100vw - 36px));
+  padding: 13px 15px;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: var(--radius-md);
+  color: var(--green);
+  background: rgba(7, 10, 5, 0.88);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+  /* El toast base es solo informativo, pero con botón de acción (Deshacer)
+     tiene que poder recibir el clic. */
+  pointer-events: auto;
+}
+
+.toast-action {
+  margin-left: 12px;
+  padding: 4px 10px;
+  border: 1px solid rgba(74, 222, 128, 0.5);
+  border-radius: var(--radius-sm);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.12);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: rgba(74, 222, 128, 0.22);
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 1080px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .bento-grid,
+  .bento-grid.no-suggest {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "macros macros"
+      "suggest suggest"
+      "expiry budget"
+      "mascot mascot"
+      "actions actions";
+  }
+
+  .bento-grid.no-suggest {
+    grid-template-areas:
+      "macros macros"
+      "expiry budget"
+      "mascot mascot"
+      "actions actions";
+  }
+
+  /* sidebar handled by mobile drawer system below */
+
+  .summary-grid,
+  .work-grid,
+  .recipe-grid,
+  .assistant-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mascot-choice-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .app-main {
+    /* Padding inferior generoso: la mascota flotante (64px + 24px de margen)
+       es fija abajo a la derecha — sin este hueco taparía permanentemente la
+       última fila de contenido (ej. celdas del planificador, botones de
+       listas). Con él, todo puede scrollear por encima de la mascota. */
+    padding: 18px 12px 104px;
+  }
+
+  /* Tap targets: estos controles median 20-30px de alto — por debajo del
+     mínimo táctil razonable. Solo en pantallas pequeñas para no engordar
+     la UI de escritorio.
+     E18-14: el resto de esta regla ya apuntaba al mínimo de 44px correcto
+     (ver .smart-suggest-toggle) salvo estas dos, que se quedaron en 40 —
+     por debajo del mismo mínimo que esta misma regla dice perseguir. Auditado
+     el resto de la app con un script que mide getBoundingClientRect() de
+     todo botón/enlace/casilla visible en viewport de 375px; se suman aquí
+     mismo las otras clases genéricas que también medían por debajo de 44px
+     (botones primario/secundario/texto, icon-button, chips de filtro,
+     acciones de tarjeta, pestañas de sugerencias del carrito). */
+  .bento-water-btn,
+  .savings-toggle,
+  .icon-button,
+  .primary-button,
+  .secondary-button,
+  .text-button,
+  .filter,
+  .small-action,
+  .suggest-tab,
+  .form-type-tab,
+  .nutrition-tab,
+  .exercises-tab,
+  .quick-chip,
+  .settings-theme-btn,
+  .danger-button,
+  .smart-suggest-toggle {
+    min-height: 44px;
+  }
+
+  .bento-grid,
+  .bento-grid.no-suggest {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "macros"
+      "expiry"
+      "budget"
+      "suggest"
+      "actions"
+      "mascot";
+  }
+
+  .bento-grid.no-suggest {
+    grid-template-areas:
+      "macros"
+      "expiry"
+      "budget"
+      "actions"
+      "mascot";
+  }
+
+  .bento-macros-body {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .bento-macros-body .bars {
+    width: 100%;
+  }
+
+  .panel-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .summary-grid,
+  .work-grid,
+  .recipe-grid,
+  .assistant-grid,
+  .form-grid,
+  .nutrition-totals {
+    grid-template-columns: 1fr;
+  }
+
+  /* sidebar drawer handles nav on mobile */
+
+  .mascot-panel {
+    display: none;
+  }
+
+  .mascot-settings {
+    grid-column: auto;
+  }
+
+  .mascot-choice-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .form-panel,
+  .stack-panels {
+    position: static;
+  }
+
+  .projection-grid,
+  .goal-options {
+    grid-template-columns: 1fr;
+  }
+
+  .scale-controls label {
+    width: 100%;
+  }
+
+  .card {
+    grid-template-columns: 1fr;
+  }
+
+  .card-actions {
+    justify-content: start;
+  }
+
+  .recipe-detail-hero,
+  .recipe-detail-grid,
+  .recipe-macros-row,
+  .cart-summary,
+  .finance-stats,
+  .category-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- Carrito inteligente ---------- */
+
+.smart-suggest-panel {
+  margin-bottom: 14px;
+}
+
+.smart-suggest-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.smart-suggest-toggle:hover {
+  color: var(--green);
+}
+
+.suggest-counts {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.suggest-chevron {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.suggest-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0 12px;
+}
+
+.suggest-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--muted);
+  background: rgba(240, 244, 238, 0.04);
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color 150ms, color 150ms, background 150ms;
+}
+
+.suggest-tab:hover {
+  color: var(--text);
+  border-color: rgba(240, 244, 238, 0.2);
+}
+
+.suggest-tab.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.2);
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.suggest-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.suggest-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+  font-size: 13px;
+}
+
+.suggest-row-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.suggest-row-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.suggest-name {
+  flex: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.suggest-meta {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.suggest-dismiss {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.suggest-dismiss:hover { color: var(--red); opacity: 1; }
+.suggest-add { padding: 3px 8px; font-size: 12px; flex-shrink: 0; }
+
+
+.suggest-empty {
+  margin: 12px 0 4px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.suggest-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.suggest-total-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.cart-budget-warn {
+  margin: 6px 0 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.07);
+  font-size: 13px;
+}
+
+.over-budget {
+  color: var(--red);
+}
+
+/* E10-03: repaso de compra (ReviewPurchaseModal) */
+.review-purchase-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 12px 0;
+}
+
+.review-purchase-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.review-purchase-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: center;
+}
+
+.review-purchase-name small {
+  color: var(--muted);
+}
+
+.review-purchase-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.review-purchase-field input,
+.review-purchase-field select {
+  font-size: 13px;
+}
+
+.review-purchase-hint {
+  color: var(--amber);
+}
+
+.review-purchase-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+@media (max-width: 680px) {
+  .review-purchase-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .review-purchase-name {
+    grid-column: 1 / -1;
+  }
+}
+

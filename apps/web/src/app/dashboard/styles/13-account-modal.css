@@ -1,0 +1,711 @@
+/* ── Account modal ──────────────────────────────────────────────── */
+
+.account-google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.account-google-btn:hover {
+  background: var(--surface-2);
+}
+
+.account-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 14px;
+  color: var(--hint);
+  font-size: 12px;
+}
+
+.account-divider::before,
+.account-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.account-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 18px;
+}
+
+.account-tab {
+  flex: 1;
+  padding: 9px 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.account-tab.active {
+  color: var(--green);
+  border-bottom-color: var(--green);
+}
+
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.account-label input {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.account-label input:focus {
+  outline: none;
+  border-color: var(--green);
+}
+
+.account-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+  padding: 4px 0;
+  transition: color 0.15s;
+}
+
+.account-link:hover {
+  color: var(--text);
+}
+
+/* ── Modo claro — overrides estructurales ───────────────────────── */
+[data-theme="light"] .sidebar {
+  background: rgba(228, 243, 220, 0.94);
+  border-right-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .nav-item {
+  color: var(--muted);
+}
+
+[data-theme="light"] .nav-item.active,
+[data-theme="light"] .nav-item:hover {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.07);
+}
+
+[data-theme="light"] .nav-item span {
+  background: rgba(21, 128, 61, 0.12);
+}
+
+[data-theme="light"] .mascot-panel {
+  background: rgba(200, 230, 195, 0.82);
+  border-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .metric-card,
+[data-theme="light"] .panel {
+  background: rgba(250, 255, 248, 0.88);
+}
+
+[data-theme="light"] .card,
+[data-theme="light"] .cart-summary div,
+[data-theme="light"] .finance-stats div,
+[data-theme="light"] .chart-card,
+[data-theme="light"] .category-breakdown,
+[data-theme="light"] .budget-card,
+[data-theme="light"] .macro-item,
+[data-theme="light"] .recipe-section,
+[data-theme="light"] .nutrition-totals div {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="light"] .recipe-card {
+  background: linear-gradient(180deg, rgba(21, 128, 61, 0.05), rgba(255, 255, 255, 0.55));
+}
+
+[data-theme="light"] .icon-button {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.07);
+}
+
+[data-theme="light"] .icon-button:hover {
+  background: rgba(14, 24, 11, 0.13);
+}
+
+/* E21-10: mismo problema que .filter.active/.settings-theme-btn.active más
+   arriba — color: #071005 (casi negro) fijo sobre background: var(--green),
+   asumiendo que --green siempre sería lo bastante claro para contrastar.
+   En tema claro (--green más oscuro a propósito, ver el comentario junto a
+   esa variable en globals.css) da 3.86:1, por debajo del 4.5:1 de AA — lo
+   encontró axe (color-contrast) al visitar Recetas/Nutrición, las vistas
+   donde SÍ hay un .primary-button visible con datos demo. */
+[data-theme="light"] .primary-button {
+  color: #fff;
+}
+
+/* E21-10 (segunda pasada): --green/--amber/--red en tema claro se calibraron
+   contra --bg y --surface (ver comentarios junto a esas variables en
+   globals.css), pero varios textos de Finanzas se apoyan en tarjetas
+   anidadas con fondo --surface-2 — un gris algo más oscuro que --surface,
+   así que el mismo color de texto pierde contraste ahí. axe lo encontró en
+   /dashboard/finance con datos que disparaban las clases .warn/.overrun/
+   .goal-reached/.neg (solo visibles con ciertos importes, por eso no salía
+   en todas las pasadas). #166534/#92400e/#b91c1c dan ~6:1+ incluso contra
+   --surface-2, con margen de sobra. */
+[data-theme="light"] .badge.green,
+[data-theme="light"] .savings-rate-pct {
+  color: #166534;
+}
+
+[data-theme="light"] .budget-bar-label.warn,
+[data-theme="light"] .budget-alert.warn {
+  color: #92400e;
+}
+
+[data-theme="light"] .budget-bar-label.overrun,
+[data-theme="light"] .budget-alert,
+[data-theme="light"] .savings-rate-pct.neg {
+  color: #b91c1c;
+}
+
+[data-theme="light"] .secondary-button {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.08);
+}
+
+[data-theme="light"] .secondary-button:hover {
+  background: rgba(14, 24, 11, 0.14);
+}
+
+[data-theme="light"] .small-action {
+  color: var(--text);
+  background: rgba(14, 24, 11, 0.06);
+  border-color: rgba(14, 24, 11, 0.12);
+}
+
+[data-theme="light"] .small-action.good {
+  color: #fff;
+  background: var(--green);
+}
+
+[data-theme="light"] .filter {
+  color: var(--muted);
+  background: rgba(14, 24, 11, 0.06);
+}
+
+[data-theme="light"] .filter.active {
+  color: #fff;
+  background: var(--green);
+}
+
+/* E21-10: --green/--accent son bastante más oscuros en tema claro (para
+   que el TEXTO en ese color siga leyéndose sobre fondo claro, ver el
+   comentario de --green en globals.css) — pero varios componentes los
+   usan como FONDO SÓLIDO con texto negro fijo (color: #000), asumiendo
+   que --green siempre sería lo bastante claro para que el negro contraste.
+   axe (color-contrast, ver theme.spec.ts) confirmó que en tema claro ya
+   no lo es: incumple el contraste mínimo. Mismo arreglo que ya tenía
+   .filter.active un poco más arriba — texto blanco en su lugar. */
+[data-theme="light"] .sidebar-avatar,
+[data-theme="light"] .settings-theme-btn.active,
+[data-theme="light"] .planner-selection-banner,
+[data-theme="light"] .planner-selection-banner button,
+[data-theme="light"] .exercises-tab.active,
+[data-theme="light"] .nutrition-tab.active,
+[data-theme="light"] .explore-category-btn.active,
+[data-theme="light"] .log-sets-btn:hover:not(:disabled) {
+  color: #fff;
+}
+
+[data-theme="light"] input,
+[data-theme="light"] select {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.80);
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .empty {
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .modal,
+[data-theme="light"] .modal-card {
+  background: var(--bg);
+  border-color: rgba(14, 24, 11, 0.15);
+}
+
+[data-theme="light"] .modal-header,
+[data-theme="light"] .modal-head {
+  background: rgba(244, 248, 242, 0.97);
+  border-bottom-color: rgba(14, 24, 11, 0.13);
+}
+
+[data-theme="light"] .bars i,
+[data-theme="light"] .category-track,
+[data-theme="light"] .macro-bar-track,
+[data-theme="light"] .stats-cat-bar-wrap,
+[data-theme="light"] .cat-budget-bar-wrap {
+  background: rgba(14, 24, 11, 0.10);
+}
+
+[data-theme="light"] .consume-controls {
+  background: rgba(21, 128, 61, 0.06);
+}
+
+[data-theme="light"] .profile-banner {
+  background: linear-gradient(90deg, rgba(21, 128, 61, 0.10), rgba(240, 250, 238, 0.65));
+}
+
+[data-theme="light"] .rule-bucket-card {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+[data-theme="light"] .cat-budget-input {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+[data-theme="light"] .barcode-input-row input {
+  background: rgba(255, 255, 255, 0.80);
+  border-color: rgba(14, 24, 11, 0.18);
+}
+
+
+/* ============================================
+   MOBILE NAV — hamburger + sliding drawer
+   ============================================ */
+
+/* Hamburger: visible only on mobile */
+.hamburger-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  /* E18-14: era 40×40 — objetivo táctil frecuente (abre el menú en cada
+     visita en móvil) por debajo del mínimo de 44×44px. */
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.hamburger-btn:hover {
+  background: var(--surface);
+}
+
+/* Overlay that closes the drawer on tap */
+.menu-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 199;
+  backdrop-filter: blur(2px);
+}
+
+/* Topbar controls row: hamburger + admin buttons */
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Settings: new sections */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.settings-toggle-row {
+  display: flex;
+  gap: 8px;
+}
+.settings-theme-btn {
+  flex: 1;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-size: 13px;
+}
+.settings-theme-btn.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #000;
+  font-weight: 600;
+}
+.settings-admin {
+  border-color: var(--amber);
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 12px;
+}
+.settings-admin .eyebrow {
+  color: var(--amber);
+}
+
+@media (max-width: 1080px) {
+  /* App shell: full width, sidebar is removed from flow */
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  /* Sidebar becomes a fixed off-canvas drawer */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: -280px;
+    width: 270px;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 200;
+    overflow-y: auto;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Open state */
+  .app-shell.menu-open .sidebar {
+    left: 0;
+    box-shadow: 4px 0 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .app-shell.menu-open .menu-overlay {
+    display: block;
+  }
+
+  /* Restore nav to a clean vertical list inside the drawer */
+  .app-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .nav-item {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 14px;
+    text-align: left;
+  }
+
+  /* Hamburger visible */
+  .hamburger-btn {
+    display: flex;
+  }
+
+  /* E04-08: colapsar a solo iconos no aplica en móvil — el sidebar ya es un
+     drawer off-canvas aquí (ver .sidebar más arriba), así que el botón para
+     activarlo se oculta. */
+  .sidebar-collapse-btn {
+    display: none;
+  }
+
+  /* Topbar: hamburger row encima, título debajo */
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    margin-bottom: 14px;
+  }
+
+  /* E04-05: antes clamp(38px, 9vw, 56px) — en un móvil típico (375-430px)
+     el título ocupaba una franja notable del viewport antes de llegar al
+     contenido. Un tamaño de titular de app (no de portada) deja más sitio
+     útil sin dejar de leerse como cabecera. */
+  .topbar h1 {
+    font-size: clamp(22px, 6vw, 32px);
+    line-height: 1.15;
+    margin-bottom: 0;
+  }
+}
+
+/* E04-03: barra inferior de navegación rápida — oculta por defecto (se
+   muestra solo en el breakpoint de teléfono, más abajo). Es un breakpoint
+   propio (680px) más estrecho que el del drawer (1080px): pensada para uso
+   con el pulgar en un teléfono, no para tablet en modo retrato, donde el
+   drawer ya funciona bien con dos manos. */
+.bottom-tab-bar {
+  display: none;
+}
+
+@media (max-width: 680px) {
+  .bottom-tab-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    background: rgba(7, 10, 5, 0.92);
+    backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border);
+    /* padding-bottom respeta el "home indicator" de iPhone y barras
+       gestuales de Android sin dejar hueco en dispositivos que no lo tienen. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .bottom-tab-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    /* Objetivo táctil >= 44px de alto (E18-14) aunque el contenido visual
+       sea más compacto. */
+    min-height: 54px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .bottom-tab-item.active {
+    color: var(--green);
+  }
+
+  /* Sitio para que la barra fija no tape el final del contenido. */
+  .app-main {
+    padding-bottom: calc(54px + env(safe-area-inset-bottom, 0px) + 24px);
+  }
+}
+
+[data-theme="light"] .bottom-tab-bar {
+  background: rgba(228, 243, 220, 0.94);
+}
+
+/* ============================================
+   PLANIFICADOR — tap-to-select (mobile)
+   ============================================ */
+
+/* Receta seleccionada en la lista lateral */
+.planner-recipe-card.selected {
+  border-color: var(--green);
+  background: rgba(74, 222, 128, 0.1);
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+/* Celda vacía lista para recibir la receta */
+.planner-cell-plus.tap-ready {
+  background: rgba(74, 222, 128, 0.18);
+  border-color: var(--green);
+  color: var(--green);
+  font-size: 18px;
+  animation: tap-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tap-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+/* Celda con receta en modo reemplazo */
+.planner-cell.select-mode .planner-cell-content {
+  outline: 2px dashed var(--green);
+  outline-offset: -3px;
+  border-radius: 8px;
+}
+
+.planner-cell-replace-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(74, 222, 128, 0.15);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.planner-cell-content {
+  position: relative;
+}
+
+/* Banner flotante de selección activa */
+.planner-selection-banner {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--green);
+  color: #000;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-radius: 40px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 300;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: banner-in 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes banner-in {
+  from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+  to   { transform: translateX(-50%) translateY(0);   opacity: 1; }
+}
+
+.planner-selection-banner button {
+  background: rgba(0, 0, 0, 0.15);
+  border: none;
+  color: #000;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.planner-selection-banner button:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* ============================================
+   SETTINGS — zona de peligro
+   ============================================ */
+
+.settings-danger-zone {
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 12px;
+}
+
+.settings-danger-zone h2 {
+  color: var(--color-danger);
+}
+
+.danger-button {
+  padding: 10px 20px;
+  border: 1px solid var(--color-danger);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-danger);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  width: fit-content;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.danger-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.delete-confirm-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px dashed rgba(239, 68, 68, 0.35);
+  border-radius: 10px;
+}
+
+.delete-confirm-label {
+  font-size: 13px;
+  color: var(--text);
+  margin: 0;
+}
+
+.delete-confirm-label strong {
+  color: var(--color-danger);
+  font-family: monospace;
+  letter-spacing: 0.05em;
+}
+
+.delete-confirm-input {
+  padding: 10px 14px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.05);
+  color: var(--color-danger);
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-align: center;
+  outline: none;
+  width: 100%;
+}
+
+.delete-confirm-input:focus {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+}
+
+.delete-confirm-input::placeholder {
+  color: rgba(239, 68, 68, 0.35);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  gap: 10px;
+}
+
+[data-theme="light"] .delete-confirm-zone {
+  background: rgba(239, 68, 68, 0.04);
+}
+
+[data-theme="light"] .delete-confirm-input {
+  background: #fff;
+}
+
