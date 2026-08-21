@@ -2,7 +2,7 @@
   "name": "@foodos/web",
   "version": "0.1.0",
   "private": true,
-  "description": "FoodOS web: landing publica + app (dashboard) en Next.js 14.",
+  "description": "FoodOS web: landing publica + app (dashboard) en Next.js 15.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
