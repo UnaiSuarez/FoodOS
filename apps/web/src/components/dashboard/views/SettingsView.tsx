@@ -624,7 +624,7 @@ export function SettingsView({
               Restaurar ajustes
             </button>
           </div>
-          <div className="settings-grid" style={{ marginTop: 16 }}>
+          <div className="settings-grid mt-16">
             <label className="settings-field">
               <span>Fecha simulada</span>
               <div className="settings-toggle-row">
@@ -656,7 +656,7 @@ export function SettingsView({
             </label>
           </div>
 
-          <div className="settings-footer" style={{ marginTop: 16 }}>
+          <div className="settings-footer mt-16">
             <button className="secondary-button" onClick={seedHistorico}>
               📊 Sembrar 7 días de historial
             </button>
@@ -697,7 +697,7 @@ export function SettingsView({
             descontó del inventario al registrar comidas se devuelve. Podrás deshacerlo justo
             después, desde el aviso.
           </p>
-          <div className="meta-row" style={{ marginTop: 12 }}>
+          <div className="meta-row mt-12">
             <button className="secondary-button" onClick={() => setConfirmingClearToday(false)}>
               Cancelar
             </button>

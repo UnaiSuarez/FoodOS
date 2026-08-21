@@ -142,13 +142,13 @@ export function StyleGuideModal({ onClose }: { onClose: () => void }) {
             idPrefix="style-guide-demo"
           />
           <TabPanel id="uno" activeId={activeTab} idPrefix="style-guide-demo">
-            <p style={{ marginTop: 8 }}>Panel uno.</p>
+            <p className="mt-8">Panel uno.</p>
           </TabPanel>
           <TabPanel id="dos" activeId={activeTab} idPrefix="style-guide-demo">
-            <p style={{ marginTop: 8 }}>Panel dos.</p>
+            <p className="mt-8">Panel dos.</p>
           </TabPanel>
           <TabPanel id="tres" activeId={activeTab} idPrefix="style-guide-demo">
-            <p style={{ marginTop: 8 }}>Panel tres.</p>
+            <p className="mt-8">Panel tres.</p>
           </TabPanel>
         </section>
 

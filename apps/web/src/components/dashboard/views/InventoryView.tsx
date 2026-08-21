@@ -471,7 +471,7 @@ export function InventoryView() {
               ref={photoInputRef}
               type="file"
               accept="image/*"
-              style={{ display: "none" }}
+              className="hidden-file-input"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) void handleFoodPhoto(file);
@@ -481,7 +481,7 @@ export function InventoryView() {
               ref={fileInputRef}
               type="file"
               accept="image/*"
-              style={{ display: "none" }}
+              className="hidden-file-input"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) handleTicketFile(file);

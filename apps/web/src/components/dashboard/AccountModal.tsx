@@ -107,7 +107,7 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
         {sent ? (
           <>
             <p>Enlace enviado a <strong>{email}</strong>. Revisa tu correo.</p>
-            <button className="secondary-button" style={{ marginTop: 12 }} onClick={() => { reset(); setMode("login"); }}>
+            <button className="secondary-button mt-12" onClick={() => { reset(); setMode("login"); }}>
               Volver al inicio de sesión
             </button>
           </>

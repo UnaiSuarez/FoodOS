@@ -258,7 +258,7 @@ function NutritionToday() {
             registradas hoy. Lo que se descontó del inventario al registrarlas se devuelve.
             Podrás deshacerlo justo después, desde el aviso.
           </p>
-          <div className="meta-row" style={{ marginTop: 12 }}>
+          <div className="meta-row mt-12">
             <button className="secondary-button" onClick={() => setConfirmingReset(false)}>
               Cancelar
             </button>
@@ -715,7 +715,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           peso, altura y actividad son correctos, o consulta con un profesional si mantienes este ritmo mucho
           tiempo.
         </p>
-        <div className="meta-row" style={{ marginTop: 12 }}>
+        <div className="meta-row mt-12">
           <button className="secondary-button" onClick={() => setPendingConfirm(null)}>
             ← Revisar los datos
           </button>
@@ -1299,7 +1299,7 @@ function AdjustmentProposalPanel() {
               ya no aplica a tu situación actual. Descártala y genera una nueva.
             </div>
           )}
-          <div className="meta-row" style={{ marginTop: 12 }}>
+          <div className="meta-row mt-12">
             <button className="primary-button" onClick={() => void respond(true)} disabled={proposalStale}>
               Aceptar ajuste
             </button>
@@ -1415,7 +1415,7 @@ function AdjustmentProposalPanel() {
             pero merece revisión.
           </p>
         )}
-        <div className="meta-row" style={{ marginTop: 12 }}>
+        <div className="meta-row mt-12">
           <button className="secondary-button" onClick={() => setPendingWarningConfirm(null)}>
             ← No aplicar todavía
           </button>
@@ -1460,8 +1460,8 @@ function MacroWeekChart() {
           <h2>Evolución de macros</h2>
         </div>
         <div className="meta-row">
-          <span className="badge green" style={{ fontSize: 11 }}>■ Proteína</span>
-          <span className="badge blue" style={{ fontSize: 11 }}>■ Kcal</span>
+          <span className="badge green legend">■ Proteína</span>
+          <span className="badge blue legend">■ Kcal</span>
         </div>
       </div>
       <svg
@@ -1710,7 +1710,7 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
         </button>
       </div>
 
-      <div className="meta-row" style={{ marginBottom: 14 }}>
+      <div className="meta-row mb-14">
         <span className={`badge ${gymToday ? "green" : "blue"}`}>
           Hoy: {gymToday ? "día de gym 💪" : "día de descanso"}
         </span>

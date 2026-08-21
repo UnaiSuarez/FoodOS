@@ -370,7 +370,7 @@ export function FinanceView() {
               </button>
             </div>
 
-            <div className="form-grid compact" style={{ marginTop: 14 }}>
+            <div className="form-grid compact mt-14">
               <label>
                 Importe €
                 {/* E13-03: sin importe por defecto — un 12€ inventado podía
@@ -481,7 +481,7 @@ export function FinanceView() {
               <span className="suggest-chevron">{incomeOpen ? "▲" : "▼"}</span>
             </button>
             {incomeOpen && (
-              <form onSubmit={addIncomeSource} style={{ marginTop: 12 }}>
+              <form onSubmit={addIncomeSource} className="mt-12">
                 <div className="form-grid compact">
                   <label>Nombre<input name="name" required placeholder="Nómina" /></label>
                   <label>Importe €<input name="amount" type="number" min="0" step="0.01" required placeholder="1450" /></label>

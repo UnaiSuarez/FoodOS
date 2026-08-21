@@ -9744,3 +9744,18 @@ button.secondary-button.small {
 .style-guide-row:last-child {
   margin-bottom: 0;
 }
+
+/* ---------- Utilidades de espaciado (E03-17) ---------- */
+/* Antes cada vista repetía el mismo `style={{ marginTop: 12 }}` (u otro
+   valor) suelto en vez de una clase — solo se cubren los valores que de
+   verdad se repetían varias veces (ver PR). Al final del archivo a
+   propósito: algunas de las clases que las usan (.meta-row, .summary-grid,
+   .settings-grid) ya fijan su propio margin-top/bottom con la misma
+   especificidad (0,0,1,0) — para que la utilidad gane ese empate tiene que
+   ser la última declaración del archivo, no solo estar "después" en el
+   JSX. */
+.mt-8  { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; }
+.mt-16 { margin-top: 16px; }
+.mb-14 { margin-bottom: 14px; }

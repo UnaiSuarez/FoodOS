@@ -102,14 +102,14 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
         type="file"
         accept="image/*"
         capture="environment"
-        style={{ display: "none" }}
+        className="hidden-file-input"
         onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ""; }}
       />
       <input
         ref={galleryRef}
         type="file"
         accept="image/*"
-        style={{ display: "none" }}
+        className="hidden-file-input"
         onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ""; }}
       />
 
