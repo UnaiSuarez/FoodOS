@@ -1,0 +1,462 @@
+# Decisiones de diseño — Nutrition Engine v3
+
+> Este documento describe **decisiones de modelo**, no constantes científicas
+> universales. Cuando una cifra sea una heurística de producto, debe
+> identificarse como tal en código, documentación y UI. No es el backlog
+> (eso vive en `BACKLOG.md`): este documento dice *por qué* v3 funciona así
+> y qué decisiones no deben reinterpretarse a mitad de refactor.
+
+Fuente: sesión de diseño conjunta revisando `nutrition.ts` (motor v2) contra
+guías EFSA, OMS, NICE, ESPEN, NIDDK/NIH, ISSN y el Compendium of Physical
+Activities 2024, más lectura directa del código real (`nutrition.ts`,
+`packages/types/src/index.ts`, `NutritionView.tsx`, `OnboardingFlow.tsx`,
+tests y `DECISIONES_PRODUCTO.md`).
+
+---
+
+## 1. Objetivo y alcance de Nutrition v3
+
+### Qué problemas resuelve
+- Elimina bugs objetivos de v2 que producen resultados incorrectos (no solo
+  "mejorables"): duración de entreno compartida entre fuerza/cardio, edad
+  mínima de 14 años, y comparación de cobertura histórica contra el
+  objetivo calórico de *hoy* en vez del objetivo vigente en cada fecha.
+- Corrige inconsistencias de modelo entre partes del motor que hoy miden lo
+  mismo con fórmulas distintas (MET bruto en el TDEE habitual vs. MET neto
+  en `estimateWorkoutKcal`), o que aplican el mismo multiplicador de
+  proteína a bases fisiológicamente distintas (peso real, peso ajustado,
+  masa magra).
+- Sustituye una regla estática (`7700 kcal/kg`) que la literatura (NIDDK/
+  Hall et al.) considera un modelo simplificado que no representa bien la
+  dinámica real del peso, por un controlador basado en si el ritmo
+  observado coincide con el ritmo objetivo.
+- Corrige una traición semántica: seleccionar "ganancia muscular" nunca
+  debe traducirse en un déficit calórico silencioso.
+
+### Qué queda explícitamente fuera de v3
+- IMC continuo + perímetro de cintura + evaluación de adiposidad completa
+  (fase 2 — ver §9).
+- Desagregación del gasto cotidiano por componentes (sueño, trabajo,
+  desplazamiento, tareas) — requiere datos que hoy no se capturan
+  (wearables, horarios reales).
+- Eliminación de `LIFESTYLE_ONLY_FACTORS` / modelo PAL.
+- Cualquier intento de convertir el % de compensación metabólica del
+  ejercicio (~28% según algunos estudios, con variación individual grande)
+  en una constante fija del motor — eso lo aprende el adaptativo, no se
+  hardcodea.
+
+### Principio general
+**Estimación inicial razonable y auditable → adaptación mediante respuesta
+real del usuario.** Ninguna fórmula de v3 pretende conocer el gasto
+energético exacto de una persona a partir de un formulario. El objetivo es
+que la estimación inicial sea coherente, monótona y sin dobles conteos
+obvios, y que el sistema adaptativo la corrija con datos reales de peso e
+ingesta a lo largo de semanas — nunca al revés.
+
+---
+
+## 2. Decisiones cerradas
+
+### 2.1 — Modelo de actividad: separar duración de fuerza y cardio
+
+- **Problema actual**: `TrainingActivityProfile.avgSessionDurationMin` es un
+  único campo aplicado tanto a `strengthDaysPerWeek` como a
+  `cardioDaysPerWeek`. Un usuario que declara "5 días fuerza + 5 días
+  cardio + 60 min" es interpretado como 600 min/semana (10h), aunque
+  probablemente quería decir sesiones combinadas de 60 min.
+- **Decisión**: separar `strength: {daysPerWeek, avgDurationMin,
+  intensity}` y `cardio: {daysPerWeek, avgDurationMin, activity,
+  intensity}` como sub-objetos independientes.
+- **Justificación**: es un bug de interpretación de datos, no una elección
+  de modelo — el dato que entra no representa lo que el usuario quiso decir.
+- **Alternativa descartada**: preguntar "¿el cardio está incluido en los 60
+  min de fuerza?" como checkbox adicional en vez de separar los campos. Se
+  descarta porque no resuelve el caso de quien sí entrena fuerza y cardio
+  en sesiones distintas — solo parchea un caso concreto.
+- **Implicaciones de código**: cambia `TrainingActivityProfile` (tipo
+  compartido), `calcHabitualTrainingAllowanceKcal`, el formulario de
+  onboarding, y requiere migración de perfiles v2 existentes (ver §10).
+
+### 2.2 — Edad mínima del motor adulto
+
+- **Problema actual**: `OnboardingFlow.tsx` acepta `age >= 14`
+  (`min="14"`), pero todas las fórmulas (Mifflin-St Jeor, guardarraíles de
+  seguridad, rangos de déficit) están calibradas para adultos.
+- **Decisión**: edad mínima 18 en cliente y servidor. No se construye un
+  motor pediátrico en v3.
+- **Justificación**: el NIH Body Weight Planner, una de las referencias
+  utilizadas para diseñar/revisar el enfoque adaptativo (§6), está limitado
+  a adultos ≥18 y excluye embarazo/lactancia explícitamente por la misma
+  razón — las necesidades de crecimiento y desarrollo no se modelan igual.
+- **Alternativa descartada**: motor pediátrico separado. Descartada por
+  alcance — no hay evidencia de que sea una prioridad de producto ahora
+  mismo, y hacerlo mal es peor que no ofrecerlo.
+- **Implicaciones de código**: validación en formulario + validación
+  server-side (no confiar solo en `min` del input HTML) + `EligibilityGate`
+  (ver §5).
+
+### 2.3 — Cobertura de ingesta histórica: target por fecha, no target de hoy
+
+- **Problema actual**: `calcIntakeCoverage` recibe `targetKcal` como un
+  único número (`targetKcalToday`), pero se evalúa contra una ventana de 28
+  días. Si hoy es día de gym y el histórico incluye días de descanso (o
+  viceversa, o el perfil cambió), la cobertura se calcula mal.
+- **Decisión**: pasar un `targetByDate: Map<string, number>` (o el
+  histórico ya persistido de objetivos diarios) en vez de un escalar.
+- **Justificación**: el bug contamina directamente el motor adaptativo —
+  una cobertura mal calculada puede bloquear o desbloquear propuestas de
+  ajuste de forma incorrecta, y silenciosa.
+- **Alternativa descartada**: recalcular retroactivamente el target de cada
+  día histórico con el perfil actual. Descartada porque es incorrecta por
+  diseño — si el perfil cambió hace 10 días, el histórico de hace 20 días
+  debe compararse contra el objetivo que existía entonces, no contra el de
+  hoy.
+- **Implicaciones de código**: `calcIntakeCoverage`, `NutritionView.tsx`
+  (puntos donde se llama con `targetKcalToday`), y probablemente requiere
+  que el objetivo diario histórico esté persistido por fecha (verificar si
+  ya existe en snapshots o hay que añadirlo).
+
+### 2.4 — Proteína: regla propia por base de referencia, sin heredar el multiplicador
+
+- **Problema actual**: `calcProteinBase()` devuelve un `number` a partir de
+  peso real, peso ajustado (ESPEN) o masa magra (si hay `bodyFatPct`), y
+  **el mismo multiplicador** (2.0 g/kg para fat_loss/recomp) se aplica a
+  las tres bases indiscriminadamente. Efecto observable: introducir el %
+  de grasa (un dato "más preciso") puede **bajar** la proteína recomendada
+  bruscamente, porque 2.0 g/kg de masa magra da un número mucho menor que
+  2.0 g/kg de peso ajustado.
+- **Decisión**: la base FFM (masa magra) tiene su propio rango, no hereda
+  el 2.0 g/kg pensado para peso ajustado/real. No se fija todavía
+  "2.0–2.4 g/kg FFM" como cifra universal para todos los contextos — se
+  trata como estrategia específica según objetivo y, como mínimo,
+  experiencia/estado energético (más alto en déficit + entrenado + magro,
+  según ISSN).
+- **Justificación**: es más simple que levantar un tipo
+  `ProteinReference + Confidence + Provenance` completo ahora mismo, y
+  arregla el comportamiento contraintuitivo del bug sin sobre-ingeniería.
+- **Alternativa descartada**: tipo completo `ProteinReference` con
+  confianza y procedencia por caso (`actual_weight` / `adjusted_weight` /
+  `fat_free_mass`, cada uno con su `confidence`). Aplazada — no rechazada
+  del todo, pero se considera trabajo de fase 2 si hace falta más adelante;
+  para v3 basta con reglas distintas por base.
+- **Implicaciones de código**: `calcProteinBase` / la función que aplica el
+  multiplicador debe ramificar por tipo de base, no aplicar un
+  `proteinPerKg` único desde `GOAL_CONFIG`. v3 **sí** añade una procedencia
+  mínima (`bodyFatSource`), pero **no** implementa todavía un sistema
+  completo de `confidence`/`provenance` ni hace depender automáticamente
+  toda la estrategia nutricional de un score de confianza — eso queda
+  aplazado a fase 2 (ver §9) si la experiencia real lo justifica.
+
+### 2.5 — Modelo energético del entrenamiento: `replacementIncrementKcal`
+
+- **Problema actual**: el TDEE habitual (`calcHabitualTrainingAllowanceKcal`)
+  suma el **MET bruto** del entrenamiento sobre un `lifestyleTdee` que ya
+  representa un día completo (24h) de actividad cotidiana sin entrenar.
+  Como el entrenamiento sustituye un tramo de ese día (no lo añade sobre un
+  día vacío), sumar el bruto cuenta dos veces la energía de esos minutos:
+  una vez implícita en `lifestyleTdee`, otra vez explícita en el
+  entrenamiento. Además, `estimateWorkoutKcal` (usado para sesiones
+  registradas) sí resta reposo (`MET − 1`), así que dos partes del motor
+  miden "gasto de ejercicio" con fórmulas distintas.
+- **Decisión**: tres conceptos separados y con nombre distinto, para no
+  confundirlos:
+  - `grossKcal` — estimación MET estándar de la sesión, sin restar nada.
+  - `netAboveRestKcal` — gross menos 1 MET (reposo). Es lo que hoy calcula
+    `estimateWorkoutKcal`; se conserva para mostrar "cuánto gastaste en la
+    sesión" en el módulo de Ejercicios.
+  - `replacementIncrementKcal` — gross menos el gasto que el modelo de
+    lifestyle **ya había asignado** a esos minutos. Es el único que debe
+    modificar el mantenimiento estimado en Nutrición.
+- **Justificación**: `netAboveRestKcal` responde exclusivamente a "cuánta
+  energía adicional estima el modelo por encima del reposo estándar de 1
+  MET". No intenta estimar cuánto añade el entrenamiento respecto al día
+  cotidiano modelado por FoodOS — por eso no debe usarse para modificar el
+  mantenimiento, independientemente del nivel de lifestyle. Ni siquiera
+  para `sedentary` representa el incremento real respecto al lifestyle:
+  `sedentary = 1.2 × RMR`, no reposo puro, y el estándar `1 MET = 3.5
+  ml/kg/min` no tiene por qué coincidir con el RMR estimado por Mifflin (de
+  hecho, en el ejemplo numérico de la sesión de diseño no coincidía).
+  Restar el gasto lifestyle desplazado (no el reposo) es la única de las
+  opciones consideradas que respeta la propia definición de `lifestyleTdee`
+  como "día completo sin entrenar".
+- **Alternativa descartada**: usar `TMB/1440` (reposo puro) como baseline
+  fijo en vez de `lifestyleTdee/1440`. Descartada porque solo corrige el
+  doble conteo del reposo, no el de la actividad cotidiana ya incluida vía
+  `LIFESTYLE_ONLY_FACTORS` — seguiría existiendo doble conteo parcial en
+  cualquier perfil que no sea sedentario puro.
+- **Nota epistémica explícita**: `baselineDisplaced` (= `lifestyleTdee/1440
+  × minutos`) es una **convención contable** para evitar doble conteo entre
+  el modelo de actividad cotidiana y el ejercicio explícito. No pretende
+  estimar el gasto contrafactual real de esa hora concreta — el promedio
+  mezcla sueño, trabajo, desplazamientos y tareas repartidos uniformemente
+  sobre 1440 min, y una hora de gimnasio normalmente sustituye una hora
+  despierta, no una fracción proporcional del día completo. Se acepta como
+  aproximación razonable, coherente y auditable — no como medición.
+- **Implicaciones de código**: `ExerciseEnergyEstimate { grossKcal,
+  netAboveRestKcal, replacementIncrementKcal }` como tipo explícito, con
+  semántica fijada para que no se elija uno al azar:
+
+  ```
+  grossKcal
+  → energía total estimada durante el intervalo de ejercicio.
+
+  netAboveRestKcal
+  → energía adicional estimada por encima de 1 MET durante ese intervalo.
+
+  replacementIncrementKcal
+  → incremento que Nutrición atribuye al entrenamiento
+    respecto al lifestyle que ya estaba modelado.
+  ```
+
+  Regla de uso en UI: si el texto dice "calorías de actividad" o "calorías
+  extra", usar `netAboveRestKcal`; si dice "energía total estimada durante
+  la sesión", puede usar `grossKcal`. Nutrición usa exclusivamente
+  `replacementIncrementKcal`. `replacementIncrementKcal` se clampa a `≥ 0`
+  (ver invariantes, §8).
+
+### 2.6 — Semántica de objetivos: `muscle_gain` nunca es un déficit encubierto
+
+- **Problema actual**: `kcalFactor("muscle_gain", ...)` devuelve `×0.90`
+  (déficit del 10%) cuando `IMC ≥ 27`. Un usuario que selecciona
+  explícitamente "ganancia muscular" recibe una estrategia de pérdida de
+  peso sin saberlo.
+- **Decisión**: `muscle_gain` significa mantenimiento o superávit pequeño,
+  siempre. Si el sistema considera que no es la estrategia más apropiada
+  para ese perfil (p.ej. adiposidad alta), **recomienda** `recomp` como
+  alternativa — nunca sustituye el objetivo por debajo del usuario sin que
+  lo vea y lo acepte explícitamente.
+- **Justificación**: cambiar el significado de un objetivo seleccionado
+  explícitamente rompe la confianza del usuario en lo que la app dice que
+  está haciendo, independientemente de si la recomendación subyacente es
+  correcta.
+- **Alternativa descartada**: mantener el comportamiento actual pero
+  renombrar la etiqueta ("ganancia muscular condicionada"). Descartada
+  porque no resuelve el problema real — el usuario sigue sin saber que
+  seleccionó A y recibió B.
+- **Implicaciones de código**: eliminar la rama de `kcalFactor` que aplica
+  déficit a `muscle_gain`; añadir el flujo de recomendación/confirmación en
+  la UI (`shouldWarnMuscleGain` ya existe como detección — falta que
+  además ofrezca la alternativa en vez de solo avisar).
+
+---
+
+## 3. Modelo energético
+
+Variables:
+
+- `RMR` — gasto en reposo estimado (Mifflin-St Jeor). Renombrado desde
+  "TMB" para reflejar que es una predicción, no una medición (Mifflin
+  estima *resting energy expenditure*).
+- `lifestyleTdee` — gasto estimado de un día completo (24h) sin
+  entrenamiento: `RMR × lifestyleFactor` (`LIFESTYLE_ONLY_FACTORS`).
+- `grossKcal` — estimación MET estándar de una sesión de ejercicio, sin
+  ajustar.
+- `netAboveRestKcal` — `grossKcal` menos 1 MET de reposo. Uso: mostrar
+  gasto estimado de una sesión concreta (módulo Ejercicios).
+- `baselineDisplaced` — gasto que `lifestyleTdee` ya asignaba a los
+  minutos de la sesión, asumiendo reparto uniforme sobre 1440 min/día.
+- `replacementIncrementKcal` — lo único que debe modificar el
+  mantenimiento estimado.
+
+Fórmula final:
+
+```
+lifestyleTdee = RMR × lifestyleFactor
+
+baselineDisplaced =
+  (lifestyleTdee / 1440) × sessionMinutes
+
+replacementIncrement =
+  max(0, grossExerciseKcal − baselineDisplaced)
+
+weeklyMaintenance =
+  lifestyleTdee × 7
+  + Σ replacementIncrement (todas las sesiones de la semana)
+```
+
+> `baselineDisplaced` es una convención contable para evitar doble conteo,
+> no una medición del gasto contrafactual real de esa hora. Ver
+> justificación completa en §2.5.
+
+---
+
+## 4. Modelo de proteína
+
+Tres bases de referencia posibles, cada una con su propia regla — **nunca
+se reutiliza automáticamente el mismo multiplicador g/kg entre bases
+distintas** (ver §2.4):
+
+- **Peso real** — caso por defecto sin obesidad ni % de grasa conocido.
+- **Peso ajustado** (aproximación ESPEN, `ideal + 0.33 × exceso`) — cuando
+  el peso supera ~1.25× el peso ideal a IMC 25 y no hay % de grasa. Se
+  documenta como "aproximación pragmática derivada de guías clínicas de
+  obesidad", no como "estándar ISSN de nutrición deportiva" — la
+  redacción anterior sobre-vendía la fuente.
+- **Masa magra (FFM)** — cuando hay % de grasa corporal disponible. Rango
+  propio, no el mismo multiplicador que peso ajustado/real.
+
+Fuente y calidad del % de grasa: los métodos de estimación de grasa
+corporal pueden presentar errores individuales suficientemente grandes
+como para no tratar cualquier porcentaje introducido como una medición
+exacta. Por eso v3 registra de dónde viene el dato (DXA, BIA profesional,
+báscula doméstica, plicómetro, estimación visual) mediante un campo mínimo
+`bodyFatSource` — sin implementar todavía un sistema completo de
+`confidence`/`provenance` (ver §2.4 y §9). La regla de "no heredar el
+multiplicador entre bases" ya evita el peor síntoma del bug mientras tanto.
+
+---
+
+## 5. Objetivos corporales
+
+- `fat_loss` — déficit.
+- `recomp` — déficit moderado, ciclado gym/descanso.
+- `maintain` — mantenimiento.
+- `muscle_gain` — mantenimiento o superávit pequeño, **siempre** (ver §2.6).
+  Nunca se transforma silenciosamente en déficit. Las recomendaciones
+  alternativas (p.ej. sugerir `recomp` según adiposidad) son
+  recomendaciones explícitas que el usuario acepta o rechaza — nunca
+  sustituciones ocultas del objetivo seleccionado.
+
+`EligibilityGate` (nuevo en v3): antes de calcular un plan automático,
+evaluar si el perfil queda fuera del alcance del motor adulto estándar
+(menor de 18, embarazo/lactancia, indicios de trastorno alimentario,
+contextos clínicos relevantes). En esos casos, el motor no genera un plan
+automático y así lo comunica — no intenta diagnosticar nada.
+
+---
+
+## 6. Motor adaptativo
+
+- `7700 kcal/kg` deja de ser la base directa de las propuestas de ajuste.
+  Se conserva como `observedTdeeKcal` — **diagnóstico/inferencia
+  aproximada**, mostrable pero no accionable por sí sola.
+- Las decisiones de ajuste salen de comparar **ritmo observado vs. ritmo
+  objetivo** durante una ventana de datos suficientemente buena — no de
+  inferir un TDEE "real" con falsa precisión de laboratorio.
+- Ventanas mínimas: mantener el criterio de calidad de tendencia de peso ya
+  existente (mediana + EWMA + regresión + `qualityScore`). Se distingue
+  explícitamente "datos mínimos para diagnóstico" de "datos mínimos para
+  permitir una propuesta":
+  - **14 días** — puede existir diagnóstico/tendencia informativa (mostrable
+    al usuario, no accionable).
+  - **21–28 días** — ventana preferida para habilitar ajustes, salvo que la
+    especificación técnica posterior justifique otra cosa.
+  El número exacto del controlador v3 (dentro de ese rango) no está cerrado
+  todavía — se deja explícitamente abierto para no contradecir este
+  documento cuando se fije en la sesión de diseño técnico.
+- Calidad de datos: cobertura de ingesta ≥85% — criterio ya existente en
+  v2, se conserva; el mínimo de días evaluados para *proponer* (no solo
+  diagnosticar) sigue el rango 21–28 anterior, no el ≥14 heredado de v2.
+- Magnitud del ajuste: `±100/150 kcal` por ciclo — se conserva como
+  guardarraíl de producto (no es una constante fisiológica, es una
+  decisión deliberada para evitar saltos bruscos).
+- Cooldown de 14 días entre propuestas — se conserva.
+- Aceptación siempre explícita por el usuario — el motor adaptativo nunca
+  aplica un ajuste por sí solo.
+
+---
+
+## 7. Bugs obligatorios de v3
+
+Los tres cambios sin debate, primeros en implementarse (ver §2.1-§2.3):
+
+1. Separar duración de fuerza y cardio en `TrainingActivityProfile`.
+2. Edad mínima 18, cliente y servidor.
+3. Cobertura de ingesta histórica evaluada contra el objetivo vigente en
+   cada fecha, no el objetivo de hoy.
+
+---
+
+## 8. Invariantes de tests
+
+Más importantes que las fórmulas exactas — protegen el *comportamiento*
+del modelo, no un número concreto que puede volverse obsoleto sin que el
+modelo esté roto:
+
+```
+grossKcal                      independiente del lifestyle
+netAboveRestKcal                independiente del lifestyle
+replacementIncrementKcal        depende del lifestyle
+replacementIncrementKcal       <= grossKcal
+
+sin sesiones de entrenamiento  → weeklyMaintenance = lifestyleTdee × 7
+
+lifestyle mayor                 → replacementIncrement menor o igual
+replacementIncrement            → siempre >= 0
+cambiar duración de cardio      → no cambia la energía calculada de fuerza
+Σ targets diarios                = presupuesto semanal
+
+goal = muscle_gain             → estrategia energética nunca tiene déficit
+
+ningún plan inseguro             se corrige silenciosamente (nunca clamp mudo)
+datos insuficientes             ⇒ ningún ajuste adaptativo se propone
+<18 años                        nunca entra en el cálculo del motor adulto
+cambiar cualquier input relevante del cálculo → invalida propuestas pendientes (fingerprint)
+```
+
+---
+
+## 9. Decisiones aplazadas
+
+Explícitamente pospuestas — y explícitamente el motivo, para que dentro de
+unos meses no reaparezcan disfrazadas de "TODO pequeño":
+
+- **Perímetro de cintura / adiposidad más allá del IMC** — mejora real
+  (EASO 2024 recomienda no reducir la valoración de obesidad al IMC), pero
+  implica UX nueva, un dato adicional que puede faltar, y más estados
+  incompletos que gestionar. Se aplaza a fase 2 de v3; mientras tanto,
+  sustituir el corte duro IMC 27/30 por interpolación suave en la banda
+  27-32 ya elimina el precipicio 29.9→30.0 sin necesitar cintura.
+- **Modelo continuo completo de adiposidad** (mismo motivo que arriba).
+- **Eliminación de `LIFESTYLE_ONLY_FACTORS` / modelo PAL** — solo tendría
+  sentido si el gasto cotidiano se reconstruye por componentes reales
+  (pasos, horarios, wearables). Sin esos datos, sustituir una heurística
+  agregada por otra no aporta precisión real, solo aparenta hacerlo.
+- **Integración de wearables / pasos en el cálculo directo** — los pasos
+  ya se capturan mediante formulario pero no afectan al cálculo (`N8` en
+  `REVISION_NUTRICION_PR48-52.md`). Integrarlos bien requiere resolver
+  primero el doble conteo con cardio declarado ("¿tu cardio va incluido en
+  esos pasos?") — no es solo sumar un término más.
+- **Gasto cotidiano por componentes** (sueño/trabajo/desplazamiento/tareas
+  desagregados) — requiere datos que hoy no existen en el producto.
+- **Tipo completo `ProteinReference { kind, confidence, provenance }`** —
+  la versión mínima (regla propia por base, sin heredar multiplicador) ya
+  resuelve el bug observable; el tipo completo se revisará si hace falta
+  más granularidad más adelante.
+
+---
+
+## 10. Plan de migración `nutrition-v2 → nutrition-v3`
+
+*(Pendiente de detallar en la sesión de diseño técnico — apuntado aquí como
+placeholder para que no se pierda como paso explícito del refactor)*
+
+- Qué datos de `PhysicalProfile`/`TrainingActivityProfile` v2 son
+  compatibles tal cual con v3, y cuáles requieren migración (p.ej.
+  `avgSessionDurationMin` único → `strength.avgDurationMin` +
+  `cardio.avgDurationMin`: decidir si se asume "mismo valor para ambos" o
+  se fuerza a los usuarios existentes a revisar su perfil).
+- Qué perfiles necesitan volver a completar información (edad <18
+  existente, si los hay; % de grasa sin fuente registrada).
+- Qué histórico del motor adaptativo queda invalidado por el cambio de
+  fórmula de `replacementIncrementKcal` (un TDEE inicial recalculado con
+  fórmula distinta rompe la comparación con el TDEE observado acumulado).
+- Cómo se conservan snapshots anteriores para auditoría sin que se
+  interpreten como calculados con las reglas de v3 (versión de motor en
+  cada snapshot — ya existe `NUTRITION_ENGINE_VERSION`, subir a
+  `nutrition-v3` cuando se implemente).
+
+---
+
+## Orden de implementación acordado
+
+1. **PR1** — Bugs obligatorios (§7) + modelo de proteína (§2.4) + soporte
+   de targets históricos por fecha en el adaptativo (§2.3). No toca MET ni
+   sustituye `7700` en la misma entrega — ambos cambian la interpretación
+   del mantenimiento y complicarían diagnosticar qué cambio produjo qué
+   resultado.
+2. **PR2** — Adaptive v3: controlador por progreso (§6), manteniendo TDEE
+   inferido como diagnóstico, cobertura/calidad recalculada correctamente.
+3. **PR3** — Actividad/TDEE v3: modelo `replacementIncrementKcal` (§2.5 y
+   §3), tras confirmar que el modelo conceptual (este documento) no
+   necesita más ajustes antes de tocar código.
