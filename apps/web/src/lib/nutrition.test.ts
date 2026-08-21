@@ -12,6 +12,7 @@ import {
   calcTdeeBreakdown,
   calcProteinBase,
   calcProteinRange,
+  calcSummary,
   calcTDEE,
   calcTMB,
   calcWeightTrend,
@@ -471,6 +472,43 @@ describe("calcDailyTargets — caso real verificado en la app (120kg/177cm/24añ
       adaptiveKcalOffsetKcal: -300,
     });
     expect(calcDailyTargets(tinyProfile, false).kcal).toBeGreaterThanOrEqual(1200);
+  });
+});
+
+// ─── PR4 — nutrition-v3 §2.6: muscle_gain nunca es un déficit encubierto ──
+// Decisión documentada como cerrada desde la primera sesión de diseño de
+// v3 (0c9b4b2), pero nunca implementada hasta la auditoría final de PR4:
+// kcalFactor("muscle_gain") devolvía 0.90 (déficit real ~10%) con
+// IMC>=27, con el objetivo etiquetado "ganancia muscular".
+
+describe("calcDailyTargets — muscle_gain nunca propone un déficit, cualquiera que sea el IMC", () => {
+  it("goal=muscle_gain → targetKcal siempre >= TDEE estimado, incluso con IMC alto (invariante del contrato)", () => {
+    const imcCases = [
+      { weightKg: 70, heightCm: 178 },  // IMC ~22, normopeso
+      { weightKg: 85, heightCm: 178 },  // IMC ~26.8, justo debajo del umbral
+      { weightKg: 90, heightCm: 178 },  // IMC ~28.4, por encima del umbral
+      { weightKg: 110, heightCm: 175 }, // IMC ~35.9, obesidad — el caso que falló en la auditoría
+    ];
+    for (const { weightKg, heightCm } of imcCases) {
+      const profile = baseProfile({ weightKg, heightCm, goal: "muscle_gain", activityLevel: "moderate" });
+      const { tdee } = calcSummary(profile);
+      const targets = calcDailyTargets(profile, false);
+      expect(targets.kcal, `weightKg=${weightKg} heightCm=${heightCm}`).toBeGreaterThanOrEqual(tdee);
+    }
+  });
+
+  it("con IMC>=27 el factor es exactamente mantenimiento (1.0), no superávit ni déficit", () => {
+    const profile = baseProfile({ weightKg: 110, heightCm: 175, goal: "muscle_gain", activityLevel: "moderate" });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(tdee);
+  });
+
+  it("con IMC<27 se mantiene el pequeño superávit del 5%", () => {
+    const profile = baseProfile({ weightKg: 70, heightCm: 178, goal: "muscle_gain", activityLevel: "moderate" });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(Math.round(tdee * 1.05));
   });
 });
 
@@ -1284,6 +1322,40 @@ describe("buildAdjustmentProfileFingerprint / isProposalStale", () => {
     const original = buildAdjustmentProfileFingerprint(baseProfile({ adaptiveKcalOffsetKcal: 0 }), "balanced");
     const current = buildAdjustmentProfileFingerprint(baseProfile({ adaptiveKcalOffsetKcal: 80 }), "balanced");
     expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  // ── PR4 — nutrition-v3 §6.11: completar el fingerprint con inputs que
+  // cambian materialmente el plan (RMR/IMC/base de proteína) y no estaban
+  // cubiertos hasta la auditoría final.
+
+  it("cambiar la edad marca la propuesta como obsoleta (cambia RMR)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ age: 30 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ age: 31 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar el sexo marca la propuesta como obsoleta (cambia RMR)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ sex: "male" }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ sex: "female" }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar la altura marca la propuesta como obsoleta (cambia RMR e IMC)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ heightCm: 175 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ heightCm: 180 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("declarar/cambiar el % de grasa marca la propuesta como obsoleta (cambia la base de proteína a fat_free_mass)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: null }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("bodyFatSource NO forma parte del fingerprint — solo cambia procedencia/UX, ningún target (decisión v3 §2.4/§9)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: null }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: "dxa" }), "balanced");
+    expect(isProposalStale(original, current)).toBe(false);
   });
 });
 

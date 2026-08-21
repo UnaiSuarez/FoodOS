@@ -446,7 +446,7 @@ export const GOAL_LABELS: Record<GoalMode, string> = {
 
 export const GOAL_DESCRIPTIONS: Record<GoalMode, string> = {
   fat_loss:    "−20% kcal · proteína 2.0 g/kg · ~−0,5–1 kg/semana",
-  muscle_gain: "+5% kcal (solo si IMC<27) · proteína 1.8 g/kg",
+  muscle_gain: "+5% kcal (mantenimiento si IMC≥27, nunca déficit) · proteína 1.8 g/kg",
   recomp:      "IMC≥30: −17-20% · IMC<30: −10-17% · proteína 2.0 g/kg",
   maintain:    "100% kcal mantenimiento · proteína 1.8 g/kg",
 };
@@ -547,7 +547,17 @@ export const MACRO_PREFERENCE_LABELS: Record<MacroPreference, string> = {
  * Factor kcal según objetivo, IMC y tipo de día.
  *
  * fat_loss:    0.80 siempre (−20%)
- * muscle_gain: 1.05 si IMC<27 / 0.90 si IMC≥27 (no superávit en obesidad)
+ * muscle_gain: 1.05 si IMC<27 / 1.0 (mantenimiento) si IMC≥27 — nunca por
+ *              debajo de 1.0 (PR4, ver docs/NUTRITION_V3_DECISIONES.md
+ *              §2.6): antes de PR4 este caso devolvía 0.90 (déficit real
+ *              de ~10%) con el objetivo etiquetado "ganancia muscular" —
+ *              la decisión de §2.6 quedó documentada como cerrada en la
+ *              primera sesión de diseño de v3 pero nunca se implementó
+ *              hasta la auditoría final. No hay superávit forzado con
+ *              adiposidad alta (por eso 1.0 y no 1.05), pero tampoco
+ *              déficit encubierto — el aviso de shouldWarnMuscleGain()
+ *              sigue recomendando recomp/pérdida de grasa, nunca cambia
+ *              el objetivo por debajo del usuario.
  * recomp:      IMC≥30 → 0.83 gym / 0.80 descanso
  *              IMC<30  → 0.90 gym / 0.83 descanso
  * maintain:    1.0
@@ -557,7 +567,7 @@ function kcalFactor(goal: GoalMode, gymDay: boolean, imc: number): number {
     case "fat_loss":
       return 0.80;
     case "muscle_gain":
-      return imc >= 27 ? 0.90 : 1.05;
+      return imc >= 27 ? 1.0 : 1.05;
     case "recomp":
       return imc >= 30
         ? (gymDay ? 0.83 : 0.80)
@@ -1406,6 +1416,10 @@ export function buildAdjustmentProfileFingerprint(
   return {
     goal: profile.goal,
     weightKg: profile.weightKg,
+    heightCm: profile.heightCm,
+    age: profile.age,
+    sex: profile.sex,
+    bodyFatPct: profile.bodyFatPct,
     activityLevel: profile.activityLevel,
     activityModelVersion: profile.activityModelVersion ?? "legacy_total_pal",
     trainingActivity: profile.trainingActivity ?? null,
@@ -1428,6 +1442,10 @@ export function isProposalStale(
   return (
     original.goal !== current.goal ||
     original.weightKg !== current.weightKg ||
+    original.heightCm !== current.heightCm ||
+    original.age !== current.age ||
+    original.sex !== current.sex ||
+    original.bodyFatPct !== current.bodyFatPct ||
     original.activityLevel !== current.activityLevel ||
     original.activityModelVersion !== current.activityModelVersion ||
     original.macroPreference !== current.macroPreference ||

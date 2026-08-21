@@ -237,6 +237,18 @@ ingesta a lo largo de semanas — nunca al revés.
   déficit a `muscle_gain`; añadir el flujo de recomendación/confirmación en
   la UI (`shouldWarnMuscleGain` ya existe como detección — falta que
   además ofrezca la alternativa en vez de solo avisar).
+- **Estado (PR4, auditoría final de v3)**: esta decisión quedó documentada
+  como cerrada en la primera sesión de diseño de v3, pero **nunca se
+  implementó** hasta que la auditoría final de PR4 la encontró todavía
+  activa en producción (`kcalFactor` seguía devolviendo `0.90` con
+  IMC≥27). PR4 corrige la mitad del problema: `kcalFactor("muscle_gain")`
+  con IMC≥27 pasa a `1.0` (mantenimiento exacto, nunca déficit) — el
+  invariante `goal=muscle_gain → targetKcal >= estimatedTdeeKcal` queda
+  protegido por test. **Sigue sin implementarse** la segunda mitad: el
+  banner de `shouldWarnMuscleGain` solo informa/recomienda en texto, no
+  ofrece un flujo real de "usar recomendación" con confirmación explícita
+  (queda como mejora futura, no bloqueante — el objetivo ya no cambia de
+  significado por debajo del usuario, que era el problema central).
 
 ---
 
@@ -674,14 +686,11 @@ Casos obligatorios de test para la asimetría de `recomp`:
 - `evaluateNutritionSafety` y demás guardarraíles de `calcDailyTargets` —
   sin relación con este cambio, no se tocan.
 
-### 6.11 Lo que NO se da por garantizado todavía
+### 6.11 Fingerprint — completado en PR4 (auditoría final de v3)
 
 El fingerprint de propuesta (`AdjustmentProfileFingerprint`) debe seguir
 invalidando una propuesta pendiente si cambia cualquier input capaz de
-alterar materialmente el plan contra el que se generó — pero el
-fingerprint **actual ya se sabe incompleto** (no cubre todos los inputs
-reales tras PR1). Este es el invariante deseado, no una propiedad que la
-implementación de hoy garantice:
+alterar materialmente el plan contra el que se generó:
 
 ```
 Invariante a preservar/completar: cualquier cambio en un input que pueda
@@ -689,9 +698,31 @@ alterar materialmente el plan contra el que se generó una propuesta debe
 hacerla stale.
 ```
 
-Qué campos entran exactamente en el fingerprint se revisa en la sesión de
-implementación, comparando contra todas las dependencias reales
-post-PR1 — no se inventa la lista aquí.
+**Cerrado en PR4** tras comparar contra las dependencias reales de
+`calcDailyTargets` post-PR1/2/3. Campos añadidos: `age`, `sex`,
+`heightCm`, `bodyFatPct` — los cuatro cambian RMR, IMC y/o la base de
+proteína. Deliberadamente **excluidos**, con justificación, no por
+omisión:
+
+- **`bodyFatSource`** — en v3 la procedencia del % graso es solo
+  informativa/UX (§2.4/§9), no cambia ningún target. Incluirla en el
+  fingerprint sería ruido — si algún día la fuente empieza a modificar
+  confianza o macros, entra entonces.
+- **`gymDays`** — `evaluateAdaptiveState()` ni siquiera recibe `gymDay`
+  como input: el offset adaptativo se suma como término plano en
+  `calcDailyTargets`, independiente del tipo de día. `gymDays` sí cambia
+  qué target concreto ve el usuario cada día, pero eso se recalcula en
+  vivo en la UI — no es parte de lo que este fingerprint protege (si la
+  *decisión* de ajuste sigue siendo válida).
+
+Nota deliberada, no fusionada con lo anterior: `isRelevantCalibrationChange()`
+(qué invalida el HISTÓRICO de calibración adaptativa) y el fingerprint de
+propuesta (qué invalida una PROPUESTA PENDIENTE concreta) son preguntas
+distintas — un input puede justificar que una propuesta quede stale sin
+necesariamente justificar borrar semanas de calibración de peso/ingesta
+ya acumulada. `isRelevantCalibrationChange()` no se tocó en PR4; sigue
+cubriendo solo `goal`/`activityLevel`/`activityModelVersion`/
+`trainingActivity`, revisión pendiente y separada si hiciera falta.
 
 ---
 
@@ -816,3 +847,23 @@ placeholder para que no se pierda como paso explícito del refactor)*
    tocar, limitación conocida explícitamente aplazada (§3.4).
    **`NUTRITION_ENGINE_VERSION` sube a `nutrition-v3`** — los tres PR
    quedan cubiertos por el identificador, tal como prometía el documento.
+4. **PR4** — ✅ **Implementado.** Cierre/auditoría final de v3, tras una
+   revisión completa de la rama `d5cb696..7feba76` (7700/combinedKcal
+   fuera de la decisión, sin gross sumado directo, sin duplicación de
+   desglose, sin residuos de campos legacy — todo confirmado limpio). Dos
+   hallazgos reales corregidos:
+   - `kcalFactor("muscle_gain")` con IMC≥27 seguía devolviendo `0.90`
+     (déficit real) pese a que §2.6 lo daba por cerrado desde la primera
+     sesión de diseño — nunca se había implementado. Corregido a `1.0`
+     (mantenimiento, nunca déficit), invariante `targetKcal >=
+     estimatedTdeeKcal` protegido por test. Banner de aviso actualizado
+     para no seguir hablando de "el superávit calórico" cuando ya no lo
+     hay.
+   - Fingerprint de propuesta completado (§6.11): `age`/`sex`/`heightCm`/
+     `bodyFatPct` añadidos; `bodyFatSource`/`gymDays` excluidos con
+     justificación explícita, no por omisión.
+   - **Bloqueante de despliegue, fuera de este PR**: las dos migraciones
+     de PR1 (`age >= 18`, `body_fat_source`) siguen sin aplicar en la
+     base de datos real — confirmado por auditoría directa. El código ya
+     asume la columna `body_fat_source`; desplegar sin aplicar antes las
+     migraciones rompería la sincronización de perfil.

@@ -372,10 +372,31 @@ export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "ex
  * aceptarla (ver isProposalStale en nutrition.ts y N4 en
  * docs/REVISION_NUTRICION_PR48-52.md). No incluye "objetivo manual" porque
  * ese campo todavía no existe en FoodOS.
+ *
+ * PR4 (auditoría final de nutrition-v3, ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.11): añade age/sex/heightCm/
+ * bodyFatPct — los cuatro cambian materialmente el plan calculado (RMR,
+ * IMC, base de proteína) y no estaban cubiertos. Deliberadamente NO
+ * incluye:
+ *   - bodyFatSource: en v3 la procedencia del % graso es solo
+ *     informativa/UX, no cambia ningún target (ver §2.4/§9) — incluirla
+ *     sería ruido en el fingerprint. Si en el futuro la fuente empieza a
+ *     modificar confianza o macros, ahí sí debe entrar.
+ *   - gymDays: el offset adaptativo (adaptiveKcalOffsetKcal) se suma como
+ *     término plano en calcDailyTargets, independiente del tipo de día
+ *     — evaluateAdaptiveState() ni siquiera recibe gymDay como input, así
+ *     que la DECISIÓN del ajuste no depende de qué días son de gym.
+ *     gymDays sí afecta qué target concreto ve el usuario cada día, pero
+ *     eso se recalcula en vivo en la UI, no es parte de lo que este
+ *     fingerprint protege (si la propuesta sigue siendo válida).
  */
 export interface AdjustmentProfileFingerprint {
   goal: GoalMode;
   weightKg: number;
+  heightCm: number;
+  age: number;
+  sex: Sex;
+  bodyFatPct: number | null;
   activityLevel: ActivityLevel;
   activityModelVersion: ActivityModelVersion;
   trainingActivity: TrainingActivityProfile | null;
