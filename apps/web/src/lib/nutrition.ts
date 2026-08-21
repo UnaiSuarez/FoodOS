@@ -92,6 +92,33 @@ export const LIFESTYLE_ONLY_FACTORS: Record<ActivityLevel, number> = {
 const STRENGTH_MET = 5.0; // Compendium of Physical Activities: fuerza general, esfuerzo moderado-alto
 const CARDIO_MET    = 7.0; // Compendium: carrera/bici a ritmo moderado
 
+// ─── MET por grupo muscular predominante de la sesión ───────────────────────
+// Compendium of Physical Activities 2024: 3.5 MET = fuerza ligera/aislamiento,
+// 5.0 MET = fuerza moderada/general (el valor por defecto de siempre), 6.0 MET
+// = fuerza vigorosa/compuesta multiarticular. La comparación directa entre
+// ejercicios confirma que el coste energético real de un compuesto de pierna
+// (ej. sentadilla) es sistemáticamente mayor que el de un aislamiento (ej.
+// curl de bíceps) a intensidad percibida equivalente — no es solo cuestión
+// de cuánto peso se mueve. Ver docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md §2.5.
+const VIGOROUS_MUSCLE_KEYWORDS = ["pierna", "gluteo", "glúteo", "cuadricep", "isquio", "espalda", "cuerpo completo", "full body"];
+const LIGHT_MUSCLE_KEYWORDS    = ["brazo", "bicep", "bíceps", "tricep", "tríceps", "abdomen", "abs", "antebrazo"];
+
+/**
+ * Deriva el MET de una sesión a partir de los grupos musculares del día
+ * (`RoutineDay.muscleGroups`, en español libre — solo lo rellenan hoy las
+ * rutinas generadas por IA). Sin señal suficiente (rutina manual sin split,
+ * o mezcla de grupos vigorosos y ligeros) cae al MET moderado de siempre.
+ */
+export function metForMuscleGroups(muscleGroups: string[] | undefined | null): number {
+  if (!muscleGroups || muscleGroups.length === 0) return STRENGTH_MET;
+  const text = muscleGroups.join(" ").toLowerCase();
+  const isVigorous = VIGOROUS_MUSCLE_KEYWORDS.some((k) => text.includes(k));
+  const isLight    = LIGHT_MUSCLE_KEYWORDS.some((k) => text.includes(k));
+  if (isVigorous && !isLight) return 6.0;
+  if (isLight && !isVigorous) return 3.5;
+  return STRENGTH_MET;
+}
+
 /** kcal/min de una actividad según su MET (fórmula estándar del Compendium). */
 function metKcalPerMin(met: number, weightKg: number): number {
   return (met * 3.5 * weightKg) / 200;

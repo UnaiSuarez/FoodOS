@@ -73,3 +73,43 @@ Fase 4 del backlog):**
 decidir, no ejecutar; la ejecución es su propio ticket en su propia fase,
 para no mezclar una decisión de producto con un borrado de código sin
 haberlo hablado como una entrega aparte.
+
+---
+
+## Las kcal de entrenamiento nunca se suman al presupuesto de comida
+
+**Decisión: el gasto calórico del ejercicio se muestra siempre como
+información (`kcalBurned` en `WorkoutSession`, panel de Ejercicios), nunca
+se suma al presupuesto calórico diario de Nutrición.**
+
+Esto ya se implementó en el commit `3ac5400` ("el entrenamiento ya no
+duplica el gasto en el presupuesto calórico", PR 1 del motor nutricional,
+#46) y sigue vigente en `estimateWorkoutKcal` (`lib/nutrition.ts`) y en
+cómo `ExercisesView.tsx` registra la sesión. Se deja constancia aquí
+porque no es solo una corrección de bug de doble contabilización — es una
+postura de producto que alguien podría intentar revertir sin este
+contexto, y la investigación de mercado la refuerza con datos concretos:
+
+- Todas las estimaciones de gasto por ejercicio (la propia FoodOS con MET,
+  y los wearables de la competencia) son **estimaciones**, no medidas. El
+  modelo MET asume esfuerzo constante durante toda la sesión, algo que no
+  se cumple en fuerza (ratios trabajo/descanso muy variables según
+  ejercicio, carga y rango de reps).
+- El Apple Watch mide frecuencia cardiaca con <5 % de error, pero falla
+  las **calorías en ~28 % de media**, y **sobreestima ~52 % en
+  entrenamiento de resistencia/fuerza** en pruebas controladas
+  ([MacRumors](https://www.macrumors.com/2025/06/05/apple-watch-gets-fitness-metric-wrong/),
+  [Empirical Health](https://www.empirical.health/blog/apple-watch-calories-accuracy/)).
+  En general la sobreestimación de wearables ronda el **20-40 %**
+  ([Nutrola](https://nutrola.app/en/blog/how-accurate-are-fitness-tracker-calorie-burn-estimates)).
+- Con un sesgo sistemático de ese tamaño, sumar la cifra de ejercicio al
+  presupuesto de comida no añade precisión: añade un error de decenas de
+  gramos de comida "de más" que la báscula real nunca respalda. Ver
+  `docs/INVESTIGACION_VISION_Y_ENTRENAMIENTO.md` §2.5 para el desglose
+  completo (MET, Compendium of Physical Activities 2024, EPOC).
+
+**Implicación práctica:** cualquier integración futura con wearables
+(Apple Health, Google Fit, Garmin — hoy una laguna real frente a la
+competencia, ver §4.3 de `INVESTIGACION_APPS_NUTRICION.md`) debe seguir
+esta misma regla: el gasto de esas fuentes entra como información
+visible, nunca como sumando automático del presupuesto calórico.

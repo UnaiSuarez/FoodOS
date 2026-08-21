@@ -37,10 +37,16 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
 }
 
-.log-exercise-row {
+.log-exercise-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-exercise-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -49,63 +55,157 @@
 
 .log-exercise-name {
   font-size: 13px;
+  font-weight: 600;
   color: var(--text);
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.log-sets-control {
+/* e1RM estimado (Epley) de la mejor serie completada — solo aparece cuando
+   hay al menos una serie con peso y reps registrados, ver lib/strength.ts */
+.log-exercise-e1rm {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.log-sets-rows {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-set-row {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  opacity: 0.55;
+}
+
+.log-set-row.done {
+  opacity: 1;
+}
+
+.log-set-index {
+  font-size: 11px;
+  color: var(--muted);
+  width: 14px;
+  text-align: center;
   flex-shrink: 0;
 }
 
-.log-sets-btn {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s;
-}
-
-.log-sets-btn:hover:not(:disabled) {
-  background: var(--accent);
-  color: #000;
-  border-color: var(--accent);
-}
-
-.log-sets-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.log-sets-count {
+.log-set-weight,
+.log-set-reps {
+  width: 56px;
+  padding: 4px 6px;
   font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  min-width: 32px;
-  text-align: center;
 }
 
-.log-sets-count.done    { color: var(--accent); }
-.log-sets-count.partial { color: var(--text); }
-.log-sets-count.zero    { color: var(--muted); }
-
-.log-sets-label {
+.log-set-x {
   font-size: 11px;
   color: var(--muted);
+  flex-shrink: 0;
+}
+
+.log-set-type {
+  width: 78px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.log-set-rir {
+  width: 46px;
+  padding: 4px 6px;
+  font-size: 13px;
+}
+
+/* ── Temporizador de descanso ──────────────────────────────────────────── */
+/* Sticky al fondo del panel (que ya es scrollable, ver .log-session-panel)
+   para que siga visible mientras se sigue registrando la siguiente serie —
+   el mismo patrón que el temporizador persistente de Hevy/Strong. */
+.rest-timer {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 4px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.rest-timer-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.rest-timer-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}
+
+.rest-timer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rest-timer-label {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.rest-timer-clock {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.rest-timer-controls {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.rest-timer-btn {
+  background: var(--surface-alt, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rest-timer-btn:hover {
+  background: var(--surface3, rgba(255, 255, 255, 0.06));
+}
+
+.rest-timer-skip {
+  color: var(--muted);
+}
+
+.log-set-done {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 /* ---------- Documentación de componentes (E03-15) ---------- */
