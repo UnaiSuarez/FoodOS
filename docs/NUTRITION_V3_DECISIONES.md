@@ -466,15 +466,20 @@ observedTdeeKcal A ≠ observedTdeeKcal B  (por construcción, al cambiar avgInt
 Esta es la prueba ejecutable de que el objetivo arquitectónico de PR2 se
 cumplió — no una declaración de intenciones en un comentario.
 
-### 6.7 Único número que queda explícitamente sin cerrar
+### 6.7 Ventana mínima para proponer — cerrado en implementación (PR2)
 
-**21 vs. 28 días como ventana mínima para proponer** (no solo
-diagnosticar). No hay evidencia que decida entre las dos — ninguna app
-comparable investigada (MacroFactor) publica ni justifica su ventana con
-estudios. Fijar un número aquí sin más información sería el mismo tipo de
-falsa precisión que motivó esta revisión. Se decide en la sesión de
-implementación de PR2, marcado explícitamente como guardarraíl de
-producto, no como hallazgo científico.
+**21 días** (`ADJUSTMENT_MIN_EVALUATION_DAYS` en `nutrition.ts`). No hay
+evidencia que decida entre 21 y 28 — ninguna app comparable investigada
+(MacroFactor) publica ni justifica su ventana con estudios. 21 no es "más
+científico" que 28; se eligió para equilibrar estabilidad de la tendencia
+y capacidad de respuesta del controlador, y queda documentado como
+**guardarraíl de producto, no hallazgo científico**, en el propio código.
+
+En cuanto se mergea, deja de ser solo una cifra "provisional en el papel"
+— empieza a decidir propuestas reales, así que código y documentación
+tienen que coincidir. Revisable con datos de producción; si cambia,
+actualizar esta sección y el comentario de `ADJUSTMENT_MIN_EVALUATION_DAYS`
+en el mismo commit.
 
 ### 6.8 Magnitud del ajuste
 
@@ -646,13 +651,16 @@ placeholder para que no se pierda como paso explícito del refactor)*
    el adaptativo (§2.3). No tocó MET ni sustituyó `7700` en la misma
    entrega — ambos cambian la interpretación del mantenimiento y
    complicarían diagnosticar qué cambio produjo qué resultado.
-2. **PR2** — ✅ **Diseño cerrado en documentación (§6), pendiente de
-   implementar.** Adaptive v3: controlador de ritmo observado vs. banda
-   objetivo, manteniendo TDEE inferido (7700) como diagnóstico puro,
-   arquitectura de tres capas (trajectory/suggestedDelta/eligibility) y
-   fuente única (`evaluateAdaptiveState()`). Único número sin cerrar:
-   ventana mínima 21 vs. 28 días (§6.7), a decidir en la sesión de
-   implementación.
+2. **PR2** — ✅ **Implementado.** Adaptive v3: controlador de ritmo
+   observado vs. banda objetivo, manteniendo TDEE inferido (7700) como
+   diagnóstico puro (garantizado por tipo — `evaluateAdaptiveState()` ni
+   siquiera acepta `avgIntakeKcal`), arquitectura de tres capas
+   (trajectory/suggestedDelta/eligibility) y fuente única. Ventana mínima
+   cerrada en 21 días (§6.7), guardarraíl de producto explícito, no
+   hallazgo científico. `NUTRITION_ENGINE_VERSION` se mantiene en
+   `nutrition-v2` a propósito — el bump a `nutrition-v3` se reserva para
+   el cierre de PR3, cuando el identificador signifique la migración
+   completa, no solo una parte.
 3. **PR3** — Actividad/TDEE v3: modelo `replacementIncrementKcal` (§2.5 y
    §3), tras confirmar que el modelo conceptual (este documento) no
    necesita más ajustes antes de tocar código.

@@ -314,21 +314,53 @@ export interface AdaptiveDiagnostics {
   weightTrendQualityScore: number | null;
   proposalEligible: boolean;
   ineligibilityReasons: string[];
+  /** Adaptive v3 — el AdjustmentDecision COMPLETO calculado por
+      evaluateAdaptiveState(), la misma fuente que produjo
+      proposalEligible/ineligibilityReasons de arriba. Los consumidores que
+      necesiten deltaKcal/proposedTargetKcal/reason (p.ej. para crear la
+      propuesta) deben leerlo de aquí — nunca volver a llamar a
+      evaluateAdaptiveState() por su cuenta con inputs recalculados aparte,
+      eso reintroduciría la doble fuente de verdad que este campo existe
+      para evitar. */
+  decision: AdjustmentDecision;
 }
 
 /**
- * Resultado de evaluateAdjustmentProposal(): si se cumplen los criterios
- * mínimos para proponer (nunca aplicar solo) un ajuste de calorías basado en
- * el TDEE adaptativo. shouldPropose=false siempre trae deltaKcal 0 y
- * proposedTargetKcal igual al actual — el reason explica por qué no procede.
+ * Adaptive v3 (ver docs/NUTRITION_V3_DECISIONES.md §6.5): posición del
+ * ritmo observado (weeklyChangePercent) respecto a la banda del objetivo.
+ * "above"/"below" son respecto al signo de la banda, no "bueno/malo" —
+ * "above" significa numéricamente más alto que el máximo de la banda
+ * (engorda más rápido / adelgaza más despacio de lo esperado, según el
+ * objetivo), "below" lo contrario. null si no hay tendencia de peso
+ * suficiente para evaluarlo.
+ */
+export type WeightTrajectoryAssessment = "inside" | "below" | "above";
+
+/**
+ * Resultado de evaluateAdaptiveState() (Adaptive v3 — antes
+ * evaluateAdjustmentProposal): si se cumplen los criterios mínimos para
+ * proponer (nunca aplicar solo) un ajuste de calorías basado en el RITMO
+ * observado vs. la banda objetivo del goal — NO en el TDEE adaptativo vía
+ * 7700 (ese sigue existiendo solo como diagnóstico, ver AdaptiveTdeeResult).
+ * shouldPropose=false siempre trae deltaKcal 0 y proposedTargetKcal igual
+ * al actual — el reason explica por qué no procede.
  */
 export interface AdjustmentDecision {
   shouldPropose: boolean;
   /** Entre -150 y 150 kcal cuando shouldPropose es true (ver migración de
-      nutrition_adjustment_proposals) — nunca se propone un salto brusco. */
+      nutrition_adjustment_proposals) — nunca se propone un salto brusco.
+      En Adaptive v3 el controlador normal solo produce -100/0/+100; el
+      rango ±150 es un hard cap de esquema/seguridad, no un segundo
+      escalón que el algoritmo seleccione por sí mismo. */
   deltaKcal: number;
   proposedTargetKcal: number;
   reason: string;
+  /** null si no hay tendencia de peso suficiente para evaluar la banda. */
+  trajectory: WeightTrajectoryAssessment | null;
+  /** Todos los motivos de bloqueo acumulados (no solo el primero) — para
+      diagnóstico ("¿por qué no me deja generar una propuesta?"). Vacío si
+      shouldPropose es true. */
+  blockingReasons: string[];
 }
 
 export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "expired";

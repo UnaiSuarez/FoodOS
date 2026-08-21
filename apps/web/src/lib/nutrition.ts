@@ -21,6 +21,7 @@ import type {
   SafetyWarning,
   TrainingActivityProfile,
   WeightEntry,
+  WeightTrajectoryAssessment,
   WeightTrendResult,
 } from "@foodos/types";
 
@@ -37,7 +38,20 @@ import type {
  * - nutrition-v2: añade modelo de actividad lifestyle_plus_training, tendencia
  *   de peso suavizada (mediana+EWMA+regresión), TDEE adaptativo combinado,
  *   propuestas de ajuste explícitas con guardarraíl de discrepancia >30%,
- *   diagnóstico completo, y aceptación transaccional vía RPC (PR8).
+ *   diagnóstico completo, y aceptación transaccional vía RPC (PR8). Incluye
+ *   también, sin haber subido el identificador todavía (deuda reconocida,
+ *   no oculta): los bugs obligatorios y la proteína por base de PR1, y el
+ *   controlador adaptativo por ritmo de PR2 — ver
+ *   docs/NUTRITION_V3_DECISIONES.md.
+ *
+ * NOTA sobre nutrition-v3: PR1 y PR2 YA cambiaron fórmulas de forma que
+ * afecta al resultado, pero el identificador se mantiene en "nutrition-v2"
+ * hasta que PR3 (actividad/TDEE — replacementIncrementKcal) esté también
+ * implementado. Subirlo ahora etiquetaría snapshots de "v3 con Adaptive
+ * nuevo pero TDEE todavía v2" igual que futuros snapshots de v3 completa —
+ * indistinguibles después. El bump se hace una sola vez, al cerrar PR3,
+ * cuando el identificador signifique exactamente lo que promete el
+ * documento de decisiones.
  */
 export const NUTRITION_ENGINE_VERSION = "nutrition-v2";
 
@@ -893,84 +907,183 @@ export function calcAdaptiveTdee(params: {
   return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence, warnings };
 }
 
-// ─── Propuestas de ajuste adaptativo (PR6) ───────────────────────────────────
+// ─── Controlador adaptativo por ritmo (Adaptive v3 / PR2) ────────────────────
+// Ver docs/NUTRITION_V3_DECISIONES.md §6 — diseño cerrado ANTES de este
+// código. Sustituye evaluateAdjustmentProposal (que decidía vía 7700/
+// TDEE observado) por evaluateAdaptiveState: compara weeklyChangePercent
+// contra una banda por objetivo. calcAdaptiveTdee/7700 se conservan
+// exclusivamente como diagnóstico — ver test "no cambia con avgIntakeKcal"
+// en nutrition.test.ts, que es la prueba ejecutable del desacoplamiento.
 
-/** Umbral de confianza mínima (misma escala que ADAPTIVE_CONFIDENCE_WEIGHTS)
-    para considerar una propuesta — equivale a exigir confianza "high", ya que
-    "moderate" pesa 0.4 y "low" 0.2 en esa tabla. */
-const ADJUSTMENT_MIN_CONFIDENCE_SCORE = 0.6;
-const ADJUSTMENT_MIN_COVERAGE = 0.85;
-const ADJUSTMENT_MIN_EVALUATION_DAYS = 14;
-const ADJUSTMENT_MIN_DELTA_KCAL = 50;
-const ADJUSTMENT_MAX_DELTA_KCAL = 150; // igual al check constraint de la tabla
-
-function noAdjustmentProposal(currentTargetKcal: number, reason: string): AdjustmentDecision {
-  return { shouldPropose: false, deltaKcal: 0, proposedTargetKcal: currentTargetKcal, reason };
+interface WeeklyRateBandPct {
+  minPct: number;
+  maxPct: number;
 }
 
 /**
- * Decide si el TDEE adaptativo justifica PROPONER (nunca aplicar solo) un
- * ajuste del objetivo de calorías. Todos los criterios deben cumplirse:
- *
- *   confianza >= 0.6 (alta) && cobertura de ingesta >= 85% && >= 14 días
- *   evaluados && |diferencia| >= 50 kcal
- *
- * El delta se recorta a ±150 kcal (nunca un salto brusco de una vez, aunque
- * la diferencia real sea mayor) y se redondea a la decena más cercana.
+ * Bandas semanales (%/semana), congeladas en docs/NUTRITION_V3_DECISIONES.md
+ * §6.3 — bordes inclusivos, recomp deliberadamente asimétrica. Ver §6.2 de
+ * ese documento para la clasificación evidencia/heurística/guardarraíl de
+ * cada fila; no repetido aquí para no desincronizarse de la fuente.
  */
-export function evaluateAdjustmentProposal(params: {
+export const GOAL_RATE_BAND_PCT_PER_WEEK: Record<GoalMode, WeeklyRateBandPct> = {
+  fat_loss:    { minPct: -1.00, maxPct: -0.50 },
+  muscle_gain: { minPct: +0.25, maxPct: +0.50 },
+  maintain:    { minPct: -0.25, maxPct: +0.25 },
+  recomp:      { minPct: -0.50, maxPct:  0.00 },
+};
+
+/**
+ * Posición del ritmo observado respecto a la banda del objetivo — variable
+ * decisoria EXCLUSIVA: weeklyChangePercent, nunca slopeKgPerDay (ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.4 — 0.5 kg/semana no significa lo
+ * mismo a 55 kg que a 130 kg; las bandas están en % a propósito).
+ */
+export function assessWeightTrajectory(goal: GoalMode, weeklyChangePercent: number): WeightTrajectoryAssessment {
+  const band = GOAL_RATE_BAND_PCT_PER_WEEK[goal];
+  if (weeklyChangePercent < band.minPct) return "below";
+  if (weeklyChangePercent > band.maxPct) return "above";
+  return "inside";
+}
+
+/** Paso fijo — ver docs/NUTRITION_V3_DECISIONES.md §6.8. El controlador
+    normal SOLO puede seleccionar -100/0/+100; 150 es un hard cap de
+    esquema/seguridad que este código nunca alcanza por sí mismo. */
+export const DEFAULT_ADJUSTMENT_STEP_KCAL = 100;
+export const MAX_ADJUSTMENT_STEP_KCAL = 150; // igual al check constraint de la tabla
+
+/**
+ * delta a partir de la trayectoria — regla ÚNICA e independiente del goal:
+ * "above" la banda (el peso sube más rápido / baja más despacio de lo
+ * esperado, en términos numéricos de weeklyChangePercent) siempre implica
+ * bajar kcal; "below" siempre implica subir. Esto no es una coincidencia:
+ * las cuatro bandas comparten el mismo convenio de signo (más negativo =
+ * perder peso), así que la regla de signo emerge sola sin ramificar por
+ * goal — ver docs/NUTRITION_V3_DECISIONES.md §6.9 para la tabla completa
+ * de invariantes de dirección por objetivo, que este código debe satisfacer
+ * como propiedad derivada, no como ifs explícitos por goal.
+ */
+function suggestedDeltaForTrajectory(trajectory: WeightTrajectoryAssessment): number {
+  switch (trajectory) {
+    case "above": return -DEFAULT_ADJUSTMENT_STEP_KCAL;
+    case "below": return  DEFAULT_ADJUSTMENT_STEP_KCAL;
+    case "inside": return 0;
+  }
+}
+
+const ADJUSTMENT_MIN_COVERAGE = 0.85;
+/**
+ * Guardarraíl de producto — ver docs/NUTRITION_V3_DECISIONES.md §6.7.
+ * Ninguna evidencia clínica establece 21 días como el mínimo único
+ * correcto para PROPONER un ajuste (frente a solo diagnosticar/mostrar
+ * tendencia, que no exige este mínimo). Se eligió para equilibrar
+ * estabilidad de la tendencia y capacidad de respuesta del controlador —
+ * revisar con datos reales de producción antes de tratarlo como cerrado.
+ * No es una cifra "científica" — no la cites como tal en ningún sitio.
+ * Exportada para que los tests la referencien en vez de hardcodear 21 en
+ * varios sitios.
+ */
+export const ADJUSTMENT_MIN_EVALUATION_DAYS = 21;
+
+function blockedAdaptiveState(currentTargetKcal: number, blockingReasons: string[]): AdjustmentDecision {
+  return {
+    shouldPropose: false,
+    deltaKcal: 0,
+    proposedTargetKcal: currentTargetKcal,
+    reason: blockingReasons[0] ?? "No hay motivo para proponer un ajuste.",
+    trajectory: null,
+    blockingReasons,
+  };
+}
+
+/**
+ * Fuente única de verdad del motor adaptativo (Adaptive v3) — sustituye a
+ * evaluateAdjustmentProposal Y a la lógica que getAdaptiveDiagnostics
+ * reimplementaba en paralelo (el bug de doble fuente detectado en el mapeo
+ * de esta sesión: dos invocaciones de la decisión con inputs
+ * potencialmente distintos). Tanto generateProposal() (UI) como el panel de
+ * diagnóstico deben consumir el resultado de ESTA función, nunca recalcular
+ * por su cuenta.
+ *
+ * Arquitectura en tres capas (ver docs/NUTRITION_V3_DECISIONES.md §6.5):
+ *   1. trajectory     — SOLO depende de goal + weeklyChangePercent
+ *   2. deltaKcal       — SOLO depende de trajectory (regla de signo única)
+ *   3. shouldPropose   — depende de deltaKcal!=0 + TODOS los gates de
+ *                        calidad + cooldown — acumula TODOS los motivos de
+ *                        bloqueo a la vez (no para en el primero), así una
+ *                        propuesta puede tener trajectory="above" con
+ *                        deltaKcal=-100 pero shouldPropose=false por
+ *                        cooldown activo — esa información no se pierde.
+ *
+ * Gates: confianza de tendencia === "high" (gate semántico directo, NO vía
+ * ADAPTIVE_CONFIDENCE_WEIGHTS — esa tabla pertenece al blending de
+ * calcAdaptiveTdee/diagnóstico, no a esta decisión); cobertura de ingesta
+ * >=85% (gate de INTERPRETABILIDAD del registro, no de "adherencia" — ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.6); días evaluados >= mínimo
+ * provisional; cooldown inactivo.
+ */
+export function evaluateAdaptiveState(params: {
+  goal: GoalMode;
   currentTargetKcal: number;
-  adaptive: AdaptiveTdeeResult;
   weightTrend: WeightTrendResult | null;
   intakeCoverage: IntakeCoverageResult | null;
+  lastAdjustmentDecisionAt: string | null;
+  referenceDate: string;
 }): AdjustmentDecision {
-  const { currentTargetKcal, adaptive, weightTrend, intakeCoverage } = params;
+  const { goal, currentTargetKcal, weightTrend, intakeCoverage, lastAdjustmentDecisionAt, referenceDate } = params;
 
-  if (!weightTrend || !intakeCoverage || adaptive.confidence === "insufficient_data") {
-    return noAdjustmentProposal(currentTargetKcal, "Todavía no hay suficiente historial de peso e ingesta.");
+  const blockingReasons: string[] = [];
+  if (!weightTrend) {
+    blockingReasons.push("Todavía no hay suficiente historial de peso.");
   }
-  if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
-    return noAdjustmentProposal(
-      currentTargetKcal,
-      "El TDEE observado y el de la fórmula discrepan demasiado (>30%) — puede haber registros incompletos, retención de agua u otro factor puntual. Esperamos a que los datos se estabilicen."
-    );
+  if (!intakeCoverage) {
+    blockingReasons.push("Todavía no hay suficiente historial de ingesta.");
   }
-
-  const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
-  if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
-    return noAdjustmentProposal(currentTargetKcal, "La confianza de tu tendencia de peso todavía es baja o moderada.");
+  if (weightTrend && weightTrend.confidence !== "high") {
+    blockingReasons.push("La confianza de tu tendencia de peso todavía no es alta.");
   }
-  if (intakeCoverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
-    return noAdjustmentProposal(currentTargetKcal, "Te faltan días de registro de comidas para confiar en el promedio.");
+  if (intakeCoverage && intakeCoverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
+    blockingReasons.push("Te faltan días de registro de comidas para confiar en el promedio (cobertura insuficiente para interpretar la tendencia).");
   }
-  if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
-    return noAdjustmentProposal(currentTargetKcal, "Todavía no se han evaluado suficientes días.");
+  if (weightTrend && weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
+    blockingReasons.push(`Todavía no se han evaluado suficientes días (mínimo provisional: ${ADJUSTMENT_MIN_EVALUATION_DAYS}).`);
   }
-
-  // OJO: el delta se basa en cuánto se ha desplazado la ESTIMACIÓN de
-  // mantenimiento (combinado vs. fórmula inicial) — nunca en la diferencia
-  // entre el combinado y el objetivo actual. El objetivo actual ya es,
-  // A PROPÓSITO, un déficit o superávit sobre el mantenimiento (ese es el
-  // sentido de tener un goal de pérdida/ganancia) — compararlo directamente
-  // contra el combinado propondría siempre "subir hacia el mantenimiento" en
-  // cualquier déficit razonable, incluso cuando la fórmula y la realidad
-  // coinciden perfectamente. Lo que sí debe trasladarse al objetivo es CUÁNTO
-  // ha cambiado la estimación de mantenimiento respecto a la fórmula.
-  const tdeeShift = adaptive.combinedKcal - adaptive.initialKcal;
-  if (Math.abs(tdeeShift) < ADJUSTMENT_MIN_DELTA_KCAL) {
-    return noAdjustmentProposal(currentTargetKcal, "Tu mantenimiento real coincide con la estimación de la fórmula — no hay motivo para tocar tu objetivo.");
+  if (isAdjustmentCooldownActive(lastAdjustmentDecisionAt, referenceDate)) {
+    blockingReasons.push(`Toca esperar — hay un periodo de espera de ${ADJUSTMENT_COOLDOWN_DAYS} días entre decisiones.`);
   }
 
-  const clamped = Math.sign(tdeeShift) * Math.min(ADJUSTMENT_MAX_DELTA_KCAL, Math.abs(tdeeShift));
-  const deltaKcal = Math.round(clamped / 10) * 10;
+  // Capa 1 y 2: solo se pueden calcular con weightTrend real — si no lo
+  // hay, no hay trajectory que evaluar (no se inventa "inside" por defecto).
+  if (!weightTrend) {
+    return blockedAdaptiveState(currentTargetKcal, blockingReasons);
+  }
+
+  const trajectory = assessWeightTrajectory(goal, weightTrend.weeklyChangePercent);
+  const deltaKcal = suggestedDeltaForTrajectory(trajectory);
+
+  if (deltaKcal === 0) {
+    blockingReasons.push("Tu ritmo observado ya está dentro del rango esperado para tu objetivo — no hay motivo para tocarlo.");
+  }
+
+  if (blockingReasons.length > 0) {
+    return {
+      shouldPropose: false,
+      deltaKcal: 0,
+      proposedTargetKcal: currentTargetKcal,
+      reason: blockingReasons[0],
+      trajectory,
+      blockingReasons,
+    };
+  }
+
+  const band = GOAL_RATE_BAND_PCT_PER_WEEK[goal];
   const proposedTargetKcal = currentTargetKcal + deltaKcal;
-
   const reason =
-    deltaKcal > 0
-      ? `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es mayor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — subir ${deltaKcal} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`
-      : `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es menor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — bajar ${Math.abs(deltaKcal)} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`;
+    trajectory === "below"
+      ? `Tu ritmo observado (${weightTrend.weeklyChangePercent}%/semana) está por debajo del rango esperado para tu objetivo (${band.minPct}% a ${band.maxPct}%/semana) — subir ${deltaKcal} kcal/día ayudaría a acercarte al ritmo esperado.`
+      : `Tu ritmo observado (${weightTrend.weeklyChangePercent}%/semana) está por encima del rango esperado para tu objetivo (${band.minPct}% a ${band.maxPct}%/semana) — bajar ${Math.abs(deltaKcal)} kcal/día ayudaría a acercarte al ritmo esperado.`;
 
-  return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason };
+  return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason, trajectory, blockingReasons: [] };
 }
 
 /** Días de espera tras aceptar O rechazar una propuesta antes de permitir
@@ -999,19 +1112,24 @@ export function adjustmentCooldownDaysLeft(
 }
 
 /**
- * Diagnóstico completo del motor adaptativo para un momento dado — a
- * diferencia de evaluateAdjustmentProposal (que para en el primer criterio
- * que falla), aquí se acumulan TODOS los motivos de bloqueo a la vez. Pensado
- * para responder "¿por qué no me deja generar una propuesta?" sin adivinar
- * por consola. proposalEligible usa evaluateAdjustmentProposal como única
- * fuente de verdad — este diagnóstico nunca puede contradecirlo.
+ * Diagnóstico completo del motor adaptativo para un momento dado.
+ * proposalEligible/ineligibilityReasons vienen SIEMPRE de
+ * evaluateAdaptiveState() — fuente única, nunca se recalcula la decisión
+ * por separado aquí (ese era exactamente el bug de doble fuente detectado
+ * en el mapeo de esta sesión: esta función y el panel de UI llamaban por
+ * su cuenta a la lógica de decisión, con inputs que podían divergir).
+ * calcAdaptiveTdee (7700) se sigue calculando para los campos de
+ * diagnóstico (initialTdeeKcal/observedTdeeKcal/blendedTdeeKcal) — nunca
+ * para decidir si se propone ni cuánto.
  */
 export function getAdaptiveDiagnostics(params: {
+  goal: GoalMode;
   weightLog: WeightEntry[];
   dailyKcal: Array<{ date: string; kcal: number }>;
   referenceDate: string;
   initialTdeeKcal: number;
   currentTargetKcal: number;
+  lastAdjustmentDecisionAt: string | null;
   windowDays?: number;
   /** PR9: si hubo un reinicio de calibración más reciente que el inicio de la
       ventana estándar (referenceDate - windowDays), el periodo evaluado
@@ -1021,7 +1139,7 @@ export function getAdaptiveDiagnostics(params: {
   calibrationStartedAt?: string | null;
 }): AdaptiveDiagnostics {
   const windowDays = params.windowDays ?? 28;
-  const { weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal } = params;
+  const { goal, weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal, lastAdjustmentDecisionAt } = params;
   const standardWindowStart = subtractDaysFromDateKey(referenceDate, windowDays);
   const effectiveEvaluationStart =
     params.calibrationStartedAt && params.calibrationStartedAt > standardWindowStart
@@ -1030,8 +1148,11 @@ export function getAdaptiveDiagnostics(params: {
 
   const weightTrend = calcWeightTrend(weightLog, referenceDate, windowDays);
   const coverage = calcIntakeCoverage(dailyKcal, referenceDate, windowDays);
+  // Diagnóstico únicamente (7700) — nunca alimenta evaluateAdaptiveState.
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
-  const decision = evaluateAdjustmentProposal({ currentTargetKcal, adaptive, weightTrend, intakeCoverage: coverage });
+  const decision = evaluateAdaptiveState({
+    goal, currentTargetKcal, weightTrend, intakeCoverage: coverage, lastAdjustmentDecisionAt, referenceDate,
+  });
 
   const inWindow = weightLog
     .filter((e) => e.date <= referenceDate && daysBetweenDates(e.date, referenceDate) <= windowDays)
@@ -1049,38 +1170,9 @@ export function getAdaptiveDiagnostics(params: {
     }
   }
 
-  const ineligibilityReasons: string[] = [];
-  if (!weightTrend) {
-    ineligibilityReasons.push(
-      `Peso: solo ${inWindow.length} mediciones en los últimos ${windowDays} días (mínimo 3 para calcular tendencia).`
-    );
-  }
-  if (!coverage) {
-    ineligibilityReasons.push(`Ingesta: sin días con registro fiable en los últimos ${windowDays} días.`);
-  }
-  if (weightTrend && coverage) {
-    const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
-    if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
-      ineligibilityReasons.push(`Confianza de tendencia: ${weightTrend.confidence} (se necesita alta).`);
-    }
-    if (coverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
-      ineligibilityReasons.push(
-        `Cobertura de ingesta: ${Math.round(coverage.coverageFraction * 100)}% (mínimo ${Math.round(ADJUSTMENT_MIN_COVERAGE * 100)}%).`
-      );
-    }
-    if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
-      ineligibilityReasons.push(
-        `Días evaluados: ${weightTrend.validMeasurements} (mínimo ${ADJUSTMENT_MIN_EVALUATION_DAYS}).`
-      );
-    }
-    if (Math.abs(adaptive.combinedKcal - adaptive.initialKcal) < ADJUSTMENT_MIN_DELTA_KCAL) {
-      ineligibilityReasons.push(
-        `Desplazamiento de la estimación de mantenimiento: ${Math.round(adaptive.combinedKcal - adaptive.initialKcal)} kcal frente a la fórmula (mínimo ${ADJUSTMENT_MIN_DELTA_KCAL} kcal).`
-      );
-    }
-  }
+  const ineligibilityReasons: string[] = [...decision.blockingReasons];
   if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
-    ineligibilityReasons.push("El TDEE observado y el de la fórmula discrepan más de un 30% — posible dato sospechoso.");
+    ineligibilityReasons.push("El TDEE observado y el de la fórmula discrepan más de un 30% — posible dato sospechoso (informativo; ya no bloquea la decisión por ritmo).");
   }
 
   return {
@@ -1100,6 +1192,7 @@ export function getAdaptiveDiagnostics(params: {
     weightTrendQualityScore: weightTrend?.qualityScore ?? null,
     proposalEligible: decision.shouldPropose,
     ineligibilityReasons,
+    decision,
   };
 }
 

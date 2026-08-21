@@ -38,7 +38,6 @@ import {
   calcSummary,
   calculateFiberTarget,
   calcWeightTrend,
-  evaluateAdjustmentProposal,
   evaluateNutritionSafety,
   filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
@@ -1181,25 +1180,29 @@ function AdjustmentProposalPanel() {
   // AdaptiveTdeePanel: nunca evaluar el histórico contra el objetivo de hoy.
   const nutritionGoalsHistory = useNutritionGoalsHistory(today, 28);
   const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, nutritionGoalsHistory);
+  // Diagnóstico únicamente (7700) — se sigue mostrando, nunca decide.
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
-  const decision = evaluateAdjustmentProposal({
-    currentTargetKcal: currentTargets.kcal,
-    adaptive,
-    weightTrend,
-    intakeCoverage: coverage,
-  });
 
   const cooldownDaysLeft = pending ? 0 : adjustmentCooldownDaysLeft(state.lastAdjustmentDecisionAt ?? null, today);
   const inCooldown = !pending && isAdjustmentCooldownActive(state.lastAdjustmentDecisionAt ?? null, today);
 
+  // Adaptive v3 (docs/NUTRITION_V3_DECISIONES.md §6.5): fuente única.
+  // `decision` NO se calcula por separado aquí — se lee de
+  // diagnostics.decision, la misma evaluateAdaptiveState() que ya decidió
+  // proposalEligible/ineligibilityReasons. Dos llamadas independientes a
+  // la lógica de decisión (con inputs que podían divergir) era exactamente
+  // el bug de doble fuente detectado en el mapeo previo a este PR.
   const diagnostics = getAdaptiveDiagnostics({
+    goal: profile.goal,
     weightLog: weightLogForAdaptive,
     dailyKcal: dailyKcalForAdaptive,
     referenceDate: today,
     initialTdeeKcal,
     currentTargetKcal: currentTargets.kcal,
+    lastAdjustmentDecisionAt: state.lastAdjustmentDecisionAt ?? null,
     calibrationStartedAt: calibrationFloor,
   });
+  const decision = diagnostics.decision;
 
   // ¿Sigue siendo válida la propuesta pendiente con el perfil actual? Un
   // cambio de objetivo/peso/actividad/macros/offset desde que se generó la
