@@ -791,14 +791,35 @@
   flex: 1;
 }
 
-.exercise-card-muscle-img {
+/* Silueta corporal (base + resaltado de músculo superpuesto) — ver el
+   comentario junto a WGER_BODY_BASE_FRONT en ExercisesView.tsx. Todas las
+   capas comparten el mismo lienzo (200×369.03 en el SVG original, ratio
+   ~0.542), así que apilarlas con position:absolute a igual tamaño las
+   alinea sin distorsión — por eso NUNCA debe ir en un cuadrado 1:1. */
+.exercise-card-muscle-diagram {
+  position: relative;
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
-  border-radius: 6px;
+  width: 22px;
+  aspect-ratio: 200 / 369.03;
+  border-radius: 4px;
   background: var(--bg-subtle, var(--border));
-  padding: 2px;
+}
+
+.exercise-card-muscle-diagram img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* fill, no contain: la base (vista frontal, 200×369) y el resaltado de
+     músculo (200×362 en algunas vistas frontales — recorte propio del
+     export de wger, no un error nuestro) no comparten exactamente el mismo
+     alto. Con "contain" cada capa se autoescala por su cuenta y puede
+     desplazarse un par de px respecto a la base; con "fill" ambas ocupan
+     literalmente la misma caja, que es más fiel para dos capas pensadas
+     para superponerse pixel a pixel. A este tamaño (~22px) la diferencia
+     de ~2% es imperceptible. */
+  object-fit: fill;
+  pointer-events: none;
 }
 
 .exercise-card-add {

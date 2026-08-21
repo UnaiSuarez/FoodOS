@@ -35,6 +35,13 @@ function muscleLabel(name: string): string {
   return MUSCLE_LABELS_ES[name] ?? name;
 }
 
+// Silueta base sobre la que se superponen los resaltados de músculo (ver
+// comentario en WgerMuscle). Confirmado que existen y sirven un SVG de
+// ~400KB (mucho más detalle que el resaltado de 1-2 paths) con el mismo
+// lienzo 200×369.03, así que ambas capas encajan en las mismas coordenadas.
+const WGER_BODY_BASE_FRONT = "https://wger.de/static/images/muscles/muscular_system_front.svg";
+const WGER_BODY_BASE_BACK  = "https://wger.de/static/images/muscles/muscular_system_back.svg";
+
 // ─── wger API types ─────────────────────────────────────────────────────────
 // wger identifica el idioma de cada traducción con un entero plano (no un
 // objeto {id, short_name} como parecía sugerir la forma anterior de este
@@ -52,7 +59,15 @@ interface WgerTranslation {
 interface WgerMuscle {
   id: number;
   name_en: string;
+  is_front: boolean;
+  // image_url_main/secondary NO son siluetas de cuerpo completo — son solo
+  // la mancha resaltada (roja=principal, naranja=asistente) sobre un lienzo
+  // de 200×369.03, pensada para superponerse sobre WGER_BODY_BASE_SVG (esa
+  // sí es la silueta completa). Usarlas solas, sin la base debajo, muestra
+  // una mancha semitransparente flotando en un lienzo vacío — comprobado
+  // descargando el SVG real: solo tiene 1-2 <path> sin ningún contorno.
   image_url_main: string | null;
+  image_url_secondary: string | null;
 }
 interface WgerExerciseInfo {
   id: number;
@@ -1239,27 +1254,40 @@ function ExploreTab() {
 
       <div className="explore-list">
         {exercises.map((ex) => {
-          const name             = getExName(ex);
+          const name              = getExName(ex);
           const muscleList        = ex.muscles ?? [];
+          const secondaryList     = ex.muscles_secondary ?? [];
           const muscles           = muscleList.map((m) => m.name_en).join(", ");
-          const secondaryMuscles  = (ex.muscles_secondary ?? []).map((m) => m.name_en).join(", ");
-          const muscleImage       = muscleList.find((m) => m.image_url_main)?.image_url_main ?? null;
+          const secondaryMuscles  = secondaryList.map((m) => m.name_en).join(", ");
           const equipment         = (ex.equipment ?? []).map((e) => e.name).join(", ");
           const description       = getExDescription(ex);
           const isAdding          = addTarget === ex.id;
 
+          // Silueta de cuerpo con el/los músculo(s) resaltado(s): base
+          // (frontal o dorsal, según el primer músculo con dato) + una capa
+          // roja por músculo principal + una naranja por asistente — solo
+          // las que coincidan con esa misma vista, ver comentario en
+          // WgerMuscle. Sin eso, la mancha resaltada sola no se entiende.
+          const diagramIsFront = muscleList[0]?.is_front ?? secondaryList[0]?.is_front ?? null;
+          const diagramOverlays = diagramIsFront == null ? [] : [
+            ...muscleList
+              .filter((m) => m.is_front === diagramIsFront && m.image_url_main)
+              .map((m) => m.image_url_main as string),
+            ...secondaryList
+              .filter((m) => m.is_front === diagramIsFront && m.image_url_secondary)
+              .map((m) => m.image_url_secondary as string),
+          ];
+
           return (
             <div key={ex.id} className="exercise-card">
               <div className="exercise-card-header">
-                {muscleImage && (
-                  <img
-                    className="exercise-card-muscle-img"
-                    src={muscleImage}
-                    alt={`Músculo trabajado: ${muscles}`}
-                    loading="lazy"
-                    width={32}
-                    height={32}
-                  />
+                {diagramIsFront != null && (
+                  <div className="exercise-card-muscle-diagram" aria-hidden="true">
+                    <img src={diagramIsFront ? WGER_BODY_BASE_FRONT : WGER_BODY_BASE_BACK} alt="" loading="lazy" />
+                    {diagramOverlays.map((url, i) => (
+                      <img key={i} src={url} alt="" loading="lazy" />
+                    ))}
+                  </div>
                 )}
                 <span className="exercise-card-name">{name}</span>
                 {!isAdding ? (
