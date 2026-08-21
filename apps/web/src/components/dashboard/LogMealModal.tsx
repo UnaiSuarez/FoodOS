@@ -870,11 +870,11 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
             )}
           </div>
           <input
-            ref={extCameraRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+            ref={extCameraRef} type="file" accept="image/*" capture="environment" className="hidden-file-input"
             onChange={e => { handleExtPhotoFile(e.target.files?.[0]); e.target.value = ""; }}
           />
           <input
-            ref={extGalleryRef} type="file" accept="image/*" style={{ display: "none" }}
+            ref={extGalleryRef} type="file" accept="image/*" className="hidden-file-input"
             onChange={e => { handleExtPhotoFile(e.target.files?.[0]); e.target.value = ""; }}
           />
 

@@ -248,6 +248,13 @@ h2 {
   background: rgba(192, 132, 252, 0.13);
 }
 
+/* E03-17: variante compacta para leyendas de gráfico (StatsView,
+   NutritionView) — antes cada leyenda repetía `style={{ fontSize: 11 }}`
+   junto al badge de color. Se combina con un tono, ej. "badge green legend". */
+.badge.legend {
+  font-size: 11px;
+}
+
 /* ── Modo claro ──────────────────────────────────────────────────── */
 [data-theme="light"] {
   --bg: #f4f8f2;
@@ -311,3 +318,16 @@ h2 {
   white-space: nowrap;
   border: 0;
 }
+
+/* E03-17: utilidades de espaciado específicas del dashboard viven en
+   dashboard.css, no aquí — varias clases de dashboard.css (.meta-row,
+   .summary-grid, .settings-grid...) ya fijan su propio margin-top/bottom, y
+   dashboard.css se carga DESPUÉS de este archivo (ver comentario junto a
+   esas utilidades). Si esta clase viviera en globals.css, perdería ese
+   empate de especificidad y cambiaría el margen visualmente sin querer. */
+
+/* Input de archivo disparado por ref (`inputRef.current?.click()`) en vez
+   de mostrarse él mismo — el mismo patrón exacto de <input type="file"
+   style={{ display: "none" }}> se repetía en 7 sitios (cámara/galería de
+   Inventario, importar receta, registrar comida). */
+.hidden-file-input { display: none; }

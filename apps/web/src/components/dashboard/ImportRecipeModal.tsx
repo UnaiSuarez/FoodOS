@@ -210,7 +210,7 @@ export function ImportRecipeModal({ onClose }: Props) {
                   ref={fileRef}
                   type="file"
                   accept="image/*"
-                  style={{ display: "none" }}
+                  className="hidden-file-input"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
                 />
                 <button

@@ -439,7 +439,7 @@ export function CartView() {
             ⚠ Esta compra ({eur(pendingOverBudget.total)}) supera tu presupuesto semanal en{" "}
             {eur(pendingOverBudget.over)}.
           </p>
-          <div className="meta-row" style={{ marginTop: 12 }}>
+          <div className="meta-row mt-12">
             <button
               className="secondary-button"
               onClick={() => {

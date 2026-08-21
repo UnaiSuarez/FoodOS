@@ -342,7 +342,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
           </label>
         </div>
 
-        <div className="lm-actions" style={{ marginTop: 16 }}>
+        <div className="lm-actions mt-16">
           <button className="secondary-button" onClick={onClose}>Cancelar</button>
           <button className="primary-button" disabled={!canConfirm} onClick={confirm}>
             Añadir al planificador

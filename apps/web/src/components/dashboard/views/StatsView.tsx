@@ -50,7 +50,7 @@ export function StatsView() {
   return (
     <section className="view">
       {/* KPI row */}
-      <div className="summary-grid" style={{ marginBottom: 14 }}>
+      <div className="summary-grid mb-14">
         <article className="metric-card">
           <span>Racha de macros</span>
           <strong>{streak}</strong>
@@ -78,16 +78,16 @@ export function StatsView() {
       </div>
 
       {/* Monthly finance chart */}
-      <article className="panel" style={{ marginBottom: 14 }}>
+      <article className="panel mb-14">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Historial financiero</p>
             <h2>Ingresos vs gastos</h2>
           </div>
           <div className="meta-row">
-            <span className="badge blue" style={{ fontSize: 11 }}>■ Ingresos</span>
-            <span className="badge red" style={{ fontSize: 11 }}>■ Gastos</span>
-            <span className="badge green" style={{ fontSize: 11 }}>■ Ahorro neto</span>
+            <span className="badge blue legend">■ Ingresos</span>
+            <span className="badge red legend">■ Gastos</span>
+            <span className="badge green legend">■ Ahorro neto</span>
           </div>
         </div>
         <MonthlyFinanceChart data={monthly} />
@@ -116,7 +116,7 @@ export function StatsView() {
             </p>
           )}
           {weightTrend != null && (
-            <div className="meta-row" style={{ marginTop: 8 }}>
+            <div className="meta-row">
               <span className={`badge ${weightTrend < 0 ? "green" : weightTrend > 0 ? "amber" : ""}`}>
                 {weightTrend >= 0 ? "+" : ""}{weightTrend} kg esta semana
               </span>
@@ -153,15 +153,15 @@ export function StatsView() {
       </div>
 
       {/* 28-day macro chart */}
-      <article className="panel" style={{ marginTop: 14 }}>
+      <article className="panel mt-14">
         <div className="panel-head">
           <div>
             <p className="eyebrow">Últimas 4 semanas</p>
             <h2>Evolución de macros</h2>
           </div>
           <div className="meta-row">
-            <span className="badge green" style={{ fontSize: 11 }}>■ Proteína</span>
-            <span className="badge blue" style={{ fontSize: 11 }}>■ Kcal</span>
+            <span className="badge green legend">■ Proteína</span>
+            <span className="badge blue legend">■ Kcal</span>
           </div>
         </div>
         <StatsMacroChart

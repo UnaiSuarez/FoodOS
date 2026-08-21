@@ -91,7 +91,7 @@ export function ReviewPurchaseModal({
           <small className="review-purchase-hint">estimado del carrito: {eur(estimatedTotal)}</small>
         )}
       </div>
-      <div className="meta-row" style={{ marginTop: 12 }}>
+      <div className="meta-row mt-12">
         <button className="secondary-button" onClick={onClose}>
           Cancelar
         </button>
