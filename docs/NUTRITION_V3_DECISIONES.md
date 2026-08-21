@@ -325,34 +325,224 @@ automático y así lo comunica — no intenta diagnosticar nada.
 
 ---
 
-## 6. Motor adaptativo
+## 6. Motor adaptativo (PR2 — Adaptive v3)
 
-- `7700 kcal/kg` deja de ser la base directa de las propuestas de ajuste.
-  Se conserva como `observedTdeeKcal` — **diagnóstico/inferencia
-  aproximada**, mostrable pero no accionable por sí sola.
-- Las decisiones de ajuste salen de comparar **ritmo observado vs. ritmo
-  objetivo** durante una ventana de datos suficientemente buena — no de
-  inferir un TDEE "real" con falsa precisión de laboratorio.
-- Ventanas mínimas: mantener el criterio de calidad de tendencia de peso ya
-  existente (mediana + EWMA + regresión + `qualityScore`). Se distingue
-  explícitamente "datos mínimos para diagnóstico" de "datos mínimos para
-  permitir una propuesta":
-  - **14 días** — puede existir diagnóstico/tendencia informativa (mostrable
-    al usuario, no accionable).
-  - **21–28 días** — ventana preferida para habilitar ajustes, salvo que la
-    especificación técnica posterior justifique otra cosa.
-  El número exacto del controlador v3 (dentro de ese rango) no está cerrado
-  todavía — se deja explícitamente abierto para no contradecir este
-  documento cuando se fije en la sesión de diseño técnico.
-- Calidad de datos: cobertura de ingesta ≥85% — criterio ya existente en
-  v2, se conserva; el mínimo de días evaluados para *proponer* (no solo
-  diagnosticar) sigue el rango 21–28 anterior, no el ≥14 heredado de v2.
-- Magnitud del ajuste: `±100/150 kcal` por ciclo — se conserva como
-  guardarraíl de producto (no es una constante fisiológica, es una
-  decisión deliberada para evitar saltos bruscos).
-- Cooldown de 14 días entre propuestas — se conserva.
-- Aceptación siempre explícita por el usuario — el motor adaptativo nunca
-  aplica un ajuste por sí solo.
+Diseño cerrado en sesión dedicada de evidencia + arquitectura, **antes** de
+tocar `nutrition.ts`. Sustituye el uso de `7700 kcal/kg` como motor de
+decisiones por un controlador de **ritmo observado vs. banda objetivo**.
+
+### 6.1 Principio general
+
+```
+NO calcular:
+  "tu TDEE real es X → te faltan Y kcal"
+SÍ calcular:
+  "para tu objetivo esperábamos una trayectoria A;
+   tu tendencia observada es B;
+   la desviación es suficientemente grande, persistente y respaldada
+   por datos buenos como para justificar un pequeño cambio."
+```
+
+`7700 kcal/kg` **nunca desaparece** — sigue calculando `observedTdeeKcal`
+como diagnóstico/inferencia aproximada (mostrable, persistible en
+evidencia), pero deja de tener ninguna vía hacia `suggestedDelta` o
+`proposalEligible`. Ver test anti-7700 en §6.6 — es la prueba ejecutable
+de que esto se cumple, no solo una declaración de intenciones.
+
+### 6.2 Matriz de evidencia (clasificación cerrada)
+
+| Elemento | Valor | Clasificación |
+|---|---:|---|
+| Banda `fat_loss` | −1.00 % a −0.50 %/semana | Evidencia específica (Helms 2014, preparación de culturismo natural) → ancla de producto, no ley universal |
+| Banda `muscle_gain` | +0.25 % a +0.50 %/semana | Evidencia específica (Iraki et al. 2019, off-season novato/intermedio) → ancla de producto, no ley universal |
+| Banda `maintain` | −0.25 % a +0.25 %/semana | Guardarraíl de producto — sin evidencia que fije el ancho |
+| Banda `recomp` | −0.50 % a 0.00 %/semana | Heurística de producto informada por la semántica de recomp (admite pérdida lenta, no ganancia sostenida ni pérdida ya agresiva) y por evidencia de que el entrenamiento de fuerza en déficit puede preservar/mejorar composición corporal aunque el peso baje — **no** es una cifra prescrita por ninguna guía |
+| Ventana mínima para proponer (21 vs. 28 días) | — | **Sin evidencia que decida entre las dos** — pendiente, ver §6.7 |
+| Relación glucógeno-agua | ~2.7–4 g agua/g glucógeno | Evidencia fisiológica de dirección — magnitud variable, no una constante de controlador |
+| Sodio → ruido de báscula | Dirección sí (regulación de agua) | DASH-Sodium mantenía el peso deliberadamente estable durante el ensayo — **no sirve** para cuantificar fluctuación libre de peso por sodio |
+| Zona muerta / paso / cooldown | — | Guardarraíles de producto — no hay literatura que prescriba deadband ni step size |
+
+`muscle_gain` modulado por `experienceLevel` (Iraki recomienda más
+conservadurismo en avanzados) queda **fuera de PR2** — cuantificar "más
+conservador" en una banda concreta sería inventar precisión, y añade un
+input subjetivo nuevo al motor/fingerprint/tests sin necesidad inmediata.
+Mejora futura documentada, no decisión de PR2.
+
+### 6.3 Bandas (congeladas)
+
+```
+fat_loss:    [-1.00, -0.50] %/semana
+muscle_gain: [+0.25, +0.50] %/semana
+maintain:    [-0.25, +0.25] %/semana
+recomp:      [-0.50,  0.00] %/semana
+```
+
+Bordes **inclusivos** en los cuatro casos — estar exactamente en el borde
+cuenta como "dentro de la banda" (sin acción), para no disparar una
+propuesta por un error de redondeo de una centésima. `recomp` es
+deliberadamente **asimétrica** — ningún código ni test debe asumir que las
+bandas son simétricas alrededor de 0.
+
+### 6.4 Variable decisoria
+
+```
+La decisión adaptativa por ritmo usa EXCLUSIVAMENTE weeklyChangePercent.
+slopeKgPerDay puede mostrarse/persistirse como diagnóstico, pero NUNCA
+determina la banda ni el delta.
+```
+
+Razón: las bandas están definidas en % del peso corporal — usar
+`slopeKgPerDay` directamente haría que 0.5 kg/semana significara lo mismo
+para alguien de 55 kg que para alguien de 130 kg, contradiciendo el propio
+diseño de la banda.
+
+### 6.5 Arquitectura en tres capas
+
+```
+1. trajectoryAssessment: "inside" | "below" | "above"
+   (weeklyChangePercent contra la banda del goal)
+
+2. suggestedDelta: -100 | 0 | +100
+   (depende SOLO de goal + weeklyChangePercent)
+
+3. proposalEligibility: boolean + blockingReasons[]
+   (depende de suggestedDelta != 0 + gates de calidad + cooldown)
+```
+
+`proposedDelta` y `proposalEligible` **no dependen de los mismos inputs**
+— es una distinción deliberada, no una simplificación. Debe poder ocurrir
+esto sin perder información:
+
+```
+fat_loss, ritmo = -0.2%/sem → suggestedDelta = -100
+pero cooldown activo        → proposalEligible = false
+```
+
+El controlador detecta la desviación aunque temporalmente no esté
+autorizado a proponer — la UI puede mostrar "detectamos algo, pero toca
+esperar" en vez de "todo bien" (a decidir en implementación, no aquí).
+
+**Fuente única**: una sola función `evaluateAdaptiveState()` produce las
+tres capas. `generateProposal()` (UI) y el panel de diagnóstico consumen
+el mismo resultado — elimina la duplicación detectada en el mapeo previo
+(dos llamadas independientes a la lógica de decisión con inputs
+potencialmente distintos).
+
+### 6.6 Gates de calidad (léxico corregido)
+
+```
+weightTrend.confidence === "high"   (gate semántico directo — NO vía
+                                      ADAPTIVE_CONFIDENCE_WEIGHTS, que
+                                      pertenece al blending de v2/diagnóstico
+                                      y no debe colarse en la decisión v3)
+coverage >= 85%                     (gate de INTERPRETABILIDAD del registro,
+                                      no de "adherencia" — cobertura alta con
+                                      ingesta sistemáticamente desviada del
+                                      objetivo pasa este gate igual; un gate
+                                      de adherencia real queda fuera de PR2,
+                                      sin diseñar todavía)
+ventana mínima = PENDIENTE (§6.7)
+cooldown inactivo
+```
+
+`ADAPTIVE_CONFIDENCE_WEIGHTS` se conserva en el código mientras
+`calcAdaptiveTdee()` siga existiendo para el diagnóstico — deja de
+formar parte de cualquier gate o cálculo de la decisión.
+
+**Test anti-7700 (obligatorio)**:
+
+```
+mismo weightTrend, mismo goal, misma confidence, misma coverage
+avgIntakeKcal A ≠ avgIntakeKcal B  (manteniendo la MISMA coverage —
+                                     coverage se deriva de los registros de
+                                     ingesta, así que el test cambia el
+                                     promedio sin cambiar cuántos días
+                                     cuentan como fiables)
+observedTdeeKcal A ≠ observedTdeeKcal B  (por construcción, al cambiar avgIntakeKcal)
+→ mismo suggestedDelta
+→ misma proposalEligibility
+```
+
+Esta es la prueba ejecutable de que el objetivo arquitectónico de PR2 se
+cumplió — no una declaración de intenciones en un comentario.
+
+### 6.7 Único número que queda explícitamente sin cerrar
+
+**21 vs. 28 días como ventana mínima para proponer** (no solo
+diagnosticar). No hay evidencia que decida entre las dos — ninguna app
+comparable investigada (MacroFactor) publica ni justifica su ventana con
+estudios. Fijar un número aquí sin más información sería el mismo tipo de
+falsa precisión que motivó esta revisión. Se decide en la sesión de
+implementación de PR2, marcado explícitamente como guardarraíl de
+producto, no como hallazgo científico.
+
+### 6.8 Magnitud del ajuste
+
+```
+DEFAULT_ADJUSTMENT_STEP_KCAL = 100   // el único valor que el controlador
+                                      // normal puede seleccionar
+MAX_ADJUSTMENT_STEP_KCAL     = 150   // hard cap de esquema/seguridad —
+                                      // NO un segundo escalón automático
+                                      // ("si te sales mucho, 150"); el
+                                      // controlador nunca lo alcanza por
+                                      // sí mismo en v3
+COOLDOWN_DAYS = 14
+```
+
+Paso fijo, no proporcional a cuánto se sale de la banda — proporcional
+introduciría una superficie de diseño nueva (¿proporcional a qué
+constante?) sin respaldo de evidencia.
+
+### 6.9 Invariantes de dirección (el contrato más importante)
+
+```
+fat_loss    + ritmo menos negativo que la banda (pierde despacio) → delta < 0
+fat_loss    + ritmo más negativo que la banda (pierde rápido)      → delta > 0
+muscle_gain + ritmo menos positivo que la banda (gana despacio)    → delta > 0
+muscle_gain + ritmo más positivo que la banda (gana rápido)        → delta < 0
+maintain    + ritmo por encima de la banda (gana)                  → delta < 0
+maintain    + ritmo por debajo de la banda (pierde)                → delta > 0
+recomp      + ritmo por encima de la banda (gana, >0%)              → delta < 0
+recomp      + ritmo por debajo de la banda (pierde más de -0.5%)   → delta > 0
+dentro de la banda (cualquier objetivo)                             → delta = 0
+```
+
+Casos obligatorios de test para la asimetría de `recomp`:
+
+```
+-0.50% → dentro
+-0.25% → dentro
+ 0.00% → dentro
+-0.51% → fuera por abajo (delta > 0)
++0.01% → fuera por arriba (delta < 0)
+```
+
+### 6.10 Lo que se conserva sin tocar
+
+- Cooldown de 14 días entre decisiones (aceptar/rechazar).
+- Aceptación siempre explícita por el usuario — el motor nunca aplica un
+  ajuste por sí solo.
+- `evaluateNutritionSafety` y demás guardarraíles de `calcDailyTargets` —
+  sin relación con este cambio, no se tocan.
+
+### 6.11 Lo que NO se da por garantizado todavía
+
+El fingerprint de propuesta (`AdjustmentProfileFingerprint`) debe seguir
+invalidando una propuesta pendiente si cambia cualquier input capaz de
+alterar materialmente el plan contra el que se generó — pero el
+fingerprint **actual ya se sabe incompleto** (no cubre todos los inputs
+reales tras PR1). Este es el invariante deseado, no una propiedad que la
+implementación de hoy garantice:
+
+```
+Invariante a preservar/completar: cualquier cambio en un input que pueda
+alterar materialmente el plan contra el que se generó una propuesta debe
+hacerla stale.
+```
+
+Qué campos entran exactamente en el fingerprint se revisa en la sesión de
+implementación, comparando contra todas las dependencias reales
+post-PR1 — no se inventa la lista aquí.
 
 ---
 
@@ -450,13 +640,19 @@ placeholder para que no se pierda como paso explícito del refactor)*
 
 ## Orden de implementación acordado
 
-1. **PR1** — Bugs obligatorios (§7) + modelo de proteína (§2.4) + soporte
-   de targets históricos por fecha en el adaptativo (§2.3). No toca MET ni
-   sustituye `7700` en la misma entrega — ambos cambian la interpretación
-   del mantenimiento y complicarían diagnosticar qué cambio produjo qué
-   resultado.
-2. **PR2** — Adaptive v3: controlador por progreso (§6), manteniendo TDEE
-   inferido como diagnóstico, cobertura/calidad recalculada correctamente.
+1. **PR1** — ✅ **Implementado** (4 commits: migraciones SQL, contrato de
+   datos, bugs obligatorios, proteína por base). Bugs obligatorios (§7) +
+   modelo de proteína (§2.4) + soporte de targets históricos por fecha en
+   el adaptativo (§2.3). No tocó MET ni sustituyó `7700` en la misma
+   entrega — ambos cambian la interpretación del mantenimiento y
+   complicarían diagnosticar qué cambio produjo qué resultado.
+2. **PR2** — ✅ **Diseño cerrado en documentación (§6), pendiente de
+   implementar.** Adaptive v3: controlador de ritmo observado vs. banda
+   objetivo, manteniendo TDEE inferido (7700) como diagnóstico puro,
+   arquitectura de tres capas (trajectory/suggestedDelta/eligibility) y
+   fuente única (`evaluateAdaptiveState()`). Único número sin cerrar:
+   ventana mínima 21 vs. 28 días (§6.7), a decidir en la sesión de
+   implementación.
 3. **PR3** — Actividad/TDEE v3: modelo `replacementIncrementKcal` (§2.5 y
    §3), tras confirmar que el modelo conceptual (este documento) no
    necesita más ajustes antes de tocar código.
