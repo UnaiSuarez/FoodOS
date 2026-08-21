@@ -19,9 +19,9 @@ import "../dashboard.css";
 export async function generateMetadata({
   params,
 }: {
-  params: { slug?: string[] };
+  params: Promise<{ slug?: string[] }>;
 }): Promise<Metadata> {
-  const segment = params.slug?.[0];
+  const segment = (await params).slug?.[0];
   const title =
     segment === "settings"
       ? "Ajustes de la app"

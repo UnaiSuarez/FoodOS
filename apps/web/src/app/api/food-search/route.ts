@@ -2,6 +2,22 @@
 // GET /api/food-search?q=nocilla
 // Usa la nueva API de búsqueda de OFF (search.openfoodfacts.org) que tiene Elasticsearch
 // y funciona mucho mejor que el CGI antiguo (/cgi/search.pl → devolvía 503).
+//
+// Caché de fetch() en Next 15 (migración de Next 14, revisión externa,
+// 2026-08-22): el fetch() de más abajo no pasaba (ni pasa ahora) ninguna
+// opción `cache` explícita. En Next 14 el valor por defecto era
+// "force-cache" — Next podía servir la respuesta de OFF de una búsqueda
+// desde su Data Cache en vez de pedirla de nuevo, así que dos usuarios (o el
+// mismo, más tarde) buscando el mismo término podían recibir un resultado
+// desactualizado sin que nadie lo pidiera. En Next 15 el valor por defecto
+// pasa a ser "no-store" — cada búsqueda golpea la API real siempre. Para
+// esta ruta es una mejora, no una regresión: una búsqueda de alimentos
+// debe reflejar el catálogo real de OFF en cada petición, nunca sesgo de
+// caché. No se fija `cache` explícitamente a propósito, para quedarse con
+// el nuevo comportamiento por defecto. (El otro handler GET del proyecto,
+// /api/recipe-fetch, no usa fetch() de Next en absoluto — usa conexión TCP
+// de bajo nivel pinneada a una IP validada, ver lib/safe-fetch.ts — así que
+// este cambio de Next no le afecta.)
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {

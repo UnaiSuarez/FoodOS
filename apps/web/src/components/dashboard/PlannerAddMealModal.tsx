@@ -74,7 +74,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [deductInv, setDeductInv] = useState(true);
   const [saveAsRecipe, setSaveAsRecipe] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);

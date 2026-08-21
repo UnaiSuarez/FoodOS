@@ -96,7 +96,7 @@ export function InventoryView() {
   const photoInputRef = useRef<HTMLInputElement>(null);
   // Para la regla de 3: cantidad de referencia cuando se cambia la qty
   const prevQtyRef = useRef<number>(DEFAULT_FORM.qty);
-  const offTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const offTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(offTimerRef.current), []);
 

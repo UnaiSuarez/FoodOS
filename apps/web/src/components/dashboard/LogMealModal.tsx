@@ -192,7 +192,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
   // Para guardar el plato como raciones en la despensa (batch cooking / meal prep).
   const [dishPortions, setDishPortions] = useState(1);
   const [dishStorage, setDishStorage] = useState<import("@foodos/types").StorageName>("Nevera");
-  const dishTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const dishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => () => clearTimeout(dishTimerRef.current), []);
 
