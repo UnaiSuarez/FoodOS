@@ -4,11 +4,51 @@
 // Recipe — la señal más limpia posible, porque casi todo blog de recetas lo
 // incluye para las rich snippets de Google.
 // GET /api/recipe-fetch?url=https://ejemplo.com/receta
+//
+// SSRF (auditoría externa, 2026-08-21): esta ruta descarga desde el SERVIDOR
+// cualquier URL http/https que le pidan — sin las comprobaciones de abajo,
+// es un proxy hacia loopback/redes privadas/link-local (incluido el
+// endpoint de metadata de nube, 169.254.169.254) y hacia lo mismo tras una
+// redirección. Se resuelve DNS y se valida la IP resultante ANTES de cada
+// conexión, incluidas las redirecciones (que se siguen a mano, nunca con
+// redirect:"follow", precisamente para poder revalidar cada salto).
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { assertPublicUrl, createRateLimiter } from "@/lib/ssrf-guard";
 
 const MAX_HTML_BYTES = 1_500_000; // defensivo: páginas enormes no aportan más señal
 const MAX_TEXT_CHARS = 8_000;
 const MAX_JSONLD_CHARS = 6_000;
+const MAX_REDIRECTS = 5;
+const FETCH_TIMEOUT_MS = 10_000;
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const isRateLimited = createRateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQUESTS);
+
+// ─── Autenticación ──────────────────────────────────────────────────────
+// Si Supabase está configurado, exige una sesión válida (Authorization:
+// Bearer <access_token>). Si NO está configurado, la app entera funciona en
+// modo local-only sin autenticación (ver hasSupabaseConfig() en
+// lib/supabase.ts) — mismo modelo de seguridad para esta ruta en ese modo,
+// pensado para uso personal/privado, no un debilitamiento nuevo.
+async function isAuthorized(request: NextRequest): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey || url.includes("TU-PROYECTO")) return true;
+
+  const authHeader = request.headers.get("authorization") ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) return false;
+
+  try {
+    const client = createClient(url, anonKey);
+    const { data, error } = await client.auth.getUser(token);
+    return !error && !!data.user;
+  } catch {
+    return false;
+  }
+}
 
 function htmlToText(html: string): string {
   return html
@@ -42,7 +82,66 @@ function extractTitle(html: string): string | undefined {
   return m ? htmlToText(m[1]).slice(0, 200) : undefined;
 }
 
+/** Descarga con límite de bytes real durante el streaming — antes se hacía
+    res.text() (cuerpo COMPLETO en memoria) y se truncaba después, así que
+    MAX_HTML_BYTES no protegía nada frente a una respuesta enorme. */
+async function readBodyLimited(res: Response, maxBytes: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let received = 0;
+  let out = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      out += decoder.decode(value.subarray(0, Math.max(0, maxBytes - (received - value.byteLength))));
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    out += decoder.decode(value, { stream: true });
+  }
+  return out;
+}
+
+/** Sigue redirecciones A MANO (nunca redirect:"follow") para poder validar
+    que cada salto sigue apuntando a una IP pública — una URL pública puede
+    redirigir a localhost/metadata igual de bien que apuntar ahí directamente. */
+async function fetchPublicUrl(startUrl: URL): Promise<Response> {
+  let current = startUrl;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    await assertPublicUrl(current);
+    const res = await fetch(current.toString(), {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; FoodOS/1.0; +https://github.com/UnaiSuarez/FoodOS)",
+        "Accept": "text/html,application/xhtml+xml",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+      current = new URL(res.headers.get("location")!, current);
+      continue;
+    }
+    return res;
+  }
+  throw new Error("TOO_MANY_REDIRECTS");
+}
+
 export async function GET(request: NextRequest) {
+  if (!(await isAuthorized(request))) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
+  const rateLimitKey =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "unknown";
+  if (isRateLimited(rateLimitKey)) {
+    return NextResponse.json({ error: "Demasiadas peticiones — espera un momento" }, { status: 429 });
+  }
+
   const rawUrl = request.nextUrl.searchParams.get("url")?.trim() ?? "";
   if (!rawUrl) return NextResponse.json({ error: "Falta el parámetro url" }, { status: 400 });
 
@@ -57,14 +156,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const res = await fetch(target.toString(), {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FoodOS/1.0; +https://github.com/UnaiSuarez/FoodOS)",
-        "Accept": "text/html,application/xhtml+xml",
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(10_000),
-    });
+    const res = await fetchPublicUrl(target);
 
     if (!res.ok) {
       return NextResponse.json({ error: `La página respondió con un error (${res.status})` }, { status: 502 });
@@ -75,8 +167,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Esa URL no apunta a una página web (¿es un PDF o una imagen?)" }, { status: 415 });
     }
 
-    const fullHtml = await res.text();
-    const html = fullHtml.length > MAX_HTML_BYTES ? fullHtml.slice(0, MAX_HTML_BYTES) : fullHtml;
+    const html = await readBodyLimited(res, MAX_HTML_BYTES);
 
     const jsonLd = extractRecipeJsonLd(html);
     const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);
@@ -87,7 +178,13 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({ text, jsonLd: jsonLd || null, title: title ?? null });
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message === "PRIVATE_TARGET") {
+      return NextResponse.json({ error: "Esa URL no es accesible (apunta a una red no permitida)" }, { status: 400 });
+    }
+    if (err instanceof Error && err.message === "TOO_MANY_REDIRECTS") {
+      return NextResponse.json({ error: "Demasiadas redirecciones" }, { status: 400 });
+    }
     return NextResponse.json(
       { error: "No se pudo descargar la página (tardó demasiado o bloqueó la petición)" },
       { status: 502 }
