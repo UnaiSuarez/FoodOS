@@ -12,15 +12,26 @@
 // redirección. Se resuelve DNS y se valida la IP resultante ANTES de cada
 // conexión, incluidas las redirecciones (que se siguen a mano, nunca con
 // redirect:"follow", precisamente para poder revalidar cada salto).
+//
+// DNS rebinding (revisión externa, 2026-08-21): validar con dns.lookup() y
+// luego llamar a fetch(url) NO es suficiente — fetch() vuelve a resolver el
+// hostname por su cuenta al conectar, y esa segunda resolución puede
+// devolver una IP distinta (TTL bajo, DNS del atacante). La conexión real
+// tiene que fijarse a la IP que se validó, no repetir la resolución — ver
+// lib/safe-fetch.ts.
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { assertPublicUrl, createRateLimiter } from "@/lib/ssrf-guard";
+import { createRateLimiter } from "@/lib/ssrf-guard";
+import { safeFetch, readNodeStreamLimited, type SafeFetchResult } from "@/lib/safe-fetch";
 
 const MAX_HTML_BYTES = 1_500_000; // defensivo: páginas enormes no aportan más señal
 const MAX_TEXT_CHARS = 8_000;
 const MAX_JSONLD_CHARS = 6_000;
 const MAX_REDIRECTS = 5;
-const FETCH_TIMEOUT_MS = 10_000;
+// Presupuesto TOTAL para toda la cadena de redirecciones, no por salto — con
+// un límite por salto, 5 redirecciones podían sumar hasta 5x el timeout
+// nominal. Cada hop recibe el tiempo que quede del presupuesto.
+const TOTAL_FETCH_TIMEOUT_MS = 10_000;
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
@@ -30,12 +41,26 @@ const isRateLimited = createRateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_REQ
 // Si Supabase está configurado, exige una sesión válida (Authorization:
 // Bearer <access_token>). Si NO está configurado, la app entera funciona en
 // modo local-only sin autenticación (ver hasSupabaseConfig() en
-// lib/supabase.ts) — mismo modelo de seguridad para esta ruta en ese modo,
-// pensado para uso personal/privado, no un debilitamiento nuevo.
+// lib/supabase.ts).
+//
+// Fail-closed (revisión externa, 2026-08-21): el modo local-only anónimo NO
+// se infiere solo de que falten NEXT_PUBLIC_SUPABASE_URL/ANON_KEY. Antes sí
+// se hacía así, lo que significa que un despliegue a producción con esas
+// variables olvidadas (typo, paso de CI saltado, etc.) dejaba esta ruta
+// abierta a cualquiera sin que nadie lo decidiera a propósito — justo lo
+// contrario de fail-closed. Ahora hace falta una señal EXPLÍCITA
+// (FOODOS_ALLOW_LOCAL_ONLY_API=true) y además NODE_ENV distinto de
+// "production"; sin las dos, la ausencia de configuración de Supabase
+// deniega la petición en vez de abrirla.
+function isExplicitLocalOnlyMode(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.FOODOS_ALLOW_LOCAL_ONLY_API === "true";
+}
+
 async function isAuthorized(request: NextRequest): Promise<boolean> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anonKey || url.includes("TU-PROYECTO")) return true;
+  const supabaseConfigured = !!url && !!anonKey && !url.includes("TU-PROYECTO");
+  if (!supabaseConfigured) return isExplicitLocalOnlyMode();
 
   const authHeader = request.headers.get("authorization") ?? "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
@@ -82,46 +107,25 @@ function extractTitle(html: string): string | undefined {
   return m ? htmlToText(m[1]).slice(0, 200) : undefined;
 }
 
-/** Descarga con límite de bytes real durante el streaming — antes se hacía
-    res.text() (cuerpo COMPLETO en memoria) y se truncaba después, así que
-    MAX_HTML_BYTES no protegía nada frente a una respuesta enorme. */
-async function readBodyLimited(res: Response, maxBytes: number): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) return "";
-  const decoder = new TextDecoder();
-  let received = 0;
-  let out = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > maxBytes) {
-      out += decoder.decode(value.subarray(0, Math.max(0, maxBytes - (received - value.byteLength))));
-      await reader.cancel().catch(() => {});
-      break;
-    }
-    out += decoder.decode(value, { stream: true });
-  }
-  return out;
-}
-
 /** Sigue redirecciones A MANO (nunca redirect:"follow") para poder validar
     que cada salto sigue apuntando a una IP pública — una URL pública puede
-    redirigir a localhost/metadata igual de bien que apuntar ahí directamente. */
-async function fetchPublicUrl(startUrl: URL): Promise<Response> {
+    redirigir a localhost/metadata igual de bien que apuntar ahí directamente.
+    Cada salto usa safeFetch(), que resuelve y fija la conexión a esa única
+    IP validada (ver lib/safe-fetch.ts). El presupuesto de tiempo es total
+    para toda la cadena: cada hop recibe lo que quede del deadline. */
+async function fetchPublicUrl(startUrl: URL, totalTimeoutMs: number): Promise<SafeFetchResult> {
+  const deadline = Date.now() + totalTimeoutMs;
   let current = startUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublicUrl(current);
-    const res = await fetch(current.toString(), {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; FoodOS/1.0; +https://github.com/UnaiSuarez/FoodOS)",
-        "Accept": "text/html,application/xhtml+xml",
-      },
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-      current = new URL(res.headers.get("location")!, current);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("TIMEOUT");
+    const res = await safeFetch(current, remaining);
+    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      res.bodyStream.resume?.(); // descarta el cuerpo de la redirección, no lo necesitamos
+      current = new URL(String(res.headers.location), current);
+      if (current.protocol !== "http:" && current.protocol !== "https:") {
+        throw new Error("PROTOCOL_NOT_ALLOWED");
+      }
       continue;
     }
     return res;
@@ -156,18 +160,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const res = await fetchPublicUrl(target);
+    const res = await fetchPublicUrl(target, TOTAL_FETCH_TIMEOUT_MS);
 
-    if (!res.ok) {
-      return NextResponse.json({ error: `La página respondió con un error (${res.status})` }, { status: 502 });
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      res.bodyStream.resume?.();
+      return NextResponse.json({ error: `La página respondió con un error (${res.statusCode})` }, { status: 502 });
     }
 
-    const contentType = res.headers.get("content-type") ?? "";
+    const contentType = String(res.headers["content-type"] ?? "");
     if (!contentType.includes("text/html") && !contentType.includes("xml")) {
+      res.bodyStream.resume?.();
       return NextResponse.json({ error: "Esa URL no apunta a una página web (¿es un PDF o una imagen?)" }, { status: 415 });
     }
 
-    const html = await readBodyLimited(res, MAX_HTML_BYTES);
+    const html = await readNodeStreamLimited(res.bodyStream, MAX_HTML_BYTES);
 
     const jsonLd = extractRecipeJsonLd(html);
     const text = htmlToText(html).slice(0, MAX_TEXT_CHARS);

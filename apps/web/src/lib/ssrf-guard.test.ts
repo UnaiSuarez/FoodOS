@@ -30,7 +30,7 @@ describe("isPrivateOrReservedIp — IPv4", () => {
     ["8.8.8.8", false, "Google DNS pública"],
     ["1.1.1.1", false, "Cloudflare DNS pública"],
     ["93.184.216.34", false, "IP pública genérica"],
-  ] as const)("%s → %s (%s)", (ip, expected) => {
+  ] as const)("%s → %s (%s)", (ip, expected, _label) => {
     expect(isPrivateOrReservedIp(ip)).toBe(expected);
   });
 });
@@ -49,7 +49,7 @@ describe("isPrivateOrReservedIp — IPv6", () => {
     ["::ffff:8.8.8.8", false, "IPv4-mapped, pública embebida"],
     ["2606:4700:4700::1111", false, "Cloudflare DNS pública IPv6"],
     ["2001:4860:4860::8888", false, "Google DNS pública IPv6"],
-  ] as const)("%s → %s (%s)", (ip, expected) => {
+  ] as const)("%s → %s (%s)", (ip, expected, _label) => {
     expect(isPrivateOrReservedIp(ip)).toBe(expected);
   });
 });

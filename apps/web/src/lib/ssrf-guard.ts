@@ -3,7 +3,14 @@
 // poder testear la lógica de rangos de IP sin levantar un Route Handler —
 // ver docs de la propia ruta para el contexto completo de la vulnerabilidad
 // (auditoría externa, 2026-08-21).
-import dns from "node:dns/promises";
+//
+// La resolución DNS + validación + conexión real vive en lib/safe-fetch.ts,
+// no aquí — deliberadamente: hacerlo con fetch()/dns.lookup() por separado
+// (como se hacía antes con resolvesToPublicAddress/assertPublicUrl, ya
+// retirados de este archivo) deja una ventana de DNS rebinding entre
+// "resolver para validar" y "resolver para conectar". safe-fetch.ts resuelve
+// una sola vez y fija la conexión a esa IP — ver el comentario al principio
+// de ese archivo.
 import net from "node:net";
 
 /** ¿Es esta IP privada, loopback, link-local (incluye el endpoint de
@@ -40,30 +47,6 @@ export function isPrivateOrReservedIp(ip: string): boolean {
     return false;
   }
   return true; // no se pudo interpretar como IP — rechazar por seguridad
-}
-
-/** Resuelve DNS del host y confirma que TODAS las IPs resultantes son
-    públicas — si una sola dirección resuelta es privada (DNS rebinding
-    apuntando a varias IPs, algunas internas), se rechaza entero. */
-export async function resolvesToPublicAddress(hostname: string): Promise<boolean> {
-  if (net.isIP(hostname)) return !isPrivateOrReservedIp(hostname);
-  let addresses: Array<{ address: string }>;
-  try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-  } catch {
-    return false; // no resuelve -> no se puede validar con seguridad
-  }
-  if (addresses.length === 0) return false;
-  return addresses.every((a) => !isPrivateOrReservedIp(a.address));
-}
-
-export async function assertPublicUrl(target: URL): Promise<void> {
-  if (target.protocol !== "http:" && target.protocol !== "https:") {
-    throw new Error("PROTOCOL_NOT_ALLOWED");
-  }
-  if (!(await resolvesToPublicAddress(target.hostname))) {
-    throw new Error("PRIVATE_TARGET");
-  }
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────
