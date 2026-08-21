@@ -314,21 +314,53 @@ export interface AdaptiveDiagnostics {
   weightTrendQualityScore: number | null;
   proposalEligible: boolean;
   ineligibilityReasons: string[];
+  /** Adaptive v3 — el AdjustmentDecision COMPLETO calculado por
+      evaluateAdaptiveState(), la misma fuente que produjo
+      proposalEligible/ineligibilityReasons de arriba. Los consumidores que
+      necesiten deltaKcal/proposedTargetKcal/reason (p.ej. para crear la
+      propuesta) deben leerlo de aquí — nunca volver a llamar a
+      evaluateAdaptiveState() por su cuenta con inputs recalculados aparte,
+      eso reintroduciría la doble fuente de verdad que este campo existe
+      para evitar. */
+  decision: AdjustmentDecision;
 }
 
 /**
- * Resultado de evaluateAdjustmentProposal(): si se cumplen los criterios
- * mínimos para proponer (nunca aplicar solo) un ajuste de calorías basado en
- * el TDEE adaptativo. shouldPropose=false siempre trae deltaKcal 0 y
- * proposedTargetKcal igual al actual — el reason explica por qué no procede.
+ * Adaptive v3 (ver docs/NUTRITION_V3_DECISIONES.md §6.5): posición del
+ * ritmo observado (weeklyChangePercent) respecto a la banda del objetivo.
+ * "above"/"below" son respecto al signo de la banda, no "bueno/malo" —
+ * "above" significa numéricamente más alto que el máximo de la banda
+ * (engorda más rápido / adelgaza más despacio de lo esperado, según el
+ * objetivo), "below" lo contrario. null si no hay tendencia de peso
+ * suficiente para evaluarlo.
+ */
+export type WeightTrajectoryAssessment = "inside" | "below" | "above";
+
+/**
+ * Resultado de evaluateAdaptiveState() (Adaptive v3 — antes
+ * evaluateAdjustmentProposal): si se cumplen los criterios mínimos para
+ * proponer (nunca aplicar solo) un ajuste de calorías basado en el RITMO
+ * observado vs. la banda objetivo del goal — NO en el TDEE adaptativo vía
+ * 7700 (ese sigue existiendo solo como diagnóstico, ver AdaptiveTdeeResult).
+ * shouldPropose=false siempre trae deltaKcal 0 y proposedTargetKcal igual
+ * al actual — el reason explica por qué no procede.
  */
 export interface AdjustmentDecision {
   shouldPropose: boolean;
   /** Entre -150 y 150 kcal cuando shouldPropose es true (ver migración de
-      nutrition_adjustment_proposals) — nunca se propone un salto brusco. */
+      nutrition_adjustment_proposals) — nunca se propone un salto brusco.
+      En Adaptive v3 el controlador normal solo produce -100/0/+100; el
+      rango ±150 es un hard cap de esquema/seguridad, no un segundo
+      escalón que el algoritmo seleccione por sí mismo. */
   deltaKcal: number;
   proposedTargetKcal: number;
   reason: string;
+  /** null si no hay tendencia de peso suficiente para evaluar la banda. */
+  trajectory: WeightTrajectoryAssessment | null;
+  /** Todos los motivos de bloqueo acumulados (no solo el primero) — para
+      diagnóstico ("¿por qué no me deja generar una propuesta?"). Vacío si
+      shouldPropose es true. */
+  blockingReasons: string[];
 }
 
 export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "expired";
@@ -340,10 +372,31 @@ export type AdjustmentProposalStatus = "pending" | "accepted" | "rejected" | "ex
  * aceptarla (ver isProposalStale en nutrition.ts y N4 en
  * docs/REVISION_NUTRICION_PR48-52.md). No incluye "objetivo manual" porque
  * ese campo todavía no existe en FoodOS.
+ *
+ * PR4 (auditoría final de nutrition-v3, ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.11): añade age/sex/heightCm/
+ * bodyFatPct — los cuatro cambian materialmente el plan calculado (RMR,
+ * IMC, base de proteína) y no estaban cubiertos. Deliberadamente NO
+ * incluye:
+ *   - bodyFatSource: en v3 la procedencia del % graso es solo
+ *     informativa/UX, no cambia ningún target (ver §2.4/§9) — incluirla
+ *     sería ruido en el fingerprint. Si en el futuro la fuente empieza a
+ *     modificar confianza o macros, ahí sí debe entrar.
+ *   - gymDays: el offset adaptativo (adaptiveKcalOffsetKcal) se suma como
+ *     término plano en calcDailyTargets, independiente del tipo de día
+ *     — evaluateAdaptiveState() ni siquiera recibe gymDay como input, así
+ *     que la DECISIÓN del ajuste no depende de qué días son de gym.
+ *     gymDays sí afecta qué target concreto ve el usuario cada día, pero
+ *     eso se recalcula en vivo en la UI, no es parte de lo que este
+ *     fingerprint protege (si la propuesta sigue siendo válida).
  */
 export interface AdjustmentProfileFingerprint {
   goal: GoalMode;
   weightKg: number;
+  heightCm: number;
+  age: number;
+  sex: Sex;
+  bodyFatPct: number | null;
   activityLevel: ActivityLevel;
   activityModelVersion: ActivityModelVersion;
   trainingActivity: TrainingActivityProfile | null;
@@ -410,6 +463,9 @@ export interface PhysicalProfile {
   weightKg: number;
   /** % de grasa corporal, opcional — afina la proteina usando masa magra. */
   bodyFatPct: number | null;
+  /** Procedencia de bodyFatPct — ver BodyFatSource. undefined/null = sin
+      procedencia registrada. */
+  bodyFatSource?: BodyFatSource | null;
   activityLevel: ActivityLevel;
   goal: GoalMode;
   /** Dias de gym: 0=Domingo, 1=Lunes ... 6=Sabado (ciclado calorico §9.4). */
@@ -450,22 +506,51 @@ export interface PhysicalProfile {
 /**
  * Cuestionario de "lifestyle_plus_training": vida cotidiana y entrenamiento
  * declarados por separado, en vez de un único nivel combinado (activityLevel).
+ *
+ * v3 (ver docs/NUTRITION_V3_DECISIONES.md §2.1): duración de fuerza y de
+ * cardio separadas — v2 tenía un único avgSessionDurationMin aplicado a
+ * ambas, así que "5 días fuerza + 5 días cardio + 60 min" se interpretaba
+ * como 600 min/semana en vez de sesiones combinadas de 60 min.
  */
 export interface TrainingActivityProfile {
   /** Actividad cotidiana SIN contar el entrenamiento (trabajo, desplazamientos, tareas de casa). */
   lifestyleActivity: ActivityLevel;
   strengthDaysPerWeek: number;
   cardioDaysPerWeek: number;
-  /** Duración media por sesión en minutos (fuerza y cardio). */
-  avgSessionDurationMin: number;
+  /** Duración media de una sesión de fuerza, en minutos. */
+  strengthAvgDurationMin: number;
+  /** Duración media de una sesión de cardio, en minutos. */
+  cardioAvgDurationMin: number;
   /** Pasos diarios habituales — se guarda para afinar el modelo adaptativo más
       adelante (PR5/PR6); todavía no se usa en el cálculo de TDEE. */
   habitualSteps?: number | null;
+  /** true si strengthAvgDurationMin/cardioAvgDurationMin vinieron de migrar
+      automáticamente el avgSessionDurationMin legacy (mismo valor copiado a
+      ambos campos) y el usuario todavía no ha confirmado que sean correctos
+      por separado — ver migrateLegacyTrainingActivity en nutrition.ts y
+      docs/NUTRITION_V3_DECISIONES.md §10. No tratar como dato confirmado
+      mientras sea true. */
+  legacyDurationUnconfirmed?: boolean;
 }
 
 export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
 
 export type EquipmentAccess = "full_gym" | "home_dumbbells" | "bodyweight";
+
+/**
+ * Procedencia del % de grasa corporal (PhysicalProfile.bodyFatPct) — v3,
+ * procedencia mínima sin sistema completo de confidence/provenance (ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.4/§4/§9). undefined/null = sin
+ * procedencia registrada (perfiles históricos o no indicado); no existe un
+ * valor "unknown" separado porque null ya expresa exactamente eso.
+ */
+export type BodyFatSource =
+  | "dxa"
+  | "bia_professional"
+  | "smart_scale"
+  | "skinfold"
+  | "visual_estimate"
+  | "other";
 
 /** Plantilla de reparto de grupos musculares por día, elegible en el asistente de IA. */
 export type SplitTemplate = "push_pull_legs" | "upper_lower" | "full_body" | "bro_split" | "ai_decide";
@@ -562,6 +647,36 @@ export type DayType = "gym" | "rest";
 
 export interface DailyTargets extends MacroTotals {
   dayType: DayType;
+}
+
+/**
+ * Desglose de calcTDEE() (ver calcTdeeBreakdown en nutrition.ts) — fuente
+ * única para que la UI muestre "vida diaria + entreno" sin reimplementar
+ * la fórmula por su cuenta (nutrition-v3 §3.2). En el modelo
+ * "legacy_total_pal", habitualTrainingGrossKcalPerDay/
+ * baselineDisplacedKcalPerDay/replacementIncrementKcalPerDay son 0 — el
+ * PAL clásico ya mezcla vida cotidiana y entreno en un único factor, no
+ * hay desglose que mostrar.
+ */
+export interface TdeeBreakdown {
+  restingEnergyKcal: number;
+  /** "lifestyle_plus_training": solo trabajo/desplazamientos/tareas (RMR ×
+      LIFESTYLE_ONLY_FACTORS). "legacy_total_pal": el TDEE total, porque no
+      hay desglose. */
+  lifestyleTdeeKcal: number;
+  /** Gasto bruto medio diario del entreno declarado (MET estándar, sin
+      ajustar) — diagnóstico, nunca se suma directamente al mantenimiento. */
+  habitualTrainingGrossKcalPerDay: number;
+  /** Gasto que lifestyleTdeeKcal ya asignaba a esos minutos — convención
+      contable, no medición del gasto contrafactual real de esa hora. */
+  baselineDisplacedKcalPerDay: number;
+  /** Lo único que realmente incrementa el mantenimiento respecto al
+      lifestyle ya modelado — max(0, gross − baselineDisplaced) por sesión,
+      sumado semanalmente y dividido entre 7. */
+  replacementIncrementKcalPerDay: number;
+  /** lifestyleTdeeKcal + replacementIncrementKcalPerDay — igual a
+      calcTDEE(). */
+  totalTdeeKcal: number;
 }
 
 export interface Mascot {

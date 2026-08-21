@@ -5,6 +5,11 @@
 -- También arregla la pérdida de qty/unit para unidades ("ud"), que antes solo
 -- se guardaba en quantity_g (numérico en gramos).
 -- Idempotente: usa ADD COLUMN IF NOT EXISTS.
+--
+-- NOTA (2026-08-21, reconciliación de historial CLI): mismo caso que
+-- 20260630_inventory_extra_fields.sql — sin versión propia en remoto,
+-- absorbida en "initial_schema" (20260629120159). Ver esa nota para el
+-- detalle completo.
 
 alter table public.food_log
   add column if not exists client_meta jsonb;

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
-import type { ActivityLevel, ActivityModelVersion, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, BodyFatSource, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { Tabs, TabPanel } from "@/components/ui";
 import {
@@ -24,9 +24,9 @@ import {
 import {
   ACTIVITY_LABELS,
   adjustmentCooldownDaysLeft,
+  BODY_FAT_SOURCE_LABELS,
   buildAdjustmentEvidence,
   calcAdaptiveTdee,
-  calcHabitualTrainingAllowanceKcal,
   calcIntakeCoverage,
   EQUIPMENT_LABELS,
   EXPERIENCE_LABELS,
@@ -35,9 +35,9 @@ import {
   calcDailyTargets,
   calcProteinRange,
   calcSummary,
+  calcTdeeBreakdown,
   calculateFiberTarget,
   calcWeightTrend,
-  evaluateAdjustmentProposal,
   evaluateNutritionSafety,
   filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
@@ -45,7 +45,6 @@ import {
   isGymDay,
   isProposalStale,
   isRelevantCalibrationChange,
-  LIFESTYLE_ONLY_FACTORS,
   MACRO_PREFERENCE_LABELS,
   NUTRITION_ENGINE_VERSION,
   buildAdjustmentProfileFingerprint,
@@ -65,6 +64,33 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
   { value: 6, label: "S" },
   { value: 0, label: "D" },
 ];
+
+/**
+ * Objetivos calóricos históricos reales por fecha (nutrition-v3 §2.3) —
+ * para que calcIntakeCoverage nunca infiera el target de un día pasado con
+ * el perfil ACTUAL. Lee getNutritionGoalsRange (data-layer.ts), que a su vez
+ * lee nutrition_goals tal cual está en la base de datos (una fila por
+ * fecha, nunca reconstruida). Un día sin fila para esa fecha simplemente no
+ * tiene entrada en el Map — nunca se rellena con el objetivo de hoy.
+ * `windowDays` se pasa explícito (no una constante compartida) porque los
+ * tres consumidores actuales ya usan 28 por separado; si alguno cambiara de
+ * ventana no debe arrastrar a los demás.
+ */
+function useNutritionGoalsHistory(referenceDate: string, windowDays: number): Map<string, number> {
+  const [history, setHistory] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const fromDateKey = dateOffset(referenceDate, -windowDays);
+    remote.getNutritionGoalsRange(fromDateKey, referenceDate).then((rows) => {
+      if (cancelled) return;
+      setHistory(new Map(rows.map((r) => [r.goalDate, r.kcalTarget])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [referenceDate, windowDays]);
+  return history;
+}
 
 /**
  * N16: la sección Nutrición había crecido a 8 paneles apilados verticalmente
@@ -288,6 +314,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   );
   const isNewActivityModel = activityModelVersion === "lifestyle_plus_training";
   const defaultTraining = profile?.trainingActivity;
+  const nutritionGoalsHistory = useNutritionGoalsHistory(getToday(state), 28);
 
   // N10: un déficit agresivo (>30% del TDEE) ya no se guarda con solo un
   // toast informativo — se detiene el guardado y se pide una confirmación
@@ -333,7 +360,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
       next.adaptiveCalibrationStartedAt
     );
-    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, targets.kcal);
+    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, nutritionGoalsHistory);
     const adaptiveAtSave = calcAdaptiveTdee({
       initialTdeeKcal: tdee,
       avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
@@ -379,12 +406,23 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     const bodyFatRaw = String(data.get("bodyFat")).trim();
     const targetWeightRaw = String(data.get("targetWeight")).trim();
 
+    // Procedencia del % graso (nutrition-v3 §2.4/§9): solo se exige fuente
+    // para un dato NUEVO — si el % cambia respecto al perfil guardado (o
+    // aparece por primera vez). Un % antiguo que el usuario no toca se
+    // conserva tal cual, sin forzar retroactivamente una fuente que nunca
+    // se pidió cuando se guardó — se queda marcado como procedencia
+    // desconocida hasta que el propio usuario lo revise.
+    const bodyFatSourceRaw = String(data.get("bodyFatSource") ?? "").trim();
+    const nextBodyFatPct = bodyFatRaw ? Number(bodyFatRaw) : null;
+    const bodyFatChanged = nextBodyFatPct !== (profile?.bodyFatPct ?? null);
+
     const trainingActivity: TrainingActivityProfile | undefined = isNewActivityModel
       ? {
           lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
           strengthDaysPerWeek: Number(data.get("strengthDays")),
           cardioDaysPerWeek: Number(data.get("cardioDays")),
-          avgSessionDurationMin: Number(data.get("avgSessionDuration")),
+          strengthAvgDurationMin: Number(data.get("strengthAvgDuration")),
+          cardioAvgDurationMin: Number(data.get("cardioAvgDuration")),
           habitualSteps: String(data.get("habitualSteps") ?? "").trim()
             ? Number(data.get("habitualSteps"))
             : null,
@@ -396,7 +434,10 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       sex: String(data.get("sex")) as Sex,
       heightCm: Number(data.get("height")),
       weightKg: Number(data.get("weight")),
-      bodyFatPct: bodyFatRaw ? Number(bodyFatRaw) : null,
+      bodyFatPct: nextBodyFatPct,
+      bodyFatSource: bodyFatSourceRaw
+        ? (bodyFatSourceRaw as BodyFatSource)
+        : (bodyFatChanged ? null : (profile?.bodyFatSource ?? null)),
       // En el modelo nuevo, activityLevel deja de usarse para calcular el TDEE
       // (ver calcTDEE) — se rellena con la actividad cotidiana declarada solo
       // para que el campo no quede vacío en el resto de la app.
@@ -440,6 +481,22 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       estimatedTdeeKcal: tdee,
       restingEnergyKcal: tmb,
     });
+    // Edad mínima del motor adulto (nutrition-v3 §2.2) — no basta con el
+    // min="18" del input: alguien puede enviar el form saltándose la
+    // validación HTML5 (herramientas de desarrollador, autocompletar con un
+    // valor viejo antes del cambio de mínimo, etc.). Sin este guardarraíl
+    // explícito, ese perfil se guardaría igual.
+    if (next.age < 18) {
+      showToast("FoodOS calcula objetivos para adultos (18+) — revisa la edad introducida.");
+      return;
+    }
+    // % graso nuevo o modificado sin procedencia (nutrition-v3 §2.4/§9) —
+    // un dato antiguo sin fuente NO dispara esto (bodyFatChanged es false
+    // si el usuario no tocó el campo).
+    if (bodyFatRaw && bodyFatChanged && !bodyFatSourceRaw) {
+      showToast("Indica de dónde viene tu % de grasa (báscula, DEXA, plicómetro...) — es un dato nuevo.");
+      return;
+    }
     if (!safety.automaticPlanAllowed) {
       showToast("Ese objetivo queda por debajo de 800 kcal — revisa peso/altura/edad o consulta a un profesional.");
       return;
@@ -475,7 +532,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           {/* Sin valor por defecto (N9): un dato inventado (25 años) podía
               guardarse sin que el usuario lo notara. Al editar sí se muestra
               el valor ya guardado — eso no es un dato inventado. */}
-          <input name="age" type="number" min="14" max="100" required defaultValue={profile?.age} placeholder="ej. 28" />
+          <input name="age" type="number" min="18" max="100" required defaultValue={profile?.age} placeholder="ej. 28" />
         </label>
         <label>
           Sexo biológico
@@ -496,6 +553,23 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
         <label>
           % graso <small>(opcional)</small>
           <input name="bodyFat" type="number" min="3" max="60" step="0.1" defaultValue={profile?.bodyFatPct ?? ""} placeholder="—" />
+        </label>
+        <label>
+          Procedencia del % graso <small>(obligatoria solo si cambias el % de arriba)</small>
+          {/* nutrition-v3 §2.4/§9: si ya tenías un % guardado de antes y no
+              lo tocas, no se exige fuente — se mantiene marcado como
+              procedencia desconocida hasta que lo revises tú mismo (ver
+              validación en save()). Solo es obligatoria para un dato NUEVO. */}
+          <select name="bodyFatSource" defaultValue={profile?.bodyFatSource ?? ""}>
+            <option value="">
+              {profile?.bodyFatPct != null && !profile?.bodyFatSource ? "Desconocida (dato antiguo)" : "—"}
+            </option>
+            {(Object.keys(BODY_FAT_SOURCE_LABELS) as BodyFatSource[]).map((source) => (
+              <option key={source} value={source}>
+                {BODY_FAT_SOURCE_LABELS[source]}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           Peso objetivo kg <small>(opcional)</small>
@@ -614,16 +688,40 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   placeholder="ej. 0"
                 />
               </label>
+              {defaultTraining?.legacyDurationUnconfirmed && (
+                <small role="status">
+                  ⚠️ Estas dos duraciones se rellenaron automáticamente a
+                  partir de tu valor anterior (fuerza y cardio compartían el
+                  mismo campo) — revísalas y ajústalas si no son iguales en
+                  realidad. Al guardar quedan confirmadas.
+                </small>
+              )}
               <label>
-                Duración media por sesión (min)
+                Duración media — sesión de fuerza (min)
                 <input
-                  name="avgSessionDuration"
+                  name="strengthAvgDuration"
                   type="number"
                   min="10"
                   max="240"
                   required
-                  defaultValue={defaultTraining?.avgSessionDurationMin}
+                  defaultValue={defaultTraining?.strengthAvgDurationMin}
                   placeholder="ej. 60"
+                />
+              </label>
+              <label>
+                Duración media — sesión de cardio (min)
+                {/* Separada de fuerza (nutrition-v3 §2.1): un único input
+                    compartido hacía que "5 días fuerza + 5 días cardio +
+                    60 min" se interpretara como 600 min/semana en vez de
+                    sesiones combinadas de 60 min. */}
+                <input
+                  name="cardioAvgDuration"
+                  type="number"
+                  min="10"
+                  max="240"
+                  required
+                  defaultValue={defaultTraining?.cardioAvgDurationMin}
+                  placeholder="ej. 30"
                 />
               </label>
               <label>
@@ -959,9 +1057,11 @@ function AdaptiveTdeePanel() {
   const profile = state.profile!;
   const today = getToday(state);
   const { tdee: initialTdeeKcal } = calcSummary(profile);
-  // Referencia para el suelo relativo de cobertura (PR10/N6) — el objetivo
-  // de HOY, ya que cambia entre día de gym y de descanso.
-  const targetKcalToday = calcDailyTargets(profile, isGymDay(profile, dateFromKey(today)), state.macroPreference).kcal;
+  // Target real por fecha (nutrition-v3 §2.3) — antes se usaba el objetivo
+  // de HOY aplicado a los ~28 días de la ventana por igual; un día de
+  // descanso en el histórico se evaluaba contra el objetivo de un día de
+  // gym (o al revés) si el tipo de día no coincidía con hoy.
+  const nutritionGoalsHistory = useNutritionGoalsHistory(today, ADAPTIVE_TDEE_WINDOW_DAYS);
   // Filtrado por calibración (PR9): tras cambiar objetivo/actividad, el
   // histórico previo ya no representa el régimen actual — ver N5.
   const calibrationFloor = profile.adaptiveCalibrationStartedAt ?? null;
@@ -976,7 +1076,7 @@ function AdaptiveTdeePanel() {
     Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
     calibrationFloor
   );
-  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS, targetKcalToday);
+  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS, nutritionGoalsHistory);
 
   const adaptive = calcAdaptiveTdee({
     initialTdeeKcal,
@@ -1075,26 +1175,33 @@ function AdjustmentProposalPanel() {
     calibrationFloor
   );
   const currentTargets = calcDailyTargets(profile, gymToday, state.macroPreference);
-  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, currentTargets.kcal);
+  // Target real por fecha (nutrition-v3 §2.3) — mismo criterio que
+  // AdaptiveTdeePanel: nunca evaluar el histórico contra el objetivo de hoy.
+  const nutritionGoalsHistory = useNutritionGoalsHistory(today, 28);
+  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, nutritionGoalsHistory);
+  // Diagnóstico únicamente (7700) — se sigue mostrando, nunca decide.
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
-  const decision = evaluateAdjustmentProposal({
-    currentTargetKcal: currentTargets.kcal,
-    adaptive,
-    weightTrend,
-    intakeCoverage: coverage,
-  });
 
   const cooldownDaysLeft = pending ? 0 : adjustmentCooldownDaysLeft(state.lastAdjustmentDecisionAt ?? null, today);
   const inCooldown = !pending && isAdjustmentCooldownActive(state.lastAdjustmentDecisionAt ?? null, today);
 
+  // Adaptive v3 (docs/NUTRITION_V3_DECISIONES.md §6.5): fuente única.
+  // `decision` NO se calcula por separado aquí — se lee de
+  // diagnostics.decision, la misma evaluateAdaptiveState() que ya decidió
+  // proposalEligible/ineligibilityReasons. Dos llamadas independientes a
+  // la lógica de decisión (con inputs que podían divergir) era exactamente
+  // el bug de doble fuente detectado en el mapeo previo a este PR.
   const diagnostics = getAdaptiveDiagnostics({
+    goal: profile.goal,
     weightLog: weightLogForAdaptive,
     dailyKcal: dailyKcalForAdaptive,
     referenceDate: today,
     initialTdeeKcal,
     currentTargetKcal: currentTargets.kcal,
+    lastAdjustmentDecisionAt: state.lastAdjustmentDecisionAt ?? null,
     calibrationStartedAt: calibrationFloor,
   });
+  const decision = diagnostics.decision;
 
   // ¿Sigue siendo válida la propuesta pendiente con el perfil actual? Un
   // cambio de objetivo/peso/actividad/macros/offset desde que se generó la
@@ -1691,12 +1798,11 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   const safety = evaluateNutritionSafety({ targetKcal: today.kcal, estimatedTdeeKcal: tdee, restingEnergyKcal: tmb });
 
   const usesNewActivityModel = profile.activityModelVersion === "lifestyle_plus_training" && !!profile.trainingActivity;
-  const lifestyleTdee = usesNewActivityModel
-    ? Math.round(tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity!.lifestyleActivity])
-    : null;
-  const trainingAllowance = usesNewActivityModel
-    ? calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity!)
-    : null;
+  // Fuente única (nutrition-v3 §3.2) — antes este panel reconstruía el
+  // desglose llamando por su cuenta a LIFESTYLE_ONLY_FACTORS/
+  // calcHabitualTrainingAllowanceKcal, una segunda implementación del
+  // mismo cálculo que calcTDEE() ya hacía internamente.
+  const tdeeBreakdown = calcTdeeBreakdown(profile, tmb);
 
   return (
     <article className="panel form-panel">
@@ -1733,7 +1839,7 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           <strong>{tdee}</strong>
           <small>
             {usesNewActivityModel
-              ? `${lifestyleTdee} vida diaria + ${trainingAllowance} entreno`
+              ? `${tdeeBreakdown.lifestyleTdeeKcal} vida diaria + ${tdeeBreakdown.replacementIncrementKcalPerDay} entreno`
               : "kcal de mantenimiento"}
           </small>
         </div>
@@ -1755,8 +1861,13 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
 
       {warnMuscle && (
         <div className="nutrition-warn-banner">
-          Tu IMC actual es superior a 27. En este punto, el superávit calórico favorece la
-          acumulación de grasa más que el músculo. Te recomendamos{" "}
+          Tu IMC actual es superior a 27. Un superávit calórico en este punto favorecería la
+          acumulación de grasa más que el músculo, así que FoodOS parte de mantenimiento (sin
+          superávit) en vez de subirte las calorías por encima de tu gasto estimado.
+          {/* No decimos "nunca déficit": si has aceptado un ajuste adaptativo, tu
+              objetivo final puede quedar por debajo del mantenimiento de la fórmula
+              — ver comentario junto a kcalFactor en nutrition.ts. */}
+          {" "}Te recomendamos{" "}
           <strong>Recomposición</strong> o <strong>Pérdida de grasa</strong> primero.
         </div>
       )}

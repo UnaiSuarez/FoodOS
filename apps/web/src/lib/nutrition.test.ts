@@ -1,29 +1,37 @@
 import { describe, expect, it } from "vitest";
-import type { AdaptiveTdeeResult, IntakeCoverageResult, PhysicalProfile, Recipe, TrainingActivityProfile, WeightEntry, WeightTrendResult } from "@foodos/types";
+import type { AdaptiveTdeeResult, GoalMode, IntakeCoverageResult, PhysicalProfile, Recipe, TrainingActivityProfile, WeightEntry, WeightTrendResult } from "@foodos/types";
 import {
+  assessWeightTrajectory,
   buildAdjustmentEvidence,
   buildAdjustmentProfileFingerprint,
   calcAdaptiveTdee,
   calcDailyTargets,
+  calcHabitualTrainingAllowanceKcal,
   calcIMC,
   calcIntakeCoverage,
+  calcTdeeBreakdown,
   calcProteinBase,
+  calcProteinRange,
+  calcSummary,
   calcTDEE,
   calcTMB,
   calcWeightTrend,
   calculateFiberTarget,
   distributeWeeklyCalories,
   estimateWorkoutKcal,
-  evaluateAdjustmentProposal,
+  evaluateAdaptiveState,
   evaluateNutritionSafety,
   filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
+  GOAL_RATE_BAND_PCT_PER_WEEK,
   isProposalStale,
   isRelevantCalibrationChange,
   metForMuscleGroups,
   monthlyAmountOf,
   NUTRITION_ENGINE_VERSION,
   projectSavings,
+  PROTEIN_PER_KG_BY_BASE_AND_GOAL,
+  resolveProteinBase,
   scaleByCalories,
   scaleByRatio,
   usesEspenAdjustedWeight,
@@ -51,24 +59,41 @@ describe("calcTDEE", () => {
     expect(withLevel("very_active")).toBe(Math.round(tmb * 1.9));
   });
 
-  it("lifestyle_plus_training: suma el TDEE de vida cotidiana + el gasto medio de entreno", () => {
+  it("lifestyle_plus_training (nutrition-v3 §2.5/§3): suma lifestyleTdee + replacementIncrementKcal, NO el gasto bruto del entreno", () => {
     const tmb = 1500;
+    const weightKg = 80;
     const profile = baseProfile({
-      weightKg: 80,
+      weightKg,
       activityModelVersion: "lifestyle_plus_training",
       trainingActivity: {
         lifestyleActivity: "sedentary",
         strengthDaysPerWeek: 3,
         cardioDaysPerWeek: 2,
-        avgSessionDurationMin: 60,
+        strengthAvgDurationMin: 60,
+        cardioAvgDurationMin: 60,
         habitualSteps: null,
       },
     });
-    const strengthWeekly = 3 * 60 * ((5.0 * 3.5 * 80) / 200);
-    const cardioWeekly = 2 * 60 * ((7.0 * 3.5 * 80) / 200);
-    const expectedAllowance = Math.round((strengthWeekly + cardioWeekly) / 7);
-    const expected = Math.round(tmb * 1.2 + expectedAllowance);
+
+    const lifestyleTdee = tmb * 1.2; // sedentary
+    // grossKcal = MET × 3.5 × peso / 200 × minutos
+    const strengthGross = ((5.0 * 3.5 * weightKg) / 200) * 60;
+    const cardioGross   = ((7.0 * 3.5 * weightKg) / 200) * 60;
+    // baselineDisplaced = lifestyleTdee / 1440 × minutos (misma duración fuerza/cardio aquí)
+    const baselineDisplaced = (lifestyleTdee / 1440) * 60;
+    // replacementIncrement = max(0, gross - baselineDisplaced), clampado POR SESIÓN
+    const strengthIncrement = Math.max(0, strengthGross - baselineDisplaced);
+    const cardioIncrement   = Math.max(0, cardioGross - baselineDisplaced);
+    const weeklyIncrement = 3 * strengthIncrement + 2 * cardioIncrement;
+    const expectedIncrementPerDay = Math.round(weeklyIncrement / 7);
+    const expected = Math.round(lifestyleTdee) + expectedIncrementPerDay;
+
     expect(calcTDEE(profile, tmb)).toBe(expected);
+    // El bruto (lo que daba v2) habría sido mayor — confirma que NO estamos
+    // sumando gross, sino el incremento neto tras descontar el baseline.
+    const grossOnlyWeekly = 3 * strengthGross + 2 * cardioGross;
+    const grossOnlyAllowance = Math.round(grossOnlyWeekly / 7);
+    expect(expectedIncrementPerDay).toBeLessThan(grossOnlyAllowance);
   });
 
   it("lifestyle_plus_training sin trainingActivity relleno cae de vuelta al modelo legacy", () => {
@@ -81,13 +106,130 @@ describe("calcTDEE", () => {
     const tmb = 1500;
     const light = baseProfile({
       activityModelVersion: "lifestyle_plus_training",
-      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0, avgSessionDurationMin: 30, habitualSteps: null },
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0, strengthAvgDurationMin: 30, cardioAvgDurationMin: 30, habitualSteps: null },
     });
     const heavy = baseProfile({
       activityModelVersion: "lifestyle_plus_training",
-      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, avgSessionDurationMin: 75, habitualSteps: null },
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, strengthAvgDurationMin: 75, cardioAvgDurationMin: 75, habitualSteps: null },
     });
     expect(calcTDEE(heavy, tmb)).toBeGreaterThan(calcTDEE(light, tmb));
+  });
+});
+
+// ─── nutrition-v3 §2.5/§3.3 — invariantes de grossKcal/netAboveRestKcal/replacementIncrementKcal ──
+
+describe("calcTdeeBreakdown — invariantes PR3", () => {
+  const tmb = 1500;
+  const training = (overrides: Partial<TrainingActivityProfile> = {}): TrainingActivityProfile => ({
+    lifestyleActivity: "sedentary",
+    strengthDaysPerWeek: 4,
+    cardioDaysPerWeek: 3,
+    strengthAvgDurationMin: 60,
+    cardioAvgDurationMin: 45,
+    habitualSteps: null,
+    ...overrides,
+  });
+  const profileWith = (t: TrainingActivityProfile, overrides: Partial<PhysicalProfile> = {}) =>
+    baseProfile({
+      weightKg: 80,
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: t,
+      ...overrides,
+    });
+
+  it("grossKcal (habitualTrainingGrossKcalPerDay) es independiente del lifestyle — mismo entreno, mismo peso", () => {
+    const sedentary = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "sedentary" })), tmb);
+    const veryActive = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "very_active" })), tmb);
+    expect(sedentary.habitualTrainingGrossKcalPerDay).toBe(veryActive.habitualTrainingGrossKcalPerDay);
+  });
+
+  it("baselineDisplaced depende del lifestyle — a más lifestyle, más baseline ya 'reservado'", () => {
+    const sedentary = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "sedentary" })), tmb);
+    const veryActive = calcTdeeBreakdown(profileWith(training({ lifestyleActivity: "very_active" })), tmb);
+    expect(veryActive.baselineDisplacedKcalPerDay).toBeGreaterThan(sedentary.baselineDisplacedKcalPerDay);
+  });
+
+  it("replacementIncrement es monótono NO creciente según sube el lifestyle (mismo entreno)", () => {
+    const levels: PhysicalProfile["activityLevel"][] = ["sedentary", "light", "moderate", "active", "very_active"];
+    const increments = levels.map(
+      (lifestyleActivity) => calcTdeeBreakdown(profileWith(training({ lifestyleActivity })), tmb).replacementIncrementKcalPerDay
+    );
+    for (let i = 1; i < increments.length; i++) {
+      expect(increments[i]).toBeLessThanOrEqual(increments[i - 1]);
+    }
+  });
+
+  it("replacementIncrement siempre >= 0 y <= grossKcal, incluso en lifestyle muy activo con entreno ligero", () => {
+    const lightTraining = training({
+      lifestyleActivity: "very_active", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0,
+      strengthAvgDurationMin: 10, cardioAvgDurationMin: 10,
+    });
+    const breakdown = calcTdeeBreakdown(profileWith(lightTraining), tmb);
+    expect(breakdown.replacementIncrementKcalPerDay).toBeGreaterThanOrEqual(0);
+    expect(breakdown.replacementIncrementKcalPerDay).toBeLessThanOrEqual(breakdown.habitualTrainingGrossKcalPerDay);
+  });
+
+  it("sin entrenamiento (0 días fuerza y cardio): replacementIncrement = 0, TDEE = lifestyleTdee", () => {
+    const noTraining = training({ strengthDaysPerWeek: 0, cardioDaysPerWeek: 0 });
+    const breakdown = calcTdeeBreakdown(profileWith(noTraining), tmb);
+    expect(breakdown.replacementIncrementKcalPerDay).toBe(0);
+    expect(breakdown.totalTdeeKcal).toBe(breakdown.lifestyleTdeeKcal);
+  });
+
+  it("añadir entrenamiento con incremento > 0 nunca hace bajar el TDEE respecto a no entrenar", () => {
+    const noTraining = calcTdeeBreakdown(profileWith(training({ strengthDaysPerWeek: 0, cardioDaysPerWeek: 0 })), tmb);
+    const withTraining = calcTdeeBreakdown(profileWith(training()), tmb);
+    expect(withTraining.totalTdeeKcal).toBeGreaterThanOrEqual(noTraining.totalTdeeKcal);
+  });
+
+  it("cambiar solo la duración de cardio no cambia el componente de fuerza (cardioDays=0 → cardioAvgDuration es irrelevante)", () => {
+    const onlyStrength = (cardioAvgDurationMin: number) =>
+      calcTdeeBreakdown(profileWith(training({ cardioDaysPerWeek: 0, cardioAvgDurationMin })), tmb);
+    const a = onlyStrength(20);
+    const b = onlyStrength(120);
+    expect(a).toEqual(b); // con 0 días de cardio, la duración de cardio no puede afectar a nada del desglose
+  });
+
+  it("weeklyTrainingIncrement/7 == replacementIncrementKcalPerDay (no se mezclan ventanas semanal/diaria)", () => {
+    const t = training();
+    const profile = profileWith(t);
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    // Reconstruye el incremento semanal a partir de calcHabitualTrainingAllowanceKcal
+    // (misma fuente que calcTdeeBreakdown, ver calcHabitualTrainingBreakdown interno)
+    // multiplicando de vuelta por 7 con margen de redondeo de ±1.
+    const impliedWeekly = breakdown.replacementIncrementKcalPerDay * 7;
+    const allowance = calcHabitualTrainingAllowanceKcal(profile.weightKg, t, breakdown.lifestyleTdeeKcal);
+    expect(allowance).toBe(breakdown.replacementIncrementKcalPerDay);
+    expect(Math.abs(impliedWeekly - allowance * 7)).toBeLessThanOrEqual(1);
+  });
+
+  it("calcTDEE() coincide exactamente con calcTdeeBreakdown().totalTdeeKcal (wrapper delgado)", () => {
+    const profile = profileWith(training());
+    expect(calcTDEE(profile, tmb)).toBe(calcTdeeBreakdown(profile, tmb).totalTdeeKcal);
+  });
+
+  it("modelo legacy_total_pal: sin desglose — lifestyleTdeeKcal === totalTdeeKcal y los campos de entreno quedan a 0", () => {
+    const profile = baseProfile({ activityLevel: "moderate", activityModelVersion: "legacy_total_pal" });
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    expect(breakdown.lifestyleTdeeKcal).toBe(breakdown.totalTdeeKcal);
+    expect(breakdown.habitualTrainingGrossKcalPerDay).toBe(0);
+    expect(breakdown.baselineDisplacedKcalPerDay).toBe(0);
+    expect(breakdown.replacementIncrementKcalPerDay).toBe(0);
+  });
+});
+
+describe("estimateWorkoutKcal / netAboveRestKcal — independiente del lifestyle (pipeline B, Ejercicios)", () => {
+  it("cambiar lifestyleActivity no puede alterar retroactivamente las kcal de una sesión ya registrada — garantizado por la firma, no solo por comportamiento", () => {
+    // No existe forma de escribir "misma sesión con lifestyle A" vs "con
+    // lifestyle B" porque estimateWorkoutKcal(peso, min, met) no acepta
+    // perfil/lifestyle como parámetro — es estructuralmente imposible que
+    // ese dato se cuele (ver docs/NUTRITION_V3_DECISIONES.md §3.3). Esta
+    // prueba documenta esa garantía y protege que nadie añada un
+    // parámetro de lifestyle a esta función en el futuro sin darse cuenta
+    // de que rompería la separación de responsabilidades entre pipelines.
+    const sessionKcal = estimateWorkoutKcal(80, 45, 5.0);
+    expect(estimateWorkoutKcal(80, 45, 5.0)).toBe(sessionKcal);
+    expect(estimateWorkoutKcal.length).toBe(2); // (weightKg, durationMin) — met tiene default, no cuenta
   });
 });
 
@@ -133,6 +275,131 @@ describe("calcProteinBase / usesEspenAdjustedWeight", () => {
     expect(usesEspenAdjustedWeight(profile)).toBe(true);
     expect(calcProteinBase(profile)).toBeCloseTo(expectedAdjusted, 5);
     expect(calcProteinBase(profile)).toBeCloseTo(92.1, 0);
+  });
+});
+
+// ─── nutrition-v3 §2.4/§4: proteína por base + tipo, tabla FFM propia ──────
+
+describe("resolveProteinBase (nunca pierde el tipo de base antes del multiplicador)", () => {
+  it("con % graso conocido, kind es fat_free_mass", () => {
+    const profile = baseProfile({ weightKg: 90, bodyFatPct: 20 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("fat_free_mass");
+    expect(base.kg).toBeCloseTo(72, 5);
+  });
+
+  it("sin % graso y sin obesidad, kind es actual_weight", () => {
+    const profile = baseProfile({ heightCm: 175, weightKg: 75 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("actual_weight");
+    expect(base.kg).toBe(75);
+  });
+
+  it("sin % graso y con obesidad, kind es adjusted_weight", () => {
+    const profile = baseProfile({ heightCm: 177, weightKg: 120 });
+    const base = resolveProteinBase(profile);
+    expect(base.kind).toBe("adjusted_weight");
+    expect(base.kg).toBeCloseTo(92.1, 0);
+  });
+});
+
+describe("PROTEIN_PER_KG_BY_BASE_AND_GOAL — caso motivador del bug (90kg, 20% grasa, recomp)", () => {
+  it("declarar % de grasa reduce muchísimo la magnitud de la caída del bug original, sin eliminarla del todo en recomp", () => {
+    // Bug original (v2): la misma fila (2.0 g/kg) se aplicaba a
+    // actual_weight Y fat_free_mass → 90×2.0=180g sin %graso, pero
+    // 72×2.0=144g con %graso (−36g, −20%). Con la tabla v3, fat_free_mass
+    // tiene su propia fila (2.4 en recomp, no 2.0) → 72×2.4=173g: la caída
+    // baja a −7g (−3.9%), muy por debajo del −20% original. No llega a
+    // igualar del todo (a diferencia de fat_loss, ver siguiente test) — es
+    // la heurística deliberada documentada en PROTEIN_PER_KG_BY_BASE_AND_GOAL,
+    // no un objetivo de igualdad exacta para todos los goals.
+    const withoutBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "recomp", bodyFatPct: null });
+    const withBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "recomp", bodyFatPct: 20 });
+    const targetsWithout = calcDailyTargets(withoutBodyFat, false);
+    const targetsWith = calcDailyTargets(withBodyFat, false);
+    expect(targetsWithout.protein).toBe(180); // 90 × 2.0 (actual_weight, recomp)
+    expect(targetsWith.protein).toBe(173);    // 72 × 2.4 (fat_free_mass, recomp)
+    const dropFraction = (targetsWithout.protein - targetsWith.protein) / targetsWithout.protein;
+    expect(dropFraction).toBeLessThan(0.05); // bug original era ~0.20 (20%)
+  });
+
+  it("en fat_loss, declarar % de grasa NO baja la proteína (la fila fat_free_mass ya supera a actual_weight en este caso)", () => {
+    const withoutBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: null });
+    const withBodyFat = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: 20 });
+    const targetsWithout = calcDailyTargets(withoutBodyFat, false);
+    const targetsWith = calcDailyTargets(withBodyFat, false);
+    expect(targetsWithout.protein).toBe(180); // 90 × 2.0 (actual_weight, fat_loss)
+    expect(targetsWith.protein).toBe(187);    // 72 × 2.6 (fat_free_mass, fat_loss)
+    expect(targetsWith.protein).toBeGreaterThanOrEqual(targetsWithout.protein);
+  });
+
+  // No se exige como invariante que fat_free_mass sea siempre >= la fila
+  // actual/adjusted (no es fisiológicamente obligatorio, se comprobó que no
+  // se sostiene en extremos >45% de grasa corporal). Lo que sí debe
+  // cumplirse: introducir un % de grasa PLAUSIBLE (rango típico de adulto
+  // no obeso, 10-30%) no debe producir un salto extremo/inexplicable del
+  // target de proteína en ningún objetivo — ni un colapso como el del bug
+  // original (que llegaba a −20% o más para pesos/objetivos concretos) ni
+  // una subida desproporcionada por error de la tabla.
+  it("introducir un % de grasa plausible (10-30%) no produce un salto extremo de proteína en ningún objetivo", () => {
+    const goals = ["fat_loss", "recomp", "muscle_gain", "maintain"] as const;
+    const plausibleBodyFatPct = [10, 15, 20, 25, 30];
+    for (const goal of goals) {
+      const withoutBodyFat = baseProfile({ weightKg: 85, heightCm: 175, goal, bodyFatPct: null });
+      const baseline = calcDailyTargets(withoutBodyFat, false).protein;
+      for (const bf of plausibleBodyFatPct) {
+        const withBodyFat = baseProfile({ weightKg: 85, heightCm: 175, goal, bodyFatPct: bf });
+        const withProtein = calcDailyTargets(withBodyFat, false).protein;
+        const relativeChange = (withProtein - baseline) / baseline;
+        // Ningún objetivo debería moverse más de un 35% en ninguna
+        // dirección solo por declarar un % de grasa típico — el bug
+        // original no tenía ningún límite (podía superar el −20% con
+        // facilidad, más aún a pesos altos).
+        expect(Math.abs(relativeChange)).toBeLessThan(0.35);
+      }
+    }
+  });
+
+  it("actual_weight y adjusted_weight comparten fila (sin cambios respecto a v2)", () => {
+    expect(PROTEIN_PER_KG_BY_BASE_AND_GOAL.actual_weight).toEqual(PROTEIN_PER_KG_BY_BASE_AND_GOAL.adjusted_weight);
+  });
+
+  it("fat_free_mass es siempre >= a la fila actual/adjusted para el mismo objetivo (la base es más exigente, no más laxa)", () => {
+    for (const goal of ["fat_loss", "recomp", "muscle_gain", "maintain"] as const) {
+      expect(PROTEIN_PER_KG_BY_BASE_AND_GOAL.fat_free_mass[goal]).toBeGreaterThanOrEqual(
+        PROTEIN_PER_KG_BY_BASE_AND_GOAL.actual_weight[goal]
+      );
+    }
+  });
+});
+
+describe("calcProteinRange — centrado en el target real (nunca deja el target fuera del rango)", () => {
+  it("fat_free_mass + fat_loss: target dentro de [broadMin, broadMax], y el broad queda contenido en el 2.2-3.0 g/kg FFM (dentro del contexto 2.3-3.1 de Helms, sin vender 3.1 como rutinario)", () => {
+    const profile = baseProfile({ weightKg: 90, heightCm: 175, goal: "fat_loss", bodyFatPct: 20 });
+    const range = calcProteinRange(profile);
+    // base = 72kg, perKg = 2.6 (fat_loss, fat_free_mass) → target=72×2.6=187.2→187
+    expect(range.target).toBe(187);
+    expect(range.broadMin).toBe(158);       // 72 × (2.6-0.4) = 72×2.2 = 158.4 → 158
+    expect(range.recommendedMin).toBe(173); // 72 × (2.6-0.2) = 72×2.4 = 172.8 → 173
+    expect(range.recommendedMax).toBe(202); // 72 × (2.6+0.2) = 72×2.8 = 201.6 → 202
+    expect(range.broadMax).toBe(216);       // 72 × (2.6+0.4) = 72×3.0 = 216
+    expect(range.broadMin).toBeLessThanOrEqual(range.recommendedMin);
+    expect(range.recommendedMin).toBeLessThanOrEqual(range.target);
+    expect(range.target).toBeLessThanOrEqual(range.recommendedMax);
+    expect(range.recommendedMax).toBeLessThanOrEqual(range.broadMax);
+  });
+
+  it("para cualquier base/objetivo, el target siempre cae dentro de [broadMin, broadMax]", () => {
+    const profiles = [
+      baseProfile({ weightKg: 75, heightCm: 175, goal: "maintain" }), // actual_weight
+      baseProfile({ weightKg: 120, heightCm: 177, goal: "fat_loss" }), // adjusted_weight
+      baseProfile({ weightKg: 90, heightCm: 175, goal: "muscle_gain", bodyFatPct: 15 }), // fat_free_mass
+    ];
+    for (const profile of profiles) {
+      const range = calcProteinRange(profile);
+      expect(range.target).toBeGreaterThanOrEqual(range.broadMin);
+      expect(range.target).toBeLessThanOrEqual(range.broadMax);
+    }
   });
 });
 
@@ -205,6 +472,70 @@ describe("calcDailyTargets — caso real verificado en la app (120kg/177cm/24añ
       adaptiveKcalOffsetKcal: -300,
     });
     expect(calcDailyTargets(tinyProfile, false).kcal).toBeGreaterThanOrEqual(1200);
+  });
+});
+
+// ─── PR4 — nutrition-v3 §2.6: muscle_gain nunca es un déficit encubierto ──
+// Decisión documentada como cerrada desde la primera sesión de diseño de
+// v3 (0c9b4b2), pero nunca implementada hasta la auditoría final de PR4:
+// kcalFactor("muscle_gain") devolvía 0.90 (déficit real ~10%) con
+// IMC>=27, con el objetivo etiquetado "ganancia muscular".
+
+// ALCANCE (corregido tras auditoría externa de fdf0f4d): el invariante
+// "muscle_gain nunca déficit" es sobre el FACTOR BASE (kcalFactor), antes
+// de sumar adaptiveKcalOffsetKcal — NO una promesa sobre
+// calcDailyTargets().kcal final para cualquier entrada. Un offset
+// adaptativo negativo ACEPTADO explícitamente por el usuario sí puede
+// bajar el target final por debajo del TDEE de la fórmula, y eso es
+// intencional (ver comentario junto a kcalFactor en nutrition.ts) — el
+// primer test de este describe llegó a prometer lo contrario, corregido
+// aquí junto con un test que documenta el comportamiento real.
+describe("calcDailyTargets — muscle_gain: el FACTOR BASE nunca es un déficit, cualquiera que sea el IMC", () => {
+  it("goal=muscle_gain SIN offset adaptativo → targetKcal siempre >= TDEE estimado, incluso con IMC alto", () => {
+    const imcCases = [
+      { weightKg: 70, heightCm: 178 },  // IMC ~22, normopeso
+      { weightKg: 85, heightCm: 178 },  // IMC ~26.8, justo debajo del umbral
+      { weightKg: 90, heightCm: 178 },  // IMC ~28.4, por encima del umbral
+      { weightKg: 110, heightCm: 175 }, // IMC ~35.9, obesidad — el caso que falló en la auditoría manual original
+    ];
+    for (const { weightKg, heightCm } of imcCases) {
+      const profile = baseProfile({ weightKg, heightCm, goal: "muscle_gain", activityLevel: "moderate" });
+      const { tdee } = calcSummary(profile);
+      const targets = calcDailyTargets(profile, false);
+      expect(targets.kcal, `weightKg=${weightKg} heightCm=${heightCm}`).toBeGreaterThanOrEqual(tdee);
+    }
+  });
+
+  it("con IMC>=27 el factor base es exactamente mantenimiento (1.0), no superávit ni déficit", () => {
+    const profile = baseProfile({ weightKg: 110, heightCm: 175, goal: "muscle_gain", activityLevel: "moderate" });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(tdee);
+  });
+
+  it("con IMC<27 se mantiene el pequeño superávit base del 5%", () => {
+    const profile = baseProfile({ weightKg: 70, heightCm: 178, goal: "muscle_gain", activityLevel: "moderate" });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(Math.round(tdee * 1.05));
+  });
+
+  it("un offset adaptativo negativo ACEPTADO por el usuario SÍ puede bajar el target final por debajo del TDEE — comportamiento intencional, no el bug de §2.6 reaparecido", () => {
+    // Hallazgo de la auditoría externa de fdf0f4d: evaluateAdaptiveState()
+    // puede proponer -100 kcal para muscle_gain si la trayectoria observada
+    // está por encima de la banda (gana más rápido de lo esperado). Una vez
+    // ACEPTADO explícitamente ese offset, el target final puede caer por
+    // debajo del TDEE de la fórmula — el controlador está corrigiendo la
+    // ESTIMACIÓN de TDEE con datos reales, con aceptación explícita, no
+    // reintroduciendo un déficit oculto por debajo del usuario.
+    const profile = baseProfile({
+      weightKg: 110, heightCm: 175, goal: "muscle_gain", activityLevel: "moderate",
+      adaptiveKcalOffsetKcal: -100,
+    });
+    const { tdee } = calcSummary(profile);
+    const targets = calcDailyTargets(profile, false);
+    expect(targets.kcal).toBe(tdee - 100);
+    expect(targets.kcal).toBeLessThan(tdee); // intencional, ver comentario arriba
   });
 });
 
@@ -557,30 +888,56 @@ describe("calcIntakeCoverage", () => {
       { date: "2026-02-14", kcal: 1200 }, // > 500 (suelo absoluto) pero < 60% de 2600
       { date: "2026-02-13", kcal: 2550 },
     ];
-    const result = calcIntakeCoverage(daily, REF, 7, 2600)!;
+    const targetKcalByDate = new Map([["2026-02-14", 2600], ["2026-02-13", 2600]]);
+    const result = calcIntakeCoverage(daily, REF, 7, targetKcalByDate)!;
     expect(result.daysWithData).toBe(1);
     expect(result.avgKcal).toBe(2550);
   });
 
   it("un déficit deliberado cumplido al 100% del objetivo SÍ cuenta (el suelo relativo no penaliza objetivos bajos)", () => {
     const daily = [{ date: "2026-02-14", kcal: 1500 }];
-    const result = calcIntakeCoverage(daily, REF, 7, 1500)!;
+    const result = calcIntakeCoverage(daily, REF, 7, new Map([["2026-02-14", 1500]]))!;
     expect(result.daysWithData).toBe(1);
   });
 
   it("justo en el límite del 60% cuenta; un kcal por debajo no", () => {
-    const target = 2000;
-    const atThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1200 }], REF, 7, target)!; // exactamente 60%
+    const targetKcalByDate = new Map([["2026-02-14", 2000]]);
+    const atThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1200 }], REF, 7, targetKcalByDate)!; // exactamente 60%
     expect(atThreshold.daysWithData).toBe(1);
-    const belowThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1199 }], REF, 7, target);
+    const belowThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1199 }], REF, 7, targetKcalByDate);
     expect(belowThreshold).toBeNull();
   });
 
-  it("con targetKcal, sigue exigiendo también el suelo absoluto de 500 kcal (objetivos muy bajos no lo saltan)", () => {
+  it("con targetKcalByDate, sigue exigiendo también el suelo absoluto de 500 kcal (objetivos muy bajos no lo saltan)", () => {
     // 60% de un objetivo de 700 son 420 kcal — por debajo del suelo absoluto,
     // así que 450 kcal registradas NO deberían contar como día fiable.
-    const result = calcIntakeCoverage([{ date: "2026-02-14", kcal: 450 }], REF, 7, 700);
+    const result = calcIntakeCoverage([{ date: "2026-02-14", kcal: 450 }], REF, 7, new Map([["2026-02-14", 700]]));
     expect(result).toBeNull();
+  });
+
+  // ── nutrition-v3 §2.3: target real por fecha, nunca inventado ────────────
+
+  it("un día sin fila nutrition_goals para esa fecha no aplica suelo relativo (no inventa el target del perfil actual)", () => {
+    const daily = [
+      { date: "2026-02-14", kcal: 1200 }, // tiene target conocido: 1200 < 60% de 2600, se descartaría CON suelo relativo
+      { date: "2026-02-13", kcal: 600 },  // SIN entrada en el mapa — por encima del suelo absoluto (500), debe contar
+    ];
+    // Solo 02-14 tiene fila histórica; 02-13 no (hueco en nutrition_goals).
+    const targetKcalByDate = new Map([["2026-02-14", 2600]]);
+    const result = calcIntakeCoverage(daily, REF, 7, targetKcalByDate)!;
+    // 02-14 se descarta por el suelo relativo (1200 < 1560), 02-13 SÍ cuenta
+    // porque sin target conocido solo se exige el suelo absoluto — no se
+    // reconstruye el target de ese día con el perfil actual.
+    expect(result.daysWithData).toBe(1);
+    expect(result.avgKcal).toBe(600);
+  });
+
+  it("targetKcalByDate vacío o ausente se comporta igual (retrocompatible, solo suelo absoluto)", () => {
+    const daily = [{ date: "2026-02-14", kcal: 600 }];
+    const withEmptyMap = calcIntakeCoverage(daily, REF, 7, new Map())!;
+    const withoutMap = calcIntakeCoverage(daily, REF, 7)!;
+    expect(withEmptyMap.daysWithData).toBe(withoutMap.daysWithData);
+    expect(withEmptyMap.avgKcal).toBe(withoutMap.avgKcal);
   });
 });
 
@@ -641,104 +998,171 @@ describe("calcAdaptiveTdee", () => {
   });
 });
 
-describe("evaluateAdjustmentProposal", () => {
-  const highTrend: WeightTrendResult = {
-    latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: -0.08,
-    weeklyChangeKg: -0.56, weeklyChangePercent: -0.7, validMeasurements: 20, confidence: "high",
-    qualityScore: 0.9,
-  };
+// ─── Adaptive v3 (PR2) — controlador por ritmo, ver docs/NUTRITION_V3_DECISIONES.md §6 ──
+
+describe("assessWeightTrajectory (bandas semanales, bordes inclusivos)", () => {
+  it("fat_loss: dentro/fuera de [-1.00, -0.50] %/semana", () => {
+    expect(assessWeightTrajectory("fat_loss", -1.00)).toBe("inside"); // borde
+    expect(assessWeightTrajectory("fat_loss", -0.75)).toBe("inside");
+    expect(assessWeightTrajectory("fat_loss", -0.50)).toBe("inside"); // borde
+    expect(assessWeightTrajectory("fat_loss", -1.01)).toBe("below");  // pierde más rápido de lo esperado
+    expect(assessWeightTrajectory("fat_loss", -0.49)).toBe("above");  // pierde más despacio de lo esperado
+  });
+
+  it("muscle_gain: dentro/fuera de [+0.25, +0.50] %/semana", () => {
+    expect(assessWeightTrajectory("muscle_gain", 0.25)).toBe("inside"); // borde
+    expect(assessWeightTrajectory("muscle_gain", 0.50)).toBe("inside"); // borde
+    expect(assessWeightTrajectory("muscle_gain", 0.24)).toBe("below");  // gana más despacio de lo esperado
+    expect(assessWeightTrajectory("muscle_gain", 0.51)).toBe("above");  // gana más rápido de lo esperado
+  });
+
+  it("maintain: dentro/fuera de [-0.25, +0.25] %/semana", () => {
+    expect(assessWeightTrajectory("maintain", -0.25)).toBe("inside");
+    expect(assessWeightTrajectory("maintain", 0.25)).toBe("inside");
+    expect(assessWeightTrajectory("maintain", -0.26)).toBe("below");
+    expect(assessWeightTrajectory("maintain", 0.26)).toBe("above");
+  });
+
+  it("recomp: banda ASIMÉTRICA [-0.50, 0.00] %/semana — casos obligatorios del contrato", () => {
+    expect(assessWeightTrajectory("recomp", -0.50)).toBe("inside");
+    expect(assessWeightTrajectory("recomp", -0.25)).toBe("inside");
+    expect(assessWeightTrajectory("recomp", 0.00)).toBe("inside");
+    expect(assessWeightTrajectory("recomp", -0.51)).toBe("below"); // fuera por abajo
+    expect(assessWeightTrajectory("recomp", 0.01)).toBe("above");  // fuera por arriba
+  });
+});
+
+describe("evaluateAdaptiveState — invariantes de dirección (docs §6.9)", () => {
   const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
-  const adaptive = (combinedKcal: number): AdaptiveTdeeResult => ({
-    initialKcal: 2200, observedKcal: combinedKcal, combinedKcal, confidence: "high", warnings: [],
+  const trend = (weeklyChangePercent: number, overrides: Partial<WeightTrendResult> = {}): WeightTrendResult => ({
+    latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: weeklyChangePercent / 700,
+    weeklyChangeKg: (weeklyChangePercent / 100) * 80 / 7 * 7, weeklyChangePercent,
+    validMeasurements: 25, confidence: "high", qualityScore: 0.9,
+    ...overrides,
   });
-
-  it("no propone sin tendencia de peso ni cobertura", () => {
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: null, intakeCoverage: null,
+  const evaluate = (goal: GoalMode, weeklyChangePercent: number) =>
+    evaluateAdaptiveState({
+      goal, currentTargetKcal: 2000, weightTrend: trend(weeklyChangePercent),
+      intakeCoverage: goodCoverage, lastAdjustmentDecisionAt: null, referenceDate: "2026-02-14",
     });
-    expect(result.shouldPropose).toBe(false);
-    expect(result.deltaKcal).toBe(0);
-  });
 
-  it("no propone con confianza insuficiente (moderada)", () => {
-    const moderateTrend: WeightTrendResult = { ...highTrend, confidence: "moderate", validMeasurements: 10 };
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: moderateTrend, intakeCoverage: goodCoverage,
-    });
-    expect(result.shouldPropose).toBe(false);
-  });
-
-  it("no propone con cobertura de ingesta insuficiente", () => {
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: highTrend,
-      intakeCoverage: { ...goodCoverage, coverageFraction: 0.5 },
-    });
-    expect(result.shouldPropose).toBe(false);
-  });
-
-  it("no propone con menos de 14 días evaluados", () => {
-    const shortTrend: WeightTrendResult = { ...highTrend, validMeasurements: 10 };
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2200), weightTrend: shortTrend, intakeCoverage: goodCoverage,
-    });
-    expect(result.shouldPropose).toBe(false);
-  });
-
-  it("no propone si el combinado apenas se separa de la fórmula inicial (<50 kcal)", () => {
-    // adaptive() fija initialKcal en 2200 — 2230 son solo 30 kcal de diferencia.
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2230), weightTrend: highTrend, intakeCoverage: goodCoverage,
-    });
-    expect(result.shouldPropose).toBe(false);
-  });
-
-  it("propone subir cuando el combinado supera bastante a la fórmula inicial (no al objetivo actual, que ya es un déficit/superávit intencionado)", () => {
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: adaptive(2400), weightTrend: highTrend, intakeCoverage: goodCoverage,
-    });
+  it.each([
+    ["fat_loss",    -0.20, -100], // pierde despacio (por encima de -0.50) → bajar kcal
+    ["fat_loss",    -1.50,  100], // pierde rápido (por debajo de -1.00)   → subir kcal
+    ["muscle_gain",  0.10,  100], // gana despacio (por debajo de +0.25)   → subir kcal
+    ["muscle_gain",  0.80, -100], // gana rápido (por encima de +0.50)     → bajar kcal
+    ["maintain",     0.50, -100], // gana                                  → bajar kcal
+    ["maintain",    -0.50,  100], // pierde                                → subir kcal
+    ["recomp",       0.30, -100], // gana (>0%)                            → bajar kcal
+    ["recomp",      -0.80,  100], // pierde más de -0.5%                   → subir kcal
+  ] as const)("%s con ritmo %f%%/semana → deltaKcal = %i", (goal, pct, expectedDelta) => {
+    const result = evaluate(goal, pct);
+    expect(result.deltaKcal).toBe(expectedDelta);
     expect(result.shouldPropose).toBe(true);
-    expect(result.deltaKcal).toBeGreaterThan(0);
-    expect(result.proposedTargetKcal).toBe(2000 + result.deltaKcal);
+    expect(result.proposedTargetKcal).toBe(2000 + expectedDelta);
   });
 
-  it("propone bajar cuando el combinado es bastante menor que la fórmula inicial", () => {
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2200, adaptive: adaptive(2000), weightTrend: highTrend, intakeCoverage: goodCoverage,
+  it.each(["fat_loss", "muscle_gain", "maintain", "recomp"] as const)(
+    "%s: dentro de la banda → deltaKcal = 0, shouldPropose = false",
+    (goal) => {
+      const band = GOAL_RATE_BAND_PCT_PER_WEEK[goal];
+      const midpoint = (band.minPct + band.maxPct) / 2;
+      const result = evaluate(goal, midpoint);
+      expect(result.deltaKcal).toBe(0);
+      expect(result.shouldPropose).toBe(false);
+      expect(result.trajectory).toBe("inside");
+    }
+  );
+
+  it("el delta nunca es un valor intermedio — solo -100, 0 o +100", () => {
+    for (const pct of [-3, -1.5, -0.9, -0.5, -0.3, -0.1, 0, 0.1, 0.3, 0.6, 1, 3]) {
+      const result = evaluate("fat_loss", pct);
+      expect([-100, 0, 100]).toContain(result.deltaKcal);
+    }
+  });
+});
+
+describe("evaluateAdaptiveState — gates de calidad (no accionan sin datos buenos)", () => {
+  const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
+  const goodTrend: WeightTrendResult = {
+    latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: -0.02,
+    weeklyChangeKg: -0.7, weeklyChangePercent: -0.20, // fuera de banda fat_loss → dispararía si no fuera por el gate
+    validMeasurements: 25, confidence: "high", qualityScore: 0.9,
+  };
+  const base = {
+    goal: "fat_loss" as const, currentTargetKcal: 2000,
+    lastAdjustmentDecisionAt: null as string | null, referenceDate: "2026-02-14",
+  };
+
+  it("sin weightTrend, no propone (trajectory null, no se inventa 'inside')", () => {
+    const result = evaluateAdaptiveState({ ...base, weightTrend: null, intakeCoverage: goodCoverage });
+    expect(result.shouldPropose).toBe(false);
+    expect(result.trajectory).toBeNull();
+    expect(result.blockingReasons.length).toBeGreaterThan(0);
+  });
+
+  it("sin intakeCoverage, no propone", () => {
+    const result = evaluateAdaptiveState({ ...base, weightTrend: goodTrend, intakeCoverage: null });
+    expect(result.shouldPropose).toBe(false);
+  });
+
+  it("confianza != 'high' bloquea (gate semántico directo, no vía ADAPTIVE_CONFIDENCE_WEIGHTS)", () => {
+    const result = evaluateAdaptiveState({
+      ...base, weightTrend: { ...goodTrend, confidence: "moderate" }, intakeCoverage: goodCoverage,
     });
-    expect(result.shouldPropose).toBe(true);
-    expect(result.deltaKcal).toBeLessThan(0);
+    expect(result.shouldPropose).toBe(false);
+    expect(result.blockingReasons.some((r) => r.includes("confianza"))).toBe(true);
   });
 
-  it("un objetivo en déficit importante (ej. fat_loss) no dispara una propuesta si el combinado coincide con la fórmula", () => {
-    // Esto es justo el bug que atrapó la suite de fixtures: comparar el
-    // combinado contra el objetivo actual (ya rebajado por el goal) en vez
-    // de contra la fórmula inicial disparaba SIEMPRE una propuesta de subir,
-    // incluso cuando la fórmula y la realidad coincidían perfectamente.
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 1700, // muy por debajo del "mantenimiento" (2200) — déficit intencionado
-      adaptive: adaptive(2200), // combinado == inicial: la fórmula acertó
-      weightTrend: highTrend,
-      intakeCoverage: goodCoverage,
+  it("cobertura < 85% bloquea (gate de interpretabilidad, no de adherencia)", () => {
+    const result = evaluateAdaptiveState({
+      ...base, weightTrend: goodTrend, intakeCoverage: { ...goodCoverage, coverageFraction: 0.5 },
     });
     expect(result.shouldPropose).toBe(false);
   });
 
-  it("recorta el delta a un máximo de 150 kcal aunque el desplazamiento de la fórmula sea mayor", () => {
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 1800, adaptive: adaptive(2600), weightTrend: highTrend, intakeCoverage: goodCoverage,
+  it("días evaluados < mínimo provisional bloquea", () => {
+    const result = evaluateAdaptiveState({
+      ...base, weightTrend: { ...goodTrend, validMeasurements: 5 }, intakeCoverage: goodCoverage,
     });
-    expect(result.deltaKcal).toBeLessThanOrEqual(150);
-    expect(result.deltaKcal).toBeGreaterThanOrEqual(-150);
+    expect(result.shouldPropose).toBe(false);
   });
 
-  it("no propone si el TDEE observado y el inicial discrepan fuertemente (posible dato sospechoso)", () => {
-    const disagreeing: AdaptiveTdeeResult = {
-      initialKcal: 2200, observedKcal: 3200, combinedKcal: 2600, confidence: "high",
-      warnings: ["tdee_estimates_strongly_disagree"],
+  it("cooldown activo bloquea, pero trajectory/deltaKcal se siguen calculando (no se pierde la información)", () => {
+    const result = evaluateAdaptiveState({
+      ...base, weightTrend: goodTrend, intakeCoverage: goodCoverage,
+      lastAdjustmentDecisionAt: "2026-02-10", referenceDate: "2026-02-14", // 4 días < cooldown de 14
+    });
+    expect(result.shouldPropose).toBe(false);
+    expect(result.trajectory).toBe("above"); // -0.20 está por encima de -0.50 (pierde despacio)
+    expect(result.deltaKcal).toBe(0); // shouldPropose=false SIEMPRE trae deltaKcal 0 en el resultado final
+    expect(result.blockingReasons.some((r) => r.toLowerCase().includes("esperar"))).toBe(true);
+  });
+
+  it("con todos los gates en verde, propone", () => {
+    const result = evaluateAdaptiveState({ ...base, weightTrend: goodTrend, intakeCoverage: goodCoverage });
+    expect(result.shouldPropose).toBe(true);
+    expect(result.deltaKcal).toBe(-100);
+  });
+});
+
+describe("evaluateAdaptiveState — test anti-7700 (prueba ejecutable del desacoplamiento arquitectónico)", () => {
+  it("evaluateAdaptiveState no acepta avgIntakeKcal/observedTdeeKcal en absoluto — desacoplamiento garantizado por el tipo, no solo por convención", () => {
+    // Esto es más fuerte que un test de comportamiento: la firma de
+    // evaluateAdaptiveState ni siquiera tiene un parámetro para el TDEE
+    // observado vía 7700 — es estructuralmente imposible que lo use.
+    const goodCoverage: IntakeCoverageResult = { avgKcal: 1900, coverageFraction: 0.9, daysWithData: 25, windowDays: 28 };
+    const trend: WeightTrendResult = {
+      latestWeightKg: 80, trendWeightKg: 80, slopeKgPerDay: -0.03,
+      weeklyChangeKg: -0.9, weeklyChangePercent: -0.75, validMeasurements: 25, confidence: "high", qualityScore: 0.9,
     };
-    const result = evaluateAdjustmentProposal({
-      currentTargetKcal: 2000, adaptive: disagreeing, weightTrend: highTrend, intakeCoverage: goodCoverage,
+    const result = evaluateAdaptiveState({
+      goal: "fat_loss", currentTargetKcal: 2000, weightTrend: trend, intakeCoverage: goodCoverage,
+      lastAdjustmentDecisionAt: null, referenceDate: "2026-02-14",
     });
+    // -0.75%/sem está DENTRO de la banda fat_loss [-1.00,-0.50] — sin
+    // necesidad de saber nada sobre ingesta/7700 para llegar a esta conclusión.
+    expect(result.trajectory).toBe("inside");
     expect(result.shouldPropose).toBe(false);
   });
 });
@@ -746,8 +1170,8 @@ describe("evaluateAdjustmentProposal", () => {
 // ─── PR8: versionado del motor + evidencia de propuestas (N1/N13) ──────────
 
 describe("NUTRITION_ENGINE_VERSION", () => {
-  it("es la constante v2 (modelo de actividad + adaptativo + propuestas transaccionales)", () => {
-    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v2");
+  it("es la constante v3 — PR1 (bugs obligatorios + proteína) + PR2 (adaptativo por ritmo) + PR3 (replacementIncrementKcal) ya cerrados", () => {
+    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v3");
   });
 });
 
@@ -763,11 +1187,13 @@ describe("buildAdjustmentEvidence", () => {
 
   it("traslada 1:1 los campos del diagnóstico ya calculado, sin recalcular nada distinto", () => {
     const diagnostics = getAdaptiveDiagnostics({
+      goal: "maintain",
       weightLog,
       dailyKcal,
       referenceDate: "2026-01-20",
       initialTdeeKcal: 2400,
       currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
     });
     const evidence = buildAdjustmentEvidence(diagnostics, [], NUTRITION_ENGINE_VERSION);
 
@@ -785,11 +1211,13 @@ describe("buildAdjustmentEvidence", () => {
 
   it("conserva los warnings del TDEE adaptativo que recibe (no los del diagnóstico, que no los expone)", () => {
     const diagnostics = getAdaptiveDiagnostics({
+      goal: "maintain",
       weightLog,
       dailyKcal,
       referenceDate: "2026-01-20",
       initialTdeeKcal: 2400,
       currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
     });
     const evidence = buildAdjustmentEvidence(diagnostics, ["tdee_estimates_strongly_disagree"], NUTRITION_ENGINE_VERSION);
     expect(evidence.warnings).toEqual(["tdee_estimates_strongly_disagree"]);
@@ -797,17 +1225,19 @@ describe("buildAdjustmentEvidence", () => {
 
   it("nunca queda vacía: siempre hay al menos ventana evaluada, TDEE inicial y versión — a diferencia del evidence:{} anterior", () => {
     const diagnostics = getAdaptiveDiagnostics({
+      goal: "maintain",
       weightLog: [],
       dailyKcal: [],
       referenceDate: "2026-01-20",
       initialTdeeKcal: 2400,
       currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
     });
     const evidence = buildAdjustmentEvidence(diagnostics, [], NUTRITION_ENGINE_VERSION);
     expect(Object.keys(evidence).length).toBeGreaterThan(0);
     expect(evidence.evaluationWindow.start).toBeTruthy();
     expect(evidence.initialTdeeKcal).toBe(2400);
-    expect(evidence.engineVersion).toBe("nutrition-v2");
+    expect(evidence.engineVersion).toBe(NUTRITION_ENGINE_VERSION);
   });
 });
 
@@ -815,7 +1245,7 @@ describe("buildAdjustmentEvidence", () => {
 
 describe("isRelevantCalibrationChange", () => {
   const training: TrainingActivityProfile = {
-    lifestyleActivity: "light", strengthDaysPerWeek: 3, cardioDaysPerWeek: 1, avgSessionDurationMin: 60,
+    lifestyleActivity: "light", strengthDaysPerWeek: 3, cardioDaysPerWeek: 1, strengthAvgDurationMin: 60, cardioAvgDurationMin: 60,
   };
 
   it("prev=null (primer perfil) nunca cuenta como cambio", () => {
@@ -920,6 +1350,65 @@ describe("buildAdjustmentProfileFingerprint / isProposalStale", () => {
     const current = buildAdjustmentProfileFingerprint(baseProfile({ adaptiveKcalOffsetKcal: 80 }), "balanced");
     expect(isProposalStale(original, current)).toBe(true);
   });
+
+  // ── PR4 — nutrition-v3 §6.11: completar el fingerprint con inputs que
+  // cambian materialmente el plan (RMR/IMC/base de proteína) y no estaban
+  // cubiertos hasta la auditoría final.
+
+  it("cambiar la edad marca la propuesta como obsoleta (cambia RMR)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ age: 30 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ age: 31 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar el sexo marca la propuesta como obsoleta (cambia RMR)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ sex: "male" }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ sex: "female" }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("cambiar la altura marca la propuesta como obsoleta (cambia RMR e IMC)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ heightCm: 175 }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ heightCm: 180 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("declarar/cambiar el % de grasa marca la propuesta como obsoleta (cambia la base de proteína a fat_free_mass)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: null }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20 }), "balanced");
+    expect(isProposalStale(original, current)).toBe(true);
+  });
+
+  it("bodyFatSource NO forma parte del fingerprint — solo cambia procedencia/UX, ningún target (decisión v3 §2.4/§9)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: null }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ bodyFatPct: 20, bodyFatSource: "dxa" }), "balanced");
+    expect(isProposalStale(original, current)).toBe(false);
+  });
+
+  it("gymDays NO forma parte del fingerprint — evaluateAdaptiveState() ni siquiera recibe gymDay, el offset es independiente del tipo de día (§6.11)", () => {
+    const original = buildAdjustmentProfileFingerprint(baseProfile({ gymDays: [1, 3, 5] }), "balanced");
+    const current = buildAdjustmentProfileFingerprint(baseProfile({ gymDays: [0, 2, 4, 6] }), "balanced");
+    expect(isProposalStale(original, current)).toBe(false);
+  });
+
+  it("un fingerprint persistido entre PR9 y PR4 (sin age/sex/heightCm/bodyFatPct) se trata como obsoleto al compararlo — degradación segura, no un crash", () => {
+    // Simula una propuesta ya guardada en DB antes de que existieran estos
+    // campos: el objeto existe (no es undefined, ese caso ya lo cubre "sin
+    // fingerprint original"), pero le faltan las claves nuevas. undefined
+    // !== valor actual siempre es true, así que la propuesta se invalida
+    // — el comportamiento correcto por defecto (bloquear una aceptación
+    // sobre datos incompletos), documentado explícitamente aquí para que
+    // no sorprenda si aparece en producción tras desplegar PR4.
+    const legacyFingerprint = {
+      goal: "recomp", weightKg: 80, activityLevel: "moderate", activityModelVersion: "legacy_total_pal",
+      trainingActivity: null, macroPreference: "balanced", adaptiveKcalOffsetKcal: 0,
+    } as unknown as ReturnType<typeof buildAdjustmentProfileFingerprint>;
+    const current = buildAdjustmentProfileFingerprint(
+      baseProfile({ goal: "recomp", weightKg: 80, activityModelVersion: "legacy_total_pal" }),
+      "balanced"
+    );
+    expect(isProposalStale(legacyFingerprint, current)).toBe(true);
+  });
 });
 
 describe("getAdaptiveDiagnostics — ventana recortada por calibración (PR9)", () => {
@@ -931,14 +1420,16 @@ describe("getAdaptiveDiagnostics — ventana recortada por calibración (PR9)", 
 
   it("sin calibración, la ventana evaluada es la estándar (referenceDate - windowDays)", () => {
     const diagnostics = getAdaptiveDiagnostics({
-      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      goal: "maintain", weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
     });
     expect(diagnostics.evaluationStart).toBe("2026-01-13"); // 2026-02-10 - 28 días
   });
 
   it("con una calibración MÁS RECIENTE que la ventana estándar, la ventana se recorta a esa fecha", () => {
     const diagnostics = getAdaptiveDiagnostics({
-      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      goal: "maintain", weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
       calibrationStartedAt: "2026-01-25",
     });
     expect(diagnostics.evaluationStart).toBe("2026-01-25");
@@ -946,7 +1437,8 @@ describe("getAdaptiveDiagnostics — ventana recortada por calibración (PR9)", 
 
   it("con una calibración MÁS ANTIGUA que la ventana estándar, no la alarga (el techo de 28 días se mantiene)", () => {
     const diagnostics = getAdaptiveDiagnostics({
-      weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      goal: "maintain", weightLog, dailyKcal, referenceDate: "2026-02-10", initialTdeeKcal: 2400, currentTargetKcal: 1900,
+      lastAdjustmentDecisionAt: null,
       calibrationStartedAt: "2025-12-01",
     });
     expect(diagnostics.evaluationStart).toBe("2026-01-13");

@@ -37,7 +37,7 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
 ];
 
 export function OnboardingFlow({ onDone }: Props) {
-  const { state, mutate } = useFoodOS();
+  const { state, mutate, showToast } = useFoodOS();
   const overlayRef = useRef<HTMLDivElement>(null);
   useInertBackground(overlayRef); // E18-09: ver comentario en use-inert-background.ts
   const [step, setStep] = useState(0);
@@ -86,6 +86,14 @@ export function OnboardingFlow({ onDone }: Props) {
       excludedFoods: [],
       activityModelVersion: "legacy_total_pal",
     };
+
+    // Edad mínima del motor adulto (nutrition-v3 §2.2) — el min="18" del
+    // input no basta por sí solo (form saltándose validación HTML5), ver
+    // mismo guardarraíl en NutritionView.tsx.
+    if (profile.age < 18) {
+      showToast("FoodOS calcula objetivos para adultos (18+) — revisa la edad introducida.");
+      return;
+    }
 
     const { tmb, tdee } = calcSummary(profile);
     const gymTodayForProfile = isGymDay(profile, dateFromKey(getToday(state)));
@@ -218,7 +226,7 @@ export function OnboardingFlow({ onDone }: Props) {
                   Edad
                   {/* Sin valor por defecto (N9): un dato inventado (25 años)
                       podía guardarse sin que el usuario lo notara. */}
-                  <input name="age" type="number" min="14" max="100" required placeholder="ej. 28" />
+                  <input name="age" type="number" min="18" max="100" required placeholder="ej. 28" />
                 </label>
                 <label>
                   Sexo biológico

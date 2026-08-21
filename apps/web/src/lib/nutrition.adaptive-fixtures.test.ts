@@ -1,18 +1,23 @@
-// Casos de referencia reproducibles para el motor adaptativo (PR7).
+// Casos de referencia reproducibles para el motor adaptativo (PR7, reescrito
+// en PR2/Adaptive v3 — ver docs/NUTRITION_V3_DECISIONES.md §6).
 //
 // A propósito NO se comprueban cifras exactas de TDEE/combinado — el
-// algoritmo puede evolucionar (ver PR8+). Lo que se protege aquí son
-// invariantes: propiedades que deben cumplirse SIEMPRE, sea cual sea el
-// ajuste fino de constantes internas (alpha del EWMA, pesos de confianza...).
+// algoritmo puede evolucionar. Lo que se protege aquí son invariantes:
+// propiedades que deben cumplirse SIEMPRE, sea cual sea el ajuste fino de
+// constantes internas (alpha del EWMA, bandas...). Adaptive v3 decide por
+// RITMO (weeklyChangePercent contra la banda del goal) — el TDEE vía 7700
+// (calcAdaptiveTdee) se sigue calculando en runEngine solo como diagnóstico,
+// nunca alimenta `decision`.
 import { describe, expect, it } from "vitest";
-import type { PhysicalProfile, WeightEntry } from "@foodos/types";
+import type { GoalMode, PhysicalProfile, WeightEntry } from "@foodos/types";
 import {
+  ADJUSTMENT_MIN_EVALUATION_DAYS,
   calcAdaptiveTdee,
   calcDailyTargets,
   calcIntakeCoverage,
   calcSummary,
   calcWeightTrend,
-  evaluateAdjustmentProposal,
+  evaluateAdaptiveState,
   evaluateNutritionSafety,
   isAdjustmentCooldownActive,
 } from "./nutrition";
@@ -77,14 +82,20 @@ function baseProfile(overrides: Partial<PhysicalProfile> = {}): PhysicalProfile 
   };
 }
 
-/** Corre el pipeline completo (tendencia -> cobertura -> adaptativo ->
-    decisión) para un caso dado. */
+/** Corre el pipeline completo (tendencia -> cobertura -> decisión por
+    ritmo). `initialTdeeKcal` sigue calculándose vía calcAdaptiveTdee (7700)
+    y se devuelve para aserciones de diagnóstico, pero NUNCA se pasa a
+    evaluateAdaptiveState — el test anti-7700 dedicado (nutrition.test.ts)
+    verifica esto a nivel de tipo/firma; aquí se verifica en un pipeline
+    realista de extremo a extremo. */
 function runEngine(params: {
+  goal: GoalMode;
   weightLog: WeightEntry[];
   dailyKcal: Array<{ date: string; kcal: number }>;
   initialTdeeKcal: number;
   currentTargetKcal: number;
   referenceDate?: string;
+  lastAdjustmentDecisionAt?: string | null;
 }) {
   const referenceDate = params.referenceDate ?? REF;
   const weightTrend = calcWeightTrend(params.weightLog, referenceDate);
@@ -94,56 +105,60 @@ function runEngine(params: {
     avgIntakeKcal: coverage?.avgKcal ?? null,
     weightTrend,
   });
-  const decision = evaluateAdjustmentProposal({
+  const decision = evaluateAdaptiveState({
+    goal: params.goal,
     currentTargetKcal: params.currentTargetKcal,
-    adaptive,
     weightTrend,
     intakeCoverage: coverage,
+    lastAdjustmentDecisionAt: params.lastAdjustmentDecisionAt ?? null,
+    referenceDate,
   });
   return { weightTrend, coverage, adaptive, decision };
 }
 
 // ─── Casos de referencia ──────────────────────────────────────────────────
 
-describe("motor adaptativo — casos de referencia", () => {
-  it("pérdida de peso lenta y dentro de rango: no debería proponer subir calorías", () => {
-    // -0.2 kg/semana ≈ -0.0286 kg/día, ingesta consistente con el objetivo
+describe("motor adaptativo — casos de referencia (banda por ritmo, Adaptive v3)", () => {
+  it("fat_loss dentro de banda (~-0.6%/sem de 85kg): no debería proponer", () => {
     const { decision } = runEngine({
-      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.2 / 7 }),
+      goal: "fat_loss",
+      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.073 }), // ≈ -0.51kg/sem ≈ -0.6%/sem
+      dailyKcal: dailyKcalSeries({ kcalPerDay: 2300, days: 28 }),
+      initialTdeeKcal: 2600,
+      currentTargetKcal: 2300,
+    });
+    expect(decision.shouldPropose).toBe(false);
+  });
+
+  it("fat_loss demasiado lento (~-0.2%/sem, por encima de la banda): si propone, es BAJAR kcal (más déficit, nunca subir)", () => {
+    const { decision } = runEngine({
+      goal: "fat_loss",
+      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.024 }), // ≈ -0.17kg/sem ≈ -0.2%/sem
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2300, days: 28 }),
       initialTdeeKcal: 2600,
       currentTargetKcal: 2300,
     });
     if (decision.shouldPropose) {
-      expect(decision.deltaKcal).toBeLessThanOrEqual(0);
+      expect(decision.deltaKcal).toBeLessThan(0);
     }
   });
 
-  it("pérdida dentro del objetivo (~0.5 kg/semana): objetivo ya alineado, no debería proponer", () => {
+  it("fat_loss demasiado rápido (~-1.5%/sem): si propone, es SUBIR kcal (nunca bajar más)", () => {
     const { decision } = runEngine({
-      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.5 / 7 }),
-      dailyKcal: dailyKcalSeries({ kcalPerDay: 2080, days: 28 }),
-      initialTdeeKcal: 2600,
-      currentTargetKcal: 2080,
-    });
-    // El propio ritmo real ya coincide con el objetivo -> sin motivo para tocar nada.
-    expect(decision.shouldPropose).toBe(false);
-  });
-
-  it("pérdida demasiado rápida: si propone, es subir calorías (nunca bajar más)", () => {
-    const { decision } = runEngine({
-      weightLog: weightSeries({ startKg: 90, days: 25, dailyDeltaKg: -1.2 / 7 }),
+      goal: "fat_loss",
+      weightLog: weightSeries({ startKg: 90, days: 25, dailyDeltaKg: -0.193 }), // ≈ -1.35kg/sem ≈ -1.5%/sem
       dailyKcal: dailyKcalSeries({ kcalPerDay: 1900, days: 28 }),
       initialTdeeKcal: 2700,
       currentTargetKcal: 2000,
     });
     if (decision.shouldPropose) {
-      expect(decision.deltaKcal).toBeGreaterThanOrEqual(0);
+      expect(decision.deltaKcal).toBeGreaterThan(0);
     }
   });
 
-  it("mantenimiento estable: objetivo ya alineado, no debería proponer nada", () => {
+  it("maintain estable (0 kg/sem): dentro de banda, no debería proponer nada", () => {
     const { decision } = runEngine({
+      goal: "maintain",
       weightLog: weightSeries({ startKg: 78, days: 25, dailyDeltaKg: 0 }),
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2400, days: 28 }),
       initialTdeeKcal: 2400,
@@ -152,32 +167,33 @@ describe("motor adaptativo — casos de referencia", () => {
     expect(decision.shouldPropose).toBe(false);
   });
 
-  it("ganancia muscular lenta y controlada: no debería proponer bajar calorías", () => {
+  it("muscle_gain lento y dentro de banda (~+0.35%/sem de 75kg): no debería proponer", () => {
     const { decision } = runEngine({
-      weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.1 / 7 }),
+      goal: "muscle_gain",
+      weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.0375 }), // ≈ +0.26kg/sem ≈ +0.35%/sem
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2700, days: 28 }),
       initialTdeeKcal: 2550,
       currentTargetKcal: 2700,
     });
-    if (decision.shouldPropose) {
-      expect(decision.deltaKcal).toBeGreaterThanOrEqual(0);
-    }
+    expect(decision.shouldPropose).toBe(false);
   });
 
-  it("ganancia de peso excesiva: si propone, es bajar calorías (nunca subir más)", () => {
+  it("muscle_gain excesivo (~+1.0%/sem): si propone, es BAJAR kcal (nunca subir más)", () => {
     const { decision } = runEngine({
-      weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.5 / 7 }),
+      goal: "muscle_gain",
+      weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.107 }), // ≈ +0.75kg/sem ≈ +1.0%/sem
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2900, days: 28 }),
       initialTdeeKcal: 2500,
       currentTargetKcal: 2900,
     });
     if (decision.shouldPropose) {
-      expect(decision.deltaKcal).toBeLessThanOrEqual(0);
+      expect(decision.deltaKcal).toBeLessThan(0);
     }
   });
 
   it("datos insuficientes (solo 2 pesajes): nunca propone", () => {
     const { decision, weightTrend } = runEngine({
+      goal: "maintain",
       weightLog: weightSeries({ startKg: 80, days: 2, dailyDeltaKg: -0.1 }),
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28 }),
       initialTdeeKcal: 2500,
@@ -185,11 +201,13 @@ describe("motor adaptativo — casos de referencia", () => {
     });
     expect(weightTrend).toBeNull();
     expect(decision.shouldPropose).toBe(false);
+    expect(decision.trajectory).toBeNull();
   });
 
-  it("ingesta incompleta (cobertura baja): nunca propone aunque el peso esté clarísimo", () => {
+  it("ingesta incompleta (cobertura baja): nunca propone aunque el ritmo esté clarísimo fuera de banda", () => {
     const { decision, coverage } = runEngine({
-      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.3 / 7 }),
+      goal: "fat_loss",
+      weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.024 }), // fuera de banda (muy lento)
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28, skipEvery: 2 }), // ~50% cobertura
       initialTdeeKcal: 2600,
       currentTargetKcal: 2300,
@@ -201,7 +219,8 @@ describe("motor adaptativo — casos de referencia", () => {
   it("peso con mucha variación de agua/sal: la tendencia no debería invertir el signo real", () => {
     // Pendiente real de pérdida, pero con ruido diario de +-0.8kg (agua/sal/glucógeno)
     const { weightTrend } = runEngine({
-      weightLog: weightSeries({ startKg: 88, days: 25, dailyDeltaKg: -0.25 / 7, noiseKg: 0.8 }),
+      goal: "fat_loss",
+      weightLog: weightSeries({ startKg: 88, days: 25, dailyDeltaKg: -0.036, noiseKg: 0.8 }),
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28 }),
       initialTdeeKcal: 2600,
       currentTargetKcal: 2300,
@@ -213,49 +232,64 @@ describe("motor adaptativo — casos de referencia", () => {
 
   it("salto brusco tipo 'inicio de creatina' (+1kg sostenido): limitación conocida, no una invariante — documentado, no silencioso", () => {
     // Un escalón de peso SOSTENIDO (agua retenida por creatina, no un pico de
-    // un solo día) es indistinguible de una ganancia real para un algoritmo
-    // que solo mira el peso: la mediana móvil de 3 amortigua picos aislados,
-    // no escalones de varios días. Esto es una limitación real del modelo
-    // (mencionada explícitamente al proponer PR7), no algo que esta PR
-    // prometa resolver — resolverlo requeriría una señal distinta al peso
-    // (ej. declarar manualmente "empecé a tomar creatina"). Lo que SÍ importa
-    // aquí es que, si el salto es lo bastante grande como para generar una
-    // discrepancia fuerte con la fórmula, el guardarraíl de PR7 lo bloquee en
-    // vez de aplicarlo a ciegas — y que en cualquier caso nunca se salga de
-    // ±150 kcal.
+    // un solo día) es indistinguible de una ganancia real para CUALQUIER
+    // algoritmo que solo mira el peso — daba igual con el TDEE vía 7700 (v2)
+    // que con el ritmo por banda (v3, Adaptive v3): la mediana móvil de 3
+    // amortigua picos aislados, no escalones de varios días. Sigue siendo
+    // una limitación real del modelo (E11-24 en el backlog, fuera de
+    // alcance de PR2 — ver docs/NUTRITION_V3_DECISIONES.md §6.2), no algo
+    // que esta PR prometa resolver. Lo que SÍ debe cumplirse: si el
+    // controlador decide proponer algo con este salto, el delta sigue
+    // siendo el paso fijo, nunca un salto adicional descontrolado.
     const steady = weightSeries({ startKg: 80, days: 20, dailyDeltaKg: 0 });
     const jump: WeightEntry[] = steady.map((e, i) => (i >= 15 ? { ...e, kg: e.kg + 1 } : e));
-    const { decision, adaptive } = runEngine({
+    const { decision } = runEngine({
+      goal: "maintain",
       weightLog: jump,
       dailyKcal: dailyKcalSeries({ kcalPerDay: 2400, days: 28 }),
       initialTdeeKcal: 2400,
       currentTargetKcal: 2400,
     });
-    if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
-      expect(decision.shouldPropose).toBe(false);
-    }
     expect(decision.deltaKcal).toBeLessThanOrEqual(150);
     expect(decision.deltaKcal).toBeGreaterThanOrEqual(-150);
+    expect([-100, 0, 100]).toContain(decision.deltaKcal);
   });
 
-  it("mismo peso/ingesta con distinto TDEE inicial (clásico vs lifestyle_plus_training): confianza y cobertura no dependen del modelo de actividad", () => {
-    const weightLog = weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.3 / 7 });
+  it("mismo peso/ingesta con distinto TDEE inicial: confianza y cobertura no dependen del modelo de actividad (ni del goal — son puramente de datos)", () => {
+    const weightLog = weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.036 });
     const dailyKcal = dailyKcalSeries({ kcalPerDay: 2200, days: 28 });
-    const classic = runEngine({ weightLog, dailyKcal, initialTdeeKcal: 2600, currentTargetKcal: 2300 });
-    const lifestylePlusTraining = runEngine({ weightLog, dailyKcal, initialTdeeKcal: 2450, currentTargetKcal: 2300 });
+    const classic = runEngine({ goal: "fat_loss", weightLog, dailyKcal, initialTdeeKcal: 2600, currentTargetKcal: 2300 });
+    const lifestylePlusTraining = runEngine({ goal: "fat_loss", weightLog, dailyKcal, initialTdeeKcal: 2450, currentTargetKcal: 2300 });
     // Confianza y cobertura salen del peso/ingesta, no de qué modelo calculó el TDEE inicial.
     expect(classic.weightTrend!.confidence).toBe(lifestylePlusTraining.weightTrend!.confidence);
     expect(classic.coverage!.coverageFraction).toBe(lifestylePlusTraining.coverage!.coverageFraction);
-    // El TDEE observado (depende solo de ingesta/peso) también coincide.
+    // El TDEE observado (depende solo de ingesta/peso) también coincide — sigue siendo diagnóstico puro.
     expect(classic.adaptive.observedKcal).toBe(lifestylePlusTraining.adaptive.observedKcal);
+    // Y la DECISIÓN (que ya no depende del TDEE inicial en absoluto) también coincide.
+    expect(classic.decision.deltaKcal).toBe(lifestylePlusTraining.decision.deltaKcal);
+    expect(classic.decision.shouldPropose).toBe(lifestylePlusTraining.decision.shouldPropose);
+  });
+
+  it("test anti-7700 de extremo a extremo: cambiar la ingesta registrada (y por tanto el TDEE observado) sin cambiar el peso ni la cobertura no cambia la decisión", () => {
+    const weightLog = weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.024 }); // fuera de banda fat_loss (muy lento)
+    const dailyKcalA = dailyKcalSeries({ kcalPerDay: 2000, days: 28 });
+    const dailyKcalB = dailyKcalSeries({ kcalPerDay: 2600, days: 28 }); // misma cobertura (28/28 días), ingesta MUY distinta
+    const a = runEngine({ goal: "fat_loss", weightLog, dailyKcal: dailyKcalA, initialTdeeKcal: 2600, currentTargetKcal: 2300 });
+    const b = runEngine({ goal: "fat_loss", weightLog, dailyKcal: dailyKcalB, initialTdeeKcal: 2600, currentTargetKcal: 2300 });
+    // El TDEE observado (7700) SÍ cambia mucho — es justo lo que se espera del diagnóstico.
+    expect(a.adaptive.observedKcal).not.toBe(b.adaptive.observedKcal);
+    // Pero la decisión (trayectoria/delta/elegibilidad) es IDÉNTICA — no depende de la ingesta en absoluto.
+    expect(a.decision.trajectory).toBe(b.decision.trajectory);
+    expect(a.decision.deltaKcal).toBe(b.decision.deltaKcal);
+    expect(a.decision.shouldPropose).toBe(b.decision.shouldPropose);
   });
 
   it("un ajuste que empujaría el objetivo por debajo de 800 kcal queda bloqueado por evaluateNutritionSafety", () => {
     const profile = baseProfile({ weightKg: 45, heightCm: 150, age: 55, goal: "fat_loss" });
     const { tmb, tdee } = calcSummary(profile);
     const currentTargets = calcDailyTargets(profile, false);
-    // Simula que se acepta un ajuste de -150 kcal sobre un objetivo ya muy bajo.
-    const proposedProfile: PhysicalProfile = { ...profile, adaptiveKcalOffsetKcal: -150 };
+    // Simula que se acepta un ajuste de -100 kcal (paso normal del controlador v3) sobre un objetivo ya muy bajo.
+    const proposedProfile: PhysicalProfile = { ...profile, adaptiveKcalOffsetKcal: -100 };
     const proposedTargets = calcDailyTargets(proposedProfile, false);
     const safety = evaluateNutritionSafety({
       targetKcal: proposedTargets.kcal,
@@ -274,22 +308,29 @@ describe("motor adaptativo — casos de referencia", () => {
 // ─── Invariantes globales (deben cumplirse en TODOS los casos anteriores) ──
 
 describe("motor adaptativo — invariantes globales", () => {
-  const scenarios = [
-    { label: "pérdida lenta", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.2 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2300, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
-    { label: "pérdida objetivo", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.5 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2080, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2080 },
-    { label: "pérdida rápida", weightLog: weightSeries({ startKg: 90, days: 25, dailyDeltaKg: -1.2 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 1900, days: 28 }), initialTdeeKcal: 2700, currentTargetKcal: 2000 },
-    { label: "mantenimiento", weightLog: weightSeries({ startKg: 78, days: 25, dailyDeltaKg: 0 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2400, days: 28 }), initialTdeeKcal: 2400, currentTargetKcal: 2400 },
-    { label: "ganancia lenta", weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.1 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2700, days: 28 }), initialTdeeKcal: 2550, currentTargetKcal: 2700 },
-    { label: "ganancia excesiva", weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.5 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2900, days: 28 }), initialTdeeKcal: 2500, currentTargetKcal: 2900 },
-    { label: "ingesta incompleta", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.3 / 7 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28, skipEvery: 2 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
-    { label: "agua/sal ruidosa", weightLog: weightSeries({ startKg: 88, days: 25, dailyDeltaKg: -0.25 / 7, noiseKg: 0.8 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
+  const scenarios: Array<{
+    label: string;
+    goal: GoalMode;
+    weightLog: WeightEntry[];
+    dailyKcal: Array<{ date: string; kcal: number }>;
+    initialTdeeKcal: number;
+    currentTargetKcal: number;
+  }> = [
+    { label: "fat_loss dentro de banda", goal: "fat_loss", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.073 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2300, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
+    { label: "fat_loss demasiado lento", goal: "fat_loss", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.024 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2300, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
+    { label: "fat_loss demasiado rápido", goal: "fat_loss", weightLog: weightSeries({ startKg: 90, days: 25, dailyDeltaKg: -0.193 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 1900, days: 28 }), initialTdeeKcal: 2700, currentTargetKcal: 2000 },
+    { label: "maintain estable", goal: "maintain", weightLog: weightSeries({ startKg: 78, days: 25, dailyDeltaKg: 0 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2400, days: 28 }), initialTdeeKcal: 2400, currentTargetKcal: 2400 },
+    { label: "muscle_gain dentro de banda", goal: "muscle_gain", weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.0375 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2700, days: 28 }), initialTdeeKcal: 2550, currentTargetKcal: 2700 },
+    { label: "muscle_gain excesivo", goal: "muscle_gain", weightLog: weightSeries({ startKg: 75, days: 25, dailyDeltaKg: 0.107 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2900, days: 28 }), initialTdeeKcal: 2500, currentTargetKcal: 2900 },
+    { label: "ingesta incompleta", goal: "fat_loss", weightLog: weightSeries({ startKg: 85, days: 25, dailyDeltaKg: -0.024 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28, skipEvery: 2 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
+    { label: "agua/sal ruidosa", goal: "fat_loss", weightLog: weightSeries({ startKg: 88, days: 25, dailyDeltaKg: -0.036, noiseKg: 0.8 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28 }), initialTdeeKcal: 2600, currentTargetKcal: 2300 },
+    { label: "recomp banda asimétrica", goal: "recomp", weightLog: weightSeries({ startKg: 80, days: 25, dailyDeltaKg: -0.028 }), dailyKcal: dailyKcalSeries({ kcalPerDay: 2200, days: 28 }), initialTdeeKcal: 2500, currentTargetKcal: 2200 },
   ];
 
-  it("nunca propone un delta fuera de ±150 kcal", () => {
+  it("nunca propone un delta fuera de {-100, 0, 100} (y por tanto nunca fuera de ±150)", () => {
     for (const s of scenarios) {
       const { decision } = runEngine(s);
-      expect(decision.deltaKcal, s.label).toBeLessThanOrEqual(150);
-      expect(decision.deltaKcal, s.label).toBeGreaterThanOrEqual(-150);
+      expect([-100, 0, 100], s.label).toContain(decision.deltaKcal);
     }
   });
 
@@ -302,23 +343,34 @@ describe("motor adaptativo — invariantes globales", () => {
     }
   });
 
-  it("nunca propone con menos de 14 días evaluados", () => {
+  it(`nunca propone con menos de ${ADJUSTMENT_MIN_EVALUATION_DAYS} días evaluados (mínimo PROVISIONAL, ver §6.7)`, () => {
     for (const s of scenarios) {
       const { decision, weightTrend } = runEngine(s);
       if (decision.shouldPropose) {
-        expect(weightTrend!.validMeasurements, s.label).toBeGreaterThanOrEqual(14);
+        expect(weightTrend!.validMeasurements, s.label).toBeGreaterThanOrEqual(ADJUSTMENT_MIN_EVALUATION_DAYS);
       }
     }
   });
 
-  it("evaluateAdjustmentProposal es una función pura: no muta sus argumentos ni el entorno", () => {
+  it("nunca propone con confianza de tendencia distinta de 'high'", () => {
+    for (const s of scenarios) {
+      const { decision, weightTrend } = runEngine(s);
+      if (decision.shouldPropose) {
+        expect(weightTrend!.confidence, s.label).toBe("high");
+      }
+    }
+  });
+
+  it("evaluateAdaptiveState es una función pura: no muta sus argumentos ni el entorno", () => {
     const s = scenarios[0];
     const weightTrend = calcWeightTrend(s.weightLog, REF);
     const coverage = calcIntakeCoverage(s.dailyKcal, REF, 28);
-    const adaptive = calcAdaptiveTdee({ initialTdeeKcal: s.initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
-    const snapshotBefore = JSON.stringify({ weightTrend, coverage, adaptive });
-    evaluateAdjustmentProposal({ currentTargetKcal: s.currentTargetKcal, adaptive, weightTrend, intakeCoverage: coverage });
-    const snapshotAfter = JSON.stringify({ weightTrend, coverage, adaptive });
+    const snapshotBefore = JSON.stringify({ weightTrend, coverage });
+    evaluateAdaptiveState({
+      goal: s.goal, currentTargetKcal: s.currentTargetKcal, weightTrend, intakeCoverage: coverage,
+      lastAdjustmentDecisionAt: null, referenceDate: REF,
+    });
+    const snapshotAfter = JSON.stringify({ weightTrend, coverage });
     expect(snapshotAfter).toBe(snapshotBefore);
   });
 

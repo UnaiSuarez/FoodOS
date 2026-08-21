@@ -6,6 +6,7 @@ import type {
   AdjustmentDecision,
   AdjustmentProfileFingerprint,
   AdjustmentProposalEvidence,
+  BodyFatSource,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
@@ -18,8 +19,10 @@ import type {
   PhysicalProfile,
   Recipe,
   SafetyWarning,
+  TdeeBreakdown,
   TrainingActivityProfile,
   WeightEntry,
+  WeightTrajectoryAssessment,
   WeightTrendResult,
 } from "@foodos/types";
 
@@ -37,8 +40,21 @@ import type {
  *   de peso suavizada (mediana+EWMA+regresión), TDEE adaptativo combinado,
  *   propuestas de ajuste explícitas con guardarraíl de discrepancia >30%,
  *   diagnóstico completo, y aceptación transaccional vía RPC (PR8).
+ * - nutrition-v3 (ver docs/NUTRITION_V3_DECISIONES.md): duración fuerza/
+ *   cardio separada, edad mínima 18, cobertura histórica por fecha real,
+ *   proteína por base+tipo (peso real/ajustado/masa magra, tabla propia
+ *   por objetivo) — PR1. Controlador adaptativo por RITMO
+ *   (weeklyChangePercent contra banda por objetivo) sustituyendo el uso
+ *   decisorio de 7700 kcal/kg, que pasa a diagnóstico puro — PR2. TDEE de
+ *   entrenamiento habitual vía replacementIncrementKcal (gross − baseline
+ *   desplazado por el lifestyle, nunca el gasto bruto) en vez del doble
+ *   conteo de v2, con calcTdeeBreakdown como fuente única para
+ *   calcTDEE() y la UI — PR3. Los tres PR ya estaban implementados antes
+ *   de subir este identificador (deuda reconocida en su momento, no
+ *   oculta) — el bump se hizo aquí, al cerrar PR3, cuando por fin
+ *   significa exactamente lo que promete el documento de decisiones.
  */
-export const NUTRITION_ENGINE_VERSION = "nutrition-v2";
+export const NUTRITION_ENGINE_VERSION = "nutrition-v3";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
 
@@ -124,36 +140,186 @@ function metKcalPerMin(met: number, weightKg: number): number {
   return (met * 3.5 * weightKg) / 200;
 }
 
+// ─── grossKcal / netAboveRestKcal / replacementIncrementKcal (PR3 —────────
+// ver docs/NUTRITION_V3_DECISIONES.md §2.5/§3) ─────────────────────────────
+//
+// Tres preguntas distintas, tres campos distintos — nunca confundir uno
+// por otro:
+//   grossKcal                 ¿cuánta energía estimamos que gastó la sesión?
+//   netAboveRestKcal          ¿cuánto por encima de estar en reposo?
+//   replacementIncrementKcal  ¿cuánto añade esto al mantenimiento, que ya
+//                             incluía parte de ese tiempo vía lifestyleTdee?
+// grossKcal/netAboveRestKcal son independientes del lifestyle por
+// construcción (no reciben lifestyleTdee como parámetro — la firma
+// misma impide que dependan de él). Solo replacementIncrementKcal
+// depende del lifestyle, porque es la única pregunta que necesita saber
+// qué había ya "reservado" ese tiempo.
+
+/** Gasto total estimado (MET estándar, sin ajustar) de un intervalo de
+    ejercicio. Independiente del lifestyle. */
+function grossExerciseKcal(met: number, weightKg: number, minutes: number): number {
+  return metKcalPerMin(met, weightKg) * minutes;
+}
+
+/** grossKcal por encima de 1 MET de reposo estándar durante esos mismos
+    minutos — "cuánto gastó la sesión por encima de estar sentado".
+    Independiente del lifestyle. Uso: mostrar el gasto de UNA sesión
+    concreta (módulo Ejercicios) — NUNCA para modificar el mantenimiento
+    nutricional, esa es una pregunta distinta (replacementIncrementKcal). */
+function netAboveRestKcal(met: number, weightKg: number, minutes: number): number {
+  const gross = grossExerciseKcal(met, weightKg, minutes);
+  const restKcal = metKcalPerMin(1, weightKg) * minutes;
+  return Math.max(0, gross - restKcal);
+}
+
+/** kcal que lifestyleTdee ya asignaba a esos minutos, asumiendo reparto
+    uniforme sobre 1440 min/día. CONVENCIÓN CONTABLE para evitar doble
+    conteo entre el modelo de actividad cotidiana y el ejercicio explícito
+    — NO una medición del gasto contrafactual real de esa hora concreta
+    (mezcla sueño, trabajo, desplazamientos repartidos uniformemente; una
+    hora de gimnasio normalmente sustituye una hora despierta, no una
+    fracción proporcional del día completo). Depende del lifestyle: a
+    mismo ejercicio, más lifestyle → más baseline ya "reservado" → menos
+    incremento real que aporta la sesión. */
+function baselineDisplacedKcal(lifestyleTdeeKcal: number, minutes: number): number {
+  return (lifestyleTdeeKcal / 1440) * minutes;
+}
+
+/** Lo único que debe modificar el mantenimiento estimado — nunca negativo:
+    si el baseline ya "reservado" para esos minutos supera el gasto bruto
+    de la sesión (lifestyle muy activo, sesión muy ligera), el incremento
+    es 0, no negativo — un entrenamiento nunca debe BAJAR el TDEE. */
+function replacementIncrementKcal(grossKcal: number, lifestyleTdeeKcal: number, minutes: number): number {
+  return Math.max(0, grossKcal - baselineDisplacedKcal(lifestyleTdeeKcal, minutes));
+}
+
+/**
+ * Desglose medio diario (kcal) del entrenamiento declarado en
+ * trainingActivity, repartido sobre los 7 días de la semana — fuente única
+ * interna para calcHabitualTrainingAllowanceKcal Y calcTdeeBreakdown, así
+ * nunca hay dos implementaciones de la misma suma semanal fuerza+cardio
+ * (el mismo tipo de duplicación que motivó todo el §3.2 de
+ * docs/NUTRITION_V3_DECISIONES.md). replacementIncrementPerDay es la suma
+ * de replacementIncrementKcal de cada sesión semanal, cada una clampada a
+ * >=0 ANTES de sumar — una sesión con incremento 0 nunca "resta" al
+ * incremento real de otra sesión distinta.
+ */
+function calcHabitualTrainingBreakdown(
+  weightKg: number,
+  training: TrainingActivityProfile,
+  lifestyleTdeeKcal: number,
+): { grossPerDay: number; baselineDisplacedPerDay: number; replacementIncrementPerDay: number } {
+  const strengthGross = grossExerciseKcal(STRENGTH_MET, weightKg, training.strengthAvgDurationMin);
+  const cardioGross   = grossExerciseKcal(CARDIO_MET, weightKg, training.cardioAvgDurationMin);
+  const strengthBaseline = baselineDisplacedKcal(lifestyleTdeeKcal, training.strengthAvgDurationMin);
+  const cardioBaseline   = baselineDisplacedKcal(lifestyleTdeeKcal, training.cardioAvgDurationMin);
+
+  const weeklyGross = training.strengthDaysPerWeek * strengthGross + training.cardioDaysPerWeek * cardioGross;
+  const weeklyBaseline = training.strengthDaysPerWeek * strengthBaseline + training.cardioDaysPerWeek * cardioBaseline;
+  // Cada sesión se clampa a >=0 INDIVIDUALMENTE antes de sumar — de ahí
+  // llamar a replacementIncrementKcal() por sesión en vez de restar los
+  // totales semanales ya sumados (weeklyGross - weeklyBaseline sería
+  // incorrecto: una sesión con incremento 0 no debe "restar" al
+  // incremento real de otra sesión distinta).
+  const weeklyIncrement =
+    training.strengthDaysPerWeek * replacementIncrementKcal(strengthGross, lifestyleTdeeKcal, training.strengthAvgDurationMin) +
+    training.cardioDaysPerWeek * replacementIncrementKcal(cardioGross, lifestyleTdeeKcal, training.cardioAvgDurationMin);
+
+  return {
+    grossPerDay: Math.round(weeklyGross / 7),
+    baselineDisplacedPerDay: Math.round(weeklyBaseline / 7),
+    replacementIncrementPerDay: Math.round(weeklyIncrement / 7),
+  };
+}
+
 /**
  * Gasto medio diario (kcal) que aporta el entrenamiento declarado en
- * trainingActivity, repartido sobre los 7 días de la semana — se suma al
- * TDEE de "solo vida cotidiana" en el modelo lifestyle_plus_training.
+ * trainingActivity — solo el incremento real (replacementIncrementKcal),
+ * lo único que se suma al TDEE de "solo vida cotidiana" en el modelo
+ * lifestyle_plus_training. Ver calcTdeeBreakdown para el desglose
+ * completo (gross/baseline/incremento).
  */
 export function calcHabitualTrainingAllowanceKcal(
   weightKg: number,
   training: TrainingActivityProfile,
+  lifestyleTdeeKcal: number,
 ): number {
-  const strengthWeekly = training.strengthDaysPerWeek * training.avgSessionDurationMin * metKcalPerMin(STRENGTH_MET, weightKg);
-  const cardioWeekly   = training.cardioDaysPerWeek   * training.avgSessionDurationMin * metKcalPerMin(CARDIO_MET, weightKg);
-  return Math.round((strengthWeekly + cardioWeekly) / 7);
+  return calcHabitualTrainingBreakdown(weightKg, training, lifestyleTdeeKcal).replacementIncrementPerDay;
 }
 
 /**
- * TDEE según el modelo de actividad del perfil (ver ActivityModelVersion):
+ * Migra un `trainingActivity` con la forma legacy v2 (un único
+ * `avgSessionDurationMin` compartido entre fuerza y cardio — ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.1/§10) a la forma v3. Copia el mismo
+ * valor a `strengthAvgDurationMin`/`cardioAvgDurationMin` como punto de
+ * partida — NUNCA como dato confirmado: marca `legacyDurationUnconfirmed:
+ * true` para que la UI pida revisión antes de tratarlo como definitivo.
+ * Si el objeto ya viene en forma v3 (tiene `strengthAvgDurationMin`), lo
+ * devuelve tal cual, sin tocar `legacyDurationUnconfirmed`.
+ */
+export function migrateLegacyTrainingActivity(
+  raw: Record<string, unknown>,
+): TrainingActivityProfile {
+  if (typeof raw.strengthAvgDurationMin === "number" && typeof raw.cardioAvgDurationMin === "number") {
+    return raw as unknown as TrainingActivityProfile;
+  }
+  const legacyDuration = Number(raw.avgSessionDurationMin) || 0;
+  return {
+    lifestyleActivity: raw.lifestyleActivity as TrainingActivityProfile["lifestyleActivity"],
+    strengthDaysPerWeek: Number(raw.strengthDaysPerWeek) || 0,
+    cardioDaysPerWeek: Number(raw.cardioDaysPerWeek) || 0,
+    strengthAvgDurationMin: legacyDuration,
+    cardioAvgDurationMin: legacyDuration,
+    habitualSteps: (raw.habitualSteps as number | null | undefined) ?? null,
+    legacyDurationUnconfirmed: true,
+  };
+}
+
+/**
+ * Desglose completo del TDEE — FUENTE ÚNICA (nutrition-v3 §3.2): antes la
+ * UI (NutritionView.tsx) reconstruía "vida diaria + entreno" llamando por
+ * su cuenta a LIFESTYLE_ONLY_FACTORS/calcHabitualTrainingAllowanceKcal —
+ * dos implementaciones del mismo cálculo, un bug preparado para el día en
+ * que una cambiara y la otra no. Ahora calcTDEE() es un wrapper delgado
+ * sobre esto, y la UI consume calcTdeeBreakdown() directamente.
+ *
  * - "legacy_total_pal" (por defecto): TMB × ACTIVITY_FACTORS[activityLevel],
- *   donde el PAL ya mezcla vida cotidiana y entrenamiento habitual.
+ *   donde el PAL ya mezcla vida cotidiana y entrenamiento habitual — no hay
+ *   desglose que mostrar, así que lifestyleTdeeKcal === totalTdeeKcal y los
+ *   campos de entreno quedan a 0.
  * - "lifestyle_plus_training": TMB × LIFESTYLE_ONLY_FACTORS[lifestyleActivity]
- *   + el gasto medio diario del entrenamiento declarado, calculado aparte.
- *   Si el perfil dice usar este modelo pero no ha rellenado trainingActivity
+ *   + replacementIncrementKcalPerDay del entrenamiento declarado. Si el
+ *   perfil dice usar este modelo pero no ha rellenado trainingActivity
  *   todavía (transición a medias), cae de vuelta al cálculo legacy.
  */
-export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
+export function calcTdeeBreakdown(profile: PhysicalProfile, restingEnergyKcal: number): TdeeBreakdown {
   if (profile.activityModelVersion === "lifestyle_plus_training" && profile.trainingActivity) {
-    const lifestyleTdee = tmb * LIFESTYLE_ONLY_FACTORS[profile.trainingActivity.lifestyleActivity];
-    const trainingAllowance = calcHabitualTrainingAllowanceKcal(profile.weightKg, profile.trainingActivity);
-    return Math.round(lifestyleTdee + trainingAllowance);
+    const training = profile.trainingActivity;
+    const lifestyleTdeeKcal = Math.round(restingEnergyKcal * LIFESTYLE_ONLY_FACTORS[training.lifestyleActivity]);
+    const breakdown = calcHabitualTrainingBreakdown(profile.weightKg, training, lifestyleTdeeKcal);
+    return {
+      restingEnergyKcal,
+      lifestyleTdeeKcal,
+      habitualTrainingGrossKcalPerDay: breakdown.grossPerDay,
+      baselineDisplacedKcalPerDay: breakdown.baselineDisplacedPerDay,
+      replacementIncrementKcalPerDay: breakdown.replacementIncrementPerDay,
+      totalTdeeKcal: lifestyleTdeeKcal + breakdown.replacementIncrementPerDay,
+    };
   }
-  return Math.round(tmb * ACTIVITY_FACTORS[profile.activityLevel]);
+
+  const totalTdeeKcal = Math.round(restingEnergyKcal * ACTIVITY_FACTORS[profile.activityLevel]);
+  return {
+    restingEnergyKcal,
+    lifestyleTdeeKcal: totalTdeeKcal,
+    habitualTrainingGrossKcalPerDay: 0,
+    baselineDisplacedKcalPerDay: 0,
+    replacementIncrementKcalPerDay: 0,
+    totalTdeeKcal,
+  };
+}
+
+export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
+  return calcTdeeBreakdown(profile, tmb).totalTdeeKcal;
 }
 
 // ─── Nivel de experiencia / material (perfil, asistente de rutinas IA) ──────
@@ -168,6 +334,18 @@ export const EQUIPMENT_LABELS: Record<EquipmentAccess, string> = {
   full_gym:       "Gimnasio completo",
   home_dumbbells: "Casa (mancuernas)",
   bodyweight:     "Sin material",
+};
+
+/** Etiquetas de BodyFatSource para el <select> del formulario — ver
+    docs/NUTRITION_V3_DECISIONES.md §2.4/§9. El orden refleja fiabilidad
+    decreciente, de más a menos precisa. */
+export const BODY_FAT_SOURCE_LABELS: Record<BodyFatSource, string> = {
+  dxa:              "DEXA / DXA",
+  bia_professional: "Báscula/analizador profesional (clínica, gimnasio)",
+  smart_scale:      "Báscula inteligente doméstica",
+  skinfold:         "Plicómetro / pliegues cutáneos",
+  visual_estimate:  "Estimación visual",
+  other:            "Otro método",
 };
 
 // ─── IMC ─────────────────────────────────────────────────────────────────────
@@ -217,19 +395,44 @@ export function usesEspenAdjustedWeight(profile: PhysicalProfile): boolean {
   return profile.weightKg > idealWeight * 1.25;
 }
 
-export function calcProteinBase(profile: PhysicalProfile): number {
+/**
+ * Qué tipo de peso de referencia se usó para proteína — nutrition-v3
+ * (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4): antes calcProteinBase
+ * devolvía un `number` desnudo y calcDailyTargets aplicaba EL MISMO
+ * multiplicador g/kg a las tres bases indiscriminadamente. Efecto
+ * observable del bug: introducir el % de grasa (un dato "más preciso")
+ * podía BAJAR la proteína recomendada, porque 2.0 g/kg de masa magra da un
+ * número mucho menor que 2.0 g/kg de peso ajustado/real. resolveProteinBase
+ * nunca pierde de qué tipo es la base antes de aplicar el multiplicador —
+ * ver PROTEIN_PER_KG_BY_BASE_AND_GOAL, que tiene una fila propia para
+ * fat_free_mass.
+ */
+export type ProteinBaseKind = "actual_weight" | "adjusted_weight" | "fat_free_mass";
+
+export interface ProteinBase {
+  kind: ProteinBaseKind;
+  kg: number;
+}
+
+export function resolveProteinBase(profile: PhysicalProfile): ProteinBase {
   if (profile.bodyFatPct != null) {
-    return profile.weightKg * (1 - profile.bodyFatPct / 100);
+    return { kind: "fat_free_mass", kg: profile.weightKg * (1 - profile.bodyFatPct / 100) };
   }
 
   const heightM     = profile.heightCm / 100;
   const idealWeight = 25 * heightM * heightM; // IMC 25
 
   if (usesEspenAdjustedWeight(profile)) {
-    return idealWeight + (profile.weightKg - idealWeight) * 0.33;
+    return { kind: "adjusted_weight", kg: idealWeight + (profile.weightKg - idealWeight) * 0.33 };
   }
 
-  return profile.weightKg;
+  return { kind: "actual_weight", kg: profile.weightKg };
+}
+
+/** Compatibilidad: solo el kg de la base, sin el tipo — usar
+    resolveProteinBase() en código nuevo que necesite ramificar por tipo. */
+export function calcProteinBase(profile: PhysicalProfile): number {
+  return resolveProteinBase(profile).kg;
 }
 
 // ─── Modos de objetivo ───────────────────────────────────────────────────────
@@ -243,23 +446,79 @@ export const GOAL_LABELS: Record<GoalMode, string> = {
 
 export const GOAL_DESCRIPTIONS: Record<GoalMode, string> = {
   fat_loss:    "−20% kcal · proteína 2.0 g/kg · ~−0,5–1 kg/semana",
-  muscle_gain: "+5% kcal (solo si IMC<27) · proteína 1.8 g/kg",
+  muscle_gain: "+5% kcal (mantenimiento si IMC≥27, nunca déficit) · proteína 1.8 g/kg",
   recomp:      "IMC≥30: −17-20% · IMC<30: −10-17% · proteína 2.0 g/kg",
   maintain:    "100% kcal mantenimiento · proteína 1.8 g/kg",
 };
 
 interface GoalConfig {
-  /** g/kg sobre calcProteinBase() — ver comentario en calcDailyTargets. */
-  proteinPerKg: number;
   /** Fracción de kcal para grasa. */
   fatPct: number;
 }
 
 const GOAL_CONFIG: Record<GoalMode, GoalConfig> = {
-  fat_loss:    { proteinPerKg: 2.0, fatPct: 0.25 },
-  muscle_gain: { proteinPerKg: 1.8, fatPct: 0.25 },
-  recomp:      { proteinPerKg: 2.0, fatPct: 0.25 },
-  maintain:    { proteinPerKg: 1.8, fatPct: 0.28 },
+  fat_loss:    { fatPct: 0.25 },
+  muscle_gain: { fatPct: 0.25 },
+  recomp:      { fatPct: 0.25 },
+  maintain:    { fatPct: 0.28 },
+};
+
+/**
+ * g/kg de proteína por (tipo de base × objetivo) — nutrition-v3, ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.4/§4. Heurísticas de producto con
+ * distinto grado de respaldo directo en literatura, documentado fila por
+ * fila para no venderlas todas como igual de "científicas":
+ *
+ * actual_weight / adjusted_weight — conservan los multiplicadores de v2
+ * como decisión de compatibilidad y heurística de producto, no como una
+ * equivalencia validada. El ajuste ESPEN (0.33, ver resolveProteinBase)
+ * reduce el riesgo de sobreestimar necesidades en perfiles con obesidad,
+ * pero ese coeficiente procede de contextos clínicos (obesidad, enfermedad
+ * renal, hospitalización) — no hay respaldo para afirmar que se diseñó
+ * específicamente para poder reutilizar sin más el multiplicador deportivo
+ * de 2.0 g/kg de esta app. Comparten fila porque es una decisión de FoodOS
+ * de mantener continuidad con v2, no porque ESPEN certifique esa cifra.
+ *
+ * fat_free_mass — la fila nueva, con respaldo desigual (jerarquía explícita,
+ *   de más a menos anclada en evidencia directa):
+ *   - fat_loss (2.6): EXTRAPOLACIÓN CONSERVADORA dentro de evidencia
+ *     específica. Helms et al. 2014 sitúa 2.3–3.1 g/kg FFM para atletas de
+ *     fuerza NATURALES, MAGROS y EN RESTRICCIÓN CALÓRICA — y dentro de ese
+ *     rango, recomienda subir hacia el extremo alto cuanto menor sea el %
+ *     graso, mayor el déficit y mayor la prioridad de preservar masa magra.
+ *     Eso respalda que la rama FFM de fat_loss use un valor más alto que
+ *     las ramas por peso corporal — NO que 2.6 sea la recomendación
+ *     universal para cualquier usuario que seleccione "pérdida de grasa"
+ *     (la mayoría no es un atleta de fuerza magro en ese contexto
+ *     específico). 2.6 se eligió en la mitad-baja del rango, no en el
+ *     extremo alto (3.1), para no convertir una cifra de ese contexto
+ *     concreto en el default de cualquier perfil con un dato de grasa
+ *     corporal.
+ *   - recomp (2.4): HEURÍSTICA DE PRODUCTO, explícitamente no una cifra
+ *     prescrita por ninguna guía — interpolación deliberada entre
+ *     mantenimiento y el déficit más marcado de fat_loss, para un objetivo
+ *     que por diseño cicla entre ambos (ver kcalFactor).
+ *   - muscle_gain / maintain (2.0): REGLA PRAGMÁTICA DEL MOTOR, no una
+ *     conversión directa desde ninguna recomendación por peso corporal. El
+ *     ISSN sitúa 1.4–2.0 g/kg de PESO CORPORAL para población activa en
+ *     general, pero ese rango no se puede trasladar sin más a g/kg de FFM
+ *     — son denominadores distintos (FFM < peso total). 2.0 es un punto
+ *     conservador elegido para esta base, no una traducción del rango ISSN.
+ *
+ * No hay garantía matemática de que fat_free_mass produzca siempre un
+ * resultado ≥ el que darían actual_weight/adjusted_weight para un % de
+ * grasa cualquiera (se comprobó en extremos >45% de grasa corporal y no se
+ * sostiene siempre) — y no se fuerza subiendo más los multiplicadores: en
+ * esos extremos, un % de grasa fiable es más preciso que la aproximación
+ * ESPEN que sustituye, así que un resultado más bajo ahí no es
+ * necesariamente el mismo bug que motivó este cambio. El caso que sí motivó
+ * el cambio (90 kg, 20% grasa, recomp: 144 g con la tabla vieja vs. 180 g
+ * — igual que sin declarar % de grasa — con esta tabla) queda resuelto.
+ */
+export const PROTEIN_PER_KG_BY_BASE_AND_GOAL: Record<ProteinBaseKind, Record<GoalMode, number>> = {
+  actual_weight:   { fat_loss: 2.0, recomp: 2.0, muscle_gain: 1.8, maintain: 1.8 },
+  adjusted_weight: { fat_loss: 2.0, recomp: 2.0, muscle_gain: 1.8, maintain: 1.8 },
+  fat_free_mass:   { fat_loss: 2.6, recomp: 2.4, muscle_gain: 2.0, maintain: 2.0 },
 };
 
 /**
@@ -288,7 +547,34 @@ export const MACRO_PREFERENCE_LABELS: Record<MacroPreference, string> = {
  * Factor kcal según objetivo, IMC y tipo de día.
  *
  * fat_loss:    0.80 siempre (−20%)
- * muscle_gain: 1.05 si IMC<27 / 0.90 si IMC≥27 (no superávit en obesidad)
+ * muscle_gain: 1.05 si IMC<27 / 1.0 (mantenimiento) si IMC≥27 — nunca por
+ *              debajo de 1.0 (PR4, ver docs/NUTRITION_V3_DECISIONES.md
+ *              §2.6): antes de PR4 este caso devolvía 0.90 (déficit real
+ *              de ~10%) con el objetivo etiquetado "ganancia muscular" —
+ *              la decisión de §2.6 quedó documentada como cerrada en la
+ *              primera sesión de diseño de v3 pero nunca se implementó
+ *              hasta la auditoría final. No hay superávit forzado con
+ *              adiposidad alta (por eso 1.0 y no 1.05), pero tampoco
+ *              déficit encubierto — el aviso de shouldWarnMuscleGain()
+ *              sigue recomendando recomp/pérdida de grasa, nunca cambia
+ *              el objetivo por debajo del usuario.
+ *
+ *              ALCANCE DEL INVARIANTE (auditoría PR4, corregido tras
+ *              revisión externa): "muscle_gain nunca déficit" se refiere
+ *              a ESTE factor base — kcalFactor("muscle_gain", ...) >= 1.0
+ *              siempre. NO es una promesa sobre calcDailyTargets().kcal
+ *              final, que además suma adaptiveKcalOffsetKcal. Un offset
+ *              negativo ACEPTADO EXPLÍCITAMENTE por el usuario (Adaptive
+ *              v3, ver §6) SÍ puede bajar el target final por debajo del
+ *              TDEE de la fórmula — eso no es el bug de §2.6 reaparecido:
+ *              evaluateAdaptiveState() no recibe ni recalcula el TDEE —
+ *              es el controlador corrigiendo el OBJETIVO respecto al
+ *              modelo estimado, con datos reales y aceptación explícita,
+ *              igual que para cualquier otro objetivo. Forzar un clamp aquí
+ *              (Math.max(tdee, rawKcal)) haría que las propuestas
+ *              negativas del adaptativo fueran inertes solo para
+ *              muscle_gain, rompiendo la universalidad del controlador
+ *              frente a los otros tres objetivos.
  * recomp:      IMC≥30 → 0.83 gym / 0.80 descanso
  *              IMC<30  → 0.90 gym / 0.83 descanso
  * maintain:    1.0
@@ -298,7 +584,7 @@ function kcalFactor(goal: GoalMode, gymDay: boolean, imc: number): number {
     case "fat_loss":
       return 0.80;
     case "muscle_gain":
-      return imc >= 27 ? 0.90 : 1.05;
+      return imc >= 27 ? 1.0 : 1.05;
     case "recomp":
       return imc >= 30
         ? (gymDay ? 0.83 : 0.80)
@@ -357,9 +643,10 @@ export function evaluateNutritionSafety(params: {
  * Objetivos diarios según perfil y tipo de día.
  *
  * 1. Calorías = TDEE × kcalFactor(goal, gymDay, IMC)
- * 2. Proteína = calcProteinBase × proteinPerKg
- *    - En obesidad: adjusted_ESPEN = ideal_IMC25 + (actual − ideal) × 0.33
- *    - Multiplier: 2.0 fat_loss/recomp · 1.8 maintain/muscle_gain
+ * 2. Proteína = resolveProteinBase(profile).kg × PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][goal]
+ *    - El tipo de base (peso real / ajustado ESPEN / masa magra) decide qué
+ *      fila de la tabla se usa — nunca se pierde el tipo antes de aplicar
+ *      el multiplicador (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4).
  * 3. Grasa = kcal × fatPct (fatPct del objetivo, desplazado por macroPreference
  *    y recortado al rango EFSA 20-35%; "balanced"/sin especificar no cambia nada)
  * 4. Carbos = resto
@@ -379,8 +666,9 @@ export function calcDailyTargets(
   const rawKcal = tdee * kcalFactor(profile.goal, gymDay, imc) + (profile.adaptiveKcalOffsetKcal ?? 0);
   const kcal = Math.max(1200, Math.round(rawKcal));
 
-  const protBase = calcProteinBase(profile);
-  const proteinG = Math.round(config.proteinPerKg * protBase);
+  const proteinBase = resolveProteinBase(profile);
+  const proteinPerKg = PROTEIN_PER_KG_BY_BASE_AND_GOAL[proteinBase.kind][profile.goal];
+  const proteinG = Math.round(proteinPerKg * proteinBase.kg);
 
   const fatPct = Math.min(FAT_PCT_MAX, Math.max(FAT_PCT_MIN, config.fatPct + FAT_PCT_DELTA[macroPreference]));
   const proteinKcal = proteinG * 4;
@@ -406,20 +694,29 @@ export function calcSummary(profile: PhysicalProfile) {
 }
 
 /**
- * Rango de proteína en 5 puntos.
+ * Rango de proteína en 5 puntos, centrado en el target real de
+ * PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal] — nutrition-v3
+ * (ver docs/NUTRITION_V3_DECISIONES.md §2.4/§4). Antes el rango usaba
+ * offsets fijos [1.6...2.4] sin importar de qué base venía el número
+ * central; con fat_free_mass en fat_loss (2.6) eso habría puesto el target
+ * POR ENCIMA del broadMax (2.4) — un rango que no contiene su propio punto
+ * central. Los offsets (±0.2 recomendado, ±0.4 amplio) son los mismos que
+ * antes, pero aplicados alrededor del target de cada base/objetivo, no
+ * como una escala absoluta fija.
  *
- * broadMin / broadMax (×1.6 / ×2.4): rango amplio de seguridad — útil para
- * validaciones, sliders, alertas de adherencia semanal. No mostrar en UI principal.
+ * broadMin / broadMax (target ∓0.4): rango amplio de seguridad — útil para
+ * validaciones, sliders, alertas de adherencia semanal. No mostrar en UI
+ * principal.
  *
- * recommendedMin / recommendedMax (×1.8 / ×2.2): rango clínico recomendado —
- * este es el que el usuario ve. Está dentro del óptimo para fat_loss / recomp.
+ * recommendedMin / recommendedMax (target ∓0.2): rango que el usuario ve.
  *
- * target (×2.0): objetivo diario de la app.
+ * target: PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal] × base.kg.
  *
- * Ejemplo: base ESPEN 92.1 kg
- *   broad:       147–221 g  (interno)
- *   recommended: 166–203 g  (UI)
- *   target:      184 g      (UI, número principal)
+ * Ejemplo: fat_free_mass, fat_loss, base 72 kg (90 kg, 20% grasa)
+ *   target: 72 × 2.6 = 187 g
+ *   recommended: 72×2.4=173 – 72×2.8=202 g
+ *   broad:       72×2.2=158 – 72×3.0=216 g (contenido en el 2.3–3.1 de Helms,
+ *                sin vender 3.1 como objetivo rutinario)
  */
 export function calcProteinRange(profile: PhysicalProfile): {
   broadMin:       number;
@@ -428,13 +725,14 @@ export function calcProteinRange(profile: PhysicalProfile): {
   recommendedMax: number;
   broadMax:       number;
 } {
-  const base = calcProteinBase(profile);
+  const base = resolveProteinBase(profile);
+  const perKg = PROTEIN_PER_KG_BY_BASE_AND_GOAL[base.kind][profile.goal];
   return {
-    broadMin:       Math.round(base * 1.6),
-    recommendedMin: Math.round(base * 1.8),
-    target:         Math.round(base * 2.0),
-    recommendedMax: Math.round(base * 2.2),
-    broadMax:       Math.round(base * 2.4),
+    broadMin:       Math.round((perKg - 0.4) * base.kg),
+    recommendedMin: Math.round((perKg - 0.2) * base.kg),
+    target:         Math.round(perKg * base.kg),
+    recommendedMax: Math.round((perKg + 0.2) * base.kg),
+    broadMax:       Math.round((perKg + 0.4) * base.kg),
   };
 }
 
@@ -665,25 +963,39 @@ const INTAKE_COVERAGE_MIN_RELATIVE_FRACTION = 0.6;
  * datos (cuanta menos cobertura, menos se puede confiar en ese promedio).
  * `dailyKcal` debe venir ya agregado (una entrada por fecha).
  *
- * `targetKcal` es opcional (y retrocompatible: sin él, el criterio es
- * exactamente el de antes de PR10, solo el suelo absoluto) — cuando se
- * pasa, un día también necesita llegar al 60% del objetivo de ESE día para
- * contar como "con datos fiables" (ver INTAKE_COVERAGE_MIN_RELATIVE_FRACTION).
+ * `targetKcalByDate` es opcional (y retrocompatible: sin él, el criterio es
+ * exactamente el de antes de PR10, solo el suelo absoluto) — cuando se pasa,
+ * un día también necesita llegar al 60% de SU PROPIO objetivo vigente ese
+ * día para contar como "con datos fiables" (ver
+ * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION).
+ *
+ * nutrition-v3 (ver docs/NUTRITION_V3_DECISIONES.md §2.3): antes se recibía
+ * un único `targetKcal` escalar (normalmente el objetivo de HOY) y se
+ * aplicaba a los ~28 días de la ventana por igual — si hoy es día de gym y
+ * el histórico incluye días de descanso (o el perfil cambió desde
+ * entonces), el suelo relativo se calculaba con el objetivo equivocado. El
+ * mapa por fecha resuelve esto usando el objetivo real vigente cada día
+ * (nutrition_goals, ver getNutritionGoalsRange en data-layer.ts). Un día
+ * sin entrada en el mapa (sin fila nutrition_goals para esa fecha) NO
+ * inventa un objetivo con el perfil actual — simplemente no aplica suelo
+ * relativo ese día (se comporta como si targetKcalByDate no existiera para
+ * esa fecha concreta), igual que el fallback histórico sin mapa en
+ * absoluto.
  */
 export function calcIntakeCoverage(
   dailyKcal: Array<{ date: string; kcal: number }>,
   referenceDate: string,
   windowDays: number,
-  targetKcal?: number,
+  targetKcalByDate?: Map<string, number>,
 ): IntakeCoverageResult | null {
-  const relativeFloor = targetKcal != null ? targetKcal * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION : 0;
-  const withData = dailyKcal.filter(
-    (d) =>
-      d.date <= referenceDate &&
-      daysBetweenDates(d.date, referenceDate) < windowDays &&
-      d.kcal >= INTAKE_COVERAGE_MIN_KCAL &&
-      d.kcal >= relativeFloor
-  );
+  const withData = dailyKcal.filter((d) => {
+    if (d.date > referenceDate) return false;
+    if (daysBetweenDates(d.date, referenceDate) >= windowDays) return false;
+    if (d.kcal < INTAKE_COVERAGE_MIN_KCAL) return false;
+    const targetForDate = targetKcalByDate?.get(d.date);
+    const relativeFloor = targetForDate != null ? targetForDate * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION : 0;
+    return d.kcal >= relativeFloor;
+  });
   if (withData.length === 0) return null;
 
   const avgKcal = Math.round(withData.reduce((sum, d) => sum + d.kcal, 0) / withData.length);
@@ -745,84 +1057,183 @@ export function calcAdaptiveTdee(params: {
   return { initialKcal, observedKcal, combinedKcal, confidence: params.weightTrend.confidence, warnings };
 }
 
-// ─── Propuestas de ajuste adaptativo (PR6) ───────────────────────────────────
+// ─── Controlador adaptativo por ritmo (Adaptive v3 / PR2) ────────────────────
+// Ver docs/NUTRITION_V3_DECISIONES.md §6 — diseño cerrado ANTES de este
+// código. Sustituye evaluateAdjustmentProposal (que decidía vía 7700/
+// TDEE observado) por evaluateAdaptiveState: compara weeklyChangePercent
+// contra una banda por objetivo. calcAdaptiveTdee/7700 se conservan
+// exclusivamente como diagnóstico — ver test "no cambia con avgIntakeKcal"
+// en nutrition.test.ts, que es la prueba ejecutable del desacoplamiento.
 
-/** Umbral de confianza mínima (misma escala que ADAPTIVE_CONFIDENCE_WEIGHTS)
-    para considerar una propuesta — equivale a exigir confianza "high", ya que
-    "moderate" pesa 0.4 y "low" 0.2 en esa tabla. */
-const ADJUSTMENT_MIN_CONFIDENCE_SCORE = 0.6;
-const ADJUSTMENT_MIN_COVERAGE = 0.85;
-const ADJUSTMENT_MIN_EVALUATION_DAYS = 14;
-const ADJUSTMENT_MIN_DELTA_KCAL = 50;
-const ADJUSTMENT_MAX_DELTA_KCAL = 150; // igual al check constraint de la tabla
-
-function noAdjustmentProposal(currentTargetKcal: number, reason: string): AdjustmentDecision {
-  return { shouldPropose: false, deltaKcal: 0, proposedTargetKcal: currentTargetKcal, reason };
+interface WeeklyRateBandPct {
+  minPct: number;
+  maxPct: number;
 }
 
 /**
- * Decide si el TDEE adaptativo justifica PROPONER (nunca aplicar solo) un
- * ajuste del objetivo de calorías. Todos los criterios deben cumplirse:
- *
- *   confianza >= 0.6 (alta) && cobertura de ingesta >= 85% && >= 14 días
- *   evaluados && |diferencia| >= 50 kcal
- *
- * El delta se recorta a ±150 kcal (nunca un salto brusco de una vez, aunque
- * la diferencia real sea mayor) y se redondea a la decena más cercana.
+ * Bandas semanales (%/semana), congeladas en docs/NUTRITION_V3_DECISIONES.md
+ * §6.3 — bordes inclusivos, recomp deliberadamente asimétrica. Ver §6.2 de
+ * ese documento para la clasificación evidencia/heurística/guardarraíl de
+ * cada fila; no repetido aquí para no desincronizarse de la fuente.
  */
-export function evaluateAdjustmentProposal(params: {
+export const GOAL_RATE_BAND_PCT_PER_WEEK: Record<GoalMode, WeeklyRateBandPct> = {
+  fat_loss:    { minPct: -1.00, maxPct: -0.50 },
+  muscle_gain: { minPct: +0.25, maxPct: +0.50 },
+  maintain:    { minPct: -0.25, maxPct: +0.25 },
+  recomp:      { minPct: -0.50, maxPct:  0.00 },
+};
+
+/**
+ * Posición del ritmo observado respecto a la banda del objetivo — variable
+ * decisoria EXCLUSIVA: weeklyChangePercent, nunca slopeKgPerDay (ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.4 — 0.5 kg/semana no significa lo
+ * mismo a 55 kg que a 130 kg; las bandas están en % a propósito).
+ */
+export function assessWeightTrajectory(goal: GoalMode, weeklyChangePercent: number): WeightTrajectoryAssessment {
+  const band = GOAL_RATE_BAND_PCT_PER_WEEK[goal];
+  if (weeklyChangePercent < band.minPct) return "below";
+  if (weeklyChangePercent > band.maxPct) return "above";
+  return "inside";
+}
+
+/** Paso fijo — ver docs/NUTRITION_V3_DECISIONES.md §6.8. El controlador
+    normal SOLO puede seleccionar -100/0/+100; 150 es un hard cap de
+    esquema/seguridad que este código nunca alcanza por sí mismo. */
+export const DEFAULT_ADJUSTMENT_STEP_KCAL = 100;
+export const MAX_ADJUSTMENT_STEP_KCAL = 150; // igual al check constraint de la tabla
+
+/**
+ * delta a partir de la trayectoria — regla ÚNICA e independiente del goal:
+ * "above" la banda (el peso sube más rápido / baja más despacio de lo
+ * esperado, en términos numéricos de weeklyChangePercent) siempre implica
+ * bajar kcal; "below" siempre implica subir. Esto no es una coincidencia:
+ * las cuatro bandas comparten el mismo convenio de signo (más negativo =
+ * perder peso), así que la regla de signo emerge sola sin ramificar por
+ * goal — ver docs/NUTRITION_V3_DECISIONES.md §6.9 para la tabla completa
+ * de invariantes de dirección por objetivo, que este código debe satisfacer
+ * como propiedad derivada, no como ifs explícitos por goal.
+ */
+function suggestedDeltaForTrajectory(trajectory: WeightTrajectoryAssessment): number {
+  switch (trajectory) {
+    case "above": return -DEFAULT_ADJUSTMENT_STEP_KCAL;
+    case "below": return  DEFAULT_ADJUSTMENT_STEP_KCAL;
+    case "inside": return 0;
+  }
+}
+
+const ADJUSTMENT_MIN_COVERAGE = 0.85;
+/**
+ * Guardarraíl de producto — ver docs/NUTRITION_V3_DECISIONES.md §6.7.
+ * Ninguna evidencia clínica establece 21 días como el mínimo único
+ * correcto para PROPONER un ajuste (frente a solo diagnosticar/mostrar
+ * tendencia, que no exige este mínimo). Se eligió para equilibrar
+ * estabilidad de la tendencia y capacidad de respuesta del controlador —
+ * revisar con datos reales de producción antes de tratarlo como cerrado.
+ * No es una cifra "científica" — no la cites como tal en ningún sitio.
+ * Exportada para que los tests la referencien en vez de hardcodear 21 en
+ * varios sitios.
+ */
+export const ADJUSTMENT_MIN_EVALUATION_DAYS = 21;
+
+function blockedAdaptiveState(currentTargetKcal: number, blockingReasons: string[]): AdjustmentDecision {
+  return {
+    shouldPropose: false,
+    deltaKcal: 0,
+    proposedTargetKcal: currentTargetKcal,
+    reason: blockingReasons[0] ?? "No hay motivo para proponer un ajuste.",
+    trajectory: null,
+    blockingReasons,
+  };
+}
+
+/**
+ * Fuente única de verdad del motor adaptativo (Adaptive v3) — sustituye a
+ * evaluateAdjustmentProposal Y a la lógica que getAdaptiveDiagnostics
+ * reimplementaba en paralelo (el bug de doble fuente detectado en el mapeo
+ * de esta sesión: dos invocaciones de la decisión con inputs
+ * potencialmente distintos). Tanto generateProposal() (UI) como el panel de
+ * diagnóstico deben consumir el resultado de ESTA función, nunca recalcular
+ * por su cuenta.
+ *
+ * Arquitectura en tres capas (ver docs/NUTRITION_V3_DECISIONES.md §6.5):
+ *   1. trajectory     — SOLO depende de goal + weeklyChangePercent
+ *   2. deltaKcal       — SOLO depende de trajectory (regla de signo única)
+ *   3. shouldPropose   — depende de deltaKcal!=0 + TODOS los gates de
+ *                        calidad + cooldown — acumula TODOS los motivos de
+ *                        bloqueo a la vez (no para en el primero), así una
+ *                        propuesta puede tener trajectory="above" con
+ *                        deltaKcal=-100 pero shouldPropose=false por
+ *                        cooldown activo — esa información no se pierde.
+ *
+ * Gates: confianza de tendencia === "high" (gate semántico directo, NO vía
+ * ADAPTIVE_CONFIDENCE_WEIGHTS — esa tabla pertenece al blending de
+ * calcAdaptiveTdee/diagnóstico, no a esta decisión); cobertura de ingesta
+ * >=85% (gate de INTERPRETABILIDAD del registro, no de "adherencia" — ver
+ * docs/NUTRITION_V3_DECISIONES.md §6.6); días evaluados >= mínimo
+ * provisional; cooldown inactivo.
+ */
+export function evaluateAdaptiveState(params: {
+  goal: GoalMode;
   currentTargetKcal: number;
-  adaptive: AdaptiveTdeeResult;
   weightTrend: WeightTrendResult | null;
   intakeCoverage: IntakeCoverageResult | null;
+  lastAdjustmentDecisionAt: string | null;
+  referenceDate: string;
 }): AdjustmentDecision {
-  const { currentTargetKcal, adaptive, weightTrend, intakeCoverage } = params;
+  const { goal, currentTargetKcal, weightTrend, intakeCoverage, lastAdjustmentDecisionAt, referenceDate } = params;
 
-  if (!weightTrend || !intakeCoverage || adaptive.confidence === "insufficient_data") {
-    return noAdjustmentProposal(currentTargetKcal, "Todavía no hay suficiente historial de peso e ingesta.");
+  const blockingReasons: string[] = [];
+  if (!weightTrend) {
+    blockingReasons.push("Todavía no hay suficiente historial de peso.");
   }
-  if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
-    return noAdjustmentProposal(
-      currentTargetKcal,
-      "El TDEE observado y el de la fórmula discrepan demasiado (>30%) — puede haber registros incompletos, retención de agua u otro factor puntual. Esperamos a que los datos se estabilicen."
-    );
+  if (!intakeCoverage) {
+    blockingReasons.push("Todavía no hay suficiente historial de ingesta.");
   }
-
-  const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
-  if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
-    return noAdjustmentProposal(currentTargetKcal, "La confianza de tu tendencia de peso todavía es baja o moderada.");
+  if (weightTrend && weightTrend.confidence !== "high") {
+    blockingReasons.push("La confianza de tu tendencia de peso todavía no es alta.");
   }
-  if (intakeCoverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
-    return noAdjustmentProposal(currentTargetKcal, "Te faltan días de registro de comidas para confiar en el promedio.");
+  if (intakeCoverage && intakeCoverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
+    blockingReasons.push("Te faltan días de registro de comidas para confiar en el promedio (cobertura insuficiente para interpretar la tendencia).");
   }
-  if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
-    return noAdjustmentProposal(currentTargetKcal, "Todavía no se han evaluado suficientes días.");
+  if (weightTrend && weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
+    blockingReasons.push(`Todavía no se han evaluado suficientes días (mínimo provisional: ${ADJUSTMENT_MIN_EVALUATION_DAYS}).`);
   }
-
-  // OJO: el delta se basa en cuánto se ha desplazado la ESTIMACIÓN de
-  // mantenimiento (combinado vs. fórmula inicial) — nunca en la diferencia
-  // entre el combinado y el objetivo actual. El objetivo actual ya es,
-  // A PROPÓSITO, un déficit o superávit sobre el mantenimiento (ese es el
-  // sentido de tener un goal de pérdida/ganancia) — compararlo directamente
-  // contra el combinado propondría siempre "subir hacia el mantenimiento" en
-  // cualquier déficit razonable, incluso cuando la fórmula y la realidad
-  // coinciden perfectamente. Lo que sí debe trasladarse al objetivo es CUÁNTO
-  // ha cambiado la estimación de mantenimiento respecto a la fórmula.
-  const tdeeShift = adaptive.combinedKcal - adaptive.initialKcal;
-  if (Math.abs(tdeeShift) < ADJUSTMENT_MIN_DELTA_KCAL) {
-    return noAdjustmentProposal(currentTargetKcal, "Tu mantenimiento real coincide con la estimación de la fórmula — no hay motivo para tocar tu objetivo.");
+  if (isAdjustmentCooldownActive(lastAdjustmentDecisionAt, referenceDate)) {
+    blockingReasons.push(`Toca esperar — hay un periodo de espera de ${ADJUSTMENT_COOLDOWN_DAYS} días entre decisiones.`);
   }
 
-  const clamped = Math.sign(tdeeShift) * Math.min(ADJUSTMENT_MAX_DELTA_KCAL, Math.abs(tdeeShift));
-  const deltaKcal = Math.round(clamped / 10) * 10;
+  // Capa 1 y 2: solo se pueden calcular con weightTrend real — si no lo
+  // hay, no hay trajectory que evaluar (no se inventa "inside" por defecto).
+  if (!weightTrend) {
+    return blockedAdaptiveState(currentTargetKcal, blockingReasons);
+  }
+
+  const trajectory = assessWeightTrajectory(goal, weightTrend.weeklyChangePercent);
+  const deltaKcal = suggestedDeltaForTrajectory(trajectory);
+
+  if (deltaKcal === 0) {
+    blockingReasons.push("Tu ritmo observado ya está dentro del rango esperado para tu objetivo — no hay motivo para tocarlo.");
+  }
+
+  if (blockingReasons.length > 0) {
+    return {
+      shouldPropose: false,
+      deltaKcal: 0,
+      proposedTargetKcal: currentTargetKcal,
+      reason: blockingReasons[0],
+      trajectory,
+      blockingReasons,
+    };
+  }
+
+  const band = GOAL_RATE_BAND_PCT_PER_WEEK[goal];
   const proposedTargetKcal = currentTargetKcal + deltaKcal;
-
   const reason =
-    deltaKcal > 0
-      ? `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es mayor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — subir ${deltaKcal} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`
-      : `Tu mantenimiento real estimado (${adaptive.combinedKcal} kcal) es menor de lo que asumía la fórmula (${adaptive.initialKcal} kcal) — bajar ${Math.abs(deltaKcal)} kcal/día mantendría el mismo ritmo que buscas, ajustado a tu caso real.`;
+    trajectory === "below"
+      ? `Tu ritmo observado (${weightTrend.weeklyChangePercent}%/semana) está por debajo del rango esperado para tu objetivo (${band.minPct}% a ${band.maxPct}%/semana) — subir ${deltaKcal} kcal/día ayudaría a acercarte al ritmo esperado.`
+      : `Tu ritmo observado (${weightTrend.weeklyChangePercent}%/semana) está por encima del rango esperado para tu objetivo (${band.minPct}% a ${band.maxPct}%/semana) — bajar ${Math.abs(deltaKcal)} kcal/día ayudaría a acercarte al ritmo esperado.`;
 
-  return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason };
+  return { shouldPropose: true, deltaKcal, proposedTargetKcal, reason, trajectory, blockingReasons: [] };
 }
 
 /** Días de espera tras aceptar O rechazar una propuesta antes de permitir
@@ -851,19 +1262,24 @@ export function adjustmentCooldownDaysLeft(
 }
 
 /**
- * Diagnóstico completo del motor adaptativo para un momento dado — a
- * diferencia de evaluateAdjustmentProposal (que para en el primer criterio
- * que falla), aquí se acumulan TODOS los motivos de bloqueo a la vez. Pensado
- * para responder "¿por qué no me deja generar una propuesta?" sin adivinar
- * por consola. proposalEligible usa evaluateAdjustmentProposal como única
- * fuente de verdad — este diagnóstico nunca puede contradecirlo.
+ * Diagnóstico completo del motor adaptativo para un momento dado.
+ * proposalEligible/ineligibilityReasons vienen SIEMPRE de
+ * evaluateAdaptiveState() — fuente única, nunca se recalcula la decisión
+ * por separado aquí (ese era exactamente el bug de doble fuente detectado
+ * en el mapeo de esta sesión: esta función y el panel de UI llamaban por
+ * su cuenta a la lógica de decisión, con inputs que podían divergir).
+ * calcAdaptiveTdee (7700) se sigue calculando para los campos de
+ * diagnóstico (initialTdeeKcal/observedTdeeKcal/blendedTdeeKcal) — nunca
+ * para decidir si se propone ni cuánto.
  */
 export function getAdaptiveDiagnostics(params: {
+  goal: GoalMode;
   weightLog: WeightEntry[];
   dailyKcal: Array<{ date: string; kcal: number }>;
   referenceDate: string;
   initialTdeeKcal: number;
   currentTargetKcal: number;
+  lastAdjustmentDecisionAt: string | null;
   windowDays?: number;
   /** PR9: si hubo un reinicio de calibración más reciente que el inicio de la
       ventana estándar (referenceDate - windowDays), el periodo evaluado
@@ -873,7 +1289,7 @@ export function getAdaptiveDiagnostics(params: {
   calibrationStartedAt?: string | null;
 }): AdaptiveDiagnostics {
   const windowDays = params.windowDays ?? 28;
-  const { weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal } = params;
+  const { goal, weightLog, dailyKcal, referenceDate, initialTdeeKcal, currentTargetKcal, lastAdjustmentDecisionAt } = params;
   const standardWindowStart = subtractDaysFromDateKey(referenceDate, windowDays);
   const effectiveEvaluationStart =
     params.calibrationStartedAt && params.calibrationStartedAt > standardWindowStart
@@ -882,8 +1298,11 @@ export function getAdaptiveDiagnostics(params: {
 
   const weightTrend = calcWeightTrend(weightLog, referenceDate, windowDays);
   const coverage = calcIntakeCoverage(dailyKcal, referenceDate, windowDays);
+  // Diagnóstico únicamente (7700) — nunca alimenta evaluateAdaptiveState.
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
-  const decision = evaluateAdjustmentProposal({ currentTargetKcal, adaptive, weightTrend, intakeCoverage: coverage });
+  const decision = evaluateAdaptiveState({
+    goal, currentTargetKcal, weightTrend, intakeCoverage: coverage, lastAdjustmentDecisionAt, referenceDate,
+  });
 
   const inWindow = weightLog
     .filter((e) => e.date <= referenceDate && daysBetweenDates(e.date, referenceDate) <= windowDays)
@@ -901,38 +1320,9 @@ export function getAdaptiveDiagnostics(params: {
     }
   }
 
-  const ineligibilityReasons: string[] = [];
-  if (!weightTrend) {
-    ineligibilityReasons.push(
-      `Peso: solo ${inWindow.length} mediciones en los últimos ${windowDays} días (mínimo 3 para calcular tendencia).`
-    );
-  }
-  if (!coverage) {
-    ineligibilityReasons.push(`Ingesta: sin días con registro fiable en los últimos ${windowDays} días.`);
-  }
-  if (weightTrend && coverage) {
-    const confidenceScore = ADAPTIVE_CONFIDENCE_WEIGHTS[weightTrend.confidence];
-    if (confidenceScore < ADJUSTMENT_MIN_CONFIDENCE_SCORE) {
-      ineligibilityReasons.push(`Confianza de tendencia: ${weightTrend.confidence} (se necesita alta).`);
-    }
-    if (coverage.coverageFraction < ADJUSTMENT_MIN_COVERAGE) {
-      ineligibilityReasons.push(
-        `Cobertura de ingesta: ${Math.round(coverage.coverageFraction * 100)}% (mínimo ${Math.round(ADJUSTMENT_MIN_COVERAGE * 100)}%).`
-      );
-    }
-    if (weightTrend.validMeasurements < ADJUSTMENT_MIN_EVALUATION_DAYS) {
-      ineligibilityReasons.push(
-        `Días evaluados: ${weightTrend.validMeasurements} (mínimo ${ADJUSTMENT_MIN_EVALUATION_DAYS}).`
-      );
-    }
-    if (Math.abs(adaptive.combinedKcal - adaptive.initialKcal) < ADJUSTMENT_MIN_DELTA_KCAL) {
-      ineligibilityReasons.push(
-        `Desplazamiento de la estimación de mantenimiento: ${Math.round(adaptive.combinedKcal - adaptive.initialKcal)} kcal frente a la fórmula (mínimo ${ADJUSTMENT_MIN_DELTA_KCAL} kcal).`
-      );
-    }
-  }
+  const ineligibilityReasons: string[] = [...decision.blockingReasons];
   if (adaptive.warnings.includes("tdee_estimates_strongly_disagree")) {
-    ineligibilityReasons.push("El TDEE observado y el de la fórmula discrepan más de un 30% — posible dato sospechoso.");
+    ineligibilityReasons.push("El TDEE observado y el de la fórmula discrepan más de un 30% — posible dato sospechoso (informativo; ya no bloquea la decisión por ritmo).");
   }
 
   return {
@@ -952,6 +1342,7 @@ export function getAdaptiveDiagnostics(params: {
     weightTrendQualityScore: weightTrend?.qualityScore ?? null,
     proposalEligible: decision.shouldPropose,
     ineligibilityReasons,
+    decision,
   };
 }
 
@@ -999,7 +1390,8 @@ function trainingActivityRelevantEqual(
     a.lifestyleActivity === b.lifestyleActivity &&
     a.strengthDaysPerWeek === b.strengthDaysPerWeek &&
     a.cardioDaysPerWeek === b.cardioDaysPerWeek &&
-    a.avgSessionDurationMin === b.avgSessionDurationMin
+    a.strengthAvgDurationMin === b.strengthAvgDurationMin &&
+    a.cardioAvgDurationMin === b.cardioAvgDurationMin
   );
 }
 
@@ -1041,6 +1433,10 @@ export function buildAdjustmentProfileFingerprint(
   return {
     goal: profile.goal,
     weightKg: profile.weightKg,
+    heightCm: profile.heightCm,
+    age: profile.age,
+    sex: profile.sex,
+    bodyFatPct: profile.bodyFatPct,
     activityLevel: profile.activityLevel,
     activityModelVersion: profile.activityModelVersion ?? "legacy_total_pal",
     trainingActivity: profile.trainingActivity ?? null,
@@ -1063,6 +1459,10 @@ export function isProposalStale(
   return (
     original.goal !== current.goal ||
     original.weightKg !== current.weightKg ||
+    original.heightCm !== current.heightCm ||
+    original.age !== current.age ||
+    original.sex !== current.sex ||
+    original.bodyFatPct !== current.bodyFatPct ||
     original.activityLevel !== current.activityLevel ||
     original.activityModelVersion !== current.activityModelVersion ||
     original.macroPreference !== current.macroPreference ||
@@ -1117,15 +1517,24 @@ export function distributeWeeklyCalories(params: {
   };
 }
 
-// ─── Estimación kcal quemadas por ejercicio (MET) ────────────────────────────
+// ─── Estimación kcal de una sesión de Ejercicios (MET) ───────────────────────
+// Pipeline B (ver docs/NUTRITION_V3_DECISIONES.md §3.1) — separada de la
+// pipeline de Nutrición (calcTdeeBreakdown). Estas kcal NUNCA se suman de
+// vuelta al presupuesto de hoy (getPendingMacros en state.tsx) ni a
+// calcTDEE — solo describen el gasto estimado de una sesión ya registrada.
 
 /**
- * Estimación neta de kcal quemadas (excluyendo gasto basal).
- * Usa MET 5.0 para entrenamiento de fuerza moderado.
- * Fórmula: (MET − 1) × 3.5 × peso_kg / 200 × minutos
+ * Estimación neta de kcal quemadas por una sesión registrada, excluyendo
+ * el gasto basal equivalente (netAboveRestKcal — ver definición completa
+ * junto a grossExerciseKcal, más arriba). Usa MET 5.0 por defecto
+ * (entrenamiento de fuerza moderado). Se mantiene como wrapper de
+ * compatibilidad para ExercisesView.tsx; el nombre "estimateWorkoutKcal"
+ * es legado — su significado real es netAboveRestKcal, nunca grossKcal ni
+ * replacementIncrementKcal (esos son conceptos de la pipeline de
+ * Nutrición, no de esta).
  */
 export function estimateWorkoutKcal(weightKg: number, durationMin: number, met = 5.0): number {
-  return Math.round((met - 1) * 3.5 * weightKg / 200 * durationMin);
+  return Math.round(netAboveRestKcal(met, weightKg, durationMin));
 }
 
 // ─── Escalado de recetas (§5.3) ──────────────────────────────────────────────
