@@ -581,6 +581,7 @@ export function FinanceView() {
                     value={savingsGoalPct}
                     onChange={(e) => mutate((d) => { d.savingsGoalPct = Number(e.target.value); })}
                     className="savings-goal-input"
+                    aria-label="Meta de ahorro (%)"
                   />
                   <span>%</span>
                 </div>
@@ -722,6 +723,7 @@ export function FinanceView() {
                                     }
                                     className="cat-budget-input"
                                     title={`Presupuesto mensual ${cat} (€)`}
+                                    aria-label={`Presupuesto mensual ${cat} (€)`}
                                   />
                                 </div>
                               </div>
@@ -825,6 +827,7 @@ export function FinanceView() {
                   type="number" min="0" step="1" value={state.weeklyBudget}
                   onChange={(e) => mutate((d) => void (d.weeklyBudget = Number(e.target.value)))}
                   className="budget-input"
+                  aria-label="Presupuesto semanal de comida (€)"
                 />
                 <span>€</span>
               </div>

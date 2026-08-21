@@ -7962,6 +7962,17 @@ button.secondary-button.small {
   background: rgba(14, 24, 11, 0.13);
 }
 
+/* E21-10: mismo problema que .filter.active/.settings-theme-btn.active más
+   arriba — color: #071005 (casi negro) fijo sobre background: var(--green),
+   asumiendo que --green siempre sería lo bastante claro para contrastar.
+   En tema claro (--green más oscuro a propósito, ver el comentario junto a
+   esa variable en globals.css) da 3.86:1, por debajo del 4.5:1 de AA — lo
+   encontró axe (color-contrast) al visitar Recetas/Nutrición, las vistas
+   donde SÍ hay un .primary-button visible con datos demo. */
+[data-theme="light"] .primary-button {
+  color: #fff;
+}
+
 [data-theme="light"] .secondary-button {
   color: var(--text);
   background: rgba(14, 24, 11, 0.08);
