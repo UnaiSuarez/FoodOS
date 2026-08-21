@@ -463,6 +463,22 @@ describe("runPush (vía schedulePush) — no marca guardado en error y reintenta
   });
 });
 
+// Conecta un RealtimeHydrationGate real (no un mock) a remote.onStatusChange
+// exactamente como lo hace state.tsx — para probar la integración completa
+// runPush() -> onStatusChange() -> gate, no solo cada pieza suelta. Se usa
+// en varios describe de "carrera" de más abajo.
+async function bindGateLikeStateTsx() {
+  const { RealtimeHydrationGate } = await import("./realtime-hydration-gate");
+  const gate = new RealtimeHydrationGate();
+  const statuses: string[] = [];
+  let hydrateCount = 0;
+  remote.onStatusChange = (status) => {
+    statuses.push(status);
+    if (gate.onPushStatusChange(status)) hydrateCount++;
+  };
+  return { gate, statuses, getHydrateCount: () => hydrateCount };
+}
+
 describe("runPush — carrera: 'saved' solo tras el ÚLTIMO snapshot, no tras cada push individual", () => {
   // B2 (revisión externa, 2026-08-22, ronda 3): "saved" se emitía en cuanto
   // ESTE push terminaba bien, sin comprobar si mientras tanto había quedado
@@ -475,22 +491,6 @@ describe("runPush — carrera: 'saved' solo tras el ÚLTIMO snapshot, no tras ca
   // (se difiere) -> el usuario edita y crea el snapshot B mientras A sigue
   // en vuelo -> A termina bien (NO debe soltar el refresco: B sigue
   // pendiente) -> B termina bien (AHORA sí, una única vez).
-  //
-  // Usa RealtimeHydrationGate real (no un mock) conectado a onStatusChange
-  // exactamente como lo hace state.tsx, para probar la integración
-  // completa runPush() -> onStatusChange() -> gate, no solo cada pieza suelta.
-  async function bindGateLikeStateTsx() {
-    const { RealtimeHydrationGate } = await import("./realtime-hydration-gate");
-    const gate = new RealtimeHydrationGate();
-    const statuses: string[] = [];
-    let hydrateCount = 0;
-    remote.onStatusChange = (status) => {
-      statuses.push(status);
-      if (gate.onPushStatusChange(status)) hydrateCount++;
-    };
-    return { gate, statuses, getHydrateCount: () => hydrateCount };
-  }
-
   it("B queda en pushTimer (su debounce aún no ha disparado cuando A termina)", async () => {
     vi.useFakeTimers();
     const config = successConfig();
@@ -566,5 +566,114 @@ describe("runPush — carrera: 'saved' solo tras el ÚLTIMO snapshot, no tras ca
 
     expect(statuses.at(-1)).toBe("saved");
     expect(getHydrateCount()).toBe(1);
+  });
+});
+
+describe("runPush — no reintenta un snapshot obsoleto si ya hay uno más reciente pendiente", () => {
+  // B2 (revisión externa, 2026-08-22, ronda 4): al fallar, runPush()
+  // programaba el reintento de A INCONDICIONALMENTE — el chequeo de "¿hay
+  // ya algo más reciente?" solo se hacía DENTRO del propio callback del
+  // reintento, 10s más tarde, nunca al programarlo. Si el snapshot más
+  // reciente (B) ya estaba en pushTimer (su debounce sin disparar todavía)
+  // en el momento exacto en que A fallaba, nada cancelaba ese reintento
+  // mientras tanto: B se ejecutaba con éxito, y 10s después el reintento
+  // de A disparaba de todos modos (pushQueued/pushTimer ya estaban limpios
+  // para entonces) y reenviaba el snapshot VIEJO, sobrescribiendo a B.
+  //
+  // Secuencia exacta pedida: A queda bloqueado -> se programa B (queda en
+  // pushTimer) -> A termina con error -> B termina correctamente -> se
+  // avanza el reloj más de PUSH_RETRY_MS -> A NO debe ejecutarse una
+  // tercera vez, el último payload persistido debe ser B, y "saved" +
+  // la hidratación diferida solo deben producirse tras B.
+  it("B en pushTimer cuando A falla: el reintento de A nunca se programa, B persiste como el último payload", async () => {
+    vi.useFakeTimers();
+    const config = successConfig();
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    config.user_profiles = { upsert: () => gateA.then(() => ({ error: { message: "caída temporal" } })) };
+    const calls = setup(config);
+    const { gate, statuses, getHydrateCount } = await bindGateLikeStateTsx();
+
+    // 1. Empieza push A (queda bloqueado en el gate del perfil).
+    remote.schedulePush(makeState({ weeklyBudget: 111 }));
+    await vi.advanceTimersByTimeAsync(500); // dispara runPush(A); A sigue "en vuelo"
+
+    expect(gate.onRealtimeRefresh(remote.hasPendingPush())).toBe(false); // evento realtime diferido
+
+    // 2. Se programa B: queda en pushTimer (su debounce aún no ha disparado).
+    remote.schedulePush(makeState({ weeklyBudget: 222 }));
+
+    // 3. A termina con error MIENTRAS el pushTimer de B sigue pendiente.
+    releaseA();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(statuses.at(-1)).toBe("error");
+    expect(getHydrateCount()).toBe(0); // el refresco sigue diferido, A no tuvo éxito
+
+    // Supabase se recupera para el resto (B, y el reintento fantasma de A
+    // que NO debería llegar a producirse).
+    config.user_profiles = { upsert: { error: null } };
+
+    // 4. B (tras su propio debounce) se ejecuta y tiene éxito.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(statuses.at(-1)).toBe("saved");
+    expect(getHydrateCount()).toBe(1); // el refresco diferido se procesa ahora, tras B
+
+    const profileUpsertsAfterB = calls.filter((c) => c.table === "user_profiles" && c.op === "upsert");
+    expect(profileUpsertsAfterB).toHaveLength(2); // A (fallido) + B (con éxito)
+    const lastPayload = profileUpsertsAfterB.at(-1)!.args as { weekly_food_budget: number };
+    expect(lastPayload.weekly_food_budget).toBe(222); // B, no el 111 de A
+
+    // 5. Más de PUSH_RETRY_MS después del fallo de A: el reintento de A
+    //    nunca se programó (porque B ya estaba en pushTimer cuando A
+    //    falló), así que no debe haber una tercera ejecución ni una nueva
+    //    transición de estado.
+    const statusesBeforeWait = statuses.length;
+    await vi.advanceTimersByTimeAsync(10_500);
+
+    expect(statuses.length).toBe(statusesBeforeWait); // ningún ciclo syncing/error/saved fantasma
+    const profileUpsertsFinal = calls.filter((c) => c.table === "user_profiles" && c.op === "upsert");
+    expect(profileUpsertsFinal).toHaveLength(2); // sigue siendo A + B, nunca un tercer envío
+    expect(getHydrateCount()).toBe(1); // no se dispara una segunda hidratación
+  });
+
+  it("B en pushQueued cuando A falla: tampoco reintenta a A (cubierto por schedulePush(queued) cancelando el retry)", async () => {
+    vi.useFakeTimers();
+    const config = successConfig();
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    config.user_profiles = { upsert: () => gateA.then(() => ({ error: { message: "caída temporal" } })) };
+    const calls = setup(config);
+    const { gate, statuses, getHydrateCount } = await bindGateLikeStateTsx();
+
+    // 1. Empieza push A (bloqueado en el gate del perfil).
+    remote.schedulePush(makeState({ weeklyBudget: 111 }));
+    await vi.advanceTimersByTimeAsync(500); // runPush(A) arranca, sigue en vuelo
+
+    expect(gate.onRealtimeRefresh(remote.hasPendingPush())).toBe(false); // evento realtime diferido
+
+    // 2. Se programa B...
+    remote.schedulePush(makeState({ weeklyBudget: 222 }));
+    // ...y su debounce dispara MIENTRAS A sigue bloqueado -> runPush(B) ve
+    // this.pushing === true y lo mueve a pushQueued.
+    await vi.advanceTimersByTimeAsync(500);
+
+    // 3. A termina con error, con B ya en pushQueued.
+    config.user_profiles = { upsert: { error: null } }; // Supabase se recupera para B
+    releaseA();
+    await vi.advanceTimersByTimeAsync(50);
+
+    // 4. B se encadena (schedulePush(queued) en el finally) y termina con éxito.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(statuses.at(-1)).toBe("saved");
+    expect(getHydrateCount()).toBe(1);
+
+    const profileUpsertsBeforeWait = calls.filter((c) => c.table === "user_profiles" && c.op === "upsert").length;
+    const statusesBeforeWait = statuses.length;
+
+    // 5. Más de PUSH_RETRY_MS después: sin reintento fantasma de A.
+    await vi.advanceTimersByTimeAsync(10_500);
+
+    expect(calls.filter((c) => c.table === "user_profiles" && c.op === "upsert").length).toBe(profileUpsertsBeforeWait);
+    expect(statuses.length).toBe(statusesBeforeWait);
   });
 });

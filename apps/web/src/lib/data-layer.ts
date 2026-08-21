@@ -946,12 +946,27 @@ class RemoteAdapter {
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
       this.notifyPushError(error);
       this.onStatusChange?.("error");
-      // Reintenta este mismo guardado tras una pausa, salvo que ya haya una
-      // edición más reciente en camino (esa ya lo incluye, al ser snapshot completo).
-      this.pushRetryTimer = setTimeout(() => {
-        this.pushRetryTimer = null;
-        if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
-      }, PUSH_RETRY_MS);
+      // Reintenta este mismo guardado tras una pausa — PERO solo si no hay
+      // YA una edición más reciente en camino (esa ya lo incluye, al ser
+      // snapshot completo). B2 (revisión externa, 2026-08-22, ronda 4): este
+      // chequeo antes solo se hacía DENTRO del propio callback del retry,
+      // 10s más tarde — nunca al programarlo. Si `state` (B) ya estaba en
+      // pushTimer en ESTE momento (el usuario editó mientras A seguía en
+      // vuelo, y B aún no había disparado su debounce), el retry de A se
+      // programaba de todos modos, sin nada que lo cancelara mientras
+      // tanto: B se ejecutaba y tenía éxito, pero 10s después el retry de A
+      // disparaba igual (pushQueued/pushTimer ya estaban limpios para
+      // entonces) y reenviaba el snapshot VIEJO, sobrescribiendo el de B ya
+      // persistido. El caso "B ya está en pushQueued" no tenía este problema
+      // — el finally de más abajo llama a schedulePush(queued), que cancela
+      // cualquier pushRetryTimer existente — pero el caso "B en pushTimer"
+      // sí, porque ese branch nunca toca pushRetryTimer.
+      if (!this.pushQueued && !this.pushTimer) {
+        this.pushRetryTimer = setTimeout(() => {
+          this.pushRetryTimer = null;
+          if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
+        }, PUSH_RETRY_MS);
+      }
     } finally {
       this.pushing = false;
       if (this.pushQueued) {
