@@ -43,6 +43,19 @@ function today(): string {
   return todayPlus(0);
 }
 
+/** Extrae un mensaje legible de cualquier error, sin asumir que sea una
+    instancia de Error — un PostgrestError de supabase-js trae `.message`
+    pero no siempre puede darse por hecho que sea `instanceof Error` en
+    todas las versiones/builds. Sin este fallback, un error que no lo fuera
+    se convertía en el inútil "[object Object]" al concatenarlo con String(). */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return String(err);
+}
+
 // ---------- Local ----------
 
 export function loadLocalState(defaults: FoodOSState): FoodOSState {
@@ -877,6 +890,16 @@ class RemoteAdapter {
     }, PUSH_DEBOUNCE_MS);
   }
 
+  /** B2 (revisión externa, 2026-08-21): esta función en sí ya estaba bien
+      estructurada — el bug real estaba en que pushState() nunca lanzaba en
+      la mayoría de sus escrituras (ver el comentario grande sobre
+      pushState), así que el try/catch de aquí nunca se disparaba para esos
+      casos y "saved" se marcaba con datos perdidos en el servidor. Con
+      pushState() ahora fail-closed (lanza si CUALQUIER escritura falló),
+      este catch se dispara correctamente: no se llama a
+      onStatusChange?.("saved"), sí se notifica el error y se programa un
+      reintento con el MISMO snapshot — `state` sigue siendo el objeto local
+      completo, nada se descarta aquí. */
   private async runPush(state: FoodOSState): Promise<void> {
     if (this.pushing) {
       this.pushQueued = state;
@@ -917,11 +940,42 @@ class RemoteAdapter {
     this.onPushError(error);
   }
 
+  /**
+   * Sincroniza el snapshot completo del estado local con Supabase.
+   *
+   * Fail-closed frente a errores de escritura (B2, revisión externa,
+   * 2026-08-21): antes, NINGUNA de las llamadas de este método comprobaba
+   * `{ error }` en la respuesta de Supabase-js — salvo el upsert dentro de
+   * syncTable(), que sí lanzaba. Supabase-js NO lanza excepciones en
+   * fallos de escritura (permiso denegado por RLS, columna inválida,
+   * violación de constraint...): los reporta como `{ data: null, error }`
+   * con la promesa resuelta igualmente. Sin comprobar ese campo, un
+   * pushState() que fallara a medias (p.ej. el perfil no se pudo guardar
+   * por RLS, pero el resto de tablas sí) terminaba SIN lanzar, así que
+   * runPush() lo trataba como éxito total: onStatusChange?.("saved") y el
+   * indicador de la UI decía "guardado" con el perfil realmente perdido en
+   * el servidor.
+   *
+   * Cada escritura relevante (perfil, pesos + su borrado, objetivos
+   * nutricionales, y cada syncTable) se intenta con mejor esfuerzo — un
+   * fallo en una no impide intentar las demás, porque son tablas
+   * independientes sin relación entre sí. Los fallos se acumulan y, si hay
+   * alguno, se lanza al final UN error agregado: eso es lo que hace que
+   * runPush() (que si envuelve pushState en try/catch) NO marque
+   * onStatusChange?.("saved") y programe un reintento (ver runPush más
+   * abajo). El reintento reenvía el MISMO snapshot completo: como cada
+   * operación es upsert (onConflict) + delete del complemento, repetir una
+   * escritura que ya tuvo éxito es un no-op idempotente — no duplica filas
+   * ni pierde las que sí se guardaron a la primera. Solo lo que de verdad
+   * falló necesita reintentarse, y reintentarlo junto con lo que ya
+   * funcionó no tiene coste de corrección, solo un poco de red de más.
+   */
   async pushState(state: FoodOSState): Promise<void> {
     const client = this.client!;
     const userId = this.user!.id;
+    const failures: string[] = [];
 
-    await client
+    const { error: profileError } = await client
       .from("user_profiles")
       .update({
         mascot_id: state.mascotId,
@@ -970,24 +1024,46 @@ class RemoteAdapter {
           : {}),
       })
       .eq("user_id", userId);
+    if (profileError) failures.push(`perfil: ${profileError.message}`);
 
     // water_log: se gestiona exclusivamente via fn_water_increment (RPC atómica).
     // No se incluye en el push completo para evitar conflictos de concurrencia entre tabs.
 
-    // weight_log: upsert + delete de entradas borradas
-    if ((state.weightLog ?? []).length > 0) {
-      const weightRows = state.weightLog.map((e) => ({ user_id: userId, log_date: e.date, kg: e.kg }));
-      await client.from("weight_log").upsert(weightRows, { onConflict: "user_id,log_date" });
-      // Borrar entradas que ya no están en el estado
-      const { data: existingWeights } = await client.from("weight_log").select("log_date").eq("user_id", userId);
-      const keepDates = new Set(state.weightLog.map((e) => e.date));
-      const toDeleteDates = (existingWeights ?? []).map((r) => r.log_date).filter((d) => !keepDates.has(d as string));
-      if (toDeleteDates.length) {
-        await client.from("weight_log").delete().eq("user_id", userId).in("log_date", toDeleteDates);
+    // weight_log: upsert de lo que hay + borrado de lo que ya no está. El
+    // chequeo de borrado corre SIEMPRE, incluso si el estado local se quedó
+    // sin ninguna entrada — antes el bloque entero se saltaba cuando
+    // weightLog estaba vacío, así que borrar la ÚLTIMA entrada de peso local
+    // nunca se propagaba: la fila quedaba huérfana en remoto para siempre.
+    // Si el upsert falla, se salta el borrado de esta pasada — sin saber qué
+    // filas llegaron a persistirse de verdad, borrar por diferencia podría
+    // eliminar datos válidos; el reintento completo (mismo snapshot) lo
+    // resuelve limpiamente en el siguiente intento.
+    {
+      const weightRows = (state.weightLog ?? []).map((e) => ({ user_id: userId, log_date: e.date, kg: e.kg }));
+      let weightUpsertOk = true;
+      if (weightRows.length > 0) {
+        const { error: weightUpsertError } = await client.from("weight_log").upsert(weightRows, { onConflict: "user_id,log_date" });
+        if (weightUpsertError) {
+          failures.push(`peso (guardado): ${weightUpsertError.message}`);
+          weightUpsertOk = false;
+        }
+      }
+      if (weightUpsertOk) {
+        const { data: existingWeights, error: weightSelectError } = await client.from("weight_log").select("log_date").eq("user_id", userId);
+        if (weightSelectError) {
+          failures.push(`peso (lectura para borrado): ${weightSelectError.message}`);
+        } else {
+          const keepDates = new Set(weightRows.map((r) => r.log_date));
+          const toDeleteDates = (existingWeights ?? []).map((r) => r.log_date as string).filter((d) => !keepDates.has(d));
+          if (toDeleteDates.length) {
+            const { error: weightDeleteError } = await client.from("weight_log").delete().eq("user_id", userId).in("log_date", toDeleteDates);
+            if (weightDeleteError) failures.push(`peso (borrado): ${weightDeleteError.message}`);
+          }
+        }
       }
     }
 
-    await client.from("nutrition_goals").upsert(
+    const { error: goalError } = await client.from("nutrition_goals").upsert(
       {
         user_id: userId,
         goal_date: state.debugDate ?? today(),
@@ -999,109 +1075,142 @@ class RemoteAdapter {
       },
       { onConflict: "user_id,goal_date" }
     );
+    if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
 
-    await this.syncTable(
-      "inventory_items",
-      state.inventory,
-      (item) => ({
-        id: ensureUuid(item.id),
-        owner_id: userId,
-        almacen_id: this.almacenIdByName[item.storage] ?? this.almacenIdByName.Despensa,
-        name: item.name,
-        quantity: item.qty,
-        unit: item.unit,
-        expiry_date: item.expires || null,
-        price_estimate: item.price || null,
-        kcal_per_100: item.kcal || null,
-        protein_per_100: item.protein || null,
-        carbs_per_100: item.carbs ?? null,
-        fat_per_100: item.fat ?? null,
-        salt_per_100: item.salt ?? null,
-        fiber_per_100: item.fiber ?? null,
-        sugars_per_100: item.sugars ?? null,
-        unit_size: item.unitSize ?? null,
-        brand: item.brand ?? null,
-        image_url: item.imageUrl ?? null,
-        allergen_tags: item.allergenTags ?? null,
-      }),
-      { owner_id: userId }
+    // Cada syncTable() es independiente de las demás (tablas sin relación
+    // entre sí) — un fallo en una no impide intentar el resto; se recoge el
+    // error para el agregado final en vez de dejar que aborte todo pushState.
+    await this.trySyncTable(failures, "inventario", () =>
+      this.syncTable(
+        "inventory_items",
+        state.inventory,
+        (item) => ({
+          id: ensureUuid(item.id),
+          owner_id: userId,
+          almacen_id: this.almacenIdByName[item.storage] ?? this.almacenIdByName.Despensa,
+          name: item.name,
+          quantity: item.qty,
+          unit: item.unit,
+          expiry_date: item.expires || null,
+          price_estimate: item.price || null,
+          kcal_per_100: item.kcal || null,
+          protein_per_100: item.protein || null,
+          carbs_per_100: item.carbs ?? null,
+          fat_per_100: item.fat ?? null,
+          salt_per_100: item.salt ?? null,
+          fiber_per_100: item.fiber ?? null,
+          sugars_per_100: item.sugars ?? null,
+          unit_size: item.unitSize ?? null,
+          brand: item.brand ?? null,
+          image_url: item.imageUrl ?? null,
+          allergen_tags: item.allergenTags ?? null,
+        }),
+        { owner_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "shopping_items",
-      state.cart,
-      (item) => ({
-        id: ensureUuid(item.id),
-        list_id: this.shoppingListId,
-        user_id: userId,
-        name: item.name,
-        quantity: item.qty,
-        unit: item.unit,
-        estimated_price: item.price || null,
-        store: item.store || null,
-        checked: Boolean(item.checked),
-        unit_size: item.unitSize ?? null,
-      }),
-      { user_id: userId, list_id: this.shoppingListId! }
+    await this.trySyncTable(failures, "carrito", () =>
+      this.syncTable(
+        "shopping_items",
+        state.cart,
+        (item) => ({
+          id: ensureUuid(item.id),
+          list_id: this.shoppingListId,
+          user_id: userId,
+          name: item.name,
+          quantity: item.qty,
+          unit: item.unit,
+          estimated_price: item.price || null,
+          store: item.store || null,
+          checked: Boolean(item.checked),
+          unit_size: item.unitSize ?? null,
+        }),
+        { user_id: userId, list_id: this.shoppingListId! }
+      )
     );
 
-    await this.syncTable(
-      "gastos",
-      state.expenses,
-      (entry) => ({
-        id: ensureUuid(entry.id),
-        user_id: userId,
-        amount: entry.type === "income" ? -Math.abs(entry.amount) : Math.abs(entry.amount),
-        description: entry.description || null,
-        category: entry.category,
-        txn_date: entry.date || today(),
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "gastos", () =>
+      this.syncTable(
+        "gastos",
+        state.expenses,
+        (entry) => ({
+          id: ensureUuid(entry.id),
+          user_id: userId,
+          amount: entry.type === "income" ? -Math.abs(entry.amount) : Math.abs(entry.amount),
+          description: entry.description || null,
+          category: entry.category,
+          txn_date: entry.date || today(),
+        }),
+        { user_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "ingresos_fuentes",
-      state.incomeSources,
-      (source) => ({
-        id: ensureUuid(source.id),
-        user_id: userId,
-        name: source.name,
-        amount: source.amount,
-        frequency: source.frequency,
-        day_of_month: source.dayOfMonth,
-        active: source.active,
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "ingresos", () =>
+      this.syncTable(
+        "ingresos_fuentes",
+        state.incomeSources,
+        (source) => ({
+          id: ensureUuid(source.id),
+          user_id: userId,
+          name: source.name,
+          amount: source.amount,
+          frequency: source.frequency,
+          day_of_month: source.dayOfMonth,
+          active: source.active,
+        }),
+        { user_id: userId }
+      )
     );
 
-    await this.syncTable(
-      "food_log",
-      state.foodLog,
-      (entry) => ({
-        id: ensureUuid(entry.id),
-        user_id: userId,
-        log_date: entry.date,
-        item_name: entry.name,
-        quantity_g: entry.unit === "g" || entry.unit === "ml" ? entry.qty : null,
-        kcal: entry.kcal,
-        protein_g: entry.protein,
-        carbs_g: entry.carbs,
-        fat_g: entry.fat,
-        source: entry.source,
-        // Metadata no tabular: qty/unit reales (para "ud"), hora, y los datos que
-        // permiten devolver al inventario al borrar (item origen o ingredientes).
-        client_meta: {
-          qty: entry.qty,
-          unit: entry.unit,
-          time: entry.time,
-          mealType: entry.mealType,
-          ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
-          ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
-          ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
-        },
-      }),
-      { user_id: userId }
+    await this.trySyncTable(failures, "diario", () =>
+      this.syncTable(
+        "food_log",
+        state.foodLog,
+        (entry) => ({
+          id: ensureUuid(entry.id),
+          user_id: userId,
+          log_date: entry.date,
+          item_name: entry.name,
+          quantity_g: entry.unit === "g" || entry.unit === "ml" ? entry.qty : null,
+          kcal: entry.kcal,
+          protein_g: entry.protein,
+          carbs_g: entry.carbs,
+          fat_g: entry.fat,
+          source: entry.source,
+          // Metadata no tabular: qty/unit reales (para "ud"), hora, y los datos que
+          // permiten devolver al inventario al borrar (item origen o ingredientes).
+          client_meta: {
+            qty: entry.qty,
+            unit: entry.unit,
+            time: entry.time,
+            mealType: entry.mealType,
+            ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
+            ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
+            ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
+          },
+        }),
+        { user_id: userId }
+      )
     );
+
+    // Fail-closed: si CUALQUIER escritura falló, se lanza aquí — esto es lo
+    // que hace que runPush() (ver más abajo) NO marque onStatusChange?.("saved")
+    // y programe un reintento con el mismo snapshot en vez de darlo por bueno.
+    if (failures.length > 0) {
+      throw new Error(`pushState: fallo(s) sincronizando — ${failures.join(" | ")}`);
+    }
+  }
+
+  /** Ejecuta un syncTable() capturando su error (si lo lanza) en `failures`
+      en vez de dejar que se propague — así el resto de tablas de pushState
+      se siguen intentando aunque esta falle (ver el comentario grande de
+      pushState). */
+  private async trySyncTable(failures: string[], label: string, run: () => Promise<void>): Promise<void> {
+    try {
+      await run();
+    } catch (err) {
+      failures.push(`${label}: ${errorMessage(err)}`);
+    }
   }
 
   // Upsert de filas actuales + delete de las que desaparecieron del estado.
@@ -1123,15 +1232,25 @@ class RemoteAdapter {
       if (error) throw error;
     }
 
+    // El chequeo de borrado (lectura de ids existentes + delete del
+    // complemento) también tiene que lanzar en error — antes ninguno de los
+    // dos se comprobaba, así que un fallo aquí dejaba filas borradas
+    // localmente pero nunca borradas en remoto, y pushState() lo daba por
+    // sincronizado igualmente (B2, revisión externa 2026-08-21). Si la
+    // LECTURA falla no sabemos qué ids existen de verdad en remoto — lanzar
+    // aquí y no intentar el delete evita borrar de más con un `existing`
+    // incompleto o vacío por error.
     let query = client.from(table).select("id");
     for (const [column, value] of Object.entries(ownershipFilter)) {
       query = query.eq(column, value);
     }
-    const { data: existing } = await query;
+    const { data: existing, error: selectError } = await query;
+    if (selectError) throw selectError;
     const keep = new Set(rows.map((row) => row.id));
     const toDelete = (existing ?? []).map((row) => row.id).filter((id) => !keep.has(id));
     if (toDelete.length) {
-      await client.from(table).delete().in("id", toDelete);
+      const { error: deleteError } = await client.from(table).delete().in("id", toDelete);
+      if (deleteError) throw deleteError;
     }
   }
 }
