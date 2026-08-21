@@ -22,11 +22,16 @@ interface PGResult {
   data?: unknown;
   error?: { message: string } | null;
 }
+// Un valor de config puede ser el resultado directo, o una función que lo
+// PRODUCE de forma asíncrona — esto último sirve para retrasar a propósito
+// una operación concreta en un test (simular "esta escritura sigue en
+// vuelo") y así poder interleaving otra acción mientras tanto.
+type PGResultOrGate = PGResult | (() => Promise<PGResult>);
 interface FakeTableConfig {
-  update?: PGResult;
-  upsert?: PGResult;
-  select?: PGResult;
-  delete?: PGResult;
+  update?: PGResultOrGate;
+  upsert?: PGResultOrGate;
+  select?: PGResultOrGate;
+  delete?: PGResultOrGate;
 }
 interface CallRecord {
   table: string;
@@ -69,7 +74,8 @@ function makeFakeClient(config: Record<string, FakeTableConfig>, calls: CallReco
         },
         then(resolve: (v: PGResult) => unknown, reject?: (e: unknown) => unknown) {
           const cfg = config[table] ?? {};
-          const result: PGResult = (op ? cfg[op] : undefined) ?? { data: null, error: null };
+          const raw: PGResultOrGate | undefined = op ? cfg[op] : undefined;
+          const result: PGResult | Promise<PGResult> = typeof raw === "function" ? raw() : raw ?? { data: null, error: null };
           return Promise.resolve(result).then(resolve, reject);
         },
       };
@@ -454,5 +460,111 @@ describe("runPush (vía schedulePush) — no marca guardado en error y reintenta
     // PUSH_RETRY_MS = 10_000ms en data-layer.ts.
     await vi.advanceTimersByTimeAsync(10_500);
     expect(statuses.at(-1)).toBe("saved");
+  });
+});
+
+describe("runPush — carrera: 'saved' solo tras el ÚLTIMO snapshot, no tras cada push individual", () => {
+  // B2 (revisión externa, 2026-08-22, ronda 3): "saved" se emitía en cuanto
+  // ESTE push terminaba bien, sin comprobar si mientras tanto había quedado
+  // otra escritura pendiente. RealtimeHydrationGate libera un refresco en
+  // tiempo real diferido en cuanto ve "saved" — así que ese "saved"
+  // prematuro podía disparar una hidratación que pisara una edición más
+  // reciente (aún sin confirmar) con el snapshot anterior ya persistido.
+  //
+  // Secuencia exacta pedida: push A en curso -> llega un evento realtime
+  // (se difiere) -> el usuario edita y crea el snapshot B mientras A sigue
+  // en vuelo -> A termina bien (NO debe soltar el refresco: B sigue
+  // pendiente) -> B termina bien (AHORA sí, una única vez).
+  //
+  // Usa RealtimeHydrationGate real (no un mock) conectado a onStatusChange
+  // exactamente como lo hace state.tsx, para probar la integración
+  // completa runPush() -> onStatusChange() -> gate, no solo cada pieza suelta.
+  async function bindGateLikeStateTsx() {
+    const { RealtimeHydrationGate } = await import("./realtime-hydration-gate");
+    const gate = new RealtimeHydrationGate();
+    const statuses: string[] = [];
+    let hydrateCount = 0;
+    remote.onStatusChange = (status) => {
+      statuses.push(status);
+      if (gate.onPushStatusChange(status)) hydrateCount++;
+    };
+    return { gate, statuses, getHydrateCount: () => hydrateCount };
+  }
+
+  it("B queda en pushTimer (su debounce aún no ha disparado cuando A termina)", async () => {
+    vi.useFakeTimers();
+    const config = successConfig();
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    config.user_profiles = { upsert: () => gateA.then(() => ({ error: null })) };
+    setup(config);
+    const { gate, statuses, getHydrateCount } = await bindGateLikeStateTsx();
+
+    // 1. Empieza push A (queda bloqueado en el gate del perfil).
+    remote.schedulePush(makeState());
+    await vi.advanceTimersByTimeAsync(500); // dispara runPush(A); A sigue "en vuelo"
+
+    // 2. Llega un evento realtime mientras A está pendiente -> se difiere.
+    expect(gate.onRealtimeRefresh(remote.hasPendingPush())).toBe(false);
+
+    // 3. El usuario edita: snapshot B. Como A sigue en curso, esto arma un
+    //    nuevo pushTimer (todavía no ha pasado el debounce).
+    remote.schedulePush(makeState({ weeklyBudget: 999 }));
+
+    // 4. A termina bien.
+    releaseA();
+    await vi.advanceTimersByTimeAsync(50);
+
+    // 5. Ese éxito de A NO debe emitir "saved" ni soltar el refresco
+    //    diferido — B sigue sin confirmar (su pushTimer sigue pendiente).
+    expect(statuses).not.toContain("saved");
+    expect(getHydrateCount()).toBe(0);
+
+    // 6. B (tras su propio debounce) termina también con éxito.
+    await vi.advanceTimersByTimeAsync(500);
+
+    // Solo AHORA, con B confirmado y nada más pendiente, se emite "saved"
+    // y se procesa el refresco diferido — una única vez.
+    expect(statuses.at(-1)).toBe("saved");
+    expect(getHydrateCount()).toBe(1);
+  });
+
+  it("B queda en pushQueued (su debounce dispara MIENTRAS A sigue en curso)", async () => {
+    vi.useFakeTimers();
+    const config = successConfig();
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => { releaseA = resolve; });
+    config.user_profiles = { upsert: () => gateA.then(() => ({ error: null })) };
+    setup(config);
+    const { gate, statuses, getHydrateCount } = await bindGateLikeStateTsx();
+
+    // 1. Empieza push A (queda bloqueado en el gate del perfil).
+    remote.schedulePush(makeState());
+    await vi.advanceTimersByTimeAsync(500); // dispara runPush(A); A sigue "en vuelo"
+
+    // 2. Evento realtime diferido.
+    expect(gate.onRealtimeRefresh(remote.hasPendingPush())).toBe(false);
+
+    // 3. Snapshot B: se programa su debounce.
+    remote.schedulePush(makeState({ weeklyBudget: 999 }));
+
+    // 4. El debounce de B dispara AHORA, con A todavía bloqueado en el gate
+    //    -> runPush(B) ve this.pushing === true y lo mueve a pushQueued.
+    await vi.advanceTimersByTimeAsync(500);
+
+    // 5. A termina bien.
+    releaseA();
+    await vi.advanceTimersByTimeAsync(50);
+
+    // 6. A tenía éxito, pero había un pushQueued (B) esperando -> NO se
+    //    emite "saved" todavía, se encadena el push de B en su lugar.
+    expect(statuses).not.toContain("saved");
+    expect(getHydrateCount()).toBe(0);
+
+    // 7. B se reprograma (nuevo debounce) y termina con éxito.
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(statuses.at(-1)).toBe("saved");
+    expect(getHydrateCount()).toBe(1);
   });
 });

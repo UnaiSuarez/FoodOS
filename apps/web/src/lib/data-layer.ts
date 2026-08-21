@@ -909,16 +909,28 @@ class RemoteAdapter {
     }, PUSH_DEBOUNCE_MS);
   }
 
-  /** B2 (revisión externa, 2026-08-21): esta función en sí ya estaba bien
-      estructurada — el bug real estaba en que pushState() nunca lanzaba en
-      la mayoría de sus escrituras (ver el comentario grande sobre
-      pushState), así que el try/catch de aquí nunca se disparaba para esos
-      casos y "saved" se marcaba con datos perdidos en el servidor. Con
-      pushState() ahora fail-closed (lanza si CUALQUIER escritura falló),
-      este catch se dispara correctamente: no se llama a
-      onStatusChange?.("saved"), sí se notifica el error y se programa un
-      reintento con el MISMO snapshot — `state` sigue siendo el objeto local
-      completo, nada se descarta aquí. */
+  /** B2 (revisión externa, 2026-08-21 y 2026-08-22): el bug original era
+      que pushState() nunca lanzaba en la mayoría de sus escrituras (ver el
+      comentario grande sobre pushState), así que el try/catch de aquí
+      nunca se disparaba para esos casos y "saved" se marcaba con datos
+      perdidos en el servidor. Ya arreglado — pero quedaba una segunda
+      carrera, más sutil, en ESTA función: "saved" se emitía en cuanto ESTE
+      push individual terminaba bien, sin comprobar si mientras tanto había
+      quedado otra escritura pendiente (una edición nueva del usuario en
+      pushQueued/pushTimer, o un reintento en pushRetryTimer). Como
+      RealtimeHydrationGate libera un refresco en tiempo real diferido en
+      cuanto ve "saved" (ver realtime-hydration-gate.ts), ese "saved"
+      prematuro podía disparar una hidratación que pisara la edición más
+      reciente (aún sin confirmar) con el snapshot ANTERIOR ya persistido.
+      Secuencia exacta que esto cierra: push A en curso, llega un evento
+      realtime (se difiere), el usuario edita y crea el snapshot B mientras
+      A sigue en vuelo (B queda en pushQueued o pushTimer), A termina bien
+      — ese éxito de A NO debe soltar el refresco diferido, porque B sigue
+      sin confirmar; solo cuando B (el ÚLTIMO snapshot) termina bien Y no
+      queda nada más pendiente se emite "saved" de verdad.
+      "saved" pasa a significar "el último snapshot programado está
+      confirmado y no queda ninguna escritura pendiente", no "este push
+      concreto terminó". */
   private async runPush(state: FoodOSState): Promise<void> {
     if (this.pushing) {
       this.pushQueued = state;
@@ -926,9 +938,10 @@ class RemoteAdapter {
     }
     this.pushing = true;
     this.onStatusChange?.("syncing");
+    let succeeded = false;
     try {
       await this.pushState(state);
-      this.onStatusChange?.("saved");
+      succeeded = true; // se registra aquí; el "saved" real se decide en el finally (ver arriba)
     } catch (error) {
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
       this.notifyPushError(error);
@@ -942,9 +955,15 @@ class RemoteAdapter {
     } finally {
       this.pushing = false;
       if (this.pushQueued) {
+        // Hay una edición más reciente esperando: se encadena sin emitir
+        // "saved" todavía — ese snapshot (state, el que acaba de terminar)
+        // ya está obsoleto frente a `queued`.
         const queued = this.pushQueued;
         this.pushQueued = null;
         this.schedulePush(queued);
+      } else if (succeeded && !this.pushTimer && !this.pushRetryTimer) {
+        // Nada más pendiente: este SÍ era el último snapshot, y tuvo éxito.
+        this.onStatusChange?.("saved");
       }
     }
   }
