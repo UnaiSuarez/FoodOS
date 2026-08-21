@@ -35,7 +35,7 @@ test("la navegación por dominios agrupa las secciones (E04-01)", async ({ page 
   const nav = page.getByRole("navigation", { name: "Navegación de la app" });
   await expect(nav.locator(".nav-group-label")).toHaveText(["Comida", "Finanzas", "Progreso", "Asistente"]);
 
-  await nav.getByRole("button", { name: "Inventario" }).click();
+  await nav.getByRole("button", { name: "Inventario", exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/inventory$/);
-  await expect(nav.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("button", { name: "Inventario", exact: true })).toHaveAttribute("aria-current", "page");
 });

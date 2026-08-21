@@ -20,7 +20,7 @@ test("un enlace profundo entra directamente en esa vista (E21-09)", async ({ pag
   // El nav marca la sección activa — confirma que no es solo la URL la que
   // cambió, la propia app sabe en qué vista está.
   const nav = page.getByRole("navigation", { name: "Navegación de la app" });
-  await expect(nav.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("button", { name: "Inventario", exact: true })).toHaveAttribute("aria-current", "page");
 });
 
 test("recargar mantiene la misma vista, no vuelve a Panel (E21-09)", async ({ page }) => {
@@ -38,10 +38,10 @@ test("Atrás/Adelante del navegador funcionan entre vistas (E21-09)", async ({ p
   await expect(page.getByRole("heading", { name: "Panel diario", level: 1 })).toBeVisible();
 
   const nav = page.getByRole("navigation", { name: "Navegación de la app" });
-  await nav.getByRole("button", { name: "Inventario" }).click();
+  await nav.getByRole("button", { name: "Inventario", exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/inventory$/);
 
-  await nav.getByRole("button", { name: "Recetas" }).click();
+  await nav.getByRole("button", { name: "Recetas", exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard\/recipes$/);
 
   // Atrás: Recetas -> Inventario -> Panel

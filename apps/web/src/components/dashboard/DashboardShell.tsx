@@ -22,6 +22,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Search,
+  Star,
   type LucideIcon,
 } from "lucide-react";
 import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
@@ -120,32 +121,53 @@ function NavButton({
   active,
   onNavigate,
   setMenuOpen,
+  isFavorite,
+  onToggleFavorite,
 }: {
   entry: (typeof VIEWS)[number];
   active: boolean;
   onNavigate: (id: ViewId) => void;
   setMenuOpen: (open: boolean) => void;
+  /** E04-13: si se pasa, muestra la estrella de fijar/quitar acceso
+      rápido — también en la propia lista de Favoritos, para poder
+      quitarlo sin tener que ir a buscar la entrada original en su grupo. */
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
 }) {
   const Icon = NAV_ICONS[entry.icon];
   return (
-    <button
-      className={`nav-item ${active ? "active" : ""}`}
-      onClick={() => { onNavigate(entry.id); setMenuOpen(false); }}
-      // E04-02: la sección activa se comunicaba solo por color (clase
-      // "active") — invisible para lectores de pantalla y para quien
-      // navega por teclado sin ver el resaltado visual.
-      aria-current={active ? "page" : undefined}
-      // E04-08/E18-04: con el sidebar colapsado la etiqueta se oculta por
-      // CSS, así que el nombre accesible del botón dependía solo de texto
-      // que deja de estar en el árbol de accesibilidad. aria-label no hace
-      // daño expandido (coincide con el texto visible) y es necesario
-      // colapsado. title da además una tooltip nativa con el ratón.
-      aria-label={entry.label}
-      title={entry.label}
-    >
-      <span><Icon size={16} aria-hidden="true" /></span>
-      <span className="nav-item-label">{entry.label}</span>
-    </button>
+    <span className="nav-item-row">
+      <button
+        className={`nav-item ${active ? "active" : ""}`}
+        onClick={() => { onNavigate(entry.id); setMenuOpen(false); }}
+        // E04-02: la sección activa se comunicaba solo por color (clase
+        // "active") — invisible para lectores de pantalla y para quien
+        // navega por teclado sin ver el resaltado visual.
+        aria-current={active ? "page" : undefined}
+        // E04-08/E18-04: con el sidebar colapsado la etiqueta se oculta por
+        // CSS, así que el nombre accesible del botón dependía solo de texto
+        // que deja de estar en el árbol de accesibilidad. aria-label no hace
+        // daño expandido (coincide con el texto visible) y es necesario
+        // colapsado. title da además una tooltip nativa con el ratón.
+        aria-label={entry.label}
+        title={entry.label}
+      >
+        <span><Icon size={16} aria-hidden="true" /></span>
+        <span className="nav-item-label">{entry.label}</span>
+      </button>
+      {onToggleFavorite && (
+        <button
+          type="button"
+          className={`nav-item-favorite${isFavorite ? " active" : ""}`}
+          onClick={onToggleFavorite}
+          aria-label={isFavorite ? `Quitar ${entry.label} de accesos rápidos` : `Fijar ${entry.label} como acceso rápido`}
+          aria-pressed={isFavorite}
+          title={isFavorite ? "Quitar de accesos rápidos" : "Fijar como acceso rápido"}
+        >
+          <Star size={13} aria-hidden="true" fill={isFavorite ? "currentColor" : "none"} />
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -262,6 +284,29 @@ function DashboardInner() {
       return next;
     });
   }
+
+  // E04-13: accesos rápidos fijados por el usuario — misma preferencia de
+  // UI que sidebarCollapsed (solo local, no viaja a Supabase: es una
+  // comodidad de este dispositivo/navegador, no un dato de la cuenta).
+  // Arranca vacío (coincide con el SSR) y se corrige tras montar, mismo
+  // motivo que sidebarCollapsed más arriba.
+  const [favoriteViewIds, setFavoriteViewIds] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("foodos-favorite-views") ?? "[]");
+      if (Array.isArray(stored)) setFavoriteViewIds(stored.filter((id) => typeof id === "string"));
+    } catch {
+      // localStorage corrupto o no disponible: se queda sin favoritos, no rompe el resto del nav.
+    }
+  }, []);
+  function toggleFavorite(id: string) {
+    setFavoriteViewIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      localStorage.setItem("foodos-favorite-views", JSON.stringify(next));
+      return next;
+    });
+  }
+
   const [isOnline, setIsOnline] = useState(true);
   // E02-03/04/08: sin esto, una comprobación de sesión colgada (proyecto de
   // Supabase pausado, sin red al cargar...) dejaba al usuario mirando
@@ -515,13 +560,27 @@ function DashboardInner() {
               grupo. El resto se agrupa por dominio (NAV_GROUPS) en vez de
               aparecer como once opciones equivalentes. */}
           {VIEWS.filter((entry) => entry.group === null).map((entry) => (
-            <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} />
+            <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} isFavorite={favoriteViewIds.includes(entry.id)} onToggleFavorite={() => toggleFavorite(entry.id)} />
           ))}
+          {/* E04-13: accesos rápidos fijados por el usuario, arriba de todo
+              — el propio orden en que se fijaron. Solo aparece si hay al
+              menos uno, para no añadir un grupo vacío permanente al nav. */}
+          {favoriteViewIds.length > 0 && (
+            <div className="nav-group" key="favorites">
+              <span className="nav-group-label">Accesos rápidos</span>
+              {favoriteViewIds
+                .map((id) => VIEWS.find((entry) => entry.id === id))
+                .filter((entry): entry is (typeof VIEWS)[number] => entry !== undefined)
+                .map((entry) => (
+                  <NavButton key={`fav-${entry.id}`} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} isFavorite onToggleFavorite={() => toggleFavorite(entry.id)} />
+                ))}
+            </div>
+          )}
           {NAV_GROUPS.map((group) => (
             <div className="nav-group" key={group.id}>
               <span className="nav-group-label">{group.label}</span>
               {VIEWS.filter((entry) => entry.group === group.id).map((entry) => (
-                <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} />
+                <NavButton key={entry.id} entry={entry} active={view === entry.id} onNavigate={navigateToView} setMenuOpen={setMenuOpen} isFavorite={favoriteViewIds.includes(entry.id)} onToggleFavorite={() => toggleFavorite(entry.id)} />
               ))}
             </div>
           ))}
