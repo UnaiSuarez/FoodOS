@@ -4,20 +4,20 @@
 // y funciona mucho mejor que el CGI antiguo (/cgi/search.pl → devolvía 503).
 //
 // Caché de fetch() en Next 15 (migración de Next 14, revisión externa,
-// 2026-08-22): el fetch() de más abajo no pasaba (ni pasa ahora) ninguna
-// opción `cache` explícita. En Next 14 el valor por defecto era
-// "force-cache" — Next podía servir la respuesta de OFF de una búsqueda
-// desde su Data Cache en vez de pedirla de nuevo, así que dos usuarios (o el
-// mismo, más tarde) buscando el mismo término podían recibir un resultado
+// 2026-08-22): en Next 14 el valor por defecto de fetch() era "force-cache"
+// — Next podía servir la respuesta de OFF de una búsqueda desde su Data
+// Cache en vez de pedirla de nuevo, así que dos usuarios (o el mismo, más
+// tarde) buscando el mismo término podían recibir un resultado
 // desactualizado sin que nadie lo pidiera. En Next 15 el valor por defecto
-// pasa a ser "no-store" — cada búsqueda golpea la API real siempre. Para
-// esta ruta es una mejora, no una regresión: una búsqueda de alimentos
-// debe reflejar el catálogo real de OFF en cada petición, nunca sesgo de
-// caché. No se fija `cache` explícitamente a propósito, para quedarse con
-// el nuevo comportamiento por defecto. (El otro handler GET del proyecto,
-// /api/recipe-fetch, no usa fetch() de Next en absoluto — usa conexión TCP
-// de bajo nivel pinneada a una IP validada, ver lib/safe-fetch.ts — así que
-// este cambio de Next no le afecta.)
+// pasa a ser "no-store", que es justo el comportamiento que esta ruta
+// necesita: una búsqueda de alimentos debe reflejar el catálogo real de OFF
+// en cada petición, nunca servir de caché. Se fija `cache: "no-store"`
+// explícitamente para conservar ese comportamiento aunque el valor por
+// defecto de Next vuelva a cambiar en el futuro — no depender de un
+// default implícito que ya nos ha cambiado una vez por debajo. (El otro
+// handler GET del proyecto, /api/recipe-fetch, no usa fetch() de Next en
+// absoluto — usa conexión TCP de bajo nivel pinneada a una IP validada, ver
+// lib/safe-fetch.ts — así que este cambio de Next no le afecta.)
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -37,6 +37,7 @@ export async function GET(request: NextRequest) {
         "User-Agent": "FoodOS/1.0 (unai64535@gmail.com)",
         "Accept": "application/json",
       },
+      cache: "no-store",
       signal: AbortSignal.timeout(8_000),
     });
 
