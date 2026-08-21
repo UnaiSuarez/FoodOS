@@ -410,6 +410,9 @@ export interface PhysicalProfile {
   weightKg: number;
   /** % de grasa corporal, opcional — afina la proteina usando masa magra. */
   bodyFatPct: number | null;
+  /** Procedencia de bodyFatPct — ver BodyFatSource. undefined/null = sin
+      procedencia registrada. */
+  bodyFatSource?: BodyFatSource | null;
   activityLevel: ActivityLevel;
   goal: GoalMode;
   /** Dias de gym: 0=Domingo, 1=Lunes ... 6=Sabado (ciclado calorico §9.4). */
@@ -450,22 +453,51 @@ export interface PhysicalProfile {
 /**
  * Cuestionario de "lifestyle_plus_training": vida cotidiana y entrenamiento
  * declarados por separado, en vez de un único nivel combinado (activityLevel).
+ *
+ * v3 (ver docs/NUTRITION_V3_DECISIONES.md §2.1): duración de fuerza y de
+ * cardio separadas — v2 tenía un único avgSessionDurationMin aplicado a
+ * ambas, así que "5 días fuerza + 5 días cardio + 60 min" se interpretaba
+ * como 600 min/semana en vez de sesiones combinadas de 60 min.
  */
 export interface TrainingActivityProfile {
   /** Actividad cotidiana SIN contar el entrenamiento (trabajo, desplazamientos, tareas de casa). */
   lifestyleActivity: ActivityLevel;
   strengthDaysPerWeek: number;
   cardioDaysPerWeek: number;
-  /** Duración media por sesión en minutos (fuerza y cardio). */
-  avgSessionDurationMin: number;
+  /** Duración media de una sesión de fuerza, en minutos. */
+  strengthAvgDurationMin: number;
+  /** Duración media de una sesión de cardio, en minutos. */
+  cardioAvgDurationMin: number;
   /** Pasos diarios habituales — se guarda para afinar el modelo adaptativo más
       adelante (PR5/PR6); todavía no se usa en el cálculo de TDEE. */
   habitualSteps?: number | null;
+  /** true si strengthAvgDurationMin/cardioAvgDurationMin vinieron de migrar
+      automáticamente el avgSessionDurationMin legacy (mismo valor copiado a
+      ambos campos) y el usuario todavía no ha confirmado que sean correctos
+      por separado — ver migrateLegacyTrainingActivity en nutrition.ts y
+      docs/NUTRITION_V3_DECISIONES.md §10. No tratar como dato confirmado
+      mientras sea true. */
+  legacyDurationUnconfirmed?: boolean;
 }
 
 export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
 
 export type EquipmentAccess = "full_gym" | "home_dumbbells" | "bodyweight";
+
+/**
+ * Procedencia del % de grasa corporal (PhysicalProfile.bodyFatPct) — v3,
+ * procedencia mínima sin sistema completo de confidence/provenance (ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.4/§4/§9). undefined/null = sin
+ * procedencia registrada (perfiles históricos o no indicado); no existe un
+ * valor "unknown" separado porque null ya expresa exactamente eso.
+ */
+export type BodyFatSource =
+  | "dxa"
+  | "bia_professional"
+  | "smart_scale"
+  | "skinfold"
+  | "visual_estimate"
+  | "other";
 
 /** Plantilla de reparto de grupos musculares por día, elegible en el asistente de IA. */
 export type SplitTemplate = "push_pull_legs" | "upper_lower" | "full_body" | "bro_split" | "ai_decide";

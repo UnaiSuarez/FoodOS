@@ -133,9 +133,37 @@ export function calcHabitualTrainingAllowanceKcal(
   weightKg: number,
   training: TrainingActivityProfile,
 ): number {
-  const strengthWeekly = training.strengthDaysPerWeek * training.avgSessionDurationMin * metKcalPerMin(STRENGTH_MET, weightKg);
-  const cardioWeekly   = training.cardioDaysPerWeek   * training.avgSessionDurationMin * metKcalPerMin(CARDIO_MET, weightKg);
+  const strengthWeekly = training.strengthDaysPerWeek * training.strengthAvgDurationMin * metKcalPerMin(STRENGTH_MET, weightKg);
+  const cardioWeekly   = training.cardioDaysPerWeek   * training.cardioAvgDurationMin   * metKcalPerMin(CARDIO_MET, weightKg);
   return Math.round((strengthWeekly + cardioWeekly) / 7);
+}
+
+/**
+ * Migra un `trainingActivity` con la forma legacy v2 (un único
+ * `avgSessionDurationMin` compartido entre fuerza y cardio — ver
+ * docs/NUTRITION_V3_DECISIONES.md §2.1/§10) a la forma v3. Copia el mismo
+ * valor a `strengthAvgDurationMin`/`cardioAvgDurationMin` como punto de
+ * partida — NUNCA como dato confirmado: marca `legacyDurationUnconfirmed:
+ * true` para que la UI pida revisión antes de tratarlo como definitivo.
+ * Si el objeto ya viene en forma v3 (tiene `strengthAvgDurationMin`), lo
+ * devuelve tal cual, sin tocar `legacyDurationUnconfirmed`.
+ */
+export function migrateLegacyTrainingActivity(
+  raw: Record<string, unknown>,
+): TrainingActivityProfile {
+  if (typeof raw.strengthAvgDurationMin === "number" && typeof raw.cardioAvgDurationMin === "number") {
+    return raw as unknown as TrainingActivityProfile;
+  }
+  const legacyDuration = Number(raw.avgSessionDurationMin) || 0;
+  return {
+    lifestyleActivity: raw.lifestyleActivity as TrainingActivityProfile["lifestyleActivity"],
+    strengthDaysPerWeek: Number(raw.strengthDaysPerWeek) || 0,
+    cardioDaysPerWeek: Number(raw.cardioDaysPerWeek) || 0,
+    strengthAvgDurationMin: legacyDuration,
+    cardioAvgDurationMin: legacyDuration,
+    habitualSteps: (raw.habitualSteps as number | null | undefined) ?? null,
+    legacyDurationUnconfirmed: true,
+  };
 }
 
 /**
@@ -999,7 +1027,8 @@ function trainingActivityRelevantEqual(
     a.lifestyleActivity === b.lifestyleActivity &&
     a.strengthDaysPerWeek === b.strengthDaysPerWeek &&
     a.cardioDaysPerWeek === b.cardioDaysPerWeek &&
-    a.avgSessionDurationMin === b.avgSessionDurationMin
+    a.strengthAvgDurationMin === b.strengthAvgDurationMin &&
+    a.cardioAvgDurationMin === b.cardioAvgDurationMin
   );
 }
 

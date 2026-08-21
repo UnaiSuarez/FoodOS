@@ -15,6 +15,7 @@ import type {
   StorageName,
 } from "@foodos/types";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
+import { migrateLegacyTrainingActivity } from "./nutrition";
 import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 
@@ -269,6 +270,41 @@ class RemoteAdapter {
         .eq("goal_date", today());
     } catch (err) {
       console.warn("FoodOS: error guardando el snapshot nutricional", err);
+    }
+  }
+
+  /**
+   * Objetivos calóricos históricos por fecha (nutrition_goals), para
+   * construir el targetByDate real que necesita calcIntakeCoverage — ver
+   * docs/NUTRITION_V3_DECISIONES.md §2.3. La tabla ya guarda una fila por
+   * (user_id, goal_date) desde antes de v3 (upsert en pushState y en
+   * fn_accept_nutrition_adjustment, nunca delete); lo que faltaba era leer
+   * el rango en vez de solo la última fila. `fromDateKey`/`toDateKey`
+   * inclusive, formato YYYY-MM-DD. No lanza: si falla, el caller debe tratar
+   * el resultado vacío como "sin histórico disponible para esa ventana"
+   * (calcIntakeCoverage ya excluye días sin dato, así que un array vacío es
+   * un estado válido, no un error). */
+  async getNutritionGoalsRange(
+    fromDateKey: string,
+    toDateKey: string,
+  ): Promise<Array<{ goalDate: string; kcalTarget: number }>> {
+    if (!this.client || !this.user) return [];
+    try {
+      const { data, error } = await this.client
+        .from("nutrition_goals")
+        .select("goal_date, kcal_target")
+        .eq("user_id", this.user.id)
+        .gte("goal_date", fromDateKey)
+        .lte("goal_date", toDateKey)
+        .order("goal_date", { ascending: true });
+      if (error || !data) {
+        console.warn("FoodOS: no se pudo leer el histórico de nutrition_goals", error);
+        return [];
+      }
+      return data.map((row) => ({ goalDate: row.goal_date as string, kcalTarget: Number(row.kcal_target) }));
+    } catch (err) {
+      console.warn("FoodOS: error de red leyendo el histórico de nutrition_goals", err);
+      return [];
     }
   }
 
@@ -542,7 +578,7 @@ class RemoteAdapter {
       client
         .from("user_profiles")
         .select(
-          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, experience_level, equipment_access, activity_model_version, extra_state"
+          "mascot_id, weekly_food_budget, age, sex, height_cm, weight_kg, body_fat_pct, body_fat_source, activity_level, goal, gym_days, allergies, excluded_foods, target_weight_kg, experience_level, equipment_access, activity_model_version, extra_state"
         )
         .eq("user_id", userId)
         .maybeSingle(),
@@ -625,6 +661,7 @@ class RemoteAdapter {
           heightCm: Number(p.height_cm),
           weightKg: Number(p.weight_kg),
           bodyFatPct: p.body_fat_pct != null ? Number(p.body_fat_pct) : null,
+          bodyFatSource: (p.body_fat_source as PhysicalProfile["bodyFatSource"]) ?? null,
           activityLevel: p.activity_level as ActivityLevel,
           goal: GOAL_MODES.includes(p.goal as GoalMode) ? (p.goal as GoalMode) : "maintain",
           gymDays: p.gym_days ?? [],
@@ -658,9 +695,17 @@ class RemoteAdapter {
         if (typeof extra.debugDate === "string" || extra.debugDate === null) state.debugDate = extra.debugDate as string | null;
         if (extra.stepsLog && typeof extra.stepsLog === "object") state.stepsLog = extra.stepsLog as typeof state.stepsLog;
         // trainingActivity vive dentro de profile pero se persiste en extra_state
-        // (igual que macroPreference): es aditivo, no requiere migración.
+        // (igual que macroPreference): es aditivo, no requiere migración de
+        // columna. Sí necesita migración de FORMA: perfiles guardados antes
+        // de nutrition-v3 tienen el avgSessionDurationMin legacy compartido
+        // entre fuerza y cardio — migrateLegacyTrainingActivity lo convierte
+        // a la forma v3 marcando legacyDurationUnconfirmed (ver
+        // docs/NUTRITION_V3_DECISIONES.md §2.1/§10). Si ya viene en forma
+        // v3, la devuelve tal cual.
         if (state.profile && extra.trainingActivity && typeof extra.trainingActivity === "object") {
-          state.profile.trainingActivity = extra.trainingActivity as PhysicalProfile["trainingActivity"];
+          state.profile.trainingActivity = migrateLegacyTrainingActivity(
+            extra.trainingActivity as Record<string, unknown>
+          );
         }
         // adaptiveKcalOffsetKcal vive dentro de profile pero se persiste en
         // extra_state (igual que trainingActivity/macroPreference): es
@@ -910,6 +955,7 @@ class RemoteAdapter {
               height_cm: state.profile.heightCm,
               weight_kg: state.profile.weightKg,
               body_fat_pct: state.profile.bodyFatPct,
+              body_fat_source: state.profile.bodyFatSource ?? null,
               activity_level: state.profile.activityLevel,
               goal: state.profile.goal,
               gym_days: state.profile.gymDays,

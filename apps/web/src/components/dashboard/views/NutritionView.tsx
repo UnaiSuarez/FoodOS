@@ -384,7 +384,14 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
           strengthDaysPerWeek: Number(data.get("strengthDays")),
           cardioDaysPerWeek: Number(data.get("cardioDays")),
-          avgSessionDurationMin: Number(data.get("avgSessionDuration")),
+          // TODO(nutrition-v3 §2.1, paso "Bugs de comportamiento" de PR1):
+          // el formulario todavía tiene un único input de duración — se
+          // copia al mismo valor en fuerza y cardio para no cambiar el
+          // comportamiento actual mientras solo migramos el contrato de
+          // datos. Separar los dos inputs es un cambio de UI pendiente,
+          // no de este commit.
+          strengthAvgDurationMin: Number(data.get("avgSessionDuration")),
+          cardioAvgDurationMin: Number(data.get("avgSessionDuration")),
           habitualSteps: String(data.get("habitualSteps") ?? "").trim()
             ? Number(data.get("habitualSteps"))
             : null,
@@ -622,7 +629,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   min="10"
                   max="240"
                   required
-                  defaultValue={defaultTraining?.avgSessionDurationMin}
+                  defaultValue={defaultTraining?.strengthAvgDurationMin}
                   placeholder="ej. 60"
                 />
               </label>

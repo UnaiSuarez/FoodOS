@@ -60,7 +60,8 @@ describe("calcTDEE", () => {
         lifestyleActivity: "sedentary",
         strengthDaysPerWeek: 3,
         cardioDaysPerWeek: 2,
-        avgSessionDurationMin: 60,
+        strengthAvgDurationMin: 60,
+        cardioAvgDurationMin: 60,
         habitualSteps: null,
       },
     });
@@ -81,11 +82,11 @@ describe("calcTDEE", () => {
     const tmb = 1500;
     const light = baseProfile({
       activityModelVersion: "lifestyle_plus_training",
-      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0, avgSessionDurationMin: 30, habitualSteps: null },
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 1, cardioDaysPerWeek: 0, strengthAvgDurationMin: 30, cardioAvgDurationMin: 30, habitualSteps: null },
     });
     const heavy = baseProfile({
       activityModelVersion: "lifestyle_plus_training",
-      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, avgSessionDurationMin: 75, habitualSteps: null },
+      trainingActivity: { lifestyleActivity: "sedentary", strengthDaysPerWeek: 5, cardioDaysPerWeek: 3, strengthAvgDurationMin: 75, cardioAvgDurationMin: 75, habitualSteps: null },
     });
     expect(calcTDEE(heavy, tmb)).toBeGreaterThan(calcTDEE(light, tmb));
   });
@@ -815,7 +816,7 @@ describe("buildAdjustmentEvidence", () => {
 
 describe("isRelevantCalibrationChange", () => {
   const training: TrainingActivityProfile = {
-    lifestyleActivity: "light", strengthDaysPerWeek: 3, cardioDaysPerWeek: 1, avgSessionDurationMin: 60,
+    lifestyleActivity: "light", strengthDaysPerWeek: 3, cardioDaysPerWeek: 1, strengthAvgDurationMin: 60, cardioAvgDurationMin: 60,
   };
 
   it("prev=null (primer perfil) nunca cuenta como cambio", () => {
