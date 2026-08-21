@@ -81,7 +81,7 @@ function makeFakeClient(config: Record<string, FakeTableConfig>, calls: CallReco
 
 function successConfig(): Record<string, FakeTableConfig> {
   return {
-    user_profiles: { update: { error: null } },
+    user_profiles: { upsert: { error: null } },
     weight_log: { upsert: { error: null }, select: { data: [], error: null }, delete: { error: null } },
     nutrition_goals: { upsert: { error: null } },
     inventory_items: { upsert: { error: null }, select: { data: [], error: null }, delete: { error: null } },
@@ -194,9 +194,9 @@ describe("pushState — camino exitoso", () => {
 });
 
 describe("pushState — perfil", () => {
-  it("propaga el error de user_profiles.update sin tragárselo", async () => {
+  it("propaga el error de user_profiles.upsert sin tragárselo", async () => {
     const config = successConfig();
-    config.user_profiles = { update: { error: { message: "RLS: permiso denegado" } } };
+    config.user_profiles = { upsert: { error: { message: "RLS: permiso denegado" } } };
     const calls = setup(config);
 
     await expect(remote.pushState(makeState())).rejects.toThrow(/perfil.*RLS: permiso denegado/);
@@ -205,6 +205,37 @@ describe("pushState — perfil", () => {
     // independientes del perfil) — no se corta la cadena al primer fallo.
     expect(calls.some((c) => c.table === "nutrition_goals" && c.op === "upsert")).toBe(true);
     expect(calls.some((c) => c.table === "food_log" && c.op === "select")).toBe(true);
+  });
+
+  it("guarda el perfil con upsert (nunca con un update que podría no afectar ninguna fila en silencio)", async () => {
+    // Antes: user_profiles.update().eq("user_id", userId). Si la fila no
+    // existía todavía (o RLS filtraba el WHERE sin marcarlo como error),
+    // Postgrest devuelve { error: null } con CERO filas afectadas — "éxito"
+    // sin haber escrito nada. upsert(onConflict: "user_id") no tiene ese
+    // resultado posible: o inserta, o actualiza, siempre queda una fila.
+    const config = successConfig();
+    const calls = setup(config);
+
+    await remote.pushState(makeState());
+
+    expect(calls.some((c) => c.table === "user_profiles" && c.op === "update")).toBe(false);
+    const upsertCall = calls.find((c) => c.table === "user_profiles" && c.op === "upsert");
+    expect(upsertCall).toBeDefined();
+    expect((upsertCall!.args as { user_id: string }).user_id).toBe("user-1");
+  });
+});
+
+describe("ensureBaseRows — perfil base", () => {
+  it("propaga el error si el upsert de la fila base del perfil falla", async () => {
+    const calls: CallRecord[] = [];
+    const r = remote as unknown as { client: unknown; user: unknown };
+    r.client = makeFakeClient(
+      { user_profiles: { upsert: { error: { message: "RLS: permiso denegado" } } } },
+      calls
+    );
+    r.user = { id: "user-1" };
+
+    await expect(remote.ensureBaseRows()).rejects.toThrow(/RLS: permiso denegado/);
   });
 });
 
@@ -300,7 +331,7 @@ describe("pushState — eliminaciones (syncTable)", () => {
 describe("pushState — fallos múltiples", () => {
   it("agrega todos los fallos en un único error en vez de quedarse solo con el primero", async () => {
     const config = successConfig();
-    config.user_profiles = { update: { error: { message: "err-perfil" } } };
+    config.user_profiles = { upsert: { error: { message: "err-perfil" } } };
     config.nutrition_goals = { upsert: { error: { message: "err-objetivos" } } };
     setup(config);
 
@@ -312,7 +343,7 @@ describe("pushState — fallos múltiples", () => {
 describe("pushState — reintento idempotente tras éxito parcial", () => {
   it("reenviar el mismo snapshot tras arreglarse el fallo tiene éxito, sin duplicar las escrituras que ya habían funcionado", async () => {
     const config = successConfig();
-    config.user_profiles = { update: { error: { message: "caída temporal" } } };
+    config.user_profiles = { upsert: { error: { message: "caída temporal" } } };
     const calls = setup(config);
     const state = makeState({ profile: null, nutrition: { kcal: 2000, protein: 140, carbs: 200, fat: 60, mode: "fat_loss" } });
 
@@ -321,7 +352,7 @@ describe("pushState — reintento idempotente tras éxito parcial", () => {
     expect(goalCallsFirstAttempt).toHaveLength(1);
 
     // Supabase se recupera: reintentar el MISMO snapshot debe tener éxito.
-    config.user_profiles = { update: { error: null } };
+    config.user_profiles = { upsert: { error: null } };
     await expect(remote.pushState(state)).resolves.toBeUndefined();
 
     // nutrition_goals se reenvía con el MISMO payload que la vez anterior
@@ -329,6 +360,73 @@ describe("pushState — reintento idempotente tras éxito parcial", () => {
     const goalCallsSecondAttempt = calls.filter((c) => c.table === "nutrition_goals" && c.op === "upsert");
     expect(goalCallsSecondAttempt).toHaveLength(2);
     expect(goalCallsSecondAttempt[0].args).toEqual(goalCallsSecondAttempt[1].args);
+  });
+
+  it("un item con id legacy (no UUID) mantiene la MISMA id remota al reintentar — no genera una fila duplicada", async () => {
+    // Antes: ensureUuid(value) llamaba a crypto.randomUUID() cada vez que
+    // `value` no era un UUID — no determinista. syncTable() mutaba
+    // item.id en el propio estado tras la primera pasada, pero esa
+    // estabilidad dependía de reutilizar el MISMO objeto JS entre intentos;
+    // ahora ensureUuid() deriva la UUID de forma determinista a partir del
+    // id legacy (ver utils.ts), así que el resultado es el mismo aunque el
+    // objeto de estado NO sea el mismo (recarga de página, otra sesión...).
+    const config = successConfig();
+    config.user_profiles = { upsert: { error: { message: "caída temporal" } } }; // fuerza el fallo parcial
+    const calls = setup(config);
+
+    const legacyItem = {
+      id: "legacy-item-42", // id no-UUID, como los que venían de antes de migrar a Supabase
+      name: "Pechuga de pollo",
+      qty: 300,
+      unit: "g",
+      storage: "Nevera" as const,
+      expires: "2026-09-01",
+      price: 3.2,
+      kcal: 165,
+      protein: 31,
+    };
+    const state = makeState({ inventory: [legacyItem] });
+
+    await expect(remote.pushState(state)).rejects.toThrow(/perfil/);
+    const inventoryUpsertsFirst = calls.filter((c) => c.table === "inventory_items" && c.op === "upsert");
+    expect(inventoryUpsertsFirst).toHaveLength(1);
+    const idAfterFirstAttempt = ((inventoryUpsertsFirst[0].args as Array<{ id: string }>)[0]).id;
+
+    // La misma derivación determinista, calculada de forma completamente
+    // independiente (fuera de pushState) a partir del id legacy original,
+    // debe coincidir con lo que se mandó a Supabase.
+    const { ensureUuid } = await import("./utils");
+    expect(idAfterFirstAttempt).toBe(ensureUuid("legacy-item-42"));
+
+    // Reintento: mismo snapshot (mismo objeto de estado, como hace runPush).
+    config.user_profiles = { upsert: { error: null } };
+    await expect(remote.pushState(state)).resolves.toBeUndefined();
+
+    const inventoryUpsertsSecond = calls.filter((c) => c.table === "inventory_items" && c.op === "upsert");
+    expect(inventoryUpsertsSecond).toHaveLength(2);
+    const idAfterSecondAttempt = ((inventoryUpsertsSecond[1].args as Array<{ id: string }>)[0]).id;
+    expect(idAfterSecondAttempt).toBe(idAfterFirstAttempt); // MISMA id remota, no una nueva aleatoria
+  });
+
+  it("un item con id legacy mantiene la misma id remota incluso partiendo de un snapshot NUEVO (objeto distinto) — no depende de mutación en memoria", async () => {
+    // Simula lo que antes rompía: la app se recarga (o es otra pestaña/
+    // sesión) entre el primer intento y el reintento, así que el segundo
+    // pushState() recibe un objeto de estado DISTINTO, reconstruido desde
+    // localStorage con el id legacy original tal cual (la mutación en
+    // memoria de la primera pasada nunca sobrevivió a la recarga).
+    const config = successConfig();
+    const calls = setup(config);
+    const legacyItemA = { id: "legacy-item-7", name: "Avena", qty: 500, unit: "g", storage: "Despensa" as const, expires: "2026-10-01", price: 1.9, kcal: 380, protein: 13 };
+    const legacyItemB = { id: "legacy-item-7", name: "Avena", qty: 500, unit: "g", storage: "Despensa" as const, expires: "2026-10-01", price: 1.9, kcal: 380, protein: 13 };
+
+    await remote.pushState(makeState({ inventory: [legacyItemA] }));
+    await remote.pushState(makeState({ inventory: [legacyItemB] })); // objeto NUEVO, mismo id legacy
+
+    const inventoryUpserts = calls.filter((c) => c.table === "inventory_items" && c.op === "upsert");
+    expect(inventoryUpserts).toHaveLength(2);
+    const idA = (inventoryUpserts[0].args as Array<{ id: string }>)[0].id;
+    const idB = (inventoryUpserts[1].args as Array<{ id: string }>)[0].id;
+    expect(idA).toBe(idB); // misma id remota pese a ser dos objetos JS distintos
   });
 });
 

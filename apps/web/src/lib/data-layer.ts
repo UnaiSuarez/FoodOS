@@ -144,11 +144,21 @@ class RemoteAdapter {
     return this.client !== null;
   }
 
-  /** true si hay un guardado local programado, en curso, o en cola de reintento.
-      Se usa para que un refresco en tiempo real no pise con datos desactualizados
-      un cambio local que aún no ha llegado al servidor (condición de carrera). */
+  /** true si hay un guardado local programado, en curso, en cola, o
+      esperando su reintento tras un fallo. Se usa para que un refresco en
+      tiempo real no pise con datos remotos desactualizados (o, tras un
+      fallo parcial, directamente INCOMPLETOS) un cambio local que aún no ha
+      llegado al servidor (condición de carrera).
+      B2 (revisión externa, 2026-08-22): antes NO incluía pushRetryTimer —
+      mientras un push fallido esperaba su reintento (hasta PUSH_RETRY_MS =
+      10s), esta función ya devolvía false, así que un refresco en tiempo
+      real de OTRA fila podía disparar una hidratación completa que pisara
+      el estado local con el resultado a medias del push que aún no se
+      había reintentado. Ver state.tsx (scheduleHydrate/onStatusChange) para
+      la otra mitad del arreglo: ahora, mientras esto sea true, un refresco
+      en tiempo real se difiere en vez de forzarse tras un margen fijo. */
   hasPendingPush(): boolean {
-    return this.pushTimer !== null || this.pushing || this.pushQueued !== null;
+    return this.pushTimer !== null || this.pushing || this.pushQueued !== null || this.pushRetryTimer !== null;
   }
 
   async init(): Promise<boolean> {
@@ -531,7 +541,16 @@ class RemoteAdapter {
     const client = this.client!;
     const userId = this.user!.id;
 
-    await client.from("user_profiles").upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });
+    // B2 (revisión externa, 2026-08-22): sin comprobar el error aquí, un
+    // fallo creando la fila base del perfil (RLS, constraint...) pasaba
+    // desapercibido y todo lo que dependiera de que esa fila existe fallaría
+    // más tarde con un error mucho más confuso (o, peor, un pushState()
+    // posterior que actualiza 0 filas sin avisar — ver el comentario grande
+    // sobre el upsert de perfil en pushState()).
+    const { error: baseProfileError } = await client
+      .from("user_profiles")
+      .upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });
+    if (baseProfileError) throw baseProfileError;
 
     const { data: almacenes } = await client.from("almacenes").select("id, name, type").eq("owner_id", userId);
     const existing = almacenes ?? [];
@@ -975,9 +994,18 @@ class RemoteAdapter {
     const userId = this.user!.id;
     const failures: string[] = [];
 
+    // upsert(onConflict: "user_id"), NO update().eq("user_id", userId) (B2,
+    // revisión externa, 2026-08-22): un UPDATE que no encuentra ninguna fila
+    // que coincida (RLS que filtra la fila sin marcarlo como error, o la
+    // fila base todavía no existe pese a ensureBaseRows()) devuelve
+    // { error: null } de todos modos — "éxito" con CERO filas afectadas.
+    // pushState() daría el perfil por guardado sin haberse escrito nada. Un
+    // upsert con la fila garantiza que, si no existía, se crea; si existía,
+    // se actualiza — no hay ningún resultado silencioso de "no hice nada".
     const { error: profileError } = await client
       .from("user_profiles")
-      .update({
+      .upsert({
+        user_id: userId,
         mascot_id: state.mascotId,
         weekly_food_budget: state.weeklyBudget,
         extra_state: {
@@ -1022,8 +1050,7 @@ class RemoteAdapter {
               onboarding_completed: true,
             }
           : {}),
-      })
-      .eq("user_id", userId);
+      }, { onConflict: "user_id" });
     if (profileError) failures.push(`perfil: ${profileError.message}`);
 
     // water_log: se gestiona exclusivamente via fn_water_increment (RPC atómica).

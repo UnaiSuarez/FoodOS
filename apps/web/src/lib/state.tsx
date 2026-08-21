@@ -13,6 +13,7 @@ import {
 import type { User } from "@supabase/supabase-js";
 import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, WeightEntry } from "@foodos/types";
 import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced } from "./data-layer";
+import { RealtimeHydrationGate } from "./realtime-hydration-gate";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
@@ -250,6 +251,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeUnsubRef = useRef<(() => void) | null>(null);
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // B2 (revisión externa, 2026-08-22): decide cuándo es seguro hidratar
+  // desde un refresco en tiempo real frente a un push local sin confirmar
+  // — lógica pura, testeada aparte en realtime-hydration-gate.test.ts (ver
+  // ese archivo y data-layer.ts/hasPendingPush() para el porqué completo).
+  const hydrationGateRef = useRef(new RealtimeHydrationGate());
+  const hydrateRemoteRef = useRef<() => Promise<void>>(async () => {});
 
   // Con la escritura de localStorage diferida (debounce), al cerrar/recargar la
   // pestaña hay que volcar lo pendiente o se perderían los últimos ~300ms.
@@ -287,19 +294,26 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setRemoteHydrated(true);
       }
     };
+    hydrateRemoteRef.current = hydrateRemote;
 
-    // Si hay un guardado local pendiente (debounce, en curso, o en cola), un pull
-    // ahora mismo traería datos desactualizados y pisaría ese cambio antes de que
-    // llegue al servidor. Reintenta un rato en vez de hidratar a ciegas; si tras el
-    // margen sigue pendiente, hidrata igualmente (red de seguridad ante un guardado
-    // atascado) para no dejar de sincronizar nunca.
-    function scheduleHydrate(retriesLeft = 6) {
+    // Si hay un guardado local sin confirmar (debounce, en curso, en cola, o
+    // esperando su reintento — remote.hasPendingPush(), ver el comentario
+    // grande en data-layer.ts), un pull ahora mismo pisaría ese cambio con
+    // un estado remoto desactualizado o, tras un fallo parcial, directamente
+    // INCOMPLETO (B2, revisión externa, 2026-08-22). Antes se reintentaba
+    // hasta 6 veces (1.8s) y LUEGO se hidrataba de todos modos como "red de
+    // seguridad" — pero el reintento de un push fallido tarda hasta
+    // PUSH_RETRY_MS (10s), así que esa red de seguridad se disparaba
+    // sistemáticamente ANTES de que el reintento pudiera siquiera empezar.
+    // Ahora, si hay un push pendiente, el refresco se DIFIERE (sin límite de
+    // tiempo) en vez de forzarse — hydrationGateRef decide cuándo es seguro
+    // procesarlo (ver el onStatusChange más abajo, que dispara
+    // hydrateRemote() al ver "saved" si quedó algo diferido).
+    function scheduleHydrate() {
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
       realtimeDebounceRef.current = setTimeout(() => {
         if (cancelled) return;
-        if (remote.hasPendingPush() && retriesLeft > 0) {
-          scheduleHydrate(retriesLeft - 1);
-          return;
-        }
+        if (!hydrationGateRef.current.onRealtimeRefresh(remote.hasPendingPush())) return;
         void hydrateRemote();
       }, 300);
     }
@@ -309,8 +323,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       realtimeUnsubRef.current = remote.subscribeRealtime(
         () => {
           if (cancelled) return;
-          // Debounce: evita re-hidrataciones en cascada cuando llegan varios eventos seguidos.
-          if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+          // Debounce: evita re-hidrataciones en cascada cuando llegan varios
+          // eventos seguidos (scheduleHydrate ya cancela cualquier timer anterior).
           scheduleHydrate();
         },
         (table, newRow) => {
@@ -399,8 +413,18 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   }, [showToast]);
 
   // E04-07: refleja en la cabecera cada transición de guardado remoto.
+  // B2 (revisión externa, 2026-08-22): además, delega en hydrationGateRef
+  // (ver scheduleHydrate más arriba y realtime-hydration-gate.ts) si esta
+  // transición debe procesar un refresco en tiempo real que se había
+  // diferido — solo ocurre en "saved" y solo si de verdad quedó algo
+  // diferido esperando.
   useEffect(() => {
-    remote.onStatusChange = (status) => setPushStatus(status);
+    remote.onStatusChange = (status) => {
+      setPushStatus(status);
+      if (hydrationGateRef.current.onPushStatusChange(status)) {
+        void hydrateRemoteRef.current();
+      }
+    };
     return () => { remote.onStatusChange = null; };
   }, []);
 

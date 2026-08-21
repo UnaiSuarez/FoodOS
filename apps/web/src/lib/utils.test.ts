@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { namesMatch, toGrams } from "./utils";
+import { ensureUuid, isUuid, namesMatch, toGrams } from "./utils";
 
 describe("toGrams", () => {
   it("kg y L multiplican por 1000", () => {
@@ -65,5 +65,39 @@ describe("namesMatch", () => {
 
   it("tolera plural/género sin necesitar coincidencia exacta de palabra", () => {
     expect(namesMatch("Tomates", "Tomate cherry")).toBe(true);
+  });
+});
+
+// B2 (revisión externa, 2026-08-22): ensureUuid() migra ids legacy no-UUID
+// a UUIDs — tenía que ser DETERMINISTA (mismo id legacy -> misma UUID
+// siempre) para que reenviar el mismo item tras un fallo parcial de sync no
+// cree una fila duplicada en Supabase. Antes usaba crypto.randomUUID(),
+// una UUID distinta en cada llamada.
+describe("ensureUuid", () => {
+  it("deja pasar un UUID válido tal cual", () => {
+    const uuid = "123e4567-e89b-12d3-a456-426614174000";
+    expect(ensureUuid(uuid)).toBe(uuid);
+  });
+
+  it("un id legacy (no UUID) se convierte en un UUID válido", () => {
+    const result = ensureUuid("legacy-item-42");
+    expect(isUuid(result)).toBe(true);
+  });
+
+  it("el mismo id legacy produce SIEMPRE la misma UUID — determinista, no aleatorio", () => {
+    const a = ensureUuid("legacy-item-42");
+    const b = ensureUuid("legacy-item-42");
+    const c = ensureUuid("legacy-item-42");
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  it("ids legacy distintos producen UUIDs distintas", () => {
+    expect(ensureUuid("legacy-item-1")).not.toBe(ensureUuid("legacy-item-2"));
+  });
+
+  it("es sensible a mayúsculas/minúsculas y a espacios (no normaliza el id de entrada)", () => {
+    expect(ensureUuid("Legacy-1")).not.toBe(ensureUuid("legacy-1"));
+    expect(ensureUuid("legacy-1 ")).not.toBe(ensureUuid("legacy-1"));
   });
 });
