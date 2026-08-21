@@ -1,0 +1,586 @@
+/* ── Gráfica semanal de macros ──────────────────────────────────── */
+.macro-week-chart {
+  width: 100%;
+  height: auto;
+  margin: 8px 0 4px;
+}
+
+.chart-legend {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* ── Optimizador proteína/€ ─────────────────────────────────────── */
+.optimizer-alert {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 10px 14px;
+  background: rgba(248, 113, 113, 0.07);
+  border-left: 3px solid #f87171;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.optimizer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.optimizer-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 64px 96px auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: rgba(240, 244, 238, 0.04);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.optimizer-rank {
+  font-weight: 700;
+  color: var(--green);
+  text-align: center;
+}
+
+.optimizer-name {
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optimizer-macro,
+.optimizer-cost {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+/* ── Modo ahorro máximo ─────────────────────────────────────────── */
+.savings-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.savings-banner.auto {
+  background: rgba(251, 191, 36, 0.07);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.savings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px dashed rgba(74, 222, 128, 0.25);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.savings-toggle:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+/* ── Inventario: total vivo del lote ───────────────────────────── */
+.form-total-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+  background: rgba(74, 222, 128, 0.06);
+  border: 1px solid rgba(74, 222, 128, 0.15);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  margin-top: -4px;
+}
+.form-total-hint strong { color: var(--green); }
+
+/* ── Inventario: vista previa de producto (marca/foto de OFF) ─────── */
+.form-product-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -4px;
+}
+.form-product-brand {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* ── Inventario: selector de imagen (URL/cámara/galería) + zoom ───── */
+.image-picker {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: -4px;
+}
+.image-picker-thumb {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-soft, #f3f3f3);
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.image-picker-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.image-picker-placeholder {
+  font-size: 24px;
+  opacity: 0.6;
+}
+.image-picker-controls {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.image-picker-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.image-picker-buttons .text-button {
+  font-size: 12.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(240, 244, 238, 0.05);
+}
+.image-picker-controls input[type="url"] {
+  width: 100%;
+}
+.image-lightbox-full {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Inventario: aviso de alérgeno declarado por el usuario ───────── */
+.allergen-warning {
+  font-size: 12.5px;
+  color: var(--danger, #e05252);
+  background: rgba(224, 82, 82, 0.08);
+  border: 1px solid rgba(224, 82, 82, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  margin-top: -4px;
+}
+
+/* ── Inventario: aviso de kcal/proteína estimadas por IA (no verificadas) ── */
+.ai-estimate-warning {
+  font-size: 12.5px;
+  color: var(--amber);
+  background: rgba(251, 146, 60, 0.08);
+  border: 1px solid rgba(251, 146, 60, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  margin-top: -4px;
+}
+
+/* ── Inventario: thumbnail de producto en la tarjeta de la lista ──── */
+.card-info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.card-info-text {
+  min-width: 0;
+  flex: 1;
+}
+.card-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft, #f3f3f3);
+  flex-shrink: 0;
+}
+.card-thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  opacity: 0.6;
+}
+.card-brand {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.85em;
+}
+
+/* ── Chat: tip motivacional rotativo ───────────────────────────── */
+.chat-mascot-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.06);
+  border: 1px solid rgba(74, 222, 128, 0.15);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  line-height: 1.5;
+  animation: tip-fade 0.5s ease;
+}
+.tip-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-top: 5px;
+}
+@keyframes tip-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Chat mejorado: tarjetas de acción ─────────────────────────── */
+
+.bubble-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.bubble-content > p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-clear {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  color: var(--green);
+  margin-top: 4px;
+}
+
+/* Tarjeta de receta inline en el chat */
+.chat-recipe-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.chat-recipe-card h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.chat-ingredients {
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.chat-steps {
+  margin: 0;
+  padding: 0 0 0 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.steps-more {
+  list-style: none;
+  margin-left: -16px;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+/* ── Autocomplete ─────────────────────────────────────── */
+.name-label { position: relative; }
+
+.autocomplete-wrapper { position: relative; }
+
+.autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: #1e2a18;
+  border: 1px solid rgba(240,244,238,0.15);
+  border-radius: 10px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.autocomplete-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+  gap: 2px;
+}
+
+.autocomplete-item:hover { background: var(--surface3, rgba(255,255,255,0.06)); }
+/* E18-08: resalta la opción activa por teclado (flechas) igual que el
+   hover del ratón — sin esto, quien navega el combobox con flechas no ve
+   cuál va a elegir al pulsar Enter. */
+.autocomplete-item.active { background: var(--surface3, rgba(255,255,255,0.06)); }
+
+/* Nombre en su propia línea (con elipsis si no cabe) para que la fila de
+   abajo (kcal/proteína + badge de fuente) nunca tenga que competir por
+   espacio y quede recortada o invisible en el panel estrecho de "Añadir
+   alimento". */
+.ac-name {
+  font-size: 13.5px;
+  color: var(--text);
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-item-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ac-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+/* ── Form actions row ─────────────────────────────────── */
+.form-actions-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.form-actions-row .primary-button { flex: 1; }
+
+.fill-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Bulk import modal ────────────────────────────────── */
+.bulk-import-modal {
+  max-width: 680px;
+  width: 96%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bulk-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.bulk-expense-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.bulk-expense-toggle input {
+  width: auto;
+  min-height: 0;
+}
+
+.bulk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 52vh;
+  padding-right: 4px;
+}
+
+.bulk-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: border-color 0.15s;
+  cursor: pointer;
+}
+
+.bulk-item.selected { border-color: var(--accent); }
+
+.bulk-checkbox {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+}
+
+.bulk-fields { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+
+.bulk-name {
+  width: 100%;
+  font-size: 13.5px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  padding: 2px 0;
+  outline: none;
+}
+
+.bulk-name:focus { border-bottom-color: var(--accent); }
+
+.bulk-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.bulk-qty { width: 60px; }
+.bulk-unit { width: 56px; }
+.bulk-storage { width: 90px; }
+.bulk-num { width: 54px; }
+.bulk-price { width: 54px; }
+
+.bulk-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.bulk-qty, .bulk-unit, .bulk-storage, .bulk-num {
+  font-size: 12.5px;
+  padding: 4px 6px;
+}
+
+/* ── Autocomplete dropdown: fix fondo transparente ─────────────────────── */
+.autocomplete-dropdown {
+  background: #1e2a18 !important;
+  opacity: 1 !important;
+  border: 1px solid rgba(240,244,238,0.15) !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+  isolation: isolate;
+}
+
+/* ── Expiry badges extra ────────────────────────────────────────────────── */
+.badge.amber-soft {
+  background: rgba(251,191,36,0.15);
+  color: #d97706;
+  border-color: rgba(251,191,36,0.3);
+}
+@keyframes pulse-badge {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.badge.pulse { animation: pulse-badge 1.4s ease-in-out infinite; }
+
+/* ── Autocomplete: OFF badge + loading + divider ────────────────────────── */
+.ac-badge-off {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(59,130,246,0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(59,130,246,0.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+.ac-badge-verified {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(74,222,128,0.14);
+  color: var(--green);
+  border: 1px solid rgba(74,222,128,0.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+.ac-muted { color: var(--muted) !important; font-style: italic; }
+.ac-loading { pointer-events: none; opacity: 0.7; }
+/* E18-08: resalta la opción activa por teclado (flechas) — sin esto, quien
+   navega este combobox con flechas no ve cuál va a elegir al pulsar Enter. */
+.ac-dropdown li.active { background: rgba(240, 244, 238, 0.07); }
+.ac-divider {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+  padding: 6px 12px 4px;
+  border-top: 1px solid var(--border);
+}
+.badge.green-soft {
+  background: rgba(74,222,128,0.12);
+  color: var(--green);
+  border-color: rgba(74,222,128,0.25);
+  font-size: 11px;
+  padding: 1px 5px;
+}
+
