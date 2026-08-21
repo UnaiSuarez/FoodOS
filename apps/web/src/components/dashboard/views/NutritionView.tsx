@@ -67,6 +67,33 @@ const WEEKDAYS: Array<{ value: number; label: string }> = [
 ];
 
 /**
+ * Objetivos calóricos históricos reales por fecha (nutrition-v3 §2.3) —
+ * para que calcIntakeCoverage nunca infiera el target de un día pasado con
+ * el perfil ACTUAL. Lee getNutritionGoalsRange (data-layer.ts), que a su vez
+ * lee nutrition_goals tal cual está en la base de datos (una fila por
+ * fecha, nunca reconstruida). Un día sin fila para esa fecha simplemente no
+ * tiene entrada en el Map — nunca se rellena con el objetivo de hoy.
+ * `windowDays` se pasa explícito (no una constante compartida) porque los
+ * tres consumidores actuales ya usan 28 por separado; si alguno cambiara de
+ * ventana no debe arrastrar a los demás.
+ */
+function useNutritionGoalsHistory(referenceDate: string, windowDays: number): Map<string, number> {
+  const [history, setHistory] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    const fromDateKey = dateOffset(referenceDate, -windowDays);
+    remote.getNutritionGoalsRange(fromDateKey, referenceDate).then((rows) => {
+      if (cancelled) return;
+      setHistory(new Map(rows.map((r) => [r.goalDate, r.kcalTarget])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [referenceDate, windowDays]);
+  return history;
+}
+
+/**
  * N16: la sección Nutrición había crecido a 8 paneles apilados verticalmente
  * (ver docs/REVISION_NUTRICION_PR48-52.md) — aquí se organiza el contenido
  * secundario en pestañas. El plan diario (perfil + resumen de hoy) se queda
@@ -288,6 +315,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   );
   const isNewActivityModel = activityModelVersion === "lifestyle_plus_training";
   const defaultTraining = profile?.trainingActivity;
+  const nutritionGoalsHistory = useNutritionGoalsHistory(getToday(state), 28);
 
   // N10: un déficit agresivo (>30% del TDEE) ya no se guarda con solo un
   // toast informativo — se detiene el guardado y se pide una confirmación
@@ -333,7 +361,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       Array.from(dailyKcalAtSaveMap, ([date, kcal]) => ({ date, kcal })),
       next.adaptiveCalibrationStartedAt
     );
-    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, targets.kcal);
+    const coverageAtSave = calcIntakeCoverage(dailyKcalAtSave, getToday(state), 28, nutritionGoalsHistory);
     const adaptiveAtSave = calcAdaptiveTdee({
       initialTdeeKcal: tdee,
       avgIntakeKcal: coverageAtSave?.avgKcal ?? null,
@@ -384,14 +412,8 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
           strengthDaysPerWeek: Number(data.get("strengthDays")),
           cardioDaysPerWeek: Number(data.get("cardioDays")),
-          // TODO(nutrition-v3 §2.1, paso "Bugs de comportamiento" de PR1):
-          // el formulario todavía tiene un único input de duración — se
-          // copia al mismo valor en fuerza y cardio para no cambiar el
-          // comportamiento actual mientras solo migramos el contrato de
-          // datos. Separar los dos inputs es un cambio de UI pendiente,
-          // no de este commit.
-          strengthAvgDurationMin: Number(data.get("avgSessionDuration")),
-          cardioAvgDurationMin: Number(data.get("avgSessionDuration")),
+          strengthAvgDurationMin: Number(data.get("strengthAvgDuration")),
+          cardioAvgDurationMin: Number(data.get("cardioAvgDuration")),
           habitualSteps: String(data.get("habitualSteps") ?? "").trim()
             ? Number(data.get("habitualSteps"))
             : null,
@@ -447,6 +469,15 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
       estimatedTdeeKcal: tdee,
       restingEnergyKcal: tmb,
     });
+    // Edad mínima del motor adulto (nutrition-v3 §2.2) — no basta con el
+    // min="18" del input: alguien puede enviar el form saltándose la
+    // validación HTML5 (herramientas de desarrollador, autocompletar con un
+    // valor viejo antes del cambio de mínimo, etc.). Sin este guardarraíl
+    // explícito, ese perfil se guardaría igual.
+    if (next.age < 18) {
+      showToast("FoodOS calcula objetivos para adultos (18+) — revisa la edad introducida.");
+      return;
+    }
     if (!safety.automaticPlanAllowed) {
       showToast("Ese objetivo queda por debajo de 800 kcal — revisa peso/altura/edad o consulta a un profesional.");
       return;
@@ -482,7 +513,7 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           {/* Sin valor por defecto (N9): un dato inventado (25 años) podía
               guardarse sin que el usuario lo notara. Al editar sí se muestra
               el valor ya guardado — eso no es un dato inventado. */}
-          <input name="age" type="number" min="14" max="100" required defaultValue={profile?.age} placeholder="ej. 28" />
+          <input name="age" type="number" min="18" max="100" required defaultValue={profile?.age} placeholder="ej. 28" />
         </label>
         <label>
           Sexo biológico
@@ -621,16 +652,40 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   placeholder="ej. 0"
                 />
               </label>
+              {defaultTraining?.legacyDurationUnconfirmed && (
+                <small role="status">
+                  ⚠️ Estas dos duraciones se rellenaron automáticamente a
+                  partir de tu valor anterior (fuerza y cardio compartían el
+                  mismo campo) — revísalas y ajústalas si no son iguales en
+                  realidad. Al guardar quedan confirmadas.
+                </small>
+              )}
               <label>
-                Duración media por sesión (min)
+                Duración media — sesión de fuerza (min)
                 <input
-                  name="avgSessionDuration"
+                  name="strengthAvgDuration"
                   type="number"
                   min="10"
                   max="240"
                   required
                   defaultValue={defaultTraining?.strengthAvgDurationMin}
                   placeholder="ej. 60"
+                />
+              </label>
+              <label>
+                Duración media — sesión de cardio (min)
+                {/* Separada de fuerza (nutrition-v3 §2.1): un único input
+                    compartido hacía que "5 días fuerza + 5 días cardio +
+                    60 min" se interpretara como 600 min/semana en vez de
+                    sesiones combinadas de 60 min. */}
+                <input
+                  name="cardioAvgDuration"
+                  type="number"
+                  min="10"
+                  max="240"
+                  required
+                  defaultValue={defaultTraining?.cardioAvgDurationMin}
+                  placeholder="ej. 30"
                 />
               </label>
               <label>
@@ -966,9 +1021,11 @@ function AdaptiveTdeePanel() {
   const profile = state.profile!;
   const today = getToday(state);
   const { tdee: initialTdeeKcal } = calcSummary(profile);
-  // Referencia para el suelo relativo de cobertura (PR10/N6) — el objetivo
-  // de HOY, ya que cambia entre día de gym y de descanso.
-  const targetKcalToday = calcDailyTargets(profile, isGymDay(profile, dateFromKey(today)), state.macroPreference).kcal;
+  // Target real por fecha (nutrition-v3 §2.3) — antes se usaba el objetivo
+  // de HOY aplicado a los ~28 días de la ventana por igual; un día de
+  // descanso en el histórico se evaluaba contra el objetivo de un día de
+  // gym (o al revés) si el tipo de día no coincidía con hoy.
+  const nutritionGoalsHistory = useNutritionGoalsHistory(today, ADAPTIVE_TDEE_WINDOW_DAYS);
   // Filtrado por calibración (PR9): tras cambiar objetivo/actividad, el
   // histórico previo ya no representa el régimen actual — ver N5.
   const calibrationFloor = profile.adaptiveCalibrationStartedAt ?? null;
@@ -983,7 +1040,7 @@ function AdaptiveTdeePanel() {
     Array.from(dailyKcalByDate, ([date, kcal]) => ({ date, kcal })),
     calibrationFloor
   );
-  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS, targetKcalToday);
+  const coverage = calcIntakeCoverage(dailyKcal, today, ADAPTIVE_TDEE_WINDOW_DAYS, nutritionGoalsHistory);
 
   const adaptive = calcAdaptiveTdee({
     initialTdeeKcal,
@@ -1082,7 +1139,10 @@ function AdjustmentProposalPanel() {
     calibrationFloor
   );
   const currentTargets = calcDailyTargets(profile, gymToday, state.macroPreference);
-  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, currentTargets.kcal);
+  // Target real por fecha (nutrition-v3 §2.3) — mismo criterio que
+  // AdaptiveTdeePanel: nunca evaluar el histórico contra el objetivo de hoy.
+  const nutritionGoalsHistory = useNutritionGoalsHistory(today, 28);
+  const coverage = calcIntakeCoverage(dailyKcalForAdaptive, today, 28, nutritionGoalsHistory);
   const adaptive = calcAdaptiveTdee({ initialTdeeKcal, avgIntakeKcal: coverage?.avgKcal ?? null, weightTrend });
   const decision = evaluateAdjustmentProposal({
     currentTargetKcal: currentTargets.kcal,

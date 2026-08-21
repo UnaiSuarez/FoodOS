@@ -693,25 +693,39 @@ const INTAKE_COVERAGE_MIN_RELATIVE_FRACTION = 0.6;
  * datos (cuanta menos cobertura, menos se puede confiar en ese promedio).
  * `dailyKcal` debe venir ya agregado (una entrada por fecha).
  *
- * `targetKcal` es opcional (y retrocompatible: sin él, el criterio es
- * exactamente el de antes de PR10, solo el suelo absoluto) — cuando se
- * pasa, un día también necesita llegar al 60% del objetivo de ESE día para
- * contar como "con datos fiables" (ver INTAKE_COVERAGE_MIN_RELATIVE_FRACTION).
+ * `targetKcalByDate` es opcional (y retrocompatible: sin él, el criterio es
+ * exactamente el de antes de PR10, solo el suelo absoluto) — cuando se pasa,
+ * un día también necesita llegar al 60% de SU PROPIO objetivo vigente ese
+ * día para contar como "con datos fiables" (ver
+ * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION).
+ *
+ * nutrition-v3 (ver docs/NUTRITION_V3_DECISIONES.md §2.3): antes se recibía
+ * un único `targetKcal` escalar (normalmente el objetivo de HOY) y se
+ * aplicaba a los ~28 días de la ventana por igual — si hoy es día de gym y
+ * el histórico incluye días de descanso (o el perfil cambió desde
+ * entonces), el suelo relativo se calculaba con el objetivo equivocado. El
+ * mapa por fecha resuelve esto usando el objetivo real vigente cada día
+ * (nutrition_goals, ver getNutritionGoalsRange en data-layer.ts). Un día
+ * sin entrada en el mapa (sin fila nutrition_goals para esa fecha) NO
+ * inventa un objetivo con el perfil actual — simplemente no aplica suelo
+ * relativo ese día (se comporta como si targetKcalByDate no existiera para
+ * esa fecha concreta), igual que el fallback histórico sin mapa en
+ * absoluto.
  */
 export function calcIntakeCoverage(
   dailyKcal: Array<{ date: string; kcal: number }>,
   referenceDate: string,
   windowDays: number,
-  targetKcal?: number,
+  targetKcalByDate?: Map<string, number>,
 ): IntakeCoverageResult | null {
-  const relativeFloor = targetKcal != null ? targetKcal * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION : 0;
-  const withData = dailyKcal.filter(
-    (d) =>
-      d.date <= referenceDate &&
-      daysBetweenDates(d.date, referenceDate) < windowDays &&
-      d.kcal >= INTAKE_COVERAGE_MIN_KCAL &&
-      d.kcal >= relativeFloor
-  );
+  const withData = dailyKcal.filter((d) => {
+    if (d.date > referenceDate) return false;
+    if (daysBetweenDates(d.date, referenceDate) >= windowDays) return false;
+    if (d.kcal < INTAKE_COVERAGE_MIN_KCAL) return false;
+    const targetForDate = targetKcalByDate?.get(d.date);
+    const relativeFloor = targetForDate != null ? targetForDate * INTAKE_COVERAGE_MIN_RELATIVE_FRACTION : 0;
+    return d.kcal >= relativeFloor;
+  });
   if (withData.length === 0) return null;
 
   const avgKcal = Math.round(withData.reduce((sum, d) => sum + d.kcal, 0) / withData.length);

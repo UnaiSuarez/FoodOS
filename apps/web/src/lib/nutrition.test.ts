@@ -558,30 +558,56 @@ describe("calcIntakeCoverage", () => {
       { date: "2026-02-14", kcal: 1200 }, // > 500 (suelo absoluto) pero < 60% de 2600
       { date: "2026-02-13", kcal: 2550 },
     ];
-    const result = calcIntakeCoverage(daily, REF, 7, 2600)!;
+    const targetKcalByDate = new Map([["2026-02-14", 2600], ["2026-02-13", 2600]]);
+    const result = calcIntakeCoverage(daily, REF, 7, targetKcalByDate)!;
     expect(result.daysWithData).toBe(1);
     expect(result.avgKcal).toBe(2550);
   });
 
   it("un déficit deliberado cumplido al 100% del objetivo SÍ cuenta (el suelo relativo no penaliza objetivos bajos)", () => {
     const daily = [{ date: "2026-02-14", kcal: 1500 }];
-    const result = calcIntakeCoverage(daily, REF, 7, 1500)!;
+    const result = calcIntakeCoverage(daily, REF, 7, new Map([["2026-02-14", 1500]]))!;
     expect(result.daysWithData).toBe(1);
   });
 
   it("justo en el límite del 60% cuenta; un kcal por debajo no", () => {
-    const target = 2000;
-    const atThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1200 }], REF, 7, target)!; // exactamente 60%
+    const targetKcalByDate = new Map([["2026-02-14", 2000]]);
+    const atThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1200 }], REF, 7, targetKcalByDate)!; // exactamente 60%
     expect(atThreshold.daysWithData).toBe(1);
-    const belowThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1199 }], REF, 7, target);
+    const belowThreshold = calcIntakeCoverage([{ date: "2026-02-14", kcal: 1199 }], REF, 7, targetKcalByDate);
     expect(belowThreshold).toBeNull();
   });
 
-  it("con targetKcal, sigue exigiendo también el suelo absoluto de 500 kcal (objetivos muy bajos no lo saltan)", () => {
+  it("con targetKcalByDate, sigue exigiendo también el suelo absoluto de 500 kcal (objetivos muy bajos no lo saltan)", () => {
     // 60% de un objetivo de 700 son 420 kcal — por debajo del suelo absoluto,
     // así que 450 kcal registradas NO deberían contar como día fiable.
-    const result = calcIntakeCoverage([{ date: "2026-02-14", kcal: 450 }], REF, 7, 700);
+    const result = calcIntakeCoverage([{ date: "2026-02-14", kcal: 450 }], REF, 7, new Map([["2026-02-14", 700]]));
     expect(result).toBeNull();
+  });
+
+  // ── nutrition-v3 §2.3: target real por fecha, nunca inventado ────────────
+
+  it("un día sin fila nutrition_goals para esa fecha no aplica suelo relativo (no inventa el target del perfil actual)", () => {
+    const daily = [
+      { date: "2026-02-14", kcal: 1200 }, // tiene target conocido: 1200 < 60% de 2600, se descartaría CON suelo relativo
+      { date: "2026-02-13", kcal: 600 },  // SIN entrada en el mapa — por encima del suelo absoluto (500), debe contar
+    ];
+    // Solo 02-14 tiene fila histórica; 02-13 no (hueco en nutrition_goals).
+    const targetKcalByDate = new Map([["2026-02-14", 2600]]);
+    const result = calcIntakeCoverage(daily, REF, 7, targetKcalByDate)!;
+    // 02-14 se descarta por el suelo relativo (1200 < 1560), 02-13 SÍ cuenta
+    // porque sin target conocido solo se exige el suelo absoluto — no se
+    // reconstruye el target de ese día con el perfil actual.
+    expect(result.daysWithData).toBe(1);
+    expect(result.avgKcal).toBe(600);
+  });
+
+  it("targetKcalByDate vacío o ausente se comporta igual (retrocompatible, solo suelo absoluto)", () => {
+    const daily = [{ date: "2026-02-14", kcal: 600 }];
+    const withEmptyMap = calcIntakeCoverage(daily, REF, 7, new Map())!;
+    const withoutMap = calcIntakeCoverage(daily, REF, 7)!;
+    expect(withEmptyMap.daysWithData).toBe(withoutMap.daysWithData);
+    expect(withEmptyMap.avgKcal).toBe(withoutMap.avgKcal);
   });
 });
 
