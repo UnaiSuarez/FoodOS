@@ -9702,3 +9702,45 @@ button.secondary-button.small {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ---------- Documentación de componentes (E03-15) ---------- */
+
+.style-guide-section {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.style-guide-section:first-of-type {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.style-guide-section h3 {
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.style-guide-desc {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.style-guide-desc code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+}
+
+.style-guide-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.style-guide-row:last-child {
+  margin-bottom: 0;
+}
