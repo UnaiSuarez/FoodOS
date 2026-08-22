@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 import type { ActivityLevel, ActivityModelVersion, BodyFatSource, CardioIntensity, CardioType, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, StrengthIntensity, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
@@ -337,6 +337,15 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
   const [cardioTypeSelected, setCardioTypeSelected] = useState<CardioType | "">(defaultTraining?.cardioType ?? "");
   const nutritionGoalsHistory = useNutritionGoalsHistory(getToday(state), 28);
 
+  // Antes este bloqueo (bodyFatRaw && bodyFatChanged && !bodyFatSourceRaw, ver
+  // save()) solo se comunicaba con un toast de 2.6s — el guardado se frenaba
+  // en silencio y, si el usuario no veía el toast a tiempo, el formulario se
+  // quedaba tal cual sin ninguna pista de qué campo lo bloqueaba (parecía que
+  // "no se guardaba" sin más). Ahora el campo se marca y el aviso queda fijo
+  // junto al select hasta que se corrija.
+  const [bodyFatSourceMissing, setBodyFatSourceMissing] = useState(false);
+  const bodyFatSourceRef = useRef<HTMLSelectElement>(null);
+
   // N10: un déficit agresivo (>30% del TDEE) ya no se guarda con solo un
   // toast informativo — se detiene el guardado y se pide una confirmación
   // real, persistente, con el dato concreto delante. pendingConfirm != null
@@ -539,11 +548,16 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     }
     // % graso nuevo o modificado sin procedencia (nutrition-v3 §2.4/§9) —
     // un dato antiguo sin fuente NO dispara esto (bodyFatChanged es false
-    // si el usuario no tocó el campo).
+    // si el usuario no tocó el campo). El toast por sí solo pasaba
+    // desapercibido y el guardado se frenaba sin ninguna pista visible junto
+    // al campo — ahora además se marca el select y se le lleva el foco.
     if (bodyFatRaw && bodyFatChanged && !bodyFatSourceRaw) {
+      setBodyFatSourceMissing(true);
+      bodyFatSourceRef.current?.focus();
       showToast("Indica de dónde viene tu % de grasa (báscula, DEXA, plicómetro...) — es un dato nuevo.");
       return;
     }
+    setBodyFatSourceMissing(false);
     if (!safety.automaticPlanAllowed) {
       showToast("Ese objetivo queda por debajo de 800 kcal — revisa peso/altura/edad o consulta a un profesional.");
       return;
@@ -607,7 +621,14 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
               lo tocas, no se exige fuente — se mantiene marcado como
               procedencia desconocida hasta que lo revises tú mismo (ver
               validación en save()). Solo es obligatoria para un dato NUEVO. */}
-          <select name="bodyFatSource" defaultValue={profile?.bodyFatSource ?? ""}>
+          <select
+            ref={bodyFatSourceRef}
+            name="bodyFatSource"
+            defaultValue={profile?.bodyFatSource ?? ""}
+            aria-invalid={bodyFatSourceMissing}
+            className={bodyFatSourceMissing ? "field-error" : ""}
+            onChange={() => setBodyFatSourceMissing(false)}
+          >
             <option value="">
               {profile?.bodyFatPct != null && !profile?.bodyFatSource ? "Desconocida (dato antiguo)" : "—"}
             </option>
@@ -617,6 +638,11 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
               </option>
             ))}
           </select>
+          {bodyFatSourceMissing && (
+            <small role="alert" className="field-error-text">
+              Falta indicar de dónde viene el % de grasa nuevo — sin esto no se guarda.
+            </small>
+          )}
         </label>
         <label>
           Peso objetivo kg <small>(opcional)</small>
