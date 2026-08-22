@@ -31,7 +31,7 @@ FoodOScodex/
 │   ├── config.toml       ← configuración estándar del CLI (supabase start/db reset)
 │   ├── migrations/       ← fuente de verdad: 26 tablas + RLS + triggers + funciones, en migraciones ordenadas
 │   ├── functions/        ← Edge Functions (delete-account)
-│   └── schema.sql        ← referencia/legado — NO se ejecuta como parte del setup, ver "Conectar Supabase"
+│   └── schema.sql        ← snapshot legacy DESACTUALIZADO — no es fuente de verdad, ver "Conectar Supabase"
 └── docs/                 ← PDF técnico v9 (98 págs.)
 ```
 
@@ -51,7 +51,7 @@ npm run build   # build de producción
 
 ## Conectar Supabase
 
-El flujo recomendado usa exclusivamente `supabase/migrations/` — es la única fuente que la CLI conoce y ejecuta (`supabase db reset`/`db push` nunca leen `supabase/schema.sql`, ni de forma automática ni manual dentro del flujo de la CLI). `supabase/schema.sql` es un archivo de referencia/legado: describe el mismo estado que las migraciones ya reproducen, pero **no** debe ejecutarse como paso del setup — combinarlo con las migraciones (que ya incluyen su propia versión de ese baseline, `20260629120159_initial_schema.sql`) duplicaría la creación de todo el esquema.
+El flujo recomendado usa exclusivamente `supabase/migrations/` — es la **única fuente reproducible**, la que la CLI conoce y ejecuta (`supabase db reset`/`db push` nunca leen `supabase/schema.sql`, ni de forma automática ni manual dentro del flujo de la CLI). `supabase/schema.sql` es un snapshot legacy **desactualizado**, no un espejo del estado final: incluye tablas `feed_*` que una migración posterior (`20260820072811_drop_feed_tables.sql`) elimina, y difiere del baseline real en otros puntos (comparado línea a línea contra el SQL exacto ya aplicado en remoto — ver `20260629120159_initial_schema.sql`). No sustituye un replay completo y no debe usarse como paso del setup ni como referencia de qué existe hoy.
 
 **Proyecto local (desarrollo, sin depender de un proyecto remoto):**
 

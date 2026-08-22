@@ -9,12 +9,17 @@
 --
 -- SQL EXACTO recuperado de supabase_migrations.schema_migrations.statements
 -- (consulta de solo lectura, sin aplicar nada) — no es una reconstrucción
--- aproximada desde supabase/schema.sql (que coincide con este contenido,
--- pero es un archivo mantenido a mano aparte, no la fuente de verdad de
--- lo que se ejecutó). Esta migración NO se aplica de nuevo contra la base
--- real con este cambio — la versión 20260629120159 ya está registrada en
--- supabase_migrations.schema_migrations; añadir este archivo solo le da
--- representación local, no dispara ninguna ejecución remota.
+-- aproximada desde supabase/schema.sql. NO son idénticos: comparado línea
+-- a línea (2026-08-22), supabase/schema.sql contiene diferencias reales
+-- frente a este baseline exacto — por ejemplo, un `comment on table
+-- public.bank_connections` que no existe aquí. supabase/schema.sql es un
+-- archivo mantenido a mano aparte, desactualizado en algunos puntos frente
+-- a lo que de verdad se ejecutó; este archivo es la fuente de verdad de lo
+-- que se ejecutó, `supabase/schema.sql` no lo es. Esta migración NO se
+-- aplica de nuevo contra la base real con este cambio — la versión
+-- 20260629120159 ya está registrada en supabase_migrations.schema_migrations;
+-- añadir este archivo solo le da representación local, no dispara ninguna
+-- ejecución remota.
 
 create extension if not exists pgcrypto;
 

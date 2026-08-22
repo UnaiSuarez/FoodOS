@@ -39,6 +39,9 @@ shadow_port = 54320
 health_timeout = "2m"
 # The database major version to use. This has to be the same as your remote database's. Run `SHOW
 # server_version;` on the remote database to check.
+# Verificado (2026-08-22, solo lectura, sin aplicar nada): SHOW server_version /
+# current_setting('server_version_num') contra rwxysqzurjsrevdhbejy devuelven
+# 170006 (PostgreSQL 17.6) — coincide con major_version = 17.
 major_version = 17
 
 [db.pooler]
@@ -65,7 +68,11 @@ schema_paths = []
 
 [db.seed]
 # If enabled, seeds the database after migrations during a db reset.
-enabled = true
+# Desactivado (2026-08-22): supabase/seed.sql no existe en este repo — no
+# se inventa uno vacío ni con datos ficticios; los datos base reales
+# (mascots) ya los inserta 20260629120159_initial_schema.sql como parte
+# del propio esquema.
+enabled = false
 # Specifies an ordered list of seed files to load during db reset.
 # Supports glob patterns relative to supabase directory: "./seeds/*.sql"
 sql_paths = ["./seed.sql"]
