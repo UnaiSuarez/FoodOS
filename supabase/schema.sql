@@ -607,9 +607,13 @@ create policy "water_log_own" on public.water_log for all using (user_id = auth.
 -- permisos (revoke/grant en 20260819190139_security_advisor_fixes.sql),
 -- que dan por hecho que la función ya existe — una instalación nueva
 -- siguiendo schema.sql + migraciones en orden fallaba exactamente ahí
--- con "function ... does not exist". CREATE OR REPLACE (no CREATE)
--- para que aplicar este archivo sobre una base que YA tiene la función
--- (como la actual) sea un no-op idempotente, nunca un error de "ya existe".
+-- con "function ... does not exist". Esta sentencia usa CREATE OR
+-- REPLACE (no CREATE a secas): al ejecutarla sobre una base que YA
+-- tiene la función (como la actual), redefine la función contra la
+-- misma definición y converge a ese mismo estado sin lanzar el error
+-- de "ya existe" que un CREATE a secas sí lanzaría — eso no implica que
+-- volver a ejecutar el archivo completo sea idempotente, solo esta
+-- sentencia en concreto.
 create or replace function public.fn_water_increment(p_date date, p_delta integer)
 returns integer
 language plpgsql

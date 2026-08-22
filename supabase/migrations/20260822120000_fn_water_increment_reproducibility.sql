@@ -17,16 +17,20 @@
 -- Esta migración NO cambia el comportamiento en producción — reproduce
 -- EXACTAMENTE (mismo cuerpo, mismo SECURITY DEFINER, mismo search_path,
 -- mismos permisos) lo que ya está vivo ahí, obtenido con
--- pg_get_functiondef(). CREATE OR REPLACE (nunca CREATE a secas) hace que
--- aplicarla sobre la base actual, que YA tiene la función, sea un no-op
--- idempotente — no un error de "ya existe" ni una función distinta.
+-- pg_get_functiondef(). CREATE OR REPLACE (nunca CREATE a secas) redefine
+-- la función contra la misma definición ya existente — no lanza el error
+-- de "ya existe" que un CREATE a secas sí lanzaría, y el resultado
+-- converge exactamente al mismo estado que había antes.
 --
--- No se toca 20260819190139_security_advisor_fixes.sql: ya está aplicada
--- y su contenido debe seguir coincidiendo exactamente con el historial
--- remoto (supabase_migrations.schema_migrations). El revoke/grant de esa
--- migración es ahora redundante con el de aquí (ambos aplicados: primero
--- éste, luego repite el mismo revoke/grant sin cambiar nada) — se deja
--- así a propósito en vez de reescribir el pasado.
+-- Orden real de ejecución en una instalación nueva (schema.sql +
+-- migraciones en orden por timestamp): schema.sql crea la función
+-- primero; 20260819190139_security_advisor_fixes la encuentra ya creada
+-- y reafirma sus permisos (su revoke/grant, sin tocar); esta migración
+-- (20260822120000) corre después de ambas y vuelve a reconciliar
+-- definición y permisos contra el mismo estado. No se toca
+-- 20260819190139_security_advisor_fixes.sql: ya está aplicada y su
+-- contenido debe seguir coincidiendo exactamente con el historial remoto
+-- (supabase_migrations.schema_migrations).
 
 create or replace function public.fn_water_increment(p_date date, p_delta integer)
 returns integer
