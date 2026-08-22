@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
-import type { ActivityLevel, ActivityModelVersion, BodyFatSource, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, BodyFatSource, CardioIntensity, CardioType, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, StrengthIntensity, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { Tabs, TabPanel } from "@/components/ui";
 import {
@@ -32,13 +32,19 @@ import {
   EXPERIENCE_LABELS,
   GOAL_DESCRIPTIONS,
   GOAL_LABELS,
+  buildCalorieBreakdownExplanation,
+  CARDIO_INTENSITY_LABELS,
+  CARDIO_TYPE_LABELS,
+  STRENGTH_INTENSITY_LABELS,
   calcDailyTargets,
   calcProteinRange,
   calcSummary,
   calcTdeeBreakdown,
   calculateFiberTarget,
   calcWeightTrend,
+  estimateTdeeUncertainty,
   evaluateNutritionSafety,
+  explainCalorieCycle,
   filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
   isAdjustmentCooldownActive,
@@ -50,6 +56,7 @@ import {
   buildAdjustmentProfileFingerprint,
   shouldWarnMuscleGain,
   usesEspenAdjustedWeight,
+  validateTrainingActivity,
   weeklyCycle,
 } from "@/lib/nutrition";
 import { remote } from "@/lib/data-layer";
@@ -416,6 +423,11 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     const nextBodyFatPct = bodyFatRaw ? Number(bodyFatRaw) : null;
     const bodyFatChanged = nextBodyFatPct !== (profile?.bodyFatPct ?? null);
 
+    const cardioTypeRaw = String(data.get("cardioType") ?? "").trim();
+    const cardioIntensityRaw = String(data.get("cardioIntensity") ?? "").trim();
+    const strengthIntensityRaw = String(data.get("strengthIntensity") ?? "").trim();
+    const overlapRaw = String(data.get("cardioOverlapDays") ?? "").trim();
+
     const trainingActivity: TrainingActivityProfile | undefined = isNewActivityModel
       ? {
           lifestyleActivity: String(data.get("lifestyleActivity")) as ActivityLevel,
@@ -426,8 +438,25 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
           habitualSteps: String(data.get("habitualSteps") ?? "").trim()
             ? Number(data.get("habitualSteps"))
             : null,
+          // nutrition-v3.1: sin declarar → undefined, NUNCA "other"+"moderate"
+          // como sustituto silencioso (ver CARDIO_MET_UNCONFIRMED).
+          cardioType: cardioTypeRaw ? (cardioTypeRaw as CardioType) : undefined,
+          cardioIntensity: cardioIntensityRaw ? (cardioIntensityRaw as CardioIntensity) : undefined,
+          strengthIntensity: strengthIntensityRaw ? (strengthIntensityRaw as StrengthIntensity) : undefined,
+          cardioOverlapDaysPerWeek: overlapRaw ? Number(overlapRaw) : 0,
+          strengthAvgDurationMinIncludesCardio: data.get("strengthIncludesCardio") === "on",
+          stepsIncludeCardio: data.get("stepsIncludeCardio") === "on",
+          isHabitual: data.get("isNewPlan") === "on" ? false : true,
         }
       : undefined;
+
+    if (trainingActivity) {
+      const issues = validateTrainingActivity(trainingActivity);
+      if (issues.length > 0) {
+        alert(issues.join("\n"));
+        return;
+      }
+    }
 
     const next: PhysicalProfile = {
       age: Number(data.get("age")),
@@ -734,6 +763,73 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
                   placeholder="—"
                   defaultValue={defaultTraining?.habitualSteps ?? ""}
                 />
+              </label>
+              {/* nutrition-v3.1: tipo/intensidad de cardio. Sin rellenar →
+                  el cálculo usa un MET "sin confirmar" propio (más bajo que
+                  el 7.0 fijo de antes), NUNCA "Otro"+"Moderada" como
+                  sustituto silencioso — por eso ninguno tiene valor por
+                  defecto. */}
+              <label>
+                Tipo de cardio <small>(opcional — sin elegir, se trata como "sin confirmar")</small>
+                <select name="cardioType" defaultValue={defaultTraining?.cardioType ?? ""}>
+                  <option value="">Sin especificar</option>
+                  {(Object.keys(CARDIO_TYPE_LABELS) as CardioType[]).map((type) => (
+                    <option key={type} value={type}>{CARDIO_TYPE_LABELS[type]}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Intensidad de cardio <small>("talk test")</small>
+                <select name="cardioIntensity" defaultValue={defaultTraining?.cardioIntensity ?? ""}>
+                  <option value="">Sin especificar</option>
+                  {(Object.keys(CARDIO_INTENSITY_LABELS) as CardioIntensity[]).map((level) => (
+                    <option key={level} value={level}>{CARDIO_INTENSITY_LABELS[level]}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Intensidad de fuerza <small>(opcional — sin elegir, se asume moderada)</small>
+                <select name="strengthIntensity" defaultValue={defaultTraining?.strengthIntensity ?? ""}>
+                  <option value="">Sin especificar (moderada)</option>
+                  {(Object.keys(STRENGTH_INTENSITY_LABELS) as StrengthIntensity[]).map((level) => (
+                    <option key={level} value={level}>{STRENGTH_INTENSITY_LABELS[level]}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Días/semana en que cardio y fuerza coinciden en la misma sesión
+                <input
+                  name="cardioOverlapDays"
+                  type="number"
+                  min="0"
+                  max="7"
+                  placeholder="0"
+                  defaultValue={defaultTraining?.cardioOverlapDaysPerWeek ?? 0}
+                />
+              </label>
+              <label className="checkbox-label">
+                <input
+                  name="strengthIncludesCardio"
+                  type="checkbox"
+                  defaultChecked={defaultTraining?.strengthAvgDurationMinIncludesCardio ?? false}
+                />
+                Los días de solape, la duración de fuerza es el total de la visita (el cardio va incluido dentro, no es tiempo adicional)
+              </label>
+              <label className="checkbox-label">
+                <input
+                  name="stepsIncludeCardio"
+                  type="checkbox"
+                  defaultChecked={defaultTraining?.stepsIncludeCardio ?? false}
+                />
+                Mis pasos diarios habituales ya incluyen este cardio
+              </label>
+              <label className="checkbox-label">
+                <input
+                  name="isNewPlan"
+                  type="checkbox"
+                  defaultChecked={defaultTraining?.isHabitual === false}
+                />
+                Es un plan que empiezo ahora, todavía no es una rutina habitual confirmada
               </label>
             </div>
             {/* N8: se captura para un futuro modelo que evite doble conteo
@@ -1803,6 +1899,23 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
   // calcHabitualTrainingAllowanceKcal, una segunda implementación del
   // mismo cálculo que calcTDEE() ya hacía internamente.
   const tdeeBreakdown = calcTdeeBreakdown(profile, tmb);
+  const uncertainty = estimateTdeeUncertainty(profile, tdeeBreakdown);
+
+  // Valores de gym/descanso canónicos (nutrition-v3.1): no dependen de qué
+  // día es hoy — así el texto y la sección "¿Por qué estas calorías?" son
+  // estables aunque el usuario los mire un día de descanso.
+  const gymDayTargets = calcDailyTargets(profile, true, state.macroPreference);
+  const restDayTargets = calcDailyTargets(profile, false, state.macroPreference);
+  const weeklyAverageTargetKcal = Math.round(
+    (gymDayTargets.kcal * profile.gymDays.length + restDayTargets.kcal * (7 - profile.gymDays.length)) / 7,
+  );
+  const cycleExplanation = explainCalorieCycle({
+    gymDayKcal: gymDayTargets.kcal,
+    restDayKcal: restDayTargets.kcal,
+    gymDaysPerWeek: profile.gymDays.length,
+    tdeeKcal: tdee,
+  });
+  const calorieBreakdown = buildCalorieBreakdownExplanation(tdeeBreakdown, weeklyAverageTargetKcal);
 
   return (
     <article className="panel form-panel">
@@ -1835,12 +1948,13 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
           <small>kcal en reposo</small>
         </div>
         <div>
-          <span>TDEE</span>
+          <span>Gasto medio diario estimado de la semana</span>
           <strong>{tdee}</strong>
           <small>
-            {usesNewActivityModel
-              ? `${tdeeBreakdown.lifestyleTdeeKcal} vida diaria + ${tdeeBreakdown.replacementIncrementKcalPerDay} entreno`
-              : "kcal de mantenimiento"}
+            rango orientativo {uncertainty.lowKcal}–{uncertainty.highKcal} kcal · confianza {
+              uncertainty.confidence === "low" ? "baja" : "moderada"
+            }
+            {usesNewActivityModel && ` · ${tdeeBreakdown.lifestyleTdeeKcal} vida diaria + ${tdeeBreakdown.replacementIncrementKcalPerDay} entreno`}
           </small>
         </div>
         <div>
@@ -1896,13 +2010,33 @@ function ProfileSummary({ onEdit }: { onEdit: () => void }) {
             </div>
           ))}
         </div>
-        {profile.goal === "recomp" && (
-          <p className="cycle-note">
-            Recomposición: ligero superávit los días de gym para construir músculo y ligero déficit
-            en descanso para oxidar grasa. La media semanal queda casi neutra.
-          </p>
-        )}
+        {/* nutrition-v3.1 P0: texto generado a partir de las cifras reales
+            (explainCalorieCycle compara gymDayKcal/restDayKcal/media contra
+            el TDEE real) — nunca un texto fijo que pueda afirmar superávit
+            cuando el número real es un déficit. Se muestra para todos los
+            objetivos, no solo recomp. */}
+        <p className="cycle-note">{cycleExplanation}</p>
       </div>
+
+      <details className="calorie-breakdown-details">
+        <summary>¿Por qué estas calorías?</summary>
+        <ul className="calorie-breakdown-list">
+          <li>Metabolismo basal en reposo: <strong>{calorieBreakdown.restingEnergyKcal} kcal</strong></li>
+          <li>Vida cotidiana (trabajo, desplazamientos, tareas): <strong>{calorieBreakdown.dailyLifeKcal >= 0 ? "+" : ""}{calorieBreakdown.dailyLifeKcal} kcal</strong></li>
+          <li>Entrenamiento habitual estimado: <strong>{calorieBreakdown.habitualTrainingKcal >= 0 ? "+" : ""}{calorieBreakdown.habitualTrainingKcal} kcal</strong></li>
+          <li>Ajuste según tu objetivo: <strong>{calorieBreakdown.goalAdjustmentKcal >= 0 ? "+" : ""}{calorieBreakdown.goalAdjustmentKcal} kcal</strong></li>
+          <li>Objetivo inicial recomendado (media semanal): <strong>{calorieBreakdown.weeklyAverageTargetKcal} kcal</strong></li>
+          <li>Diferencia vs. tu gasto medio diario estimado: <strong>{calorieBreakdown.deltaVsTdeeKcal >= 0 ? "+" : ""}{calorieBreakdown.deltaVsTdeeKcal} kcal</strong></li>
+        </ul>
+        <p className="cycle-note">{calorieBreakdown.expectedPaceLabel}</p>
+        <p className="cycle-note">{uncertainty.confidenceReason}</p>
+        <p className="activity-model-note">
+          📌 Este es un <strong>objetivo inicial recomendado</strong>, no una cifra óptima ni exacta.
+          Las calorías extra de los días de entrenamiento son un reparto semanal pensado para
+          rendimiento y recuperación — no una devolución automática de todo lo "quemado" en la
+          sesión.
+        </p>
+      </details>
 
       {(profile.allergies.length > 0 || profile.excludedFoods.length > 0) && (
         <div className="meta-row">

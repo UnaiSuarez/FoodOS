@@ -7,6 +7,10 @@ import type {
   AdjustmentProfileFingerprint,
   AdjustmentProposalEvidence,
   BodyFatSource,
+  CalorieBreakdownExplanation,
+  CalorieVsTdeeStance,
+  CardioIntensity,
+  CardioType,
   ConfidenceLevel,
   DailyTargets,
   EquipmentAccess,
@@ -19,7 +23,9 @@ import type {
   PhysicalProfile,
   Recipe,
   SafetyWarning,
+  StrengthIntensity,
   TdeeBreakdown,
+  TdeeUncertainty,
   TrainingActivityProfile,
   WeightEntry,
   WeightTrajectoryAssessment,
@@ -53,8 +59,21 @@ import type {
  *   de subir este identificador (deuda reconocida en su momento, no
  *   oculta) — el bump se hizo aquí, al cerrar PR3, cuando por fin
  *   significa exactamente lo que promete el documento de decisiones.
+ * - nutrition-v3.1 (ver docs/NUTRITION_V3_DECISIONES.md §11): MET de cardio
+ *   por tipo × intensidad en vez de CARDIO_MET=7.0 fijo (que asumía
+ *   intensidad vigorosa sin preguntar), con categoría "sin confirmar"
+ *   propia (CARDIO_MET_UNCONFIRMED=4.5) para perfiles legacy en vez de
+ *   heredar el 7.0 disfrazado de "other+moderate". Intensidad de fuerza
+ *   opcional. Representación de solapamiento fuerza/cardio por
+ *   cardioOverlapDaysPerWeek + strengthAvgDurationMinIncludesCardio, sin
+ *   truncar minutos en silencio. TdeeUncertainty deriva el rango de los MET
+ *   bajo/alto reales de la actividad declarada (nunca un ±% arbitrario) y
+ *   nunca alcanza confidence "high" en el modelo estático. Explicación de
+ *   calorías (P0) generada dinámicamente comparando target real contra TDEE
+ *   real, nunca un texto fijo. Cambia el resultado numérico del TDEE para
+ *   perfiles con cardio declarado — bump obligatorio, no cosmético.
  */
-export const NUTRITION_ENGINE_VERSION = "nutrition-v3";
+export const NUTRITION_ENGINE_VERSION = "nutrition-v3.1";
 
 // ─── TMB / TDEE (Mifflin-St Jeor) ───────────────────────────────────────────
 
@@ -106,7 +125,75 @@ export const LIFESTYLE_ONLY_FACTORS: Record<ActivityLevel, number> = {
 };
 
 const STRENGTH_MET = 5.0; // Compendium of Physical Activities: fuerza general, esfuerzo moderado-alto
-const CARDIO_MET    = 7.0; // Compendium: carrera/bici a ritmo moderado
+
+// ─── MET de cardio por tipo × intensidad (nutrition-v3.1) ──────────────────
+// Valores estándar consistentes con los rangos publicados por el Compendium
+// of Physical Activities (2024 Adult Compendium, pacompendium.com) — no se
+// pudo extraer el código numérico de 5 dígitos exacto de cada fila en esta
+// sesión (pacompendium.com devolvió 403 al intentar consultarlo por red; el
+// PMC del propio Compendium remite ahí la base de datos completa sin
+// volcarla en el texto del artículo), así que estos números están marcados
+// para verificación posterior contra la fuente antes de tratarse como cita
+// cerrada — pero la MAGNITUD relativa (suave < moderada < intensa, y el
+// orden entre tipos) es la que sustituye al CARDIO_MET=7.0 fijo de antes,
+// que asumía sin preguntar una intensidad vigorosa para cualquier cardio.
+// Intensidad = "talk test": suave = conversación normal; moderada = se
+// puede hablar pero con algo de dificultad; intensa = solo frases cortas.
+export const CARDIO_MET_TABLE: Record<CardioType, Record<CardioIntensity, number>> = {
+  walk:              { light: 2.8, moderate: 3.5,  vigorous: 5.0  },
+  incline_treadmill: { light: 4.0, moderate: 6.0,  vigorous: 8.0  },
+  bike:              { light: 4.0, moderate: 6.8,  vigorous: 10.0 },
+  elliptical:        { light: 4.0, moderate: 5.5,  vigorous: 7.5  },
+  run:               { light: 6.0, moderate: 9.0,  vigorous: 11.5 },
+  row:               { light: 3.5, moderate: 7.0,  vigorous: 12.0 },
+  other:             { light: 3.0, moderate: 5.5,  vigorous: 8.0  },
+};
+
+/** MET usado cuando el cardio NO tiene tipo o intensidad declarados —
+    perfiles legacy incluidos. Deliberadamente NO es CARDIO_MET_TABLE.other
+    .moderate (5.5): equiparar "sin datos" a "el usuario eligió genérico y
+    moderado" ocultaría la misma sobreestimación bajo otra etiqueta. 4.5 es
+    un cardio genérico suave-moderado (caminar rápido/bici fácil),
+    deliberadamente por debajo del punto medio de la tabla — y siempre va
+    acompañado de confidence "low" en TdeeUncertainty. Ver diagnóstico
+    nutrition-v3.1: para el caso de referencia (124kg, 100min/sesión) baja el
+    TDEE de ~4015 (MET 7 fijo) a ~3627, sin caer en un descuento arbitrario
+    no explicado — el número sale de un MET distinto, documentado. */
+export const CARDIO_MET_UNCONFIRMED = 4.5;
+
+export const CARDIO_TYPE_LABELS: Record<CardioType, string> = {
+  walk:              "Caminar",
+  incline_treadmill: "Cinta con inclinación",
+  bike:              "Bici (estática o spinning)",
+  elliptical:        "Elíptica",
+  run:               "Correr",
+  row:               "Remo",
+  other:             "Otro",
+};
+
+/** Etiquetas del "talk test": suave = conversación normal; moderada = se
+    puede hablar pero con algo de dificultad; intensa = solo frases cortas. */
+export const CARDIO_INTENSITY_LABELS: Record<CardioIntensity, string> = {
+  light:    "Suave — puedes mantener una conversación normal",
+  moderate: "Moderada — puedes hablar, pero con algo de dificultad",
+  vigorous: "Intensa — solo te salen frases cortas",
+};
+
+export const STRENGTH_INTENSITY_LABELS: Record<StrengthIntensity, string> = {
+  light:    "Suave — técnica/máquinas, esfuerzo bajo",
+  moderate: "Moderada — esfuerzo general, la más habitual",
+  vigorous: "Intensa — compuestos pesados, poco descanso",
+};
+
+// ─── MET de fuerza por intensidad (nutrition-v3.1) ──────────────────────────
+// Mismos tres valores que metForMuscleGroups() ya usa por grupo muscular
+// (ver más abajo) — reutilizamos la misma escala en vez de inventar una
+// segunda, para que "fuerza vigorosa" signifique lo mismo en todo el motor.
+export const STRENGTH_INTENSITY_MET_TABLE: Record<StrengthIntensity, number> = {
+  light:    3.5,
+  moderate: 5.0,
+  vigorous: 6.0,
+};
 
 // ─── MET por grupo muscular predominante de la sesión ───────────────────────
 // Compendium of Physical Activities 2024: 3.5 MET = fuerza ligera/aislamiento,
@@ -204,32 +291,154 @@ function replacementIncrementKcal(grossKcal: number, lifestyleTdeeKcal: number, 
  * >=0 ANTES de sumar — una sesión con incremento 0 nunca "resta" al
  * incremento real de otra sesión distinta.
  */
+/** MET de cardio a usar en el cálculo — CARDIO_MET_TABLE[tipo][intensidad]
+    si ambos están declarados, o CARDIO_MET_UNCONFIRMED si falta cualquiera
+    de los dos (nunca "other"+"moderate" como sustituto silencioso). */
+function resolveCardioMet(training: TrainingActivityProfile): number {
+  if (training.cardioType && training.cardioIntensity) {
+    return CARDIO_MET_TABLE[training.cardioType][training.cardioIntensity];
+  }
+  return CARDIO_MET_UNCONFIRMED;
+}
+
+/** MET de fuerza a usar en el cálculo — STRENGTH_INTENSITY_MET_TABLE si hay
+    intensidad declarada, o STRENGTH_MET (5.0, moderado) si no. A diferencia
+    del cardio, el moderado por defecto SÍ representa fielmente "esfuerzo
+    moderado" — no hace falta una categoría "sin confirmar" separada. */
+function resolveStrengthMet(training: TrainingActivityProfile): number {
+  if (training.strengthIntensity) {
+    return STRENGTH_INTENSITY_MET_TABLE[training.strengthIntensity];
+  }
+  return STRENGTH_MET;
+}
+
+/**
+ * Desglose medio diario (kcal) del entrenamiento declarado en
+ * trainingActivity, repartido sobre los 7 días de la semana — fuente única
+ * interna para calcHabitualTrainingAllowanceKcal Y calcTdeeBreakdown, así
+ * nunca hay dos implementaciones de la misma suma semanal fuerza+cardio
+ * (el mismo tipo de duplicación que motivó todo el §3.2 de
+ * docs/NUTRITION_V3_DECISIONES.md). replacementIncrementPerDay es la suma
+ * de replacementIncrementKcal de cada sesión semanal, cada una clampada a
+ * >=0 ANTES de sumar — una sesión con incremento 0 nunca "resta" al
+ * incremento real de otra sesión distinta.
+ *
+ * nutrition-v3.1: si cardioOverlapDaysPerWeek > 0 Y
+ * strengthAvgDurationMinIncludesCardio es true, los días de solape se tratan
+ * como UNA sola sesión (duración total = strengthAvgDurationMin, con
+ * cardioAvgDurationMin de esos minutos a MET cardio y el resto a MET
+ * fuerza) con UN solo baselineDisplaced sobre el total — evita contar dos
+ * veces el mismo tramo horario. Si cardioAvgDurationMin > strengthAvgDurationMin
+ * el dato es inconsistente: en vez de truncar minutos en silencio, esos
+ * días se tratan como si el flag de solape no estuviera activo (aditivo,
+ * comportamiento por defecto) y quedan marcados para revisión (ver
+ * validateTrainingActivity). Los días de fuerza y cardio que NO solapan
+ * siguen siendo aditivos, exactamente igual que en v3.
+ */
 function calcHabitualTrainingBreakdown(
   weightKg: number,
   training: TrainingActivityProfile,
   lifestyleTdeeKcal: number,
 ): { grossPerDay: number; baselineDisplacedPerDay: number; replacementIncrementPerDay: number } {
-  const strengthGross = grossExerciseKcal(STRENGTH_MET, weightKg, training.strengthAvgDurationMin);
-  const cardioGross   = grossExerciseKcal(CARDIO_MET, weightKg, training.cardioAvgDurationMin);
-  const strengthBaseline = baselineDisplacedKcal(lifestyleTdeeKcal, training.strengthAvgDurationMin);
-  const cardioBaseline   = baselineDisplacedKcal(lifestyleTdeeKcal, training.cardioAvgDurationMin);
+  return calcHabitualTrainingBreakdownWithMets(
+    weightKg,
+    training,
+    lifestyleTdeeKcal,
+    resolveStrengthMet(training),
+    resolveCardioMet(training),
+  );
+}
 
-  const weeklyGross = training.strengthDaysPerWeek * strengthGross + training.cardioDaysPerWeek * cardioGross;
-  const weeklyBaseline = training.strengthDaysPerWeek * strengthBaseline + training.cardioDaysPerWeek * cardioBaseline;
-  // Cada sesión se clampa a >=0 INDIVIDUALMENTE antes de sumar — de ahí
-  // llamar a replacementIncrementKcal() por sesión en vez de restar los
-  // totales semanales ya sumados (weeklyGross - weeklyBaseline sería
-  // incorrecto: una sesión con incremento 0 no debe "restar" al
-  // incremento real de otra sesión distinta).
-  const weeklyIncrement =
-    training.strengthDaysPerWeek * replacementIncrementKcal(strengthGross, lifestyleTdeeKcal, training.strengthAvgDurationMin) +
-    training.cardioDaysPerWeek * replacementIncrementKcal(cardioGross, lifestyleTdeeKcal, training.cardioAvgDurationMin);
+/** Igual que calcHabitualTrainingBreakdown pero con los MET de fuerza/cardio
+    pasados explícitamente en vez de resueltos desde `training` — extraído
+    para que estimateTdeeUncertainty pueda propagar los MET bajo/alto de la
+    MISMA actividad declarada a través del mismo pipeline, en vez de aplicar
+    un ±% arbitrario sobre el resultado ya calculado (nutrition-v3.1). */
+function calcHabitualTrainingBreakdownWithMets(
+  weightKg: number,
+  training: TrainingActivityProfile,
+  lifestyleTdeeKcal: number,
+  strengthMet: number,
+  cardioMet: number,
+): { grossPerDay: number; baselineDisplacedPerDay: number; replacementIncrementPerDay: number } {
+  const declaredOverlapDays = Math.max(0, Math.min(
+    training.cardioOverlapDaysPerWeek ?? 0,
+    training.strengthDaysPerWeek,
+    training.cardioDaysPerWeek,
+  ));
+  const overlapMinutesValid = training.cardioAvgDurationMin <= training.strengthAvgDurationMin;
+  const mergeDays = training.strengthAvgDurationMinIncludesCardio === true && overlapMinutesValid
+    ? declaredOverlapDays
+    : 0;
+
+  let weeklyGross = 0;
+  let weeklyBaseline = 0;
+  let weeklyIncrement = 0;
+
+  // Días de solape: una sola sesión combinada, un solo baselineDisplaced.
+  if (mergeDays > 0) {
+    const cardioPortionMin = training.cardioAvgDurationMin;
+    const strengthPortionMin = training.strengthAvgDurationMin - cardioPortionMin;
+    const sessionGross =
+      grossExerciseKcal(cardioMet, weightKg, cardioPortionMin) +
+      grossExerciseKcal(strengthMet, weightKg, strengthPortionMin);
+    const sessionBaseline = baselineDisplacedKcal(lifestyleTdeeKcal, training.strengthAvgDurationMin);
+    const sessionIncrement = replacementIncrementKcal(sessionGross, lifestyleTdeeKcal, training.strengthAvgDurationMin);
+
+    weeklyGross += mergeDays * sessionGross;
+    weeklyBaseline += mergeDays * sessionBaseline;
+    weeklyIncrement += mergeDays * sessionIncrement;
+  }
+
+  // Resto de días de fuerza (sin solape): bloque aditivo independiente.
+  const standaloneStrengthDays = training.strengthDaysPerWeek - mergeDays;
+  if (standaloneStrengthDays > 0) {
+    const strengthGross = grossExerciseKcal(strengthMet, weightKg, training.strengthAvgDurationMin);
+    weeklyGross += standaloneStrengthDays * strengthGross;
+    weeklyBaseline += standaloneStrengthDays * baselineDisplacedKcal(lifestyleTdeeKcal, training.strengthAvgDurationMin);
+    weeklyIncrement += standaloneStrengthDays * replacementIncrementKcal(strengthGross, lifestyleTdeeKcal, training.strengthAvgDurationMin);
+  }
+
+  // Resto de días de cardio (sin solape): bloque aditivo independiente.
+  const standaloneCardioDays = training.cardioDaysPerWeek - mergeDays;
+  if (standaloneCardioDays > 0) {
+    const cardioGross = grossExerciseKcal(cardioMet, weightKg, training.cardioAvgDurationMin);
+    weeklyGross += standaloneCardioDays * cardioGross;
+    weeklyBaseline += standaloneCardioDays * baselineDisplacedKcal(lifestyleTdeeKcal, training.cardioAvgDurationMin);
+    weeklyIncrement += standaloneCardioDays * replacementIncrementKcal(cardioGross, lifestyleTdeeKcal, training.cardioAvgDurationMin);
+  }
 
   return {
     grossPerDay: Math.round(weeklyGross / 7),
     baselineDisplacedPerDay: Math.round(weeklyBaseline / 7),
     replacementIncrementPerDay: Math.round(weeklyIncrement / 7),
   };
+}
+
+/**
+ * ¿Es internamente consistente el trainingActivity declarado? Puramente de
+ * validación de entrada — no modifica ni trunca nada, solo señala qué
+ * revisar (nutrition-v3.1, ver calcHabitualTrainingBreakdown). La UI debe
+ * bloquear el guardado mientras haya issues, en vez de guardar un dato
+ * inconsistente y dejar que el cálculo lo reinterprete en silencio.
+ */
+export function validateTrainingActivity(training: TrainingActivityProfile): string[] {
+  const issues: string[] = [];
+  const overlapDays = training.cardioOverlapDaysPerWeek ?? 0;
+  if (overlapDays > Math.min(training.strengthDaysPerWeek, training.cardioDaysPerWeek)) {
+    issues.push(
+      "Los días de solape no pueden superar el mínimo entre días de fuerza y días de cardio.",
+    );
+  }
+  if (
+    training.strengthAvgDurationMinIncludesCardio === true &&
+    training.cardioAvgDurationMin > training.strengthAvgDurationMin
+  ) {
+    issues.push(
+      "Si el cardio está incluido en la sesión de fuerza, sus minutos no pueden superar la duración total de esa sesión — ajusta las duraciones en vez de guardar así.",
+    );
+  }
+  return issues;
 }
 
 /**
@@ -320,6 +529,183 @@ export function calcTdeeBreakdown(profile: PhysicalProfile, restingEnergyKcal: n
 
 export function calcTDEE(profile: PhysicalProfile, tmb: number): number {
   return calcTdeeBreakdown(profile, tmb).totalTdeeKcal;
+}
+
+// ─── Incertidumbre del TDEE estático (nutrition-v3.1) ───────────────────────
+
+/**
+ * Rango de incertidumbre del "gasto medio diario estimado de la semana" —
+ * nunca se presenta como cifra exacta. Con "lifestyle_plus_training", el
+ * rango se deriva propagando los MET bajo/alto de la MISMA actividad
+ * declarada por el mismo pipeline gross→baselineDisplaced→replacementIncrement
+ * que el valor central (nunca un ±% inventado sobre el resultado ya
+ * calculado). Sin desglose de entrenamiento ("legacy_total_pal"), se usa un
+ * margen fijo del 15%, documentado aquí como heurística de producto — no una
+ * medición.
+ *
+ * El techo de confianza es SIEMPRE "moderate": "high" queda reservado al
+ * motor adaptativo con datos de seguimiento suficientes y consistentes (ver
+ * evaluateAdaptiveState) — el estimador estático inicial nunca lo alcanza,
+ * ni con tipo/intensidad/hábito confirmados. Con IMC≥30 se documenta
+ * explícitamente la incertidumbre individual adicional, conocida en la
+ * literatura, de las ecuaciones predictivas de TDEE en personas con
+ * obesidad — no baja el techo por debajo de "moderate" (ya no hay margen
+ * más bajo que dar), pero sí se refleja en confidenceReason.
+ */
+export function estimateTdeeUncertainty(profile: PhysicalProfile, breakdown: TdeeBreakdown): TdeeUncertainty {
+  const midKcal = breakdown.totalTdeeKcal;
+  const isObese = calcIMC(profile.weightKg, profile.heightCm) >= 30;
+
+  if (profile.activityModelVersion !== "lifestyle_plus_training" || !profile.trainingActivity) {
+    const marginPct = 0.15;
+    return {
+      lowKcal: Math.round(midKcal * (1 - marginPct)),
+      highKcal: Math.round(midKcal * (1 + marginPct)),
+      midKcal,
+      confidence: "low",
+      confidenceReason:
+        "Calculado solo con el factor de actividad clásico (PAL), sin desglosar el entrenamiento por tipo/intensidad — margen amplio por defecto.",
+    };
+  }
+
+  const training = profile.trainingActivity;
+  const lifestyleTdeeKcal = breakdown.lifestyleTdeeKcal;
+
+  const cardioKnown = !!(training.cardioType && training.cardioIntensity);
+  const cardioMetLow  = cardioKnown ? CARDIO_MET_TABLE[training.cardioType as CardioType].light    : CARDIO_MET_UNCONFIRMED * 0.6;
+  const cardioMetHigh = cardioKnown ? CARDIO_MET_TABLE[training.cardioType as CardioType].vigorous : CARDIO_MET_UNCONFIRMED * 1.8;
+
+  const lowTraining  = calcHabitualTrainingBreakdownWithMets(profile.weightKg, training, lifestyleTdeeKcal, STRENGTH_INTENSITY_MET_TABLE.light,    cardioMetLow);
+  const highTraining = calcHabitualTrainingBreakdownWithMets(profile.weightKg, training, lifestyleTdeeKcal, STRENGTH_INTENSITY_MET_TABLE.vigorous, cardioMetHigh);
+
+  // Margen adicional sobre reposo+vida cotidiana: cualquier ecuación
+  // predictiva de TMB/TDEE (Mifflin-St Jeor incluida) tiene un error
+  // individual conocido frente a calorimetría real, mayor en personas con
+  // obesidad — limitación general documentada en la literatura, no un
+  // hallazgo propio de esta app.
+  const restingMarginPct = isObese ? 0.10 : 0.07;
+  const lowResting  = Math.round(lifestyleTdeeKcal * (1 - restingMarginPct));
+  const highResting = Math.round(lifestyleTdeeKcal * (1 + restingMarginPct));
+
+  const lowKcal  = Math.round(lowResting  + lowTraining.replacementIncrementPerDay);
+  const highKcal = Math.round(highResting + highTraining.replacementIncrementPerDay);
+
+  const reasons: string[] = [];
+  if (!cardioKnown) reasons.push("tipo/intensidad de cardio sin confirmar");
+  if (!training.strengthIntensity) reasons.push("intensidad de fuerza sin confirmar");
+  if (training.isHabitual === false) reasons.push("entrenamiento planeado, todavía no confirmado como hábito");
+  if (training.legacyDurationUnconfirmed) reasons.push("duraciones migradas de un dato antiguo, sin revisar");
+
+  const confidence: Exclude<ConfidenceLevel, "high"> = reasons.length > 0 ? "low" : "moderate";
+  const obesityNote = isObese
+    ? " Las ecuaciones de TDEE tienen incertidumbre individual relevante, más aún en personas con obesidad — por eso el estimador inicial no supera confianza moderada."
+    : " El estimador inicial no supera confianza moderada — la confianza alta solo se alcanza con datos de seguimiento reales del motor adaptativo.";
+  const confidenceReason = reasons.length > 0
+    ? `Confianza baja: ${reasons.join("; ")}.${obesityNote}`
+    : `Tipo, intensidad y hábito de entrenamiento confirmados.${obesityNote}`;
+
+  return { lowKcal, highKcal, midKcal, confidence, confidenceReason };
+}
+
+// ─── "¿Por qué estas calorías?" (P0 + P1, nutrition-v3.1) ───────────────────
+
+/** ¿Un valor de kcal queda en déficit, superávit o cerca del mantenimiento
+    frente al TDEE? Banda de ±3% para no etiquetar como déficit/superávit el
+    ruido de redondeo. Base de toda explicación que compara calorías reales
+    contra TDEE real — nunca un texto fijo que pueda contradecir las cifras. */
+export function describeCalorieVsTdee(kcal: number, tdeeKcal: number): CalorieVsTdeeStance {
+  if (tdeeKcal <= 0) return "near_maintenance";
+  const diffPct = (kcal - tdeeKcal) / tdeeKcal;
+  if (diffPct <= -0.03) return "deficit";
+  if (diffPct >= 0.03) return "surplus";
+  return "near_maintenance";
+}
+
+/**
+ * Texto del ciclo semanal de calorías (sustituye el bloque fijo de
+ * "ligero superávit los días de gym... media semanal casi neutra" que
+ * NutritionView.tsx mostraba siempre para recomp, incluso cuando las cifras
+ * reales eran un déficit — nutrition-v3.1 P0). Genérico para cualquier
+ * objetivo: compara gymDayKcal/restDayKcal/weeklyAvgKcal contra el TDEE real
+ * y compone el texto según el signo, así que NUNCA puede afirmar superávit
+ * cuando el número real es un déficit.
+ */
+export function explainCalorieCycle(params: {
+  gymDayKcal: number;
+  restDayKcal: number;
+  gymDaysPerWeek: number;
+  tdeeKcal: number;
+}): string {
+  const { gymDayKcal, restDayKcal, gymDaysPerWeek, tdeeKcal } = params;
+  const restDaysPerWeek = 7 - gymDaysPerWeek;
+  const weeklyAvgKcal = Math.round((gymDayKcal * gymDaysPerWeek + restDayKcal * restDaysPerWeek) / 7);
+
+  const gymStance = describeCalorieVsTdee(gymDayKcal, tdeeKcal);
+  const restStance = describeCalorieVsTdee(restDayKcal, tdeeKcal);
+  const avgStance = describeCalorieVsTdee(weeklyAvgKcal, tdeeKcal);
+
+  if (gymDayKcal === restDayKcal) {
+    const stanceLabel = avgStance === "deficit" ? "en déficit" : avgStance === "surplus" ? "en superávit" : "cerca del mantenimiento";
+    return `Mismas calorías todos los días (${weeklyAvgKcal} kcal de media) — quedas ${stanceLabel} frente a tu gasto medio diario estimado de la semana (${tdeeKcal} kcal).`;
+  }
+
+  if (gymStance !== "surplus" && restStance !== "surplus") {
+    // Nunca se llega aquí con superávit en ningún día — cubre déficit puro,
+    // mezcla déficit/mantenimiento, y mantenimiento en ambos.
+    if (gymStance === "deficit" && restStance === "deficit") {
+      return `Mantendrás un déficit moderado durante la semana. Los días de entrenamiento recibirás algo más de energía (${gymDayKcal} kcal) que en descanso (${restDayKcal} kcal) para favorecer el rendimiento y la recuperación, pero seguirás en déficit — la media semanal (${weeklyAvgKcal} kcal) queda por debajo de tu gasto medio diario estimado de la semana (${tdeeKcal} kcal).`;
+    }
+    return `La media semanal (${weeklyAvgKcal} kcal) queda cerca de tu gasto medio diario estimado de la semana (${tdeeKcal} kcal) — un objetivo de mantenimiento aproximado, no un superávit.`;
+  }
+
+  if (gymStance === "surplus" && restStance !== "surplus") {
+    const avgLabel = avgStance === "surplus" ? "en ligero superávit" : avgStance === "deficit" ? "en ligero déficit" : "prácticamente neutra";
+    return `Los días de entrenamiento (${gymDayKcal} kcal) tendrás algo más de energía para favorecer el rendimiento y la recuperación; en descanso (${restDayKcal} kcal) bajas a ${restStance === "deficit" ? "déficit" : "mantenimiento"}. La media semanal queda ${avgLabel} frente a tu gasto medio diario estimado de la semana (${weeklyAvgKcal} kcal vs. ${tdeeKcal} kcal).`;
+  }
+
+  return `Tanto los días de entrenamiento (${gymDayKcal} kcal) como los de descanso (${restDayKcal} kcal) quedan en superávit frente a tu gasto medio diario estimado de la semana — media semanal ${weeklyAvgKcal} kcal frente a ${tdeeKcal} kcal.`;
+}
+
+/** Banda cualitativa de ritmo esperado — nunca kg/semana exactos ni deriva
+    del factor 7700 kcal/kg (sigue siendo solo diagnóstico, ver
+    calcAdaptiveTdee). La tendencia real la confirma el motor adaptativo. */
+function expectedPaceLabel(deltaKcal: number, tdeeKcal: number): string {
+  const deltaPct = tdeeKcal > 0 ? deltaKcal / tdeeKcal : 0;
+  const abs = Math.abs(deltaPct);
+  const sign = deltaKcal < 0 ? "Déficit" : deltaKcal > 0 ? "Superávit" : "Diferencia";
+  if (abs < 0.03) {
+    return `${sign} muy pequeño frente a tu gasto medio diario estimado de la semana — ritmo esperado lento, casi de mantenimiento. La tendencia real de peso la confirmará el motor adaptativo, no esta cifra sola.`;
+  }
+  if (abs < 0.15) {
+    return `${sign} moderado frente a tu gasto medio diario estimado de la semana — ritmo esperado bajo-moderado, como objetivo inicial recomendado. El motor adaptativo lo ajustará según tu tendencia real de peso.`;
+  }
+  return `${sign} más pronunciado frente a tu gasto medio diario estimado de la semana — vigila adherencia y energía. El ritmo real lo confirmará el motor adaptativo con tus datos, nunca una proyección fija de kg/semana.`;
+}
+
+/**
+ * Desglose para "¿Por qué estas calorías?" — puramente derivado de
+ * TdeeBreakdown + el objetivo medio semanal ya calculado, nunca una fuente
+ * de verdad independiente. Suma exacta: restingEnergyKcal + dailyLifeKcal +
+ * habitualTrainingKcal + goalAdjustmentKcal === weeklyAverageTargetKcal —
+ * invariante protegido por test.
+ */
+export function buildCalorieBreakdownExplanation(
+  breakdown: TdeeBreakdown,
+  weeklyAverageTargetKcal: number,
+): CalorieBreakdownExplanation {
+  const restingEnergyKcal = breakdown.restingEnergyKcal;
+  const dailyLifeKcal = breakdown.lifestyleTdeeKcal - breakdown.restingEnergyKcal;
+  const habitualTrainingKcal = breakdown.replacementIncrementKcalPerDay;
+  const deltaVsTdeeKcal = Math.round(weeklyAverageTargetKcal - breakdown.totalTdeeKcal);
+  return {
+    restingEnergyKcal,
+    dailyLifeKcal,
+    habitualTrainingKcal,
+    goalAdjustmentKcal: deltaVsTdeeKcal,
+    weeklyAverageTargetKcal,
+    deltaVsTdeeKcal,
+    expectedPaceLabel: expectedPaceLabel(deltaVsTdeeKcal, breakdown.totalTdeeKcal),
+  };
 }
 
 // ─── Nivel de experiencia / material (perfil, asistente de rutinas IA) ──────
@@ -1379,7 +1765,13 @@ export function buildAdjustmentEvidence(
 
 /** Solo los campos de TrainingActivityProfile que de verdad afectan al
     cálculo — habitualSteps se guarda para referencia pero todavía no entra
-    en ninguna fórmula (ver N8), así que cambiarlo NO debe invalidar nada. */
+    en ninguna fórmula (ver N8), así que cambiarlo NO debe invalidar nada.
+    nutrition-v3.1: cardioType/cardioIntensity/strengthIntensity/
+    cardioOverlapDaysPerWeek/strengthAvgDurationMinIncludesCardio SÍ cambian
+    el MET o el reparto usado en el cálculo → decisionales, se comparan.
+    stepsIncludeCardio e isHabitual son informativos (no tocan el kcal
+    calculado, solo confianza/copy) → mismo criterio que habitualSteps, NO
+    se comparan aquí. */
 function trainingActivityRelevantEqual(
   a: TrainingActivityProfile | null | undefined,
   b: TrainingActivityProfile | null | undefined,
@@ -1391,7 +1783,12 @@ function trainingActivityRelevantEqual(
     a.strengthDaysPerWeek === b.strengthDaysPerWeek &&
     a.cardioDaysPerWeek === b.cardioDaysPerWeek &&
     a.strengthAvgDurationMin === b.strengthAvgDurationMin &&
-    a.cardioAvgDurationMin === b.cardioAvgDurationMin
+    a.cardioAvgDurationMin === b.cardioAvgDurationMin &&
+    (a.cardioType ?? null) === (b.cardioType ?? null) &&
+    (a.cardioIntensity ?? null) === (b.cardioIntensity ?? null) &&
+    (a.strengthIntensity ?? null) === (b.strengthIntensity ?? null) &&
+    (a.cardioOverlapDaysPerWeek ?? 0) === (b.cardioOverlapDaysPerWeek ?? 0) &&
+    (a.strengthAvgDurationMinIncludesCardio ?? false) === (b.strengthAvgDurationMinIncludesCardio ?? false)
   );
 }
 

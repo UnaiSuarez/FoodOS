@@ -512,12 +512,28 @@ export interface PhysicalProfile {
  * ambas, así que "5 días fuerza + 5 días cardio + 60 min" se interpretaba
  * como 600 min/semana en vez de sesiones combinadas de 60 min.
  */
+/** Tipo de sesión de cardio — nutrition-v3.1 (ver docs/NUTRITION_V3_DECISIONES.md §11).
+    Determina qué fila de CARDIO_MET_TABLE se usa; "other" es el cajón de
+    sastre explícito elegido por el usuario, distinto de "sin declarar". */
+export type CardioType = "walk" | "incline_treadmill" | "bike" | "elliptical" | "run" | "row" | "other";
+
+/** Intensidad autopercibida vía "talk test" — suave: conversación normal;
+    moderada: se puede hablar pero con algo de dificultad; intensa: solo
+    frases cortas. nutrition-v3.1. */
+export type CardioIntensity = "light" | "moderate" | "vigorous";
+
+/** Intensidad de la sesión de fuerza — mismo talk test, aplicado a
+    resistencia. nutrition-v3.1. */
+export type StrengthIntensity = "light" | "moderate" | "vigorous";
+
 export interface TrainingActivityProfile {
   /** Actividad cotidiana SIN contar el entrenamiento (trabajo, desplazamientos, tareas de casa). */
   lifestyleActivity: ActivityLevel;
   strengthDaysPerWeek: number;
   cardioDaysPerWeek: number;
-  /** Duración media de una sesión de fuerza, en minutos. */
+  /** Duración media de una sesión de fuerza, en minutos. Por defecto es
+      tiempo EXCLUSIVO de fuerza (ver strengthAvgDurationMinIncludesCardio) —
+      no incluye el cardio salvo que ese flag lo indique explícitamente. */
   strengthAvgDurationMin: number;
   /** Duración media de una sesión de cardio, en minutos. */
   cardioAvgDurationMin: number;
@@ -531,6 +547,50 @@ export interface TrainingActivityProfile {
       docs/NUTRITION_V3_DECISIONES.md §10. No tratar como dato confirmado
       mientras sea true. */
   legacyDurationUnconfirmed?: boolean;
+
+  // ─── nutrition-v3.1 (ver docs/NUTRITION_V3_DECISIONES.md §11) ────────────
+
+  /** Tipo de cardio declarado. null/undefined = no declarado — el cálculo
+      usa un MET "sin confirmar" propio (CARDIO_MET_UNCONFIRMED), NUNCA el de
+      "other"+"moderate": no es lo mismo "el usuario eligió genérico" que "no
+      sabemos nada". Decisional: entra en el fingerprint. */
+  cardioType?: CardioType | null;
+  /** Intensidad de cardio (talk test). null/undefined = no declarada, mismo
+      tratamiento "sin confirmar" que cardioType ausente. Decisional. */
+  cardioIntensity?: CardioIntensity | null;
+  /** Intensidad de fuerza (talk test). null/undefined = MET moderado por
+      defecto (5.0) — a diferencia de cardio, ese valor por defecto SÍ es
+      representativo de "esfuerzo moderado" real, no una vigorosa disfrazada,
+      así que no hace falta una categoría "sin confirmar" separada.
+      Decisional. */
+  strengthIntensity?: StrengthIntensity | null;
+  /** Cuántos días/semana coinciden fuerza y cardio en la MISMA franja
+      horaria — acotado a min(strengthDaysPerWeek, cardioDaysPerWeek). Solo
+      afecta al cálculo si strengthAvgDurationMinIncludesCardio es true;
+      si es false (o no declarado), ambos entrenos son aditivos aunque
+      compartan día de calendario. Decisional (junto con el flag de abajo). */
+  cardioOverlapDaysPerWeek?: number;
+  /** false/undefined (por defecto): strengthAvgDurationMin es tiempo
+      EXCLUSIVO de fuerza; el cardio de cardioOverlapDaysPerWeek es tiempo
+      adicional aparte, no solapado. true: strengthAvgDurationMin es la
+      duración TOTAL de la visita al gimnasio en esos días de solape, y
+      cardioAvgDurationMin son minutos DENTRO de esa duración total — nunca
+      minutos adicionales. Con true, cardioAvgDurationMin no puede superar
+      strengthAvgDurationMin (ver validateTrainingActivity). Decisional. */
+  strengthAvgDurationMinIncludesCardio?: boolean;
+  /** true = los pasos habituales (habitualSteps) ya incluyen el movimiento
+      de este cardio. Puramente informativo mientras los pasos no entren en
+      ninguna fórmula de TDEE (igual que habitualSteps hoy) — NO afecta al
+      cálculo ni al fingerprint. Se guarda para que la explicación no dé a
+      entender que los pasos ya suman calorías. */
+  stepsIncludeCardio?: boolean | null;
+  /** true/undefined (por defecto): este entrenamiento ya es rutina habitual
+      — se trata con la confianza normal del modelo. false: es un plan que
+      empieza ahora, todavía no confirmado como hábito — NO reduce el kcal
+      calculado (nunca se aplica un descuento arbitrario), pero baja el
+      techo de `confidence` en TdeeUncertainty y cambia el texto explicativo.
+      Puramente informativo para el cálculo — NO entra en el fingerprint. */
+  isHabitual?: boolean;
 }
 
 export type ExperienceLevel = "beginner" | "intermediate" | "advanced";
@@ -678,6 +738,54 @@ export interface TdeeBreakdown {
       calcTDEE(). */
   totalTdeeKcal: number;
 }
+
+/**
+ * Rango de incertidumbre del TDEE estático (nutrition-v3.1, ver
+ * docs/NUTRITION_V3_DECISIONES.md §11.3) — nunca se muestra el TDEE como una
+ * cifra exacta. lowKcal/highKcal se derivan de propagar los MET bajo/alto de
+ * la MISMA actividad declarada (no un ±% arbitrario) a través del mismo
+ * pipeline gross→baselineDisplaced→replacementIncrement que totalTdeeKcal;
+ * midKcal es siempre igual a TdeeBreakdown.totalTdeeKcal (el valor que de
+ * verdad se usa para el plan). `confidence` de este tipo NUNCA es "high" —
+ * "high" queda reservado al motor adaptativo con datos suficientes y
+ * consistentes; el estimador estático inicial, con todo confirmado, llega
+ * como mucho a "moderate" (y baja a "moderate" incluso con IMC≥30, por la
+ * incertidumbre individual conocida de las ecuaciones de TDEE en obesidad).
+ */
+export interface TdeeUncertainty {
+  lowKcal: number;
+  highKcal: number;
+  /** = TdeeBreakdown.totalTdeeKcal — el valor central usado para el plan. */
+  midKcal: number;
+  confidence: Exclude<ConfidenceLevel, "high">;
+  confidenceReason: string;
+}
+
+/** "Cómo llegamos hasta aquí" — desglose para la sección "¿Por qué estas
+    calorías?" (nutrition-v3.1). Puramente derivado de TdeeBreakdown +
+    calcDailyTargets, nunca una fuente de verdad independiente. */
+export interface CalorieBreakdownExplanation {
+  restingEnergyKcal: number;
+  dailyLifeKcal: number;
+  habitualTrainingKcal: number;
+  /** Efecto neto de kcalFactor(goal, gymDay, imc): weeklyAverageTargetKcal
+      menos (dailyLifeKcal + habitualTrainingKcal + restingEnergyKcal, salvo
+      modelo legacy donde resting+dailyLife ya es el total). */
+  goalAdjustmentKcal: number;
+  weeklyAverageTargetKcal: number;
+  /** weeklyAverageTargetKcal - TdeeBreakdown.totalTdeeKcal. Negativo =
+      déficit medio semanal, positivo = superávit medio semanal. */
+  deltaVsTdeeKcal: number;
+  /** Banda cualitativa de ritmo esperado — nunca kg/semana exactos ni deriva
+      del factor 7700 kcal/kg (ese factor sigue siendo solo diagnóstico, ver
+      calcAdaptiveTdee). La tendencia real la confirma el motor adaptativo. */
+  expectedPaceLabel: string;
+}
+
+/** Cómo se compara un día concreto (o la media semanal) contra el TDEE —
+    base para que ninguna explicación afirme superávit cuando en realidad hay
+    déficit (nutrition-v3.1 P0). */
+export type CalorieVsTdeeStance = "deficit" | "near_maintenance" | "surplus";
 
 export interface Mascot {
   id: string;

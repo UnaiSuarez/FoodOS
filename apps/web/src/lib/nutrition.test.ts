@@ -4,6 +4,7 @@ import {
   assessWeightTrajectory,
   buildAdjustmentEvidence,
   buildAdjustmentProfileFingerprint,
+  buildCalorieBreakdownExplanation,
   calcAdaptiveTdee,
   calcDailyTargets,
   calcHabitualTrainingAllowanceKcal,
@@ -17,16 +18,20 @@ import {
   calcTMB,
   calcWeightTrend,
   calculateFiberTarget,
+  describeCalorieVsTdee,
   distributeWeeklyCalories,
+  estimateTdeeUncertainty,
   estimateWorkoutKcal,
   evaluateAdaptiveState,
   evaluateNutritionSafety,
+  explainCalorieCycle,
   filterEntriesFromCalibrationStart,
   getAdaptiveDiagnostics,
   GOAL_RATE_BAND_PCT_PER_WEEK,
   isProposalStale,
   isRelevantCalibrationChange,
   metForMuscleGroups,
+  migrateLegacyTrainingActivity,
   monthlyAmountOf,
   NUTRITION_ENGINE_VERSION,
   projectSavings,
@@ -35,6 +40,8 @@ import {
   scaleByCalories,
   scaleByRatio,
   usesEspenAdjustedWeight,
+  validateTrainingActivity,
+  weeklyCycle,
 } from "./nutrition";
 
 describe("calcTMB (Mifflin-St Jeor)", () => {
@@ -72,13 +79,15 @@ describe("calcTDEE", () => {
         strengthAvgDurationMin: 60,
         cardioAvgDurationMin: 60,
         habitualSteps: null,
+        // Sin cardioType/cardioIntensity declarados (nutrition-v3.1): el
+        // cálculo usa CARDIO_MET_UNCONFIRMED (4.5), no un 7.0 fijo.
       },
     });
 
     const lifestyleTdee = tmb * 1.2; // sedentary
     // grossKcal = MET × 3.5 × peso / 200 × minutos
     const strengthGross = ((5.0 * 3.5 * weightKg) / 200) * 60;
-    const cardioGross   = ((7.0 * 3.5 * weightKg) / 200) * 60;
+    const cardioGross   = ((4.5 * 3.5 * weightKg) / 200) * 60; // MET "sin confirmar"
     // baselineDisplaced = lifestyleTdee / 1440 × minutos (misma duración fuerza/cardio aquí)
     const baselineDisplaced = (lifestyleTdee / 1440) * 60;
     // replacementIncrement = max(0, gross - baselineDisplaced), clampado POR SESIÓN
@@ -1170,8 +1179,8 @@ describe("evaluateAdaptiveState — test anti-7700 (prueba ejecutable del desaco
 // ─── PR8: versionado del motor + evidencia de propuestas (N1/N13) ──────────
 
 describe("NUTRITION_ENGINE_VERSION", () => {
-  it("es la constante v3 — PR1 (bugs obligatorios + proteína) + PR2 (adaptativo por ritmo) + PR3 (replacementIncrementKcal) ya cerrados", () => {
-    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v3");
+  it("es la constante v3.1 — PR1-3 (v3) + MET de cardio por tipo/intensidad, solapamiento, incertidumbre y explicabilidad (v3.1) ya cerrados", () => {
+    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v3.1");
   });
 });
 
@@ -1442,5 +1451,363 @@ describe("getAdaptiveDiagnostics — ventana recortada por calibración (PR9)", 
       calibrationStartedAt: "2025-12-01",
     });
     expect(diagnostics.evaluationStart).toBe("2026-01-13");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// nutrition-v3.1 — precisión y explicabilidad del gasto energético
+// (ver docs/NUTRITION_V3_DECISIONES.md §11)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Perfil de referencia del diagnóstico: 124kg/177cm sedentario, fuerza
+    5×60min, cardio 5×100min — el caso que reportó TDEE 4015 con MET 7.0
+    fijo, sin preguntar intensidad. */
+function referenceObeseProfile(training: Partial<TrainingActivityProfile> = {}): PhysicalProfile {
+  return baseProfile({
+    age: 24,
+    sex: "male",
+    heightCm: 177,
+    weightKg: 124,
+    activityLevel: "sedentary",
+    activityModelVersion: "lifestyle_plus_training",
+    goal: "recomp",
+    gymDays: [1, 2, 3, 4, 5],
+    trainingActivity: {
+      lifestyleActivity: "sedentary",
+      strengthDaysPerWeek: 5,
+      cardioDaysPerWeek: 5,
+      strengthAvgDurationMin: 60,
+      cardioAvgDurationMin: 100,
+      habitualSteps: null,
+      ...training,
+    },
+  });
+}
+
+describe("nutrition-v3.1 — MET de cardio por tipo × intensidad", () => {
+  it("1) misma duración: cardio suave < moderado < intenso en gasto estimado", () => {
+    const tmb = calcTMB(124, 177, 24, "male");
+    const light    = referenceObeseProfile({ cardioType: "run", cardioIntensity: "light" });
+    const moderate = referenceObeseProfile({ cardioType: "run", cardioIntensity: "moderate" });
+    const vigorous = referenceObeseProfile({ cardioType: "run", cardioIntensity: "vigorous" });
+
+    const tdeeLight    = calcTDEE(light, tmb);
+    const tdeeModerate = calcTDEE(moderate, tmb);
+    const tdeeVigorous = calcTDEE(vigorous, tmb);
+
+    expect(tdeeLight).toBeLessThan(tdeeModerate);
+    expect(tdeeModerate).toBeLessThan(tdeeVigorous);
+  });
+
+  it("perfil legacy/sin confirmar usa un MET propio (4.5), no el 7.0 fijo de antes", () => {
+    const tmb = calcTMB(124, 177, 24, "male");
+    const unconfirmed = referenceObeseProfile(); // sin cardioType/cardioIntensity
+    const tdee = calcTDEE(unconfirmed, tmb);
+    // Con MET 7.0 fijo (comportamiento anterior) el TDEE rondaba 4015.
+    expect(tdee).toBeLessThan(4015);
+    expect(tdee).toBeGreaterThan(3400);
+  });
+});
+
+describe("nutrition-v3.1 — solapamiento fuerza/cardio", () => {
+  it("2) cardio incluido en la sesión de fuerza no se cuenta dos veces", () => {
+    const tmb = 1500;
+    const weightKg = 80;
+    const additive = baseProfile({
+      weightKg, activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "sedentary",
+        strengthDaysPerWeek: 3, cardioDaysPerWeek: 3,
+        strengthAvgDurationMin: 60, cardioAvgDurationMin: 20,
+        habitualSteps: null,
+        cardioType: "bike", cardioIntensity: "moderate",
+      },
+    });
+    const overlapping = baseProfile({
+      weightKg, activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "sedentary",
+        strengthDaysPerWeek: 3, cardioDaysPerWeek: 3,
+        strengthAvgDurationMin: 60, cardioAvgDurationMin: 20,
+        habitualSteps: null,
+        cardioType: "bike", cardioIntensity: "moderate",
+        cardioOverlapDaysPerWeek: 3,
+        strengthAvgDurationMinIncludesCardio: true,
+      },
+    });
+
+    // Con el cardio incluido en la sesión (20 de los 60 minutos totales),
+    // el TDEE debe ser MENOR que tratarlo como tiempo aditivo aparte —
+    // nunca igual (eso significaría que el flag no hizo nada) ni mayor.
+    expect(calcTDEE(overlapping, tmb)).toBeLessThan(calcTDEE(additive, tmb));
+  });
+
+  it("no trunca minutos en silencio: cardio > duración total con el flag activo se trata como aditivo, no se recorta", () => {
+    const tmb = 1500;
+    const weightKg = 80;
+    const inconsistent = baseProfile({
+      weightKg, activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "sedentary",
+        strengthDaysPerWeek: 3, cardioDaysPerWeek: 3,
+        strengthAvgDurationMin: 60, cardioAvgDurationMin: 100, // > 60
+        habitualSteps: null,
+        cardioType: "run", cardioIntensity: "moderate",
+        cardioOverlapDaysPerWeek: 3,
+        strengthAvgDurationMinIncludesCardio: true,
+      },
+    });
+    const additiveEquivalent = baseProfile({
+      weightKg, activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "sedentary",
+        strengthDaysPerWeek: 3, cardioDaysPerWeek: 3,
+        strengthAvgDurationMin: 60, cardioAvgDurationMin: 100,
+        habitualSteps: null,
+        cardioType: "run", cardioIntensity: "moderate",
+        // sin overlap activo — mismo dato, tratamiento aditivo explícito
+      },
+    });
+    // El dato inconsistente cae al mismo resultado que el aditivo explícito
+    // (fallback documentado), no a una versión con los 100 min recortados a 60.
+    expect(calcTDEE(inconsistent, tmb)).toBe(calcTDEE(additiveEquivalent, tmb));
+
+    expect(validateTrainingActivity(inconsistent.trainingActivity!)).toContain(
+      "Si el cardio está incluido en la sesión de fuerza, sus minutos no pueden superar la duración total de esa sesión — ajusta las duraciones en vez de guardar así.",
+    );
+  });
+
+  it("validateTrainingActivity: días de solape no pueden superar min(fuerza, cardio)", () => {
+    const training: TrainingActivityProfile = {
+      lifestyleActivity: "sedentary",
+      strengthDaysPerWeek: 2, cardioDaysPerWeek: 5,
+      strengthAvgDurationMin: 60, cardioAvgDurationMin: 30,
+      habitualSteps: null,
+      cardioOverlapDaysPerWeek: 3, // > min(2,5)=2
+    };
+    expect(validateTrainingActivity(training).length).toBeGreaterThan(0);
+  });
+});
+
+describe("nutrition-v3.1 — pasos y doble conteo (3)", () => {
+  it("3) stepsIncludeCardio no cambia el TDEE — los pasos siguen sin entrar en ninguna fórmula", () => {
+    const tmb = 1500;
+    const base = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "moderate", habitualSteps: 12000 });
+    const withFlagTrue = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "moderate", habitualSteps: 12000, stepsIncludeCardio: true });
+    const withFlagFalse = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "moderate", habitualSteps: 12000, stepsIncludeCardio: false });
+    expect(calcTDEE(withFlagTrue, tmb)).toBe(calcTDEE(base, tmb));
+    expect(calcTDEE(withFlagFalse, tmb)).toBe(calcTDEE(base, tmb));
+  });
+});
+
+describe("nutrition-v3.1 — fingerprint / staleness (4)", () => {
+  it("4) cambiar cardioType, cardioIntensity, strengthIntensity, overlap o el flag de sesión combinada invalida la propuesta", () => {
+    const base = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light" });
+    const original = buildAdjustmentProfileFingerprint(base, "balanced");
+
+    const changedType = referenceObeseProfile({ cardioType: "run", cardioIntensity: "light" });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedType, "balanced"))).toBe(true);
+
+    const changedIntensity = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "vigorous" });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedIntensity, "balanced"))).toBe(true);
+
+    const changedStrength = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light", strengthIntensity: "vigorous" });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedStrength, "balanced"))).toBe(true);
+
+    const changedOverlap = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light", cardioOverlapDaysPerWeek: 2 });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedOverlap, "balanced"))).toBe(true);
+
+    const changedIncludes = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light", strengthAvgDurationMinIncludesCardio: true });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedIncludes, "balanced"))).toBe(true);
+  });
+
+  it("stepsIncludeCardio e isHabitual son informativos: NO invalidan la propuesta", () => {
+    const base = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light" });
+    const original = buildAdjustmentProfileFingerprint(base, "balanced");
+
+    const changedSteps = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light", stepsIncludeCardio: true });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedSteps, "balanced"))).toBe(false);
+
+    const changedHabit = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light", isHabitual: false });
+    expect(isProposalStale(original, buildAdjustmentProfileFingerprint(changedHabit, "balanced"))).toBe(false);
+  });
+});
+
+describe("nutrition-v3.1 — perfiles legacy (5)", () => {
+  it("5) un perfil legacy sin ningún campo nuevo produce un resultado válido y conservador (no revienta, no MET 7 fijo)", () => {
+    const tmb = calcTMB(124, 177, 24, "male");
+    const legacy = referenceObeseProfile(); // ningún campo v3.1 declarado
+    const breakdown = calcTdeeBreakdown(legacy, tmb);
+    expect(breakdown.totalTdeeKcal).toBeGreaterThan(0);
+    expect(Number.isFinite(breakdown.totalTdeeKcal)).toBe(true);
+    expect(breakdown.totalTdeeKcal).toBeLessThan(4015); // ya no MET 7 fijo
+
+    const uncertainty = estimateTdeeUncertainty(legacy, breakdown);
+    expect(uncertainty.confidence).toBe("low");
+  });
+
+  it("migrateLegacyTrainingActivity: dato v2 (un solo avgSessionDurationMin) migra sin campos v3.1, tratado como sin confirmar", () => {
+    const migrated = migrateLegacyTrainingActivity({
+      lifestyleActivity: "sedentary",
+      strengthDaysPerWeek: 4,
+      cardioDaysPerWeek: 3,
+      avgSessionDurationMin: 45,
+      habitualSteps: null,
+    });
+    expect(migrated.legacyDurationUnconfirmed).toBe(true);
+    expect(migrated.cardioType).toBeUndefined();
+    expect(migrated.cardioIntensity).toBeUndefined();
+  });
+});
+
+describe("nutrition-v3.1 — P0: ninguna explicación afirma superávit en déficit (6)", () => {
+  it("6) recomp (124kg, IMC≥30): el texto generado nunca dice 'superávit' cuando gym/rest/media están en déficit", () => {
+    const profile = referenceObeseProfile({ cardioType: "run", cardioIntensity: "moderate" });
+    const tmb = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+    const tdee = calcTDEE(profile, tmb);
+    const gymTargets = calcDailyTargets(profile, true);
+    const restTargets = calcDailyTargets(profile, false);
+
+    // Con kcalFactor(recomp, *, imc>=30) el factor SIEMPRE es <1 — confirma
+    // que el caso real cae en déficit ambos días, como reporta el usuario.
+    expect(gymTargets.kcal).toBeLessThan(tdee);
+    expect(restTargets.kcal).toBeLessThan(tdee);
+
+    const text = explainCalorieCycle({
+      gymDayKcal: gymTargets.kcal, restDayKcal: restTargets.kcal,
+      gymDaysPerWeek: profile.gymDays.length, tdeeKcal: tdee,
+    });
+    expect(text.toLowerCase()).not.toContain("superávit");
+    expect(text.toLowerCase()).toContain("déficit");
+  });
+
+  it("describeCalorieVsTdee: nunca clasifica como surplus un valor por debajo del TDEE", () => {
+    expect(describeCalorieVsTdee(1800, 2400)).toBe("deficit");
+    expect(describeCalorieVsTdee(2400, 2400)).toBe("near_maintenance");
+    expect(describeCalorieVsTdee(2900, 2400)).toBe("surplus");
+  });
+
+  it("explainCalorieCycle: con superávit real en gym, SÍ lo dice (no oculta el caso contrario)", () => {
+    const text = explainCalorieCycle({ gymDayKcal: 2900, restDayKcal: 2200, gymDaysPerWeek: 4, tdeeKcal: 2400 });
+    expect(text.toLowerCase()).toContain("superávit");
+  });
+});
+
+describe("nutrition-v3.1 — media semanal coherente (7)", () => {
+  it("7) la media semanal mostrada coincide matemáticamente con los 7 días reales", () => {
+    const profile = referenceObeseProfile({ cardioType: "bike", cardioIntensity: "moderate" });
+    const cycle = weeklyCycle(profile);
+    const weeklyTotal = cycle.reduce((sum, day) => sum + day.targets.kcal, 0);
+    const weeklyAverage = Math.round(weeklyTotal / 7);
+
+    const tmb = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    const explanation = buildCalorieBreakdownExplanation(breakdown, weeklyAverage);
+
+    expect(explanation.weeklyAverageTargetKcal).toBe(weeklyAverage);
+    // Invariante de suma: reposo + vida cotidiana + entreno + ajuste == media semanal
+    expect(
+      explanation.restingEnergyKcal + explanation.dailyLifeKcal + explanation.habitualTrainingKcal + explanation.goalAdjustmentKcal,
+    ).toBe(explanation.weeklyAverageTargetKcal);
+  });
+});
+
+describe("nutrition-v3.1 — caso 124kg: incertidumbre, nunca cifra exacta (8)", () => {
+  it("8) el TDEE mostrado va acompañado de un rango y de confianza explicada, nunca como cifra exacta sola", () => {
+    const profile = referenceObeseProfile(); // sin confirmar tipo/intensidad, como reportó el usuario
+    const tmb = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    const uncertainty = estimateTdeeUncertainty(profile, breakdown);
+
+    expect(uncertainty.midKcal).toBe(breakdown.totalTdeeKcal);
+    expect(uncertainty.lowKcal).toBeLessThan(uncertainty.midKcal);
+    expect(uncertainty.highKcal).toBeGreaterThan(uncertainty.midKcal);
+    expect(uncertainty.confidence).not.toBe("high"); // nunca "high" en el estimador estático
+    expect(uncertainty.confidence).toBe("low"); // sin tipo/intensidad confirmados
+    expect(uncertainty.confidenceReason.length).toBeGreaterThan(0);
+  });
+
+  it("con todo confirmado, el techo de confianza sigue sin superar 'moderate' (IMC≥30)", () => {
+    const profile = referenceObeseProfile({
+      cardioType: "run", cardioIntensity: "moderate", strengthIntensity: "moderate", isHabitual: true,
+    });
+    const tmb = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+    const breakdown = calcTdeeBreakdown(profile, tmb);
+    const uncertainty = estimateTdeeUncertainty(profile, breakdown);
+    expect(uncertainty.confidence).toBe("moderate");
+  });
+
+  it("isHabitual=false NO reduce el kcal calculado — solo baja la confianza (nunca un descuento arbitrario)", () => {
+    const habitual = referenceObeseProfile({ cardioType: "run", cardioIntensity: "moderate", isHabitual: true });
+    const plan = referenceObeseProfile({ cardioType: "run", cardioIntensity: "moderate", isHabitual: false });
+    const tmb = calcTMB(124, 177, 24, "male");
+    expect(calcTDEE(plan, tmb)).toBe(calcTDEE(habitual, tmb));
+
+    const breakdown = calcTdeeBreakdown(plan, tmb);
+    expect(estimateTdeeUncertainty(plan, breakdown).confidence).toBe("low");
+  });
+});
+
+describe("nutrition-v3.1 — motor adaptativo e invariantes previas siguen intactos (9)", () => {
+  it("9) NUTRITION_ENGINE_VERSION sube a nutrition-v3.1 (cambia el resultado numérico del TDEE)", () => {
+    expect(NUTRITION_ENGINE_VERSION).toBe("nutrition-v3.1");
+  });
+
+  it("calcAdaptiveTdee (7700) sigue siendo diagnóstico puro — evaluateAdaptiveState no lo recibe como input", () => {
+    // Firma de evaluateAdaptiveState no acepta avgIntakeKcal/TDEE calculado
+    // directamente (solo weeklyChangePercent vía weightTrend) — esta prueba
+    // documenta la invariante ya cerrada de v3, que nutrition-v3.1 no debe
+    // romper.
+    const trend: WeightTrendResult = {
+      latestWeightKg: 124, trendWeightKg: 124, slopeKgPerDay: -0.03,
+      weeklyChangeKg: -0.5, weeklyChangePercent: -0.5,
+      validMeasurements: 21, confidence: "high", qualityScore: 0.9,
+    };
+    const coverage: IntakeCoverageResult = { avgKcal: 2000, coverageFraction: 0.9, daysWithData: 19, windowDays: 21 };
+    const result = evaluateAdaptiveState({
+      goal: "fat_loss", currentTargetKcal: 2000, weightTrend: trend, intakeCoverage: coverage,
+      lastAdjustmentDecisionAt: null, referenceDate: "2026-02-10",
+    });
+    expect(result).toBeDefined();
+  });
+
+  it("muscle_gain nunca en déficit — invariante v3 intacta con perfiles que usan los nuevos campos", () => {
+    const profile = referenceObeseProfile({ cardioType: "walk", cardioIntensity: "light" });
+    profile.goal = "muscle_gain";
+    const tmb = calcTMB(profile.weightKg, profile.heightCm, profile.age, profile.sex);
+    const tdee = calcTDEE(profile, tmb);
+    const gymTargets = calcDailyTargets(profile, true);
+    const restTargets = calcDailyTargets(profile, false);
+    expect(gymTargets.kcal).toBeGreaterThanOrEqual(tdee);
+    expect(restTargets.kcal).toBeGreaterThanOrEqual(tdee);
+  });
+});
+
+describe("nutrition-v3.1 — round-trip de persistencia (extra_state)", () => {
+  it("todos los campos nuevos de TrainingActivityProfile sobreviven un round-trip JSON (localStorage/Supabase JSONB) + migrateLegacyTrainingActivity", () => {
+    const original: TrainingActivityProfile = {
+      lifestyleActivity: "light",
+      strengthDaysPerWeek: 4,
+      cardioDaysPerWeek: 4,
+      strengthAvgDurationMin: 70,
+      cardioAvgDurationMin: 25,
+      habitualSteps: 8000,
+      cardioType: "row",
+      cardioIntensity: "vigorous",
+      strengthIntensity: "light",
+      cardioOverlapDaysPerWeek: 2,
+      strengthAvgDurationMinIncludesCardio: true,
+      stepsIncludeCardio: true,
+      isHabitual: false,
+    };
+
+    // Simula exactamente lo que le pasa al objeto al escribirlo en
+    // localStorage (JSON.stringify) o en extra_state (columna jsonb de
+    // Supabase, serializada/deserializada como JSON) y leerlo de vuelta con
+    // el mismo mapper que usa data-layer.ts (migrateLegacyTrainingActivity).
+    const roundTripped = JSON.parse(JSON.stringify(original)) as Record<string, unknown>;
+    const migrated = migrateLegacyTrainingActivity(roundTripped);
+
+    expect(migrated).toEqual(original);
   });
 });
