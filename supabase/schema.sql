@@ -596,3 +596,44 @@ create table if not exists public.water_log (
 
 alter table public.water_log enable row level security;
 create policy "water_log_own" on public.water_log for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- fn_water_increment: incremento atómico de agua (evita condiciones de
+-- carrera entre tabs/dispositivos escribiendo el mismo día — ver
+-- incrementWater en data-layer.ts). Reconstruida aquí desde
+-- pg_get_functiondef() sobre la definición ya viva en producción
+-- (rwxysqzurjsrevdhbejy) — auditoría de reproducibilidad, 2026-08-22:
+-- esta función existía en remoto pero nunca se había versionado, ni en
+-- este archivo ni en ninguna migración. Solo estaban versionados sus
+-- permisos (revoke/grant en 20260819190139_security_advisor_fixes.sql),
+-- que dan por hecho que la función ya existe — una instalación nueva
+-- siguiendo schema.sql + migraciones en orden fallaba exactamente ahí
+-- con "function ... does not exist". CREATE OR REPLACE (no CREATE)
+-- para que aplicar este archivo sobre una base que YA tiene la función
+-- (como la actual) sea un no-op idempotente, nunca un error de "ya existe".
+create or replace function public.fn_water_increment(p_date date, p_delta integer)
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $$
+declare
+  new_ml integer;
+begin
+  insert into public.water_log (user_id, log_date, ml)
+  values (auth.uid(), p_date, greatest(0, p_delta))
+  on conflict (user_id, log_date)
+  do update set
+    ml         = greatest(0, water_log.ml + p_delta),
+    updated_at = now()
+  returning ml into new_ml;
+  return coalesce(new_ml, 0);
+end;
+$$;
+
+-- Mismo endurecimiento que ya se aplicó en remoto vía
+-- 20260819190139_security_advisor_fixes.sql — repetido aquí porque una
+-- instalación nueva ejecuta schema.sql primero y esa migración después;
+-- sin este revoke/grant, una instalación nueva dejaría la función
+-- ejecutable por `anon` hasta que corriera esa migración posterior.
+revoke all on function public.fn_water_increment(date, integer) from public;
+grant execute on function public.fn_water_increment(date, integer) to authenticated;

@@ -906,8 +906,14 @@ placeholder para que no se pierda como paso explícito del refactor)*
    - Fingerprint de propuesta completado (§6.11): `age`/`sex`/`heightCm`/
      `bodyFatPct` añadidos; `bodyFatSource`/`gymDays` excluidos con
      justificación explícita, no por omisión.
-   - **Bloqueante de despliegue, fuera de este PR**: las dos migraciones
-     de PR1 (`age >= 18`, `body_fat_source`) siguen sin aplicar en la
-     base de datos real — confirmado por auditoría directa. El código ya
-     asume la columna `body_fat_source`; desplegar sin aplicar antes las
-     migraciones rompería la sincronización de perfil.
+   - **Bloqueante de despliegue señalado en el cierre de PR4, ya resuelto
+     (actualizado tras la auditoría final de Nutrition v3, 2026-08-22)**:
+     en el momento de cerrar PR4 las dos migraciones de PR1 (`age >= 18`,
+     `body_fat_source`) todavía no se habían aplicado en la base de datos
+     real. **Ya están aplicadas** — confirmado con SQL directo contra
+     `rwxysqzurjsrevdhbejy`: el `CHECK` `user_profiles_age_check`
+     (`age is null or (age >= 18 and age < 120)`) y la columna
+     `body_fat_source` (`text`) existen ambos en la base real, y
+     `supabase_migrations.schema_migrations` registra las dos migraciones
+     (`20260821202150`, `20260821202202`) como aplicadas. Nutrition v3 no
+     tiene ningún bloqueante de despliegue pendiente por este motivo.

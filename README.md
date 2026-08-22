@@ -28,8 +28,9 @@ FoodOScodex/
 │   └── desktop/          ← reservada: Tauri
 ├── packages/types/       ← tipos TypeScript compartidos (@foodos/types)
 ├── supabase/
-│   ├── schema.sql        ← 25 tablas + RLS + triggers
-│   └── migrations/       ← migraciones incrementales
+│   ├── schema.sql        ← 26 tablas + RLS + triggers + funciones
+│   ├── migrations/       ← migraciones incrementales
+│   └── functions/        ← Edge Functions (delete-account)
 └── docs/                 ← PDF técnico v9 (98 págs.)
 ```
 
@@ -50,15 +51,16 @@ npm run build   # build de producción
 ## Conectar Supabase
 
 1. Crea un proyecto en [supabase.com](https://supabase.com).
-2. SQL Editor → ejecuta `supabase/schema.sql` y luego cada archivo en `supabase/migrations/`.
+2. SQL Editor → ejecuta `supabase/schema.sql` y luego cada archivo en `supabase/migrations/`, en orden.
 3. Authentication → activa **Email** (magic link) y **Google** (OAuth client en Google Cloud Console).
-4. Copia `.env.local.example` como `apps/web/.env.local` y rellena:
+4. Edge Functions → despliega `supabase/functions/delete-account` (`supabase functions deploy delete-account`). Necesita privilegios de service role para borrar la cuenta de `auth.users` — por eso vive como Edge Function y no como llamada directa desde el cliente (ver `deleteAccount()` en `data-layer.ts`). Sin desplegarla, el botón de borrar cuenta en Ajustes falla.
+5. Copia `.env.local.example` como `apps/web/.env.local` y rellena:
    ```
    NEXT_PUBLIC_SUPABASE_URL=...
    NEXT_PUBLIC_SUPABASE_ANON_KEY=...
    NEXT_PUBLIC_ADMIN_EMAILS=tu@email.com
    ```
-5. `npm run dev` — el botón Cuenta ya sincroniza todo.
+6. `npm run dev` — el botón Cuenta ya sincroniza todo.
 
 ## Vistas del dashboard
 
@@ -72,7 +74,7 @@ npm run build   # build de producción
 | Carrito | Lista de compra generada desde inventario y recetas |
 | Finanzas | Fuentes de ingreso, balance mensual, proyección con interés compuesto (6m/1a/5a/10a) |
 | Estadísticas | Gráficos SVG históricos de macros, peso y gasto |
-| Nutrición | TMB/TDEE Mifflin-St Jeor, 4 modos de objetivo, ciclado calórico gym/descanso, ESPEN adjusted weight, rango proteína 5 puntos, integración con kcal quemadas |
+| Nutrición | Nutrition Engine v3: TDEE Mifflin-St Jeor + modelo de actividad (vida diaria + entreno declarado, sin doble conteo), 4 objetivos (ganancia muscular nunca es un déficit encubierto), ciclado gym/descanso solo en recomposición, proteína por base de referencia (peso real/ajustado ESPEN/masa magra), motor adaptativo por ritmo de peso observado |
 | Asistente | Chat IA contextual con historial del estado del usuario |
 | Planificador | Planificación semanal de comidas |
 | Ejercicios | Rutinas, explorador wger, generación IA, historial y kcal quemadas → objetivo nutricional |
@@ -87,11 +89,13 @@ npm run build   # build de producción
 
 ## Nutrición
 
-- **TMB/TDEE** con Mifflin-St Jeor y multiplicador de actividad.
-- **4 modos**: déficit, mantenimiento, volumen limpio, pérdida acelerada.
-- **Ciclado calórico** automático: kcal distintas en días de gym vs. descanso.
-- **Proteína**: fórmula ESPEN con peso ajustado para obesidad; rango 5 puntos (1.6–2.4 g/kg).
-- **Integración ejercicio**: las kcal quemadas hoy se suman al objetivo efectivo del día.
+Motor v3 (ver [`docs/NUTRITION_V3_DECISIONES.md`](docs/NUTRITION_V3_DECISIONES.md) para el porqué de cada decisión):
+
+- **TDEE**: Mifflin-St Jeor + modelo de actividad de dos capas (vida diaria vía `LIFESTYLE_ONLY_FACTORS` + entrenamiento declarado vía `replacementIncrementKcal`, diseñado explícitamente para no contar dos veces la misma energía).
+- **4 objetivos**: pérdida de grasa, recomposición, mantenimiento, ganancia muscular. Ganancia muscular **nunca** es un déficit encubierto — el factor base siempre es ≥1.0, cualquiera que sea el IMC.
+- **Ciclado calórico gym/descanso**: solo en recomposición (IMC≥30: −17% a −20%; IMC<30: −10% a −17%, según sea día de gym o descanso). El resto de objetivos no varía entre días de entreno y descanso.
+- **Proteína**: regla propia por base de referencia — peso real, peso ajustado (aproximación ESPEN) o masa magra si hay % de grasa registrado — sin heredar el mismo multiplicador entre bases. Rango real 1.8–2.6 g/kg según objetivo y base.
+- **Motor adaptativo**: ajusta el objetivo calórico según si el ritmo de peso observado (no las kcal quemadas del día) coincide con la banda esperada del objetivo elegido, con cobertura de registro y confianza de tendencia mínimas antes de proponer nada. Las sesiones de ejercicio registradas se muestran en el módulo de Ejercicios pero **nunca** se suman de vuelta al presupuesto nutricional — el entrenamiento habitual ya está contado en el TDEE.
 
 ## PWA
 
