@@ -12,8 +12,8 @@ export function MascotWidget() {
   const { mascotMessage, mascotState } = useFoodOSUI();
   const mascot = getMascot(state.mascotId);
   const [bubble, setBubble] = useState(false);
-  const bubbleTimer = useRef<ReturnType<typeof setTimeout>>();
-  const inactivityTimer = useRef<ReturnType<typeof setTimeout>>();
+  const bubbleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const prevMsgRef = useRef(mascotMessage);
 
   // First visit of day → wave

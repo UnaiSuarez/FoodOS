@@ -1,12 +1,12 @@
 # FoodOS
 
-App unificada de **alimentación, ejercicio y finanzas personales**. Monorepo Next.js 14 con Supabase, sync en tiempo real y PWA offline.
+App unificada de **alimentación, ejercicio y finanzas personales**. Monorepo Next.js 15 con Supabase, sync en tiempo real y PWA offline.
 
 ## Stack
 
 | Capa | Tecnología |
 |---|---|
-| Frontend | Next.js 14 App Router, React, TypeScript |
+| Frontend | Next.js 15 App Router, React, TypeScript |
 | Base de datos | Supabase (PostgreSQL + RLS + Realtime) |
 | Auth | Supabase Auth — Google OAuth y magic link |
 | Estado | React Context + localStorage + sync bidireccional |
@@ -18,7 +18,7 @@ App unificada de **alimentación, ejercicio y finanzas personales**. Monorepo Ne
 ```text
 FoodOScodex/
 ├── apps/
-│   ├── web/              ← Next.js 14 (landing + dashboard) — ACTIVA
+│   ├── web/              ← Next.js 15 (landing + dashboard) — ACTIVA
 │   │   ├── public/       ← 15 avatares webp, sw.js, manifest.json
 │   │   └── src/
 │   │       ├── app/      ← rutas: / (landing) y /dashboard

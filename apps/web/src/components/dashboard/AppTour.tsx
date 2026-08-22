@@ -90,7 +90,7 @@ export function AppTour({ setView, onDone }: Props) {
   // paso guardado en vez de siempre en 0 es lo que permite retomar donde
   // se quedó en vez de reiniciarse solo.
   const [step, setStep] = useState(() => getSavedTourStep() ?? 0);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const titleRef = useRef<HTMLHeadingElement>(null);
 
   const current = STEPS[step];

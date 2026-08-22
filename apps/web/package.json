@@ -2,7 +2,7 @@
   "name": "@foodos/web",
   "version": "0.1.0",
   "private": true,
-  "description": "FoodOS web: landing publica + app (dashboard) en Next.js 14.",
+  "description": "FoodOS web: landing publica + app (dashboard) en Next.js 15.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -16,16 +16,16 @@
     "@foodos/types": "*",
     "@supabase/supabase-js": "^2.45.0",
     "lucide-react": "^1.33.0",
-    "next": "^14.2.15",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "next": "15.5.23",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
     "@types/node": "^20.14.0",
-    "@types/react": "^18.3.3",
-    "@types/react-dom": "^18.3.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "typescript": "^5.5.0",
     "vitest": "^4.1.10"
   }
