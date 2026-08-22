@@ -6,13 +6,9 @@
 -- (20260819190139_security_advisor_fixes.sql hace revoke/grant sobre
 -- ella), que dan por hecho que la función ya existe. Confirmado con
 -- pg_get_functiondef() sobre la base real y con
--- supabase_migrations.schema_migrations.statements (ninguna de las 13
--- migraciones registradas contiene un CREATE FUNCTION para ella): la
--- función se creó directamente contra la base remota por fuera del
--- control de versiones. Consecuencia real: una instalación nueva
--- siguiendo schema.sql + migraciones en orden fallaba exactamente en
--- 20260819190139 con "function public.fn_water_increment(date, integer)
--- does not exist" (ese REVOKE/GRANT no lleva IF EXISTS).
+-- supabase_migrations.schema_migrations.statements (ninguna migración
+-- registrada contiene un CREATE FUNCTION para ella): la función se creó
+-- directamente contra la base remota por fuera del control de versiones.
 --
 -- Esta migración NO cambia el comportamiento en producción — reproduce
 -- EXACTAMENTE (mismo cuerpo, mismo SECURITY DEFINER, mismo search_path,
@@ -22,12 +18,14 @@
 -- de "ya existe" que un CREATE a secas sí lanzaría, y el resultado
 -- converge exactamente al mismo estado que había antes.
 --
--- Orden real de ejecución en una instalación nueva (schema.sql +
--- migraciones en orden por timestamp): schema.sql crea la función
--- primero; 20260819190139_security_advisor_fixes la encuentra ya creada
--- y reafirma sus permisos (su revoke/grant, sin tocar); esta migración
--- (20260822120000) corre después de ambas y vuelve a reconciliar
--- definición y permisos contra el mismo estado. No se toca
+-- Versión deliberadamente ANTERIOR a 20260819190139_security_advisor_fixes
+-- (revisión externa, reconciliación de historial 2026-08-22): un `supabase
+-- db reset`/`db push` desde vacío solo conoce supabase/migrations/ (no
+-- ejecuta schema.sql) y aplica en orden estricto de timestamp. Con
+-- 20260819180000 < 20260819190139, esta migración crea la función ANTES
+-- de que 20260819190139 intente su revoke/grant sobre ella — sin esto, ese
+-- revoke/grant (que no lleva IF EXISTS) fallaría con "function ... does
+-- not exist" en cualquier replay puramente por CLI. No se toca
 -- 20260819190139_security_advisor_fixes.sql: ya está aplicada y su
 -- contenido debe seguir coincidiendo exactamente con el historial remoto
 -- (supabase_migrations.schema_migrations).

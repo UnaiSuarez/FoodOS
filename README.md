@@ -28,9 +28,10 @@ FoodOScodex/
 │   └── desktop/          ← reservada: Tauri
 ├── packages/types/       ← tipos TypeScript compartidos (@foodos/types)
 ├── supabase/
-│   ├── schema.sql        ← 26 tablas + RLS + triggers + funciones
-│   ├── migrations/       ← migraciones incrementales
-│   └── functions/        ← Edge Functions (delete-account)
+│   ├── config.toml       ← configuración estándar del CLI (supabase start/db reset)
+│   ├── migrations/       ← fuente de verdad: 26 tablas + RLS + triggers + funciones, en migraciones ordenadas
+│   ├── functions/        ← Edge Functions (delete-account)
+│   └── schema.sql        ← referencia/legado — NO se ejecuta como parte del setup, ver "Conectar Supabase"
 └── docs/                 ← PDF técnico v9 (98 págs.)
 ```
 
@@ -50,17 +51,29 @@ npm run build   # build de producción
 
 ## Conectar Supabase
 
+El flujo recomendado usa exclusivamente `supabase/migrations/` — es la única fuente que la CLI conoce y ejecuta (`supabase db reset`/`db push` nunca leen `supabase/schema.sql`, ni de forma automática ni manual dentro del flujo de la CLI). `supabase/schema.sql` es un archivo de referencia/legado: describe el mismo estado que las migraciones ya reproducen, pero **no** debe ejecutarse como paso del setup — combinarlo con las migraciones (que ya incluyen su propia versión de ese baseline, `20260629120159_initial_schema.sql`) duplicaría la creación de todo el esquema.
+
+**Proyecto local (desarrollo, sin depender de un proyecto remoto):**
+
+1. [Instala Docker](https://docs.docker.com/get-docker/) (lo usa `supabase start` para levantar Postgres/Auth/Storage local).
+2. `supabase start` — levanta el stack local completo.
+3. `supabase db reset` — aplica todas las migraciones de `supabase/migrations/` en orden sobre la base local, desde vacío.
+4. Copia `.env.local.example` como `apps/web/.env.local` y apunta a las URLs/claves locales que imprime `supabase start`.
+
+**Proyecto remoto (Supabase Cloud):**
+
 1. Crea un proyecto en [supabase.com](https://supabase.com).
-2. SQL Editor → ejecuta `supabase/schema.sql` y luego cada archivo en `supabase/migrations/`, en orden.
-3. Authentication → activa **Email** (magic link) y **Google** (OAuth client en Google Cloud Console).
-4. Edge Functions → despliega `supabase/functions/delete-account` (`supabase functions deploy delete-account`). Necesita privilegios de service role para borrar la cuenta de `auth.users` — por eso vive como Edge Function y no como llamada directa desde el cliente (ver `deleteAccount()` en `data-layer.ts`). Sin desplegarla, el botón de borrar cuenta en Ajustes falla.
-5. Copia `.env.local.example` como `apps/web/.env.local` y rellena:
+2. `supabase link --project-ref <tu-project-ref>` para enlazar el repo con el proyecto.
+3. `supabase db push` — aplica las migraciones pendientes de `supabase/migrations/` contra el proyecto remoto, en orden.
+4. Authentication → activa **Email** (magic link) y **Google** (OAuth client en Google Cloud Console).
+5. Edge Functions → despliega `supabase/functions/delete-account` (`supabase functions deploy delete-account`). Necesita privilegios de service role para borrar la cuenta de `auth.users` — por eso vive como Edge Function y no como llamada directa desde el cliente (ver `deleteAccount()` en `data-layer.ts`). Sin desplegarla, el botón de borrar cuenta en Ajustes falla.
+6. Copia `.env.local.example` como `apps/web/.env.local` y rellena:
    ```
    NEXT_PUBLIC_SUPABASE_URL=...
    NEXT_PUBLIC_SUPABASE_ANON_KEY=...
    NEXT_PUBLIC_ADMIN_EMAILS=tu@email.com
    ```
-6. `npm run dev` — el botón Cuenta ya sincroniza todo.
+7. `npm run dev` — el botón Cuenta ya sincroniza todo.
 
 ## Vistas del dashboard
 
