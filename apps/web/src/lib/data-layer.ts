@@ -754,6 +754,13 @@ class RemoteAdapter {
         if (state.profile && (typeof extra.lastTargetChangedAt === "string" || extra.lastTargetChangedAt === null)) {
           state.profile.lastTargetChangedAt = extra.lastTargetChangedAt as string | null;
         }
+        // lastCalculationEngineVersion (nutrition-v3.1): mismo criterio —
+        // vive en extra_state, aditivo. Sin este dato (perfiles guardados
+        // antes de v3.1), queda undefined y applyEngineVersionTransition lo
+        // detecta como pendiente de transición en el próximo render.
+        if (state.profile && typeof extra.lastCalculationEngineVersion === "string") {
+          state.profile.lastCalculationEngineVersion = extra.lastCalculationEngineVersion;
+        }
       }
     }
 
@@ -1063,6 +1070,7 @@ class RemoteAdapter {
           adaptiveKcalOffsetKcal: state.profile?.adaptiveKcalOffsetKcal ?? 0,
           adaptiveCalibrationStartedAt: state.profile?.adaptiveCalibrationStartedAt ?? null,
           lastTargetChangedAt: state.profile?.lastTargetChangedAt ?? null,
+          lastCalculationEngineVersion: state.profile?.lastCalculationEngineVersion ?? null,
         },
         ...(state.profile
           ? {

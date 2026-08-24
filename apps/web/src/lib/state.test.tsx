@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CartItem, InventoryItem, Recipe } from "@foodos/types";
-import { actions, defaultState, getIngredientStatus, getRecipeMatch, normalizeState } from "./state";
+import type { CartItem, FoodOSState, InventoryItem, PhysicalProfile, Recipe } from "@foodos/types";
+import { NUTRITION_ENGINE_VERSION } from "./nutrition";
+import { actions, defaultState, getIngredientStatus, getRecipeMatch, hydrateRemoteState, normalizeState } from "./state";
 
 function inv(overrides: Partial<InventoryItem>): InventoryItem {
   return {
@@ -215,5 +216,278 @@ describe("normalizeState — migración de estados antiguos (E21-15)", () => {
     expect(twice.foodLog).toHaveLength(1); // no se duplica la comida migrada
     expect(twice.nutrition.mode).toBe("recomp");
     expect(twice).toEqual(once);
+  });
+});
+
+// ─── nutrition-v3.1 — transición de motor sin riesgo de carrera en el arranque ──
+// Corrección de revisión: ProfileSummary (componente visual) disparaba
+// applyEngineVersionTransition() en un useEffect y llamaba a mutate(), que
+// guarda el snapshot completo y programa un push. Al arrancar, el estado
+// LOCAL se carga primero (síncrono) y el remoto se hidrata después (async,
+// red) — si ese efecto corría con el perfil local todavía no confirmado
+// por el servidor, podía programarse un push del snapshot local antiguo
+// mientras la hidratación remota autoritativa seguía en curso, con riesgo
+// de que uno pisara al otro según cuál terminara antes. La transición se
+// movió a normalizeState() — capa de estado pura, sin efectos secundarios
+// propios — llamada tanto sobre el estado local como sobre el remoto recién
+// hidratado, cada uno de forma completamente independiente (nunca se
+// fusionan). Quien llama (FoodOSProvider) decide cuándo persistir cada
+// resultado.
+function physicalProfile(overrides: Partial<PhysicalProfile> = {}): PhysicalProfile {
+  return {
+    age: 30, sex: "male", heightCm: 178, weightKg: 78, bodyFatPct: null,
+    activityLevel: "sedentary", goal: "maintain", gymDays: [1, 3, 5],
+    allergies: [], excludedFoods: [],
+    ...overrides,
+  };
+}
+
+describe("normalizeState — transición de motor v3.1 (sin contaminación entre estado local y remoto)", () => {
+  it("perfil local antiguo + perfil remoto más reciente, ambos con motor desactualizado: normalizeState(remoto) conserva TODOS los datos remotos, solo sella la versión y reinicia calibración — nunca mezcla con el local", () => {
+    // "Local antiguo": lo que había en localStorage antes de que el usuario
+    // recalibrara su plan en otro dispositivo.
+    const localState: FoodOSState = {
+      ...defaultState,
+      profile: physicalProfile({
+        weightKg: 90, goal: "fat_loss",
+        activityModelVersion: "lifestyle_plus_training",
+        trainingActivity: {
+          lifestyleActivity: "sedentary", strengthDaysPerWeek: 3, cardioDaysPerWeek: 2,
+          strengthAvgDurationMin: 45, cardioAvgDurationMin: 30, habitualSteps: null,
+        },
+        adaptiveKcalOffsetKcal: -50,
+        adaptiveCalibrationStartedAt: "2026-01-01",
+        lastTargetChangedAt: "2026-01-01",
+        // sin lastCalculationEngineVersion — perfil de antes de v3.1
+      }),
+    };
+
+    // "Remoto más reciente": el usuario cambió de peso y objetivo desde
+    // otro dispositivo DESPUÉS de guardar el snapshot local — sigue sin
+    // lastCalculationEngineVersion (tampoco pasó por v3.1 todavía), y su
+    // cardio es legacy (cardioDaysPerWeek > 0, sin tipo/intensidad) → SÍ
+    // queda afectado por el cambio de fórmula.
+    const remoteState: FoodOSState = {
+      ...defaultState,
+      profile: physicalProfile({
+        weightKg: 85, goal: "recomp", // distinto del local — la prueba de que no se mezclan
+        activityModelVersion: "lifestyle_plus_training",
+        trainingActivity: {
+          lifestyleActivity: "light", strengthDaysPerWeek: 4, cardioDaysPerWeek: 3,
+          strengthAvgDurationMin: 60, cardioAvgDurationMin: 40, habitualSteps: 9000,
+        },
+        adaptiveKcalOffsetKcal: 120, // distinto del local
+        adaptiveCalibrationStartedAt: "2026-02-15",
+        lastTargetChangedAt: "2026-02-15",
+      }),
+    };
+
+    const normalizedRemote = normalizeState(remoteState);
+    const p = normalizedRemote.profile!;
+
+    // Todos los datos REMOTOS se conservan exactamente — nada del perfil
+    // local (peso 90, fat_loss, offset -50, fecha 2026-01-01) se filtra.
+    expect(p.weightKg).toBe(85);
+    expect(p.goal).toBe("recomp");
+    expect(p.adaptiveKcalOffsetKcal).toBe(120);
+    expect(p.trainingActivity).toEqual(remoteState.profile!.trainingActivity);
+
+    // Único cambio: el sello de versión (siempre) y el reinicio de
+    // calibración (porque este perfil remoto SÍ está afectado — cardio
+    // legacy con cardioDaysPerWeek > 0 y sin tipo/intensidad).
+    expect(p.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
+    expect(p.adaptiveCalibrationStartedAt).not.toBe("2026-02-15");
+    expect(p.adaptiveCalibrationStartedAt).not.toBe("2026-01-01"); // tampoco el del local
+
+    // normalizeState(local) es una llamada TOTALMENTE independiente — no
+    // recibe ni puede ver remoteState en ningún momento.
+    const normalizedLocal = normalizeState(localState);
+    expect(normalizedLocal.profile!.weightKg).toBe(90);
+    expect(normalizedLocal.profile!.goal).toBe("fat_loss");
+  });
+
+  it("perfil remoto YA al día (lastCalculationEngineVersion == motor actual): normalizeState no toca nada de calibración, aunque el local esté desactualizado", () => {
+    const remoteState: FoodOSState = {
+      ...defaultState,
+      profile: physicalProfile({
+        weightKg: 82,
+        lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION,
+        adaptiveCalibrationStartedAt: "2026-03-01",
+      }),
+    };
+    const normalized = normalizeState(remoteState);
+    expect(normalized.profile!.adaptiveCalibrationStartedAt).toBe("2026-03-01");
+    expect(normalized.profile!.weightKg).toBe(82);
+  });
+
+  it("perfil remoto legacy_total_pal con motor desactualizado: sella la versión pero NO reinicia calibración (esa fórmula no cambió)", () => {
+    const remoteState: FoodOSState = {
+      ...defaultState,
+      profile: physicalProfile({
+        activityModelVersion: "legacy_total_pal",
+        adaptiveCalibrationStartedAt: "2026-01-10",
+      }),
+    };
+    const normalized = normalizeState(remoteState);
+    expect(normalized.profile!.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
+    expect(normalized.profile!.adaptiveCalibrationStartedAt).toBe("2026-01-10");
+  });
+});
+
+// ─── Reproducción EJECUTABLE de la carrera asíncrona (corrección de revisión) ──
+// Los tests anteriores (normalizeState llamado por separado, o inspección
+// de texto fuente) podían pasar aunque reapareciera un
+// `remote.schedulePush(localLoaded)` antes de que pullState() resolviera —
+// ninguno de los dos ejecuta de verdad la secuencia asíncrona real. Estos sí:
+// hydrateRemoteState() (extraída de FoodOSProvider a state.tsx, con
+// dependencias inyectables) se invoca con un pullState() controlado por una
+// promesa diferida, para poder inspeccionar el estado de los espías
+// mientras el pull está deliberadamente bloqueado — igual que ocurriría de
+// verdad al arrancar con una conexión lenta.
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
+
+describe("hydrateRemoteState — sin push del snapshot local antiguo durante la hidratación (reproducción de la carrera)", () => {
+  it("mientras pullState() está pendiente no se llama a schedulePush ni a saveLocalState; al resolver con un perfil remoto más reciente y motor antiguo, se llama a schedulePush UNA sola vez con un snapshot que conserva todos los datos remotos, y solo transiciona sello+calibración cuando corresponde", async () => {
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: FoodOSState[] = [];
+    const saveLocalStateCalls: FoodOSState[] = [];
+    let ensureBaseRowsCalled = false;
+
+    // "Perfil local antiguo" cargado justo antes de esta hidratación —
+    // hydrateRemoteState() no lo recibe como parámetro en absoluto (no
+    // puede empujarlo por error), pero lo dejamos preparado para
+    // documentar el escenario exacto que describe la revisión.
+    const localOld = physicalProfile({
+      weightKg: 90, goal: "fat_loss", adaptiveKcalOffsetKcal: -50,
+      adaptiveCalibrationStartedAt: "2026-01-01",
+    });
+    void localOld;
+
+    const hydratePromise = hydrateRemoteState(defaultState, {
+      ensureBaseRows: async () => { ensureBaseRowsCalled = true; },
+      pullState: () => pull.promise,
+      saveLocalState: (s) => saveLocalStateCalls.push(s),
+      schedulePush: (s) => schedulePushCalls.push(s),
+      isCancelled: () => false,
+    });
+
+    // El pull todavía no resolvió — deja que las microtasks previas al
+    // await de pullState() se asienten (ensureBaseRows) sin avanzar más.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ensureBaseRowsCalled).toBe(true);
+    expect(schedulePushCalls).toHaveLength(0);
+    expect(saveLocalStateCalls).toHaveLength(0);
+
+    // Ahora resuelve el pull: perfil remoto más reciente/distinto del
+    // local, motor antiguo (sin lastCalculationEngineVersion), cardio
+    // legacy (cardioDaysPerWeek > 0 sin tipo/intensidad) → SÍ afectado.
+    const remoteProfile = physicalProfile({
+      weightKg: 85, goal: "recomp",
+      activityModelVersion: "lifestyle_plus_training",
+      trainingActivity: {
+        lifestyleActivity: "light", strengthDaysPerWeek: 4, cardioDaysPerWeek: 3,
+        strengthAvgDurationMin: 60, cardioAvgDurationMin: 40, habitualSteps: 9000,
+      },
+      adaptiveKcalOffsetKcal: 120,
+      adaptiveCalibrationStartedAt: "2026-02-15",
+      lastTargetChangedAt: "2026-02-15",
+    });
+    pull.resolve({ ...defaultState, profile: remoteProfile });
+
+    const result = await hydratePromise;
+
+    expect(saveLocalStateCalls).toHaveLength(1);
+    expect(schedulePushCalls).toHaveLength(1);
+    const pushed = schedulePushCalls[0];
+
+    // El snapshot empujado conserva TODOS los datos remotos — nada del
+    // perfil local (peso 90, fat_loss, offset -50) se filtra, porque
+    // hydrateRemoteState() nunca tuvo acceso a él.
+    expect(pushed.profile!.weightKg).toBe(85);
+    expect(pushed.profile!.goal).toBe("recomp");
+    expect(pushed.profile!.adaptiveKcalOffsetKcal).toBe(120);
+    expect(pushed.profile!.trainingActivity).toEqual(remoteProfile.trainingActivity);
+
+    // Único cambio real: el sello de versión (siempre) y el reinicio de
+    // calibración (porque este perfil SÍ está afectado por el cambio de
+    // fórmula de cardio legacy).
+    expect(pushed.profile!.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
+    expect(pushed.profile!.adaptiveCalibrationStartedAt).not.toBe("2026-02-15");
+    expect(pushed.profile!.adaptiveCalibrationStartedAt).not.toBe("2026-01-01"); // tampoco el del local
+
+    expect(result).toBe(pushed); // hydrateRemoteState() devuelve exactamente lo empujado
+  });
+
+  it("perfil remoto NO afectado (legacy_total_pal): sella la versión (schedulePush SÍ se llama, hay algo nuevo que guardar), pero NO reinicia la calibración", async () => {
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: FoodOSState[] = [];
+
+    const hydratePromise = hydrateRemoteState(defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: () => pull.promise,
+      saveLocalState: () => {},
+      schedulePush: (s) => schedulePushCalls.push(s),
+      isCancelled: () => false,
+    });
+
+    pull.resolve({
+      ...defaultState,
+      profile: physicalProfile({ activityModelVersion: "legacy_total_pal", adaptiveCalibrationStartedAt: "2026-01-10" }),
+    });
+    await hydratePromise;
+
+    expect(schedulePushCalls).toHaveLength(1);
+    expect(schedulePushCalls[0].profile!.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
+    expect(schedulePushCalls[0].profile!.adaptiveCalibrationStartedAt).toBe("2026-01-10"); // sin tocar
+  });
+
+  it("perfil remoto YA al día: no llama a schedulePush en absoluto (hydrate normal, puramente de lectura)", async () => {
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: FoodOSState[] = [];
+
+    const hydratePromise = hydrateRemoteState(defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: () => pull.promise,
+      saveLocalState: () => {},
+      schedulePush: (s) => schedulePushCalls.push(s),
+      isCancelled: () => false,
+    });
+
+    pull.resolve({
+      ...defaultState,
+      profile: physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION, weightKg: 82 }),
+    });
+    const result = await hydratePromise;
+
+    expect(schedulePushCalls).toHaveLength(0);
+    expect(result!.profile!.weightKg).toBe(82);
+  });
+
+  it("cancelado mientras el pull estaba en vuelo: devuelve null y no llama a saveLocalState ni a schedulePush, aunque el pull acabe resolviendo", async () => {
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: FoodOSState[] = [];
+    const saveLocalStateCalls: FoodOSState[] = [];
+    let cancelled = false;
+
+    const hydratePromise = hydrateRemoteState(defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: () => pull.promise,
+      saveLocalState: (s) => saveLocalStateCalls.push(s),
+      schedulePush: (s) => schedulePushCalls.push(s),
+      isCancelled: () => cancelled,
+    });
+
+    cancelled = true; // p.ej. el componente se desmontó mientras el pull seguía en vuelo
+    pull.resolve({ ...defaultState, profile: physicalProfile({ weightKg: 99 }) });
+
+    const result = await hydratePromise;
+    expect(result).toBeNull();
+    expect(saveLocalStateCalls).toHaveLength(0);
+    expect(schedulePushCalls).toHaveLength(0);
   });
 });

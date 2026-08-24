@@ -17,7 +17,7 @@ import { RealtimeHydrationGate } from "./realtime-hydration-gate";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
-import { calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
+import { applyEngineVersionTransition, calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
@@ -126,6 +126,19 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     ),
   }));
   if (next.profile) {
+    // nutrition-v3.1 (corrección de revisión — riesgo de carrera en el
+    // arranque, ver FoodOSProvider): la transición de motor se aplica AQUÍ,
+    // en la capa de estado, sobre CUALQUIER perfil que pase por
+    // normalizeState — tanto el local (arranque en modo solo-local, o
+    // antes de que la hidratación remota complete) como el remoto recién
+    // hidratado. Nunca desde un componente visual ni en un efecto separado
+    // que pudiera disparar un guardado mientras la hidratación remota
+    // autoritativa sigue en curso. Pura, sin efectos secundarios — quien
+    // llama decide si además hace falta persistir el cambio (ver los dos
+    // call sites en FoodOSProvider).
+    const transitioned = applyEngineVersionTransition(next.profile, getToday(next));
+    if (transitioned) next.profile = transitioned;
+
     const targets = calcDailyTargets(next.profile, isGymDay(next.profile, stateDate(next)), next.macroPreference);
     next.nutrition = {
       kcal: targets.kcal,
@@ -136,6 +149,50 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     };
   }
   return next;
+}
+
+export interface HydrateRemoteDeps {
+  ensureBaseRows: () => Promise<void>;
+  pullState: (defaults: FoodOSState) => Promise<FoodOSState>;
+  saveLocalState: (state: FoodOSState) => void;
+  schedulePush: (state: FoodOSState) => void;
+  isCancelled: () => boolean;
+}
+
+/**
+ * Núcleo asíncrono de la hidratación remota autoritativa — extraído de
+ * FoodOSProvider (nutrition-v3.1, corrección de revisión) para poder
+ * probarlo con Vitest sin renderizar React (el proyecto no usa
+ * @testing-library/react ni un entorno DOM en vitest). Dependencias
+ * inyectables: FoodOSProvider las conecta a `remote`/saveLocalState reales;
+ * los tests las sustituyen por promesas diferidas y espías para reproducir
+ * la carrera asíncrona real (pullState pendiente, local antiguo cargado
+ * mientras tanto) sin depender de leer el código fuente ni de temporizadores.
+ *
+ * Devuelve el estado remoto ya normalizado (con la transición de motor
+ * aplicada por normalizeState si tocaba) o `null` si se canceló mientras
+ * el pull seguía en vuelo. Deliberadamente NO recibe el estado local como
+ * parámetro — no puede empujarlo por error ni por descuido futuro, porque
+ * no tiene forma de acceder a él. `schedulePush` solo se llama con un
+ * snapshot derivado directamente de `pullState()`, nunca antes de que esa
+ * promesa resuelva.
+ */
+export async function hydrateRemoteState(
+  defaults: FoodOSState,
+  deps: HydrateRemoteDeps,
+): Promise<FoodOSState | null> {
+  await deps.ensureBaseRows();
+  const pulled = await deps.pullState(defaults);
+  if (deps.isCancelled()) return null;
+  const remoteState = normalizeState(pulled);
+  deps.saveLocalState(remoteState);
+  // Solo se persiste en remoto si normalizeState() cambió de verdad el
+  // sello de motor del perfil — un hydrate normal (perfil ya al día) sigue
+  // siendo puramente de lectura, nunca dispara una escritura de vuelta.
+  if (pulled.profile?.lastCalculationEngineVersion !== remoteState.profile?.lastCalculationEngineVersion) {
+    deps.schedulePush(remoteState);
+  }
+  return remoteState;
 }
 
 function stateDate(state: Pick<FoodOSState, "debugDate">): Date {
@@ -267,11 +324,28 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
 
   // Hidratacion: primero localStorage, despues Supabase si hay sesion.
   useEffect(() => {
-    setState(normalizeState(loadLocalState(defaultState)));
+    // nutrition-v3.1 (corrección de revisión — riesgo de carrera): la
+    // transición de motor (applyEngineVersionTransition, dentro de
+    // normalizeState) NUNCA se persiste aquí en modo Supabase — solo se
+    // aplica para que el primer render (con el estado LOCAL, todavía no
+    // confirmado por el servidor) muestre cifras coherentes. Persistirla ya
+    // — con mutate()/schedulePush() — programaría un push de un snapshot
+    // que puede quedar obsoleto en cuanto complete hydrateRemote() más
+    // abajo, pisando datos remotos más recientes con datos locales
+    // desactualizados. En modo exclusivamente local (sin Supabase) sí se
+    // persiste de inmediato — no hay hidratación remota que pueda
+    // adelantarse ni con la que competir.
+    const localLoaded = normalizeState(loadLocalState(defaultState));
+    setState(localLoaded);
     setHydrated(true);
 
-    // Sin Supabase: no hay nada remoto que esperar, el estado local es la verdad.
-    if (!hasSupabaseConfig()) { setRemoteHydrated(true); return; }
+    // Sin Supabase: no hay nada remoto que esperar, el estado local es la
+    // verdad — la transición (si normalizeState la aplicó) se guarda ya.
+    if (!hasSupabaseConfig()) {
+      saveLocalState(localLoaded);
+      setRemoteHydrated(true);
+      return;
+    }
     let cancelled = false;
 
     const hydrateRemote = async () => {
@@ -282,11 +356,18 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       // asomar el onboarding a un usuario que sí tiene perfil.
       setRemoteHydrated(false);
       try {
-        await remote.ensureBaseRows();
-        const remoteState = normalizeState(await remote.pullState(defaultState));
-        if (cancelled) return;
+        // Núcleo asíncrono extraído a hydrateRemoteState() — ver su
+        // comentario junto a la definición: pullState() es la única fuente
+        // de lo que se persiste/empuja de vuelta, nunca el estado local.
+        const remoteState = await hydrateRemoteState(defaultState, {
+          ensureBaseRows: () => remote.ensureBaseRows(),
+          pullState: (defaults) => remote.pullState(defaults),
+          saveLocalState,
+          schedulePush: (s) => remote.schedulePush(s),
+          isCancelled: () => cancelled,
+        });
+        if (remoteState === null) return; // cancelado mientras el pull estaba en vuelo
         setState(remoteState);
-        saveLocalState(remoteState);
         setMascotMessage("Datos sincronizados desde Supabase.");
       } catch (error) {
         console.warn("FoodOS: fallo hidratando desde Supabase", error);

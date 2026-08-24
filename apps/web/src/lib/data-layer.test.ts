@@ -8,7 +8,7 @@
 // resto de tablas se sigue intentando (mejor esfuerzo — son independientes
 // entre sí) y que reintentar el mismo snapshot es idempotente.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings, FoodOSState } from "@foodos/types";
+import type { AppSettings, FoodOSState, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
 import { remote } from "./data-layer";
 
 // ─── Cliente Supabase falso ─────────────────────────────────────────────────
@@ -675,5 +675,109 @@ describe("runPush — no reintenta un snapshot obsoleto si ya hay uno más recie
 
     expect(calls.filter((c) => c.table === "user_profiles" && c.op === "upsert").length).toBe(profileUpsertsBeforeWait);
     expect(statuses.length).toBe(statusesBeforeWait);
+  });
+});
+
+// ─── nutrition-v3.1 — round-trip real de trainingActivity vía pushState/pullState ──
+// Corrección de revisión: el test anterior solo hacía
+// JSON.parse(JSON.stringify(...)) + migrateLegacyTrainingActivity, sin pasar
+// por pushState/pullState ni por el mapper real de data-layer.ts. Este test
+// SÍ ejercita ambos: escribe con el cliente falso ya existente en este
+// archivo, captura el payload jsonb exacto que se habría guardado, lo
+// devuelve como si fuera la fila leída de vuelta de Supabase, y confirma que
+// pullState() reconstruye el mismo TrainingActivityProfile.
+
+interface FakeSelectResult { data: unknown; error: { message: string } | null }
+
+/** Cliente falso de solo lectura para pullState() — reproduce las cadenas
+    .select().eq()... .maybeSingle() (perfil) y .select().eq()...order()
+    .limit() (el resto de tablas), sin reutilizar makeFakeClient (ese es
+    de escritura, pensado para pushState). */
+function makeFakePullClient(tableData: Record<string, FakeSelectResult>) {
+  return {
+    from(table: string) {
+      const fallback: FakeSelectResult = { data: [], error: null };
+      const resolved = () => Promise.resolve(tableData[table] ?? fallback);
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: () => builder,
+        order: () => builder,
+        limit: () => builder,
+        maybeSingle: () => resolved(),
+        then: (resolve: (v: FakeSelectResult) => unknown, reject?: (e: unknown) => unknown) =>
+          resolved().then(resolve, reject),
+      };
+      return builder;
+    },
+  };
+}
+
+function fullTrainingActivity(): TrainingActivityProfile {
+  return {
+    lifestyleActivity: "light",
+    strengthDaysPerWeek: 4,
+    cardioDaysPerWeek: 4,
+    strengthAvgDurationMin: 70,
+    cardioAvgDurationMin: 25,
+    habitualSteps: 8000,
+    cardioType: "row",
+    cardioIntensity: "vigorous",
+    strengthIntensity: "light",
+    cardioOverlapDaysPerWeek: 2,
+    strengthAvgDurationMinIncludesCardio: true,
+    stepsIncludeCardio: true,
+    isHabitual: false,
+  };
+}
+
+function fullProfile(training: TrainingActivityProfile): PhysicalProfile {
+  return {
+    age: 24, sex: "male", heightCm: 177, weightKg: 124,
+    bodyFatPct: null, activityLevel: "sedentary", goal: "recomp",
+    gymDays: [1, 2, 3, 4, 5], allergies: [], excludedFoods: [],
+    activityModelVersion: "lifestyle_plus_training",
+    trainingActivity: training,
+  };
+}
+
+describe("nutrition-v3.1 — round-trip real de trainingActivity (pushState → pullState)", () => {
+  it("todos los campos nuevos sobreviven pushState (upsert real) + pullState (select + mapper real), no solo JSON.stringify", async () => {
+    const training = fullTrainingActivity();
+    const profile = fullProfile(training);
+    const calls = setup(successConfig());
+
+    await remote.pushState(makeState({ profile }));
+
+    const upsertCall = calls.find((c) => c.table === "user_profiles" && c.op === "upsert");
+    expect(upsertCall).toBeDefined();
+    const payload = upsertCall!.args as Record<string, unknown>;
+    const extraState = payload.extra_state as Record<string, unknown>;
+    // Confirma que el payload REAL enviado a Supabase lleva el objeto
+    // completo — si algún mapper de escritura lo recortara, fallaría aquí
+    // antes incluso de llegar a pullState.
+    expect(extraState.trainingActivity).toEqual(training);
+
+    // Simula la fila que Supabase devolvería en la siguiente lectura: mismas
+    // columnas tabulares que el upsert escribió + el mismo extra_state jsonb
+    // (jsonb hace round-trip de JSON exacto, sin recortar nada por su cuenta).
+    const profileRow = {
+      mascot_id: "zana", weekly_food_budget: 70,
+      age: payload.age, sex: payload.sex, height_cm: payload.height_cm, weight_kg: payload.weight_kg,
+      body_fat_pct: payload.body_fat_pct, body_fat_source: payload.body_fat_source,
+      activity_level: payload.activity_level, goal: payload.goal, gym_days: payload.gym_days,
+      allergies: payload.allergies, excluded_foods: payload.excluded_foods,
+      target_weight_kg: payload.target_weight_kg, experience_level: payload.experience_level,
+      equipment_access: payload.equipment_access, activity_model_version: payload.activity_model_version,
+      extra_state: extraState,
+    };
+
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeFakePullClient({ user_profiles: { data: profileRow, error: null } });
+    r.shoppingListId = "shopping-list-1";
+
+    const result = await remote.pullState(makeState({ profile: null }));
+
+    expect(result.profile).not.toBeNull();
+    expect(result.profile!.trainingActivity).toEqual(training);
   });
 });
