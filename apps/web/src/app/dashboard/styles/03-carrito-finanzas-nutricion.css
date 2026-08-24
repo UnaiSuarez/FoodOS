@@ -112,6 +112,64 @@
   color: var(--muted);
 }
 
+/* ---------- nutrition-v3.1: casillas de entrenamiento + desglose ---------- */
+.checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.calorie-breakdown-details {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(7, 10, 5, 0.34);
+}
+
+.calorie-breakdown-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.calorie-breakdown-details[open] summary {
+  margin-bottom: 10px;
+}
+
+.calorie-breakdown-list {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.calorie-breakdown-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.calorie-breakdown-list li:last-child {
+  border-bottom: none;
+}
+
 .meal-list {
   display: grid;
   gap: 8px;
@@ -643,4 +701,3 @@
 .bento-suggest.dinner .eyebrow {
   color: #818cf8;
 }
-

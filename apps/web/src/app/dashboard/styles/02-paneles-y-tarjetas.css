@@ -244,7 +244,14 @@
 }
 
 .form-grid.compact {
-  grid-template-columns: 1fr;
+  /* minmax(0, 1fr), no un "1fr" a secas (nutrition-v3.1): un track "1fr"
+     sin mínimo explícito toma como base su contenido más ancho (auto), así
+     que un hijo con texto largo sin punto de corte (una opción de <select>
+     larga, una frase de checkbox-label sin salto) podía forzar la columna
+     — y con ella toda la página — a desbordar en móvil. Con minmax(0, 1fr)
+     el track puede encogerse por debajo de su contenido intrínseco, que es
+     exactamente lo que ya hacía .form-grid de dos columnas más arriba. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* E07-05/06: sección colapsable de "datos avanzados" en el formulario de
@@ -673,4 +680,3 @@ select:focus {
   padding-top: 14px;
   border-top: 1px solid var(--border);
 }
-

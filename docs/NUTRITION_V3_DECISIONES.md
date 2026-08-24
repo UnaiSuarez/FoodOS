@@ -753,16 +753,16 @@ cubriendo solo `goal`/`activityLevel`/`activityModelVersion`/
 
 **Compatibilidad con propuestas persistidas entre PR9 y PR4** (señalado en
 la auditoría externa del commit): una propuesta guardada en ese rango
-tiene un `AdjustmentProfileFingerprint` real (no `undefined` — ese caso
-ya lo cubre "sin fingerprint original, nunca obsoleta"), pero sin las
-claves `age`/`sex`/`heightCm`/`bodyFatPct`. Al comparar, `undefined !==
-valor actual` es siempre `true`, así que **cualquier propuesta pendiente
-de ese rango se trata como obsoleta al primer intento de aceptarla tras
-desplegar PR4** — degradación segura (bloquea aceptar sobre datos
-incompletos en vez de asumir que sigue siendo válida), no un crash.
-Impacto esperado bajo (pocos usuarios, propuestas pendientes raras en la
-práctica), pero documentado explícitamente y cubierto por test para que
-no sorprenda si aparece en producción.
+tiene un `AdjustmentProfileFingerprint` real (no `undefined` — ese es un
+caso distinto, tratado aparte y ahora **siempre** obsoleto, ver §11.7),
+pero sin las claves `age`/`sex`/`heightCm`/`bodyFatPct`. Al comparar,
+`undefined !== valor actual` es siempre `true`, así que **cualquier
+propuesta pendiente de ese rango se trata como obsoleta al primer intento
+de aceptarla tras desplegar PR4** — degradación segura (bloquea aceptar
+sobre datos incompletos en vez de asumir que sigue siendo válida), no un
+crash. Impacto esperado bajo (pocos usuarios, propuestas pendientes raras
+en la práctica), pero documentado explícitamente y cubierto por test para
+que no sorprenda si aparece en producción.
 
 ---
 
@@ -855,6 +855,187 @@ placeholder para que no se pierda como paso explícito del refactor)*
   interpreten como calculados con las reglas de v3 (versión de motor en
   cada snapshot — ya existe `NUTRITION_ENGINE_VERSION`, subir a
   `nutrition-v3` cuando se implemente).
+
+---
+
+## 11. Nutrition v3.1 — precisión y explicabilidad del gasto energético
+
+`NUTRITION_ENGINE_VERSION = "nutrition-v3.1"`. Sustituye los dos MET fijos
+de v3 (`CARDIO_MET = 7.0`, `STRENGTH_MET = 5.0`) — el problema no era que
+ambos representaran necesariamente "sesión vigorosa": era que eran valores
+fijos que se aplicaban SIN que el usuario declarase nunca tipo o intensidad
+de sesión. `STRENGTH_MET = 5.0` en concreto correspondía a una fila
+específica del Compendio (02052, predominio sentadilla/peso muerto), no a
+"cualquier entrenamiento de fuerza" — aplicarlo como default sin declarar
+sobreestimaba una sesión general (02054, 3.5). Ambos se sustituyen por MET
+reales del Compendium of Physical Activities, resueltos por tipo/intensidad
+de sesión declarados, con categorías "sin confirmar" explícitas para cuando
+no lo están. Cambia el TDEE numérico calculado para cualquier perfil con
+`lifestyle_plus_training` y cardio y/o fuerza declarados — bump de motor
+obligatorio, no cosmético (ver §11.7 para qué invalida y qué no).
+
+### 11.1 Tabla MET de cardio (`CARDIO_MET_TABLE`)
+
+Filas reales del Compendium 2024, no interpoladas salvo donde se indica.
+Cada celda es `[tipo][intensidad talk-test]`:
+
+| Tipo (`CardioType`)        | light | moderate | vigorous | Filas de origen |
+|-----------------------------|:-----:|:--------:|:--------:|------------------|
+| `walk`                       | 2.8   | 3.8      | 5.5      | 17152 / 17190 / 17220 |
+| `incline_treadmill`          | 5.3   | 7.0      | 8.8      | 17034 / 17035 / 17036 (series de subida de cuestas, mismo patrón fisiológico; no hay fila directa mph+pendiente para cinta) |
+| `bike`                       | 4.0   | 6.8      | 10.3     | 01214 / 01224 / 01232 |
+| `elliptical`                 | 4.0*  | 5.0      | 9.0      | moderate=02048, vigorous=02049; *light es interpolación de producto (≈80% de moderate) — no existe fila "elíptica, esfuerzo suave" |
+| `run`                        | 3.3   | 6.5      | 11.0     | 12026 / 12028 / 12070 |
+| `row`                        | 3.5*  | 5.0      | 7.5      | moderate=02071, vigorous=02072; *light es interpolación de producto (≈70% de moderate) — no existe fila de remo por debajo de 02071 |
+| `other`                      | 3.5*  | 5.5      | 8.0*     | moderate=02060 (fila real, ancla); light/vigorous son interpolación de producto alrededor de esa fila — "otro" no es una modalidad real del Compendio |
+
+`CARDIO_INTENSITY_EXAMPLES` muestra siempre, junto a la etiqueta de talk
+test, el ritmo/vatiaje/pendiente aproximado de la fila usada — ver §11.4.
+
+Fuerza (`STRENGTH_INTENSITY_MET_TABLE`) — se clasifica por **estructura de
+la sesión**, no por talk test (ver §11.4):
+
+| Intensidad (`StrengthIntensity`) | MET | Fila de origen |
+|-----------------------------------|:---:|-----------------|
+| `light` ("general", default)      | 3.5 | 02054 — múltiples ejercicios, 8-15 reps a resistencia variada |
+| `moderate`                        | 5.0 | 02052 — predominio sentadilla/peso muerto, esfuerzo lento o explosivo |
+| `vigorous`                        | 6.0 | 02050 — powerlifting/culturismo, esfuerzo vigoroso |
+
+`STRENGTH_MET` (5.0, código 02052) se conserva sin tocar para
+`metForMuscleGroups()` — función distinta, con otro propósito (estimar el
+MET de una sesión ya registrada por grupo muscular), no el default de
+sesión sin declarar.
+
+### 11.2 Defaults legacy — "sin confirmar" nunca es "moderado por defecto"
+
+Un perfil sin tipo/intensidad declarados (`lifestyle_plus_training` con
+`cardioDaysPerWeek`/`strengthDaysPerWeek` > 0 pero sin el resto de campos
+v3.1) usa:
+
+- **Cardio: `CARDIO_MET_UNCONFIRMED = 4.5`** — interpolación de producto
+  explícita, deliberadamente por debajo del punto medio de la tabla
+  (caminar rápido / bici muy fácil). NO es `CARDIO_MET_TABLE.other.moderate`
+  (5.5): equiparar "sin datos" a "el usuario eligió genérico y moderado"
+  ocultaría la misma sobreestimación bajo otra etiqueta. Siempre va
+  acompañado de `confidence: "low"`.
+- **Fuerza: `STRENGTH_INTENSITY_MET_TABLE.light` = 3.5** (código 02054,
+  "general") — corrección de revisión: el default anterior de v3.1
+  (heredado de `STRENGTH_MET = 5.0`, código 02052) sobreestimaba una
+  sesión sin especificar; 5.0 no es "esfuerzo general", es un patrón
+  concreto (sentadilla/peso muerto) más intenso que el caso típico sin
+  declarar.
+
+**Perfil de referencia** (124 kg, cardio y fuerza sin tipo/intensidad
+declarados, ~100 min/sesión): con MET 7.0 fijo (v3) el TDEE estimado
+rondaba ~4015 kcal. Con ambos defaults corregidos (cardio 4.5, fuerza
+general 3.5) el TDEE estimado queda coherentemente alrededor de
+**~3.488 kcal** — el descuento sale de MET distintos, documentados y
+trazables por fila del Compendio, no de un recorte arbitrario.
+
+### 11.3 Rango/confianza (`TdeeUncertainty`)
+
+El TDEE estático nunca se presenta como cifra exacta. `estimateTdeeUncertainty`
+deriva `lowKcal`/`highKcal` propagando los MET bajo/alto de la MISMA
+actividad declarada — filas **vecinas** de la tabla correspondiente, nunca
+un ±% arbitrario sobre el resultado ya calculado (`neighborMetRange`):
+`light` acota hacia abajo con un margen adicional del 15% (no hay fila más
+suave con la que acotar), `vigorous` igual hacia arriba, `moderate` usa el
+rango completo suave↔intenso (la categoría más ambigua del talk test).
+Sin tipo/intensidad conocidos, el bracket es deliberadamente amplio
+alrededor del MET "sin confirmar" (×0.6 / ×1.8). Sin desglose de
+entrenamiento (`legacy_total_pal`), margen fijo del 15% — heurística de
+producto documentada, no una medición.
+
+`confidence` **nunca** llega a `"high"` en el estimador estático — ese
+techo queda reservado al motor adaptativo con seguimiento real suficiente
+(`evaluateAdaptiveState`). El máximo es `"moderate"`, incluso con
+tipo/intensidad/hábito confirmados; con IMC≥30 se documenta explícitamente
+en `confidenceReason` la incertidumbre individual adicional, conocida en
+la literatura, de las ecuaciones predictivas de TDEE en personas con
+obesidad (no baja el techo por debajo de `"moderate"`, ya no hay margen
+inferior que dar).
+
+### 11.4 Limitación talk-test frente a MET absoluto
+
+La intensidad de cardio se recoge por "talk test" (autopercepción:
+suave = conversación normal, moderada = se puede hablar con dificultad,
+intensa = solo frases cortas) — mide esfuerzo **percibido**, no el MET
+**absoluto** real de la sesión, y "moderado" es la categoría más ambigua
+de las tres. Mitigación de producto, no solución completa: cada intensidad
+se muestra siempre junto a un ejemplo observable (`CARDIO_INTENSITY_EXAMPLES`
+— ritmo/pendiente/vatiaje aproximado de la fila real usada), nunca en su
+lugar, para anclar la autopercepción a algo más cercano al MET real; y
+`estimateTdeeUncertainty` nunca trata el MET de la intensidad confirmada
+como un punto fiable sin margen (§11.3). Fuerza deliberadamente NO usa
+talk test — se clasifica por estructura de sesión (§11.1), porque ahí lo
+que separa los tres MET del Compendio es qué ejercicios y cuánto descanso,
+no el esfuerzo percibido.
+
+### 11.5 Solapamiento de sesiones fuerza/cardio
+
+`cardioOverlapDaysPerWeek` + `strengthAvgDurationMinIncludesCardio`
+representan cuándo cardio y fuerza comparten la misma franja horaria (p.ej.
+5 min de bici de calentamiento dentro de la sesión de fuerza), para no
+contar dos veces el mismo tramo. Días de solape efectivos = `min(
+cardioOverlapDaysPerWeek, strengthDaysPerWeek, cardioDaysPerWeek)`, acotado
+a `>= 0`. Si `strengthAvgDurationMinIncludesCardio` es `true` y
+`cardioAvgDurationMin <= strengthAvgDurationMin` (validado explícitamente
+por `validateTrainingActivity` — nunca se trunca en silencio), esos días se
+fusionan en **una sola sesión**: duración total = `strengthAvgDurationMin`,
+con `cardioAvgDurationMin` de esos minutos a MET cardio y el resto a MET
+fuerza, con **un solo** `baselineDisplaced` sobre el total. Sin el flag (o
+con duraciones inconsistentes), fuerza y cardio son aditivos aunque
+compartan día de calendario.
+
+### 11.6 Explicación de calorías (P0)
+
+El desglose de calorías mostrado al usuario se genera dinámicamente
+comparando el target real contra el TDEE real del perfil (`calcTdeeBreakdown`
++ `estimateTdeeUncertainty`) — nunca un texto fijo o una plantilla genérica
+independiente del cálculo.
+
+### 11.7 Transición adaptativa y obsolescencia de propuestas
+
+**Transición de motor** (`applyEngineVersionTransition` /
+`isAffectedByV31FormulaChange`): v3.1 cambió DOS defaults sin confirmar
+(§11.2), no solo el de cardio. Un perfil solo se marca afectado — y por
+tanto solo a un perfil así se le reinicia la calibración adaptativa al
+subir de motor — si su TDEE calculado puede cambiar numéricamente:
+`legacy_total_pal` nunca usa estos MET y nunca queda afectado; un perfil
+`lifestyle_plus_training` con 0 días de la modalidad cuyo default cambió
+(cardio o fuerza) tampoco. Corrección de revisión sobre una versión previa
+que reiniciaba la calibración de TODOS los perfiles sin
+`lastCalculationEngineVersion`, incluidos los que no podían cambiar de
+resultado en absoluto. Idempotente: aplicarla dos veces sobre el resultado
+de la primera no vuelve a resetear nada.
+
+**Obsolescencia de propuestas pendientes** (`isProposalStale`): con
+fingerprint original presente, cualquier cambio material de perfil
+(objetivo/peso/altura/edad/sexo/%grasa/actividad/macros/offset/
+`engineVersion`, o solapamiento fuerza/cardio si de verdad participa en el
+cálculo) invalida la propuesta — sin cambios, sigue vigente.
+
+**Sin fingerprint original (propuestas anteriores a PR9, previas al propio
+fingerprint): siempre obsoleta, sin excepción.** Corrección de revisión
+(ronda 3) sobre una versión previa que aceptaba una propuesta sin
+fingerprint si `evidence.engineVersion` coincidía con el motor actual —
+pero la versión del motor por sí sola no dice nada sobre si peso, edad,
+objetivo, actividad, macros u offset cambiaron desde que se generó la
+propuesta. Aceptar una propuesta sin contexto verificable es exactamente
+el riesgo que el fingerprint existe para evitar, así que no hay atajo por
+versión. `evidence.engineVersion` se conserva como evidencia auditora
+adicional (para diagnóstico/soporte), nunca como sustituto del fingerprint
+en la decisión de vigencia. Rechazar una propuesta obsoleta sigue permitido
+siempre — solo se bloquea *aceptarla*.
+
+### 11.8 Pasos habituales — informativos, fuera del cálculo
+
+`habitualSteps` y `stepsIncludeCardio` se guardan y se muestran (contexto/
+confianza, copy) pero **no entran en ninguna fórmula del cálculo todavía**
+(ver §9 — nota N8) — cambiarlos no invalida el fingerprint de una
+propuesta pendiente ni la calibración adaptativa. Documentado aquí
+explícitamente para que no se asuma lo contrario al leer el resto de esta
+sección.
 
 ---
 
