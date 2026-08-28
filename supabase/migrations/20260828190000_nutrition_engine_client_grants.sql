@@ -1,0 +1,125 @@
+-- FoodOS — P0: conceder al rol `authenticated` los privilegios de tabla que
+-- le faltan en dos tablas del motor nutricional adaptativo.
+--
+-- Diagnóstico (QA de sincronización, 2026-08-28, cuenta QA desechable):
+-- pullState() (apps/web/src/lib/data-layer.ts) falla siempre con
+-- "permission denied for table nutrition_adjustment_proposals" porque el
+-- rol `authenticated` nunca recibió GRANT alguno sobre esa tabla — la
+-- migración que la creó (20260729222903_nutrition_engine_snapshots.sql)
+-- activó RLS y dejó las policies "own row" correctas, pero olvidó el
+-- GRANT. Postgres evalúa el privilegio de tabla ANTES que las policies de
+-- RLS: sin GRANT, la policy ni siquiera llega a evaluarse — no es un
+-- problema de RLS.
+--
+-- pullState() lanza sus 10 consultas en un único Promise.all() y aborta la
+-- hidratación COMPLETA (perfil, inventario, agua, peso, finanzas...) si
+-- cualquiera falla — así que este único GRANT faltante bloquea, desde que
+-- existe esta tabla, la confirmación remota de todo el estado de la app
+-- para cualquier cuenta, no solo la sección de propuestas de ajuste.
+--
+-- Alcance deliberadamente mínimo, verificado contra el código real del
+-- cliente (apps/web/src/lib/data-layer.ts), no contra lo que la tabla
+-- podría llegar a necesitar:
+--
+--   nutrition_calculation_snapshots: el cliente hace
+--     .insert({...}).select("id").single()            (líneas ~518-532,
+--                                                        ~621-635)
+--     — el .select() encadenado tras .insert() exige también SELECT,
+--     además de INSERT, para que PostgREST pueda devolver la fila creada.
+--     Nunca se lee la tabla de forma independiente ni se actualiza ni se
+--     borra desde el cliente → sin UPDATE, sin DELETE.
+--
+--   nutrition_adjustment_proposals: el cliente hace
+--     .insert({...}).select("id, ...").single()         (líneas ~643-655)
+--     .select("id, current_target_kcal, ...")            (pullState,
+--                                                          líneas ~1147-1151)
+--     — igual razonamiento: INSERT + SELECT. La única mutación de estado
+--     (aceptar/rechazar una propuesta) pasa por el RPC SECURITY DEFINER
+--     fn_accept_nutrition_adjustment (20260819124430_nutrition_adjustment_
+--     accept_rpc.sql), que se ejecuta con los privilegios de su dueño
+--     (postgres) y ya tiene su propio "grant execute ... to authenticated"
+--     en esa migración — el cliente nunca llama a .update() directamente
+--     sobre esta tabla, así que no se concede UPDATE aquí tampoco. Sin
+--     DELETE bajo ningún flujo.
+--
+-- Deliberadamente NO se usa: `anon` (ninguna de las dos tablas es legible
+-- sin sesión — la app entera requiere login), `ALTER DEFAULT PRIVILEGES`
+-- (afectaría a toda tabla futura del rol `postgres`, incluidas otras
+-- pensadas para uso exclusivo de service_role — ver la nota de alcance más
+-- abajo), y no se toca ninguna policy existente (ya son correctas: RLS
+-- activo con "user_id = auth.uid()" en ambas tablas — 2 policies en
+-- nutrition_calculation_snapshots, SELECT e INSERT [un snapshot es
+-- inmutable, sin policy de update/delete a propósito], y 3 policies en
+-- nutrition_adjustment_proposals, SELECT/INSERT/UPDATE).
+--
+-- Nota de alcance — otras tablas sin SELECT/INSERT/UPDATE/DELETE para
+-- `authenticated` detectadas durante el mismo diagnóstico (ai_events,
+-- ai_recipe_cache, bank_connections, ingredient_searches,
+-- notification_events): ninguna referencia de código en apps/web/src
+-- las consulta desde el cliente — parecen tablas de uso exclusivo del
+-- backend/service_role por diseño. Quedan fuera de esta migración a
+-- propósito; tocarlas exigiría antes encontrar esa evidencia de código,
+-- que no existe hoy.
+--
+-- Fuera de alcance a propósito, documentado como trabajo posterior (no
+-- implementado en esta rama): el badge de sincronización de la UI no
+-- refleja en absoluto un fallo de pullState() — hydrateForUser() (state.tsx)
+-- atrapa el error y solo hace console.warn(), desacoplado por completo de
+-- computeSyncStatus()/pushStatus, que únicamente vigila la dirección de
+-- salida (mutate()/push). Corregir esto es un cambio de código de
+-- aplicación aparte, no una migración SQL.
+
+grant select, insert
+  on table public.nutrition_calculation_snapshots
+  to authenticated;
+
+grant select, insert
+  on table public.nutrition_adjustment_proposals
+  to authenticated;
+
+-- Verificación posterior a aplicar esta migración (no automatizable con
+-- los tests unitarios actuales — usan un cliente Supabase falso, no
+-- Postgres real, así que no pueden ejercitar GRANT/RLS de verdad):
+-- confirmar de solo lectura, contra el proyecto Supabase, que SOLO
+-- cambió esto y nada más.
+--
+-- 1) Privilegios CRUD de tabla — el filtro de privilege_type es
+--    obligatorio: sin él, la tabla también lista TRIGGER/TRUNCATE/
+--    REFERENCES (heredados por defecto, no relacionados con este cambio),
+--    y el resultado "exacto" de abajo no se cumpliría literalmente.
+--
+--   select table_name, grantee, privilege_type
+--   from information_schema.role_table_grants
+--   where table_schema = 'public'
+--     and table_name in ('nutrition_calculation_snapshots', 'nutrition_adjustment_proposals')
+--     and grantee in ('anon', 'authenticated')
+--     and privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+--   order by table_name, grantee, privilege_type;
+--
+-- Resultado CRUD esperado exacto:
+--   nutrition_adjustment_proposals  | authenticated | INSERT
+--   nutrition_adjustment_proposals  | authenticated | SELECT
+--   nutrition_calculation_snapshots | authenticated | INSERT
+--   nutrition_calculation_snapshots | authenticated | SELECT
+--   (ninguna fila con grantee = 'anon'; ningún UPDATE ni DELETE para
+--   ninguna de las dos tablas)
+--
+-- 2) El RPC fn_accept_nutrition_adjustment sigue siendo la única vía de
+--    escritura de estado en nutrition_adjustment_proposals (aceptar Y
+--    rechazar una propuesta), y `authenticated` conserva EXECUTE sobre su
+--    firma completa — esta migración no la toca, pero conviene
+--    reconfirmarlo junto con el resto:
+--
+--   select p.proname,
+--     pg_get_function_identity_arguments(p.oid) as args,
+--     has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute
+--   from pg_proc p
+--   join pg_namespace n on n.oid = p.pronamespace
+--   where n.nspname = 'public' and p.proname = 'fn_accept_nutrition_adjustment';
+--
+--   Resultado esperado: una fila, authenticated_execute = true.
+--
+-- 3) Ya con una sesión autenticada de prueba (no con este rol
+--    administrativo), reproducir el flujo que fallaba: recargar la app
+--    logueado y comprobar en la consola del navegador que
+--    "FoodOS: fallo hidratando desde Supabase" ya no aparece.
