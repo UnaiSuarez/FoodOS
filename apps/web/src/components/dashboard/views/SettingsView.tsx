@@ -42,7 +42,7 @@ export function SettingsView({
   onImportData,
   onRestoreImportBackup,
 }: Props) {
-  const { state, mutate, showToast, authUser, resetAll, seedDemo } = useFoodOS();
+  const { state, mutate, showToast, authUser, resetAll, seedDemo, requestSignOut, setWaterAbsolute } = useFoodOS();
   const s = state.settings;
 
   const now = new Date();
@@ -111,33 +111,42 @@ export function SettingsView({
   const [confirmingClearToday, setConfirmingClearToday] = useState(false);
 
   /** Borra comidas, agua y entrenamiento del día actual (o simulado); devuelve al inventario
-      lo que se consumió de ahí, igual que al borrar una entrada individual. */
+      lo que se consumió de ahí, igual que al borrar una entrada individual.
+      Corrección de revisión (P0): el agua se fija con setWaterAbsolute(),
+      NUNCA escribiendo waterLog dentro de mutate() — pushState() excluye
+      water_log a propósito (RPC atómica independiente), así que un cambio
+      hecho solo dentro del draft de mutate() nunca llegaría a Supabase
+      aunque la outbox genérica se confirmara y el badge dijera "Guardado". */
   function clearToday() {
     const today = getToday(state);
     const prevFoodLog = state.foodLog;
     const prevInventory = state.inventory;
-    const prevWater = state.waterLog[today];
+    const prevWater = state.waterLog[today] ?? 0;
     const prevWorkoutLog = state.workoutLog;
     mutate((draft) => {
       for (const entry of draft.foodLog) {
         if (entry.date === today) actions.returnEntryToInventory(draft, entry);
       }
       draft.foodLog = draft.foodLog.filter((entry) => entry.date !== today);
-      draft.waterLog[today] = 0;
       draft.workoutLog = (draft.workoutLog ?? []).filter((session) => session.date !== today);
     });
+    setWaterAbsolute(today, 0);
     showToast(`Registro de ${today} borrado`, {
       label: "Deshacer",
-      onAction: () => mutate((draft) => {
-        draft.foodLog = structuredClone(prevFoodLog);
-        draft.inventory = structuredClone(prevInventory);
-        draft.waterLog[today] = prevWater;
-        draft.workoutLog = structuredClone(prevWorkoutLog);
-      }),
+      onAction: () => {
+        mutate((draft) => {
+          draft.foodLog = structuredClone(prevFoodLog);
+          draft.inventory = structuredClone(prevInventory);
+          draft.workoutLog = structuredClone(prevWorkoutLog);
+        });
+        setWaterAbsolute(today, prevWater);
+      },
     });
   }
 
-  /** Rellena los últimos 7 días con comidas, agua, peso y entrenamiento de ejemplo para probar Estadísticas. */
+  /** Rellena los últimos 7 días con comidas, agua, peso y entrenamiento de ejemplo para probar Estadísticas.
+      El agua se fija por fecha con setWaterAbsolute() (mismo motivo que
+      clearToday(): pushState() excluye water_log a propósito). */
   function seedHistorico() {
     const meals = [
       { name: "Avena con proteína", kcal: 380, protein: 28, carbs: 52, fat: 8, mealType: "breakfast" as const },
@@ -145,6 +154,7 @@ export function SettingsView({
       { name: "Salmón con verduras", kcal: 440, protein: 38, carbs: 18, fat: 22, mealType: "dinner" as const },
     ];
     const todayBase = getToday(state);
+    const waterByDate: Record<string, number> = {};
     mutate((draft) => {
       for (let i = 1; i <= 7; i++) {
         const date = addDaysToDateKey(todayBase, -i);
@@ -162,7 +172,7 @@ export function SettingsView({
           });
         });
 
-        draft.waterLog[date] = 1600 + ((i * 137) % 1400);
+        waterByDate[date] = 1600 + ((i * 137) % 1400);
 
         if (!draft.weightLog.some((w) => w.date === date)) {
           const base = state.profile?.weightKg ?? 75;
@@ -182,6 +192,7 @@ export function SettingsView({
       }
       draft.weightLog.sort((a, b) => a.date.localeCompare(b.date));
     });
+    Object.entries(waterByDate).forEach(([date, ml]) => setWaterAbsolute(date, ml));
     showToast("7 días de historial de ejemplo añadidos");
   }
 
@@ -210,7 +221,11 @@ export function SettingsView({
             <button
               className="secondary-button"
               onClick={async () => {
-                await remote.signOut();
+                const result = await requestSignOut();
+                // Corrección de revisión (P1, sexta ronda): "cancelled" y
+                // "failed" no deben mostrar el toast de éxito —
+                // requestSignOut() ya avisa de un fallo real por su cuenta.
+                if (result !== "signed_out") return;
                 showToast("Sesión cerrada.");
               }}
             >

@@ -8,7 +8,7 @@ import { Modal } from "./Modal";
 type Mode = "login" | "register" | "forgot";
 
 export function AccountModal({ onClose }: { onClose: () => void }) {
-  const { remoteReady, authUser, showToast } = useFoodOS();
+  const { remoteReady, authUser, showToast, requestSignOut } = useFoodOS();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -88,7 +88,13 @@ export function AccountModal({ onClose }: { onClose: () => void }) {
           <button
             className="secondary-button"
             onClick={async () => {
-              await remote.signOut();
+              const result = await requestSignOut();
+              // Corrección de revisión (P1, sexta ronda): "cancelled" Y
+              // "failed" deben tratarse igual aquí — ni cerrar el modal ni
+              // mostrar el toast de éxito. requestSignOut() ya mostró su
+              // propio aviso de error para "failed"; con "cancelled" no
+              // hace falta ningún aviso adicional.
+              if (result !== "signed_out") return;
               onClose();
               showToast("Sesión cerrada. Sigues en modo local.");
             }}
