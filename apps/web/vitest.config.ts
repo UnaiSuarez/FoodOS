@@ -19,6 +19,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    setupFiles: ["./vitest.setup.ts"],
     // E21-01: e2e/*.spec.ts son tests de Playwright, no de vitest — el
     // patrón por defecto de vitest (**/*.{test,spec}.ts) los recogía
     // igualmente e intentaba ejecutarlos con su propio runner, donde
