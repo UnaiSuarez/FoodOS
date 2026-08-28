@@ -14,10 +14,48 @@ import type {
   Sex,
   StorageName,
 } from "@foodos/types";
-import type { SupabaseClient, User } from "@supabase/supabase-js";
+import type { AuthChangeEvent, SupabaseClient, User } from "@supabase/supabase-js";
 import { migrateLegacyTrainingActivity } from "./nutrition";
+import * as outbox from "./outbox";
 import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
+
+/** Snapshot de sincronización programado por mutate() — captura de forma
+    INMUTABLE userId/epoch/mutationId/estado en el momento de la mutación,
+    nunca se resuelven leyendo `this.user`/`this.sessionEpoch` más tarde
+    (esa lectura tardía es exactamente la causa del cruce A→B, ver diseño). */
+export interface PendingPush {
+  userId: string;
+  epoch: number;
+  mutationId: string;
+  revision: number;
+  state: FoodOSState;
+}
+
+interface PushContext {
+  userId: string;
+  epoch: number;
+  mutationId: string;
+  signal: AbortSignal;
+}
+
+/** Se lanza dentro de pushState() cuando se detecta que la sesión cambió
+    mientras la operación estaba en vuelo — runPush() la trata distinto de
+    un fallo de red real: no cuenta como error, no dispara retry ni el
+    toast de aviso, simplemente se descarta (la sesión nueva ya tiene su
+    propio push programado). */
+class AbortedPushError extends Error {
+  constructor() {
+    super("push abortado: la sesión cambió mientras estaba en vuelo");
+    this.name = "AbortedPushError";
+  }
+}
+
+// "unsynced" NO es un estado que RemoteAdapter emita — vive un nivel por
+// encima (SyncStatus en state.tsx), derivado de si la ÚLTIMA escritura de
+// outbox falló (ver mutate()). Aquí solo lo que de verdad puede pasarle a
+// una operación de red: en curso, confirmada, o fallida.
+export type SyncPushStatus = "syncing" | "saved" | "error";
 
 // Capa de persistencia de FoodOS.
 // - Local: localStorage, siempre activa.
@@ -124,21 +162,104 @@ class RemoteAdapter {
   user: User | null = null;
   private almacenIdByName: Record<string, string> = {};
   private shoppingListId: string | null = null;
+  /** Incrementa SOLO en un cambio REAL de sesión (nunca en un
+      TOKEN_REFRESHED/USER_UPDATED del mismo usuario — ver onAuthChange en
+      state.tsx). Toda operación programada (push, RPC de agua, hidratación)
+      captura este valor de forma inmutable al programarse y lo revalida
+      antes de tocar cualquier estado compartido — outbox, badge, cachés. */
+  sessionEpoch = 0;
   private pushTimer: ReturnType<typeof setTimeout> | null = null;
   private pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private pushing = false;
-  private pushQueued: FoodOSState | null = null;
+  /** Sustituye al antiguo booleano `pushing` (bloqueante de revisión: un
+      booleano global no distingue DE QUIÉN es el push en vuelo — su propio
+      `finally` podía pisar el turno de la sesión siguiente). Cada intento
+      real tiene un `token` propio; solo el código que sigue teniendo el
+      token vigente puede tocar outbox/badge/cola. */
+  private activePush: { token: string; userId: string; epoch: number; controller: AbortController } | null = null;
+  private pushQueued: PendingPush | null = null;
   private lastPushErrorNotifiedAt = 0;
+  /** true solo entre que requestSignOut() (state.tsx) decide cerrar sesión
+      y que termina — así el listener de auth sabe que el SIGNED_OUT que
+      viene a continuación es explícito (la decisión sobre lo pendiente ya
+      se tomó) y no debe tratarlo como una expulsión involuntaria a aparcar. */
+  explicitSignOutInProgress = false;
+
+  // ── RPC de agua: cola propia, separada del snapshot genérico, pero
+  // integrada en el estado de sincronización visible (ver hasPendingWater
+  // y pushIsFullyIdle) — un fallo aquí no puede quedar oculto detrás de un
+  // "guardado" global si el snapshot sí confirmó a tiempo.
+  //
+  // Corrección de revisión (P0, dos hallazgos distintos):
+  // 1. Durabilidad: esto vivía SOLO en memoria — una recarga (o el cierre
+  //    de la pestaña) mientras un reintento seguía pendiente lo perdía sin
+  //    dejar rastro, aunque la outbox del snapshot genérico sí sobreviviera.
+  //    Ahora cada cambio del mapa se persiste en outbox.ts
+  //    (foodos-water-pending-v1-<userId>, ver readWaterPending/
+  //    writeWaterPending) y resumePendingWater() lo recupera al iniciar/
+  //    reanudar una sesión.
+  // 2. Idempotencia: la versión anterior encolaba DELTAS y, tras un fallo
+  //    ambiguo (¿aplicó el servidor el incremento antes de que se perdiera
+  //    la respuesta?), reintentaba reenviando el MISMO delta — si sí había
+  //    aplicado, eso duplicaba los mililitros. Sin una RPC idempotente por
+  //    operation_id (fuera de alcance sin migración — habría que
+  //    consultarlo aparte), la cola ahora guarda el OBJETIVO ABSOLUTO por
+  //    fecha, no un delta: CADA intento (el primero y cualquier reintento)
+  //    lee el valor remoto actual justo antes de enviar y calcula la
+  //    diferencia en ese momento. Si el intento anterior sí aplicó, la
+  //    diferencia recién calculada da 0 y no se reenvía nada — nunca se
+  //    reenvía "a ciegas". Limitación residual: sigue existiendo una
+  //    ventana estrecha entre esa lectura y el envío en la que OTRO
+  //    dispositivo podría escribir la misma fecha (mismo tipo de "última
+  //    escritura gana" ya documentado para el snapshot genérico) — no hay
+  //    bloqueo distribuido; se acepta y se documenta, no se oculta.
+  private waterPending: Map<string, { userId: string; epoch: number; date: string; targetMl: number }> = new Map();
+  private waterRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Corrección de revisión (P0, cuarta ronda): sustituye al antiguo
+      booleano `waterProcessing` — el mismo bug de propiedad que ya se
+      había corregido para `pushing`→`activePush` (ver el comentario junto
+      a `activePush`) seguía existiendo aquí. resetSessionState() ponía
+      `waterProcessing = false` incondicionalmente al cambiar de sesión
+      (correcto: una sesión nueva no debe quedar bloqueada por la bandera
+      "en curso" de la anterior), pero el WORKER antiguo de A, si seguía en
+      vuelo, ejecutaba en su propio `finally` el mismo
+      `waterProcessing = false` — sin comprobar si esa bandera pertenecía
+      todavía a su propio turno o ya al de un worker de B arrancado
+      mientras tanto. Con el booleano, ambos comparten el mismo bit; con un
+      token por worker, el `finally` de A solo puede limpiar `activeWaterWorker`
+      si `activeWaterWorker.token` sigue siendo el suyo — igual que
+      `activePush`. Todo acceso a `waterHasError`/`waterRetryTimer`/
+      `notifyStatus("error"|"saved")` desde dentro de un worker debe pasar
+      primero por esta misma comprobación de propiedad. */
+  private activeWaterWorker: { token: string } | null = null;
+  private waterHasError = false;
+
   /** La UI se engancha aquí para avisar al usuario de que un guardado no
       llegó al servidor (queda solo en este dispositivo hasta reintentar). */
   onPushError: ((error: unknown) => void) | null = null;
   /** E04-07: la UI se engancha aquí para mostrar el estado de sincronización
-      en la cabecera (guardado/sincronizando/error). Se dispara al empezar un
-      push ("syncing"), al terminarlo bien ("saved") o al fallar ("error") —
-      independiente de onPushError, que solo dispara el toast (throttleado)
-      de aviso; este callback sí debe reflejar cada transición para que el
-      indicador no se quede "sincronizando" para siempre tras un error. */
-  onStatusChange: ((status: "syncing" | "saved" | "error") => void) | null = null;
+      en la cabecera. "saved" ahora significa "ni el snapshot genérico ni
+      la RPC de agua tienen nada pendiente/en curso/en reintento" — nunca se
+      emite mientras cualquiera de los dos siga sin confirmar. */
+  onStatusChange: ((status: SyncPushStatus) => void) | null = null;
+  /** Corrección de revisión (P1): utilidades internas (flushPendingOrTimeout,
+      esperar a que una mutación concreta se confirme) necesitaban observar
+      transiciones de estado SIN pisar `onStatusChange`, que es el único
+      canal que usa la UI principal — sustituirlo temporalmente (como hacía
+      la versión anterior de flushPendingOrTimeout) podía perder el aviso
+      real si otra transición llegaba mientras el canal estaba "prestado".
+      addStatusListener() añade un oyente adicional que se notifica SIEMPRE,
+      además de (nunca en vez de) onStatusChange. */
+  private statusListeners = new Set<(status: SyncPushStatus) => void>();
+
+  addStatusListener(fn: (status: SyncPushStatus) => void): () => void {
+    this.statusListeners.add(fn);
+    return () => { this.statusListeners.delete(fn); };
+  }
+
+  private notifyStatus(status: SyncPushStatus): void {
+    this.onStatusChange?.(status);
+    this.statusListeners.forEach((fn) => fn(status));
+  }
 
   get ready(): boolean {
     return this.client !== null;
@@ -158,7 +279,63 @@ class RemoteAdapter {
       la otra mitad del arreglo: ahora, mientras esto sea true, un refresco
       en tiempo real se difiere en vez de forzarse tras un margen fijo. */
   hasPendingPush(): boolean {
-    return this.pushTimer !== null || this.pushing || this.pushQueued !== null || this.pushRetryTimer !== null;
+    if (this.pushTimer !== null || this.activePush !== null || this.pushQueued !== null || this.pushRetryTimer !== null) return true;
+    // Corrección de revisión (P1): lo anterior solo miraba temporizadores en
+    // memoria — justo tras una recarga, esos campos arrancan todos en null
+    // aunque el envelope persistido siga teniendo un `pending` real (ver
+    // outbox.ts) que todavía no se ha vuelto a programar. Sin esto, un
+    // refresco en tiempo real podía colarse antes de que la hidratación
+    // llegara a reprogramar ese push, pisando el cambio pendiente con datos
+    // remotos desactualizados.
+    return this.user != null && outbox.hasPending(this.user.id);
+  }
+
+  hasPendingWater(): boolean {
+    if (this.waterPending.size > 0 || this.waterRetryTimer !== null || this.activeWaterWorker !== null) return true;
+    // Igual que hasPendingPush(): justo tras una recarga, el mapa en
+    // memoria todavía puede estar vacío aunque exista agua persistida sin
+    // confirmar (ver resumePendingWater) que aún no se ha vuelto a encolar.
+    return this.user != null && Object.keys(outbox.readWaterPending(this.user.id)).length > 0;
+  }
+
+  /** ¿No queda NADA por confirmar — ni snapshot genérico ni RPC de agua?
+      Único sitio que decide si toca emitir "saved" (ver runPush/
+      processWaterQueue). */
+  private pushIsFullyIdle(): boolean {
+    return !this.pushTimer && !this.activePush && !this.pushQueued && !this.pushRetryTimer && !this.hasPendingWater();
+  }
+
+  /** Cancela timers/retries, vacía cola y cachés, invalida cualquier
+      operación en vuelo (vía epoch — el token de `activePush` deja de
+      coincidir en cuanto se resuelva) y aborta su AbortController. Se
+      llama en TODO cambio real de sesión (login, logout, cambio de
+      usuario) — nunca en un simple refresco de token del mismo usuario.
+      Deliberadamente NO toca el agua PERSISTIDA en disco (outbox.ts) — solo
+      el mapa en memoria de la sesión que termina: si es una expulsión
+      involuntaria, esa copia en disco es justo lo que resumePendingWater()
+      necesita para retomarlo cuando el mismo usuario vuelva; si es un
+      logout explícito, es signOut() quien la descarta explícitamente
+      (ver más abajo) — resetSessionState() no puede saber cuál de los dos
+      casos es. */
+  resetSessionState(): void {
+    this.sessionEpoch++;
+    if (this.pushTimer) { clearTimeout(this.pushTimer); this.pushTimer = null; }
+    if (this.pushRetryTimer) { clearTimeout(this.pushRetryTimer); this.pushRetryTimer = null; }
+    this.pushQueued = null;
+    this.activePush?.controller.abort();
+    this.activePush = null;
+    this.almacenIdByName = {};
+    this.shoppingListId = null;
+    if (this.waterRetryTimer) { clearTimeout(this.waterRetryTimer); this.waterRetryTimer = null; }
+    this.waterPending = new Map();
+    // Libera la exclusión mutua SIEMPRE, sin comprobar propiedad — una
+    // sesión nueva no debe esperar al `finally` de un worker de agua de la
+    // sesión anterior para poder arrancar el suyo propio (igual que
+    // activePush arriba). El worker antiguo, si sigue en vuelo, comprobará
+    // por su cuenta si `activeWaterWorker.token` sigue siendo el suyo antes
+    // de tocar nada compartido — ver processWaterQueue().
+    this.activeWaterWorker = null;
+    this.waterHasError = false;
   }
 
   async init(): Promise<boolean> {
@@ -169,10 +346,10 @@ class RemoteAdapter {
     return true;
   }
 
-  onAuthChange(callback: (user: User | null) => void): void {
-    this.client?.auth.onAuthStateChange((_event, session) => {
+  onAuthChange(callback: (event: AuthChangeEvent, user: User | null) => void): void {
+    this.client?.auth.onAuthStateChange((event, session) => {
       this.user = session?.user ?? null;
-      callback(this.user);
+      callback(event, this.user);
     });
   }
 
@@ -207,9 +384,78 @@ class RemoteAdapter {
     });
   }
 
-  async signOut() {
-    this.user = null;
-    return this.client!.auth.signOut();
+  /** Logout — SIEMPRE llamado desde requestSignOut() (state.tsx) una vez
+      decidido qué hacer con lo pendiente, nunca directamente desde la UI.
+      Intenta borrar el envelope completo de este usuario en este
+      dispositivo, exista o no `pending` — un logout explícito NUNCA debe
+      dejar datos personales atrás (§4 del diseño) a propósito, pero
+      `localStorage.removeItem` puede fallar (almacenamiento bloqueado,
+      modo privado con cuota agotada...) y antes ese fallo se ignoraba en
+      silencio — la garantía era solo "mejor esfuerzo" pese a lo que decía
+      el comentario. Corrección de revisión (P1): cada discard*() ahora
+      devuelve su resultado; `cleanupOk` en la respuesta le dice al caller
+      (requestSignOut() en state.tsx) si de verdad se limpió el
+      dispositivo, para poder avisar en vez de afirmar una garantía
+      absoluta que no se cumplió. `explicitSignOutInProgress` le dice al
+      listener de auth que este SIGNED_OUT no debe aparcarse como una
+      expulsión involuntaria (ya se decidió/ejecutó el descarte aquí,
+      haya tenido éxito completo o no). */
+  async signOut(): Promise<{ ok: boolean; error: unknown; cleanupOk: boolean }> {
+    // Corrección de revisión (P1, sexta ronda): la versión anterior hacía
+    // `resetSessionState()`/`this.user = null` y borraba las cuatro claves
+    // ANTES de llamar a `auth.signOut()` — si esa llamada fallaba, la app
+    // ya se había puesto a sí misma en "sin sesión" pese a que Supabase
+    // podía no haber cerrado nada de verdad. Confirmado contra
+    // `@supabase/auth-js`: `_signOut()` devuelve el error ANTES de
+    // ejecutar `_removeSession()` para errores que no sean los casos
+    // explícitamente ignorados — la sesión persistida podía sobrevivir a
+    // una recarga pese a que la UI ya decía "sesión cerrada". Ahora el
+    // orden es: llamar a `auth.signOut()` PRIMERO; solo si confirma éxito
+    // (sin error) se toca cualquier estado local — `resetSessionState()`,
+    // `this.user = null`, y las cuatro claves. Si falla, NO se toca nada:
+    // la sesión (en memoria y en Supabase) sigue activa tal cual estaba,
+    // y el caller (resolveSignOutChoice/requestSignOut en state.tsx)
+    // puede ofrecer reintentar sin haber perdido nada por el camino. */
+    // Corrección de revisión (P1, séptima ronda): `outgoing` se leía
+    // DESPUÉS del `await auth.signOut()` — en el cliente real, un logout
+    // correcto dispara `SIGNED_OUT` durante `_removeSession()`, y el
+    // callback registrado en onAuthChange() ejecuta `this.user = ... ??
+    // null` de forma síncrona dentro de ese evento, ANTES de que la
+    // promesa de `auth.signOut()` siquiera resuelva para este código. Para
+    // cuando el `await` termina con éxito, `this.user` ya podía ser
+    // `null` — `outgoing` se quedaba `null` y los cuatro discard*() se
+    // saltaban enteros: el logout funcionaba, pero los datos personales
+    // locales de ESE usuario nunca se borraban. Se captura ahora ANTES
+    // del `await`, sin tocar ningún otro estado todavía — solo se usa si
+    // `auth.signOut()` confirma éxito (si falla, se descarta sin más).
+    const outgoing = this.user?.id ?? null;
+    this.explicitSignOutInProgress = true;
+    try {
+      const { error } = await this.client!.auth.signOut();
+      if (error) {
+        return { ok: false, error, cleanupOk: true }; // "cleanupOk" no aplica: no se intentó limpiar nada porque no se confirmó el cierre
+      }
+
+      let cleanupOk = true;
+      if (outgoing) {
+        // Cuatro claves posibles para este usuario en este dispositivo:
+        // el envelope activo, su aparcado, el agua activa, y su aparcado
+        // — igual de "datos personales en este dispositivo" los cuatro.
+        const r1 = outbox.discard(outgoing);
+        const r2 = outbox.discardParked(outgoing);
+        const r3 = outbox.discardWaterPending(outgoing);
+        const r4 = outbox.discardParkedWater(outgoing);
+        cleanupOk = r1.ok && r2.ok && r3.ok && r4.ok;
+        if (!cleanupOk) {
+          console.warn("FoodOS: no se pudo limpiar por completo los datos locales al cerrar sesión (mejor esfuerzo)", { r1, r2, r3, r4 });
+        }
+      }
+      this.resetSessionState();
+      this.user = null;
+      return { ok: true, error: null, cleanupOk };
+    } finally {
+      this.explicitSignOutInProgress = false;
+    }
   }
 
   resendConfirmation(email: string) {
@@ -487,15 +733,266 @@ class RemoteAdapter {
     }
   }
 
-  /** Incremento atómico de agua: evita conflictos de concurrencia entre tabs/dispositivos. */
-  async incrementWater(date: string, deltaMl: number): Promise<number> {
-    if (!this.client || !this.user) return 0;
-    const { data, error } = await this.client.rpc("fn_water_increment", {
-      p_date: date,
-      p_delta: deltaMl,
-    });
-    if (error) throw error;
-    return data as number;
+  /** Igual que onPushError, pero para el caso peor: ni siquiera se pudo
+      escribir la copia LOCAL durable del agua pendiente — más grave que un
+      fallo de red: ni siquiera queda una copia en este dispositivo que
+      reintentar tras una recarga. Ver SyncStatus "unsynced" en state.tsx
+      (corrección de revisión, P1: antes un fallo de writeWaterPending() se
+      ignoraba en silencio). Se llama en CADA intento de persistencia, con
+      `ok` indicando éxito o fallo — corrección de revisión (P1, cuarta
+      ronda): antes solo se llamaba en el fallo, así que el flag de la UI
+      (hadUnsyncedWaterWrite en state.tsx) nunca tenía una señal explícita
+      de "esta fuente concreta ya se recuperó" — dependía de que otra
+      escritura CUALQUIERA (incluida la del envelope genérico, una fuente
+      totalmente distinta) lo limpiara por error. Llamar siempre, con el
+      resultado real, permite que cada fuente se limpie solo a sí misma. */
+  onUnsyncedWrite: ((ok: boolean) => void) | null = null;
+
+  /** Persiste el conjunto ACTUAL de objetivos de agua sin confirmar de
+      `userId` — se llama tras cualquier cambio de waterPending (añadir,
+      reconciliar, borrar) para que sobreviva a una recarga (ver el
+      comentario grande sobre waterPending más arriba). Notifica
+      onUnsyncedWrite() con el resultado — la operación sigue intentándose
+      en mejor esfuerzo si falla (mismo criterio que mutate() en
+      state.tsx), pero nunca puede darse por "durable" mientras la copia
+      local no exista de verdad. */
+  private persistWaterPending(userId: string): outbox.WriteResult {
+    const snapshot: Record<string, number> = {};
+    for (const op of this.waterPending.values()) {
+      if (op.userId === userId) snapshot[op.date] = op.targetMl;
+    }
+    const result = outbox.writeWaterPending(userId, snapshot);
+    this.onUnsyncedWrite?.(result.ok);
+    return result;
+  }
+
+  /** Fija el objetivo ABSOLUTO de agua de `date` a `targetMl` — cola
+      durable, con reintento, integrada en el estado de sincronización
+      global (ver hasPendingWater/pushIsFullyIdle): un fallo aquí mantiene
+      el badge en "syncing"/"error" igual que un fallo del snapshot
+      genérico — nunca puede quedar escondido detrás de un "saved" solo
+      porque el resto sí confirmó.
+      Corrección de revisión (P0): recibe el OBJETIVO absoluto, no un
+      delta — ver el comentario grande sobre waterPending para el porqué
+      (permite reconciliar de forma segura tras un fallo ambiguo, sin
+      reenviar el mismo delta a ciegas). Deliberadamente NO se mete en la
+      outbox del snapshot genérico (mutationId/compare-and-delete) — es una
+      operación atómica independiente, con su propia cola y su propio
+      reintento. Toda mutación de waterLog (addWater, "borrar hoy",
+      deshacer, datos demo) debe pasar por aquí — nunca por mutate()
+      genérico, porque pushState() excluye water_log a propósito (ver el
+      comentario en pushState). */
+  setWaterTargetDurable(date: string, targetMl: number): void {
+    if (!this.ready || !this.user) return; // sin sesión: el valor ya se aplicó en local de forma optimista
+    // Corrección de revisión (P2): la misma validación que se aplica al
+    // leer localStorage (fecha de calendario real, entero finito no
+    // negativo dentro de un límite plausible) se aplica también a esta
+    // entrada PÚBLICA — nunca debe llegar un NaN/Infinity/decimal/fecha
+    // imposible hasta encolarse y, eventualmente, el upsert. Se descarta
+    // con un aviso en vez de intentar "arreglar" el valor a ciegas (p.ej.
+    // redondeando) — un valor inválido aquí es indicio de un bug en quien
+    // llama, no algo que debamos disimular.
+    if (!outbox.isValidCalendarDateKey(date) || !outbox.isValidWaterTarget(targetMl)) {
+      console.warn("FoodOS: setWaterTargetDurable() recibió una fecha/objetivo inválido — se ignora, no se encola", { date, targetMl });
+      return;
+    }
+    const userId = this.user.id;
+    const existing = this.waterPending.get(date);
+    if (existing) existing.targetMl = targetMl; // la intención más reciente para esta fecha siempre gana
+    else this.waterPending.set(date, { userId, epoch: this.sessionEpoch, date, targetMl });
+    this.persistWaterPending(userId);
+    this.notifyStatus("syncing");
+    void this.processWaterQueue();
+  }
+
+  /** ¿Hay agua sin confirmar para `userId` — en memoria (en vuelo o
+      esperando reintento) O persistida en disco (justo tras una recarga,
+      antes de resumePendingWaterFor())? Corrección de revisión (P1): a
+      diferencia de hasPendingWater() (que consulta implícitamente
+      this.user, la sesión VIGENTE), esta consulta explícitamente por
+      userId — imprescindible para que flushPendingOrTimeout(userId) /
+      waitForMutationConfirmed(userId, ...) comprueben exactamente ESE
+      usuario y nunca, por accidente, el que esté activo en este momento
+      en `remote` (que podría ya ser otro). */
+  hasPendingWaterFor(userId: string): boolean {
+    for (const op of this.waterPending.values()) {
+      if (op.userId === userId) return true;
+    }
+    return Object.keys(outbox.readWaterPending(userId)).length > 0;
+  }
+
+  /** Objetivo local todavía sin confirmar para `userId`+`date`, o null si
+      no hay ninguno — usado por el patch de Realtime de water_log en
+      state.tsx (corrección de revisión, P1) para NUNCA pisar
+      temporalmente un objetivo local más nuevo con un evento remoto de una
+      escritura anterior: si hay un pending para esa fecha, el evento se
+      ignora hasta que el upsert absoluto lo confirme y lo borre. */
+  pendingWaterTargetFor(userId: string, date: string): number | null {
+    for (const op of this.waterPending.values()) {
+      if (op.userId === userId && op.date === date) return op.targetMl;
+    }
+    const persisted = outbox.readWaterPending(userId);
+    return date in persisted ? persisted[date] : null;
+  }
+
+  /** Recupera, al iniciar/reanudar una sesión, los objetivos de agua que
+      quedaran persistidos de un intento anterior (recarga, cierre de
+      pestaña) que la instancia en memoria nunca llegó a confirmar —
+      corrección de revisión (P0): antes esta cola vivía solo en memoria y
+      una recarga la perdía sin dejar rastro, aunque la outbox del snapshot
+      genérico sí sobreviviera. Solo actúa si `userId` coincide con la
+      sesión vigente — nombre explícito (P1) para dejar claro que el
+      parámetro manda, nunca this.user implícitamente. */
+  resumePendingWaterFor(userId: string): void {
+    if (this.user?.id !== userId) return;
+    const persisted = outbox.readWaterPending(userId);
+    const dates = Object.keys(persisted);
+    if (dates.length === 0) return;
+    for (const date of dates) {
+      if (!this.waterPending.has(date)) {
+        this.waterPending.set(date, { userId, epoch: this.sessionEpoch, date, targetMl: persisted[date] });
+      }
+    }
+    this.notifyStatus("syncing");
+    void this.processWaterQueue();
+  }
+
+  /** `activeWaterWorker` con token identificado — mismo patrón que
+      `activePush` (ver su comentario grande): solo el código que ve
+      `activeWaterWorker?.token === token` puede tocar
+      waterPending/waterHasError/waterRetryTimer o emitir "error"/"saved".
+      resetSessionState() limpia `activeWaterWorker` SÍNCRONAMENTE al
+      cambiar de sesión, así que el worker de la sesión nueva nunca tiene
+      que esperar al `finally` del worker de la sesión vieja para poder
+      arrancar el suyo — y el `finally` del worker viejo, si termina tarde,
+      no puede pisar la exclusión mutua del nuevo (corrección de revisión,
+      P0, cuarta ronda — ver el comentario junto a `activeWaterWorker`). */
+  private async processWaterQueue(): Promise<void> {
+    if (this.activeWaterWorker) return;
+    const token = crypto.randomUUID();
+    this.activeWaterWorker = { token };
+    const stillOwnsWorker = () => this.activeWaterWorker?.token === token;
+    // Si esta pasada termina por un fallo (catch más abajo), ya se programó
+    // un pushRetryTimer con PUSH_RETRY_MS de espera — el `finally` NO debe
+    // relanzar la cola de inmediato en ese caso, o el retry con temporizador
+    // quedaría anulado por un reintento inmediato en bucle apretado.
+    let scheduledRetry = false;
+    try {
+      for (const [date, op] of [...this.waterPending.entries()]) {
+        // Comprobación INMEDIATA antes del await — corrección de revisión
+        // (P0, severidad alta): la versión anterior hacía un select()
+        // filtrado por op.userId y LUEGO llamaba a fn_water_increment(),
+        // que usa auth.uid() internamente (no recibe userId) — si la
+        // sesión cambiaba de A a B mientras el select estaba en vuelo, la
+        // RPC se ejecutaba igualmente, pero bajo auth.uid()=B, aplicando
+        // el delta de A a la cuenta de B. La comprobación de epoch solo
+        // llegaba DESPUÉS de la RPC — demasiado tarde. (No hace falta
+        // comprobar stillOwnsWorker() aquí: acabamos de establecer el
+        // token síncronamente arriba, sin ningún await de por medio
+        // todavía, así que sigue siendo el nuestro con toda seguridad.)
+        if (op.epoch !== this.sessionEpoch || this.user?.id !== op.userId) { this.waterPending.delete(date); continue; }
+        const targetAtStart = op.targetMl;
+        try {
+          // Corrección de revisión (P0, dos hallazgos): sustituye el
+          // "select + fn_water_increment(delta)" por un UPSERT ABSOLUTO
+          // e idempotente (la tabla ya tiene primary key (user_id,
+          // log_date) — ver supabase/schema.sql). Dos motivos:
+          // 1. Atomicidad del objetivo: leer el remoto y sumar un delta
+          //    calculado en el cliente NO garantiza que el resultado final
+          //    sea el objetivo pedido si OTRO dispositivo cambió el valor
+          //    entre la lectura y el envío (ventana de carrera real, no
+          //    solo un fallo ambiguo). Un upsert con `ml: targetAtStart`
+          //    fija el valor exacto sin importar qué hubiera antes —
+          //    repetirlo tras cualquier fallo (ambiguo o no) es un no-op
+          //    idempotente que SIEMPRE converge al objetivo.
+          // 2. Seguridad entre sesiones: el upsert lleva `user_id` EXPLÍCITO
+          //    (op.userId, capturado al programarse — nunca this.user) y la
+          //    policy `water_log_own` exige `user_id = auth.uid()` tanto
+          //    para leer como para escribir (`with check`). Si la sesión ya
+          //    cambió a B en el momento en que esta petición sale
+          //    (auth.uid() = B) pero seguimos pidiendo escribir
+          //    user_id=A, RLS RECHAZA la escritura — nunca se aplica ni
+          //    como agua de A ni, mucho menos, como agua de B. A
+          //    diferencia de la RPC anterior (que usaba auth.uid()
+          //    internamente e ignoraba el userId que le pasábamos), este
+          //    cruce queda estructuralmente cerrado por la base de datos,
+          //    no solo por una comprobación de epoch en el cliente (que
+          //    sigue existiendo como primera línea de defensa, ver arriba
+          //    y abajo, pero ya no es la ÚNICA). Nota: esta garantía
+          //    depende de la policy RLS real de Supabase — los tests de
+          //    este archivo usan un cliente falso y comprueban el
+          //    CONTRATO del lado del cliente (el payload lleva siempre el
+          //    userId capturado, nunca ambient this.user), no la policy en
+          //    sí, que no se ha ejecutado contra una base Postgres real.
+          const { error: upsertError } = await this.client!
+            .from("water_log")
+            .upsert(
+              { user_id: op.userId, log_date: op.date, ml: targetAtStart, updated_at: new Date().toISOString() },
+              { onConflict: "user_id,log_date" },
+            );
+          if (upsertError) throw upsertError;
+          // Comprobación de propiedad DESPUÉS del await — corrección de
+          // revisión (P0, cuarta ronda): sin `stillOwnsWorker()`, un
+          // worker de una sesión ya terminada podía seguir tocando
+          // waterPending/waterHasError aunque otro worker (de una sesión
+          // nueva) ya fuera el dueño legítimo de esas banderas.
+          if (!stillOwnsWorker() || op.epoch !== this.sessionEpoch || this.user?.id !== op.userId) return;
+          if (op.targetMl === targetAtStart) {
+            // Nadie pidió un objetivo más nuevo para esta fecha mientras
+            // esperábamos — el upsert remoto confirmó. Pero la operación
+            // NO se da por completamente terminada hasta que la cola
+            // DURABLE (en disco) también refleje la eliminación —
+            // corrección de revisión (P0, cuarta ronda): si
+            // persistWaterPending() (el removeItem/setItem de disco)
+            // falla, NO se borra del mapa en memoria — se hace rollback y
+            // se relanza como un fallo más (mismo camino de reintento:
+            // reenviar el MISMO upsert, ya confirmado en remoto, es un
+            // no-op idempotente). Sin esto, un objetivo antiguo podía
+            // quedar persistido indefinidamente en disco mientras remoto
+            // ya tenía el nuevo — y resumePendingWaterFor() lo habría
+            // reenviado tras una recarga, REVIRTIENDO el agua remota al
+            // valor antiguo.
+            this.waterPending.delete(date);
+            const persisted = this.persistWaterPending(op.userId);
+            if (!persisted.ok) {
+              this.waterPending.set(date, op);
+              throw new Error("no se pudo actualizar la cola durable de agua tras confirmar en remoto");
+            }
+          } // si no, se deja pendiente: la próxima vuelta de la cola lo recogerá con el objetivo más reciente.
+          this.waterHasError = false;
+        } catch (error) {
+          if (!stillOwnsWorker() || op.epoch !== this.sessionEpoch || this.user?.id !== op.userId) return;
+          console.warn("FoodOS: el upsert de agua falló — se reintentará con el MISMO objetivo absoluto (idempotente, nunca duplica ni se desvía)", error);
+          this.waterHasError = true;
+          this.notifyStatus("error");
+          scheduledRetry = true;
+          this.waterRetryTimer = setTimeout(() => {
+            this.waterRetryTimer = null;
+            void this.processWaterQueue();
+          }, PUSH_RETRY_MS);
+          return; // no sigue con el resto de la cola hasta resolver este reintento
+        }
+      }
+    } finally {
+      // OJO: capturar la propiedad en una variable ANTES de limpiar
+      // `activeWaterWorker` — si se comprobara `stillOwnsWorker()` DESPUÉS
+      // de ponerlo a null, siempre daría false (bug descartado en
+      // revisión propia antes de comitear: habría dejado esta rama muerta
+      // incluso para el worker legítimo).
+      const wasOwner = stillOwnsWorker();
+      if (wasOwner) this.activeWaterWorker = null; // solo si sigue siendo NUESTRO turno
+      if (!wasOwner) {
+        // Perdimos la propiedad mientras tanto (una sesión nueva ya tiene
+        // su propio worker) — no tocar cola/retry/badge ajenos.
+      } else if (!scheduledRetry && this.waterPending.size > 0) {
+        // Quedó algo pendiente sin que fuera por un fallo (p.ej. un objetivo
+        // más nuevo llegó durante el envío del anterior) — se retoma de
+        // inmediato, sin esperar el plazo de reintento.
+        void this.processWaterQueue();
+      } else if (!scheduledRetry && !this.waterHasError && this.pushIsFullyIdle()) {
+        this.notifyStatus("saved");
+      }
+    }
   }
 
   /**
@@ -719,6 +1216,12 @@ class RemoteAdapter {
         if (extra.categoryBudgets && typeof extra.categoryBudgets === "object") state.categoryBudgets = extra.categoryBudgets as typeof state.categoryBudgets;
         if (extra.settings && typeof extra.settings === "object") state.settings = { ...state.settings, ...(extra.settings as typeof state.settings) };
         if (typeof extra.savingsGoalPct === "number") state.savingsGoalPct = extra.savingsGoalPct;
+        // savingsGoal (corrección de revisión): faltaba por completo del
+        // round-trip remoto — se guardaba localmente pero nunca llegaba a
+        // Supabase ni se leía de vuelta. null explícito borra una meta
+        // existente (igual que el resto de campos "objeto o null" de aquí).
+        if (extra.savingsGoal === null) state.savingsGoal = null;
+        else if (extra.savingsGoal && typeof extra.savingsGoal === "object") state.savingsGoal = extra.savingsGoal as typeof state.savingsGoal;
         if (typeof extra.bankSynced === "boolean") state.bankSynced = extra.bankSynced;
         if (typeof extra.recipeTag === "string") state.recipeTag = extra.recipeTag;
         if (["higher_carbohydrate", "balanced", "higher_fat"].includes(extra.macroPreference as string)) {
@@ -896,9 +1399,18 @@ class RemoteAdapter {
     return state;
   }
 
-  // Push con debounce para no saturar la API en rachas de cambios.
-  schedulePush(state: FoodOSState): void {
-    if (!this.ready || !this.user) return;
+  /** Push con debounce para no saturar la API en rachas de cambios.
+      `op` viene de mutate() con userId/epoch/mutationId ya capturados de
+      forma inmutable — nunca se resuelven aquí ni en runPush/pushState
+      leyendo `this.user`/`this.sessionEpoch` en el momento de ejecutar
+      (esa lectura tardía era la causa exacta del cruce A→B). Si `op.epoch`
+      ya no es el vigente, no se programa nada — pero el cambio NO se
+      pierde: mutate() ya lo dejó escrito en la outbox (ver outbox.ts)
+      antes de llamar aquí, así que sigue durable para cuando ese usuario
+      vuelva a tener sesión. */
+  schedulePush(op: PendingPush): void {
+    if (!this.ready) return;
+    if (op.epoch !== this.sessionEpoch) return;
     if (this.pushTimer) clearTimeout(this.pushTimer);
     // Una edición nueva ya incluye (por ser snapshot completo) lo que un
     // reintento pendiente iba a reenviar — cancelarlo evita un push duplicado.
@@ -909,83 +1421,87 @@ class RemoteAdapter {
     // Aviso inmediato: sin esto el indicador se queda en "guardado" hasta que
     // vence el debounce (PUSH_DEBOUNCE_MS) y arranca runPush de verdad — una
     // edición que tarda en confirmarse parecería ya sincronizada.
-    this.onStatusChange?.("syncing");
+    this.notifyStatus("syncing");
     this.pushTimer = setTimeout(() => {
       this.pushTimer = null;
-      void this.runPush(state);
+      if (op.epoch !== this.sessionEpoch) return; // sesión cambió durante el debounce
+      void this.runPush(op);
     }, PUSH_DEBOUNCE_MS);
   }
 
-  /** B2 (revisión externa, 2026-08-21 y 2026-08-22): el bug original era
-      que pushState() nunca lanzaba en la mayoría de sus escrituras (ver el
-      comentario grande sobre pushState), así que el try/catch de aquí
-      nunca se disparaba para esos casos y "saved" se marcaba con datos
-      perdidos en el servidor. Ya arreglado — pero quedaba una segunda
-      carrera, más sutil, en ESTA función: "saved" se emitía en cuanto ESTE
-      push individual terminaba bien, sin comprobar si mientras tanto había
-      quedado otra escritura pendiente (una edición nueva del usuario en
-      pushQueued/pushTimer, o un reintento en pushRetryTimer). Como
-      RealtimeHydrationGate libera un refresco en tiempo real diferido en
-      cuanto ve "saved" (ver realtime-hydration-gate.ts), ese "saved"
-      prematuro podía disparar una hidratación que pisara la edición más
-      reciente (aún sin confirmar) con el snapshot ANTERIOR ya persistido.
-      Secuencia exacta que esto cierra: push A en curso, llega un evento
-      realtime (se difiere), el usuario edita y crea el snapshot B mientras
-      A sigue en vuelo (B queda en pushQueued o pushTimer), A termina bien
-      — ese éxito de A NO debe soltar el refresco diferido, porque B sigue
-      sin confirmar; solo cuando B (el ÚLTIMO snapshot) termina bien Y no
-      queda nada más pendiente se emite "saved" de verdad.
-      "saved" pasa a significar "el último snapshot programado está
-      confirmado y no queda ninguna escritura pendiente", no "este push
-      concreto terminó". */
-  private async runPush(state: FoodOSState): Promise<void> {
-    if (this.pushing) {
-      this.pushQueued = state;
+  /** B2 (revisión externa, 2026-08-21 y 2026-08-22): "saved" solo se emite
+      cuando el ÚLTIMO snapshot programado está confirmado y no queda nada
+      más pendiente — nunca "este push individual terminó" (ver el
+      historial completo del bug en git blame de este archivo).
+      Corrección de revisión (rama sync/outbox-session-safety): el booleano
+      `pushing` se sustituye por `activePush` identificado por `token` —
+      un booleano global no distinguía DE QUIÉN era el push en vuelo, así
+      que el `finally` de una sesión A que terminaba DESPUÉS de que B
+      iniciara sesión podía pisar el turno de B (dejar su cola sin
+      procesar, o peor, tocar su badge/outbox). Con el token: solo el
+      código que sigue viendo `activePush.token === token` puede tocar
+      cola/badge/outbox — `resetSessionState()` limpia `activePush`
+      SÍNCRONAMENTE al cambiar de sesión, así que B nunca tiene que
+      esperar a que el `finally` de A se ejecute para poder arrancar. */
+  private async runPush(op: PendingPush): Promise<void> {
+    if (op.epoch !== this.sessionEpoch) return;
+    if (this.activePush) {
+      // Ya hay un push en vuelo de ESTA MISMA sesión (si fuera de otra, ya
+      // se habría limpiado por resetSessionState()) — coalesce: la
+      // revisión más alta gana la cola.
+      if (!this.pushQueued || op.revision >= this.pushQueued.revision) this.pushQueued = op;
       return;
     }
-    this.pushing = true;
-    this.onStatusChange?.("syncing");
+    const token = crypto.randomUUID();
+    const controller = new AbortController();
+    this.activePush = { token, userId: op.userId, epoch: op.epoch, controller };
+    this.notifyStatus("syncing");
     let succeeded = false;
     try {
-      await this.pushState(state);
+      await this.pushState({ userId: op.userId, epoch: op.epoch, mutationId: op.mutationId, signal: controller.signal }, op.state);
       succeeded = true; // se registra aquí; el "saved" real se decide en el finally (ver arriba)
     } catch (error) {
+      if (this.activePush?.token !== token) return; // la sesión ya cambió: ni error visible ni retry de esta operación
+      if (error instanceof AbortedPushError) { this.activePush = null; return; }
       console.warn("FoodOS: fallo al sincronizar con Supabase", error);
       this.notifyPushError(error);
-      this.onStatusChange?.("error");
+      this.notifyStatus("error");
       // Reintenta este mismo guardado tras una pausa — PERO solo si no hay
       // YA una edición más reciente en camino (esa ya lo incluye, al ser
       // snapshot completo). B2 (revisión externa, 2026-08-22, ronda 4): este
       // chequeo antes solo se hacía DENTRO del propio callback del retry,
-      // 10s más tarde — nunca al programarlo. Si `state` (B) ya estaba en
-      // pushTimer en ESTE momento (el usuario editó mientras A seguía en
-      // vuelo, y B aún no había disparado su debounce), el retry de A se
-      // programaba de todos modos, sin nada que lo cancelara mientras
-      // tanto: B se ejecutaba y tenía éxito, pero 10s después el retry de A
-      // disparaba igual (pushQueued/pushTimer ya estaban limpios para
-      // entonces) y reenviaba el snapshot VIEJO, sobrescribiendo el de B ya
-      // persistido. El caso "B ya está en pushQueued" no tenía este problema
-      // — el finally de más abajo llama a schedulePush(queued), que cancela
-      // cualquier pushRetryTimer existente — pero el caso "B en pushTimer"
-      // sí, porque ese branch nunca toca pushRetryTimer.
+      // 10s más tarde — nunca al programarlo. Si `op` (B) ya estaba en
+      // pushTimer en ESTE momento, el retry de A se programaba de todos
+      // modos, sin nada que lo cancelara mientras tanto — el caso "B ya
+      // está en pushQueued" no tenía este problema (el finally de más abajo
+      // llama a schedulePush(queued), que cancela cualquier pushRetryTimer
+      // existente) pero el caso "B en pushTimer" sí, porque ese branch
+      // nunca tocaba pushRetryTimer.
       if (!this.pushQueued && !this.pushTimer) {
         this.pushRetryTimer = setTimeout(() => {
           this.pushRetryTimer = null;
-          if (!this.pushQueued && !this.pushTimer) void this.runPush(state);
+          if (op.epoch !== this.sessionEpoch) return;
+          if (!this.pushQueued && !this.pushTimer) void this.runPush(op);
         }, PUSH_RETRY_MS);
       }
     } finally {
-      this.pushing = false;
+      if (this.activePush?.token === token) this.activePush = null; // solo si sigue siendo NUESTRO turno
+      if (op.epoch !== this.sessionEpoch) return; // no toca cola/badge/outbox de una sesión nueva
+      if (succeeded) {
+        // Compare-and-delete por mutationId (NUNCA por revision — ver
+        // outbox.ts): si mientras este push estaba en vuelo apareció una
+        // mutación más nueva, esto no coincide y no borra nada; esa
+        // mutación más nueva sigue pendiente y su propio push se encarga.
+        const cleared = outbox.deleteIfMatches(op.userId, op.mutationId);
+        if (cleared && this.pushIsFullyIdle()) this.notifyStatus("saved");
+      }
       if (this.pushQueued) {
         // Hay una edición más reciente esperando: se encadena sin emitir
-        // "saved" todavía — ese snapshot (state, el que acaba de terminar)
+        // "saved" todavía — ese snapshot (op, el que acaba de terminar)
         // ya está obsoleto frente a `queued`.
         const queued = this.pushQueued;
         this.pushQueued = null;
         this.schedulePush(queued);
-      } else if (succeeded && !this.pushTimer && !this.pushRetryTimer) {
-        // Nada más pendiente: este SÍ era el último snapshot, y tuvo éxito.
-        this.onStatusChange?.("saved");
       }
     }
   }
@@ -1030,10 +1546,29 @@ class RemoteAdapter {
    * falló necesita reintentarse, y reintentarlo junto con lo que ya
    * funcionó no tiene coste de corrección, solo un poco de red de más.
    */
-  async pushState(state: FoodOSState): Promise<void> {
+  /** `ctx.userId` es SIEMPRE el identificador con el que se escribe cada
+      fila — deliberadamente NUNCA se lee `this.user` aquí (esa lectura
+      tardía, en una función que puede ejecutarse mucho después de
+      programarse, era la causa exacta del cruce A→B: el snapshot de A
+      escrito bajo el user_id de B si la sesión cambiaba mientras el push
+      estaba en cola). `checkAlive()` revalida antes/después de cada tabla
+      — esta versión de postgrest-js no expone `.abortSignal()` encadenable
+      en el query builder, así que una petición YA en vuelo hacia una tabla
+      concreta no se puede cancelar a nivel de red; lo que sí se garantiza
+      es que ninguna tabla POSTERIOR se toca tras detectar que la sesión
+      cambió, y que el resultado completo se descarta en runPush() (vía el
+      token de activePush) aunque esta función termine "bien". Push parcial
+      documentado: en el peor caso, una tabla puede llegar a escribirse con
+      datos de A incluso después de que B haya iniciado sesión — pero
+      NUNCA bajo el user_id de B, porque userId sigue siendo ctx.userId. */
+  async pushState(ctx: PushContext, state: FoodOSState): Promise<void> {
     const client = this.client!;
-    const userId = this.user!.id;
+    const userId = ctx.userId;
     const failures: string[] = [];
+    const checkAlive = () => {
+      if (ctx.signal.aborted || ctx.epoch !== this.sessionEpoch) throw new AbortedPushError();
+    };
+    checkAlive();
 
     // upsert(onConflict: "user_id"), NO update().eq("user_id", userId) (B2,
     // revisión externa, 2026-08-22): un UPDATE que no encuentra ninguna fila
@@ -1061,6 +1596,7 @@ class RemoteAdapter {
           categoryBudgets:   state.categoryBudgets   ?? {},
           settings:          state.settings,
           savingsGoalPct:    state.savingsGoalPct    ?? 20,
+          savingsGoal:       state.savingsGoal        ?? null,
           bankSynced:        state.bankSynced        ?? false,
           recipeTag:         state.recipeTag         ?? "todos",
           macroPreference:   state.macroPreference    ?? "balanced",
@@ -1094,9 +1630,14 @@ class RemoteAdapter {
           : {}),
       }, { onConflict: "user_id" });
     if (profileError) failures.push(`perfil: ${profileError.message}`);
+    checkAlive();
 
-    // water_log: se gestiona exclusivamente via fn_water_increment (RPC atómica).
-    // No se incluye en el push completo para evitar conflictos de concurrencia entre tabs.
+    // water_log: se gestiona exclusivamente vía setWaterTargetDurable()/
+    // processWaterQueue() (upsert absoluto e idempotente — ver el
+    // comentario grande junto a waterPending; ya NO usa fn_water_increment,
+    // sustituida en la tercera ronda de revisión por el cruce A→B que esa
+    // RPC podía reintroducir). No se incluye en el push completo para
+    // evitar conflictos de concurrencia entre tabs.
 
     // weight_log: upsert de lo que hay + borrado de lo que ya no está. El
     // chequeo de borrado corre SIEMPRE, incluso si el estado local se quedó
@@ -1131,6 +1672,7 @@ class RemoteAdapter {
         }
       }
     }
+    checkAlive();
 
     const { error: goalError } = await client.from("nutrition_goals").upsert(
       {
@@ -1145,6 +1687,7 @@ class RemoteAdapter {
       { onConflict: "user_id,goal_date" }
     );
     if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
+    checkAlive();
 
     // Cada syncTable() es independiente de las demás (tablas sin relación
     // entre sí) — un fallo en una no impide intentar el resto; se recoge el
@@ -1177,6 +1720,7 @@ class RemoteAdapter {
         { owner_id: userId }
       )
     );
+    checkAlive();
 
     await this.trySyncTable(failures, "carrito", () =>
       this.syncTable(
@@ -1197,6 +1741,7 @@ class RemoteAdapter {
         { user_id: userId, list_id: this.shoppingListId! }
       )
     );
+    checkAlive();
 
     await this.trySyncTable(failures, "gastos", () =>
       this.syncTable(
@@ -1213,6 +1758,7 @@ class RemoteAdapter {
         { user_id: userId }
       )
     );
+    checkAlive();
 
     await this.trySyncTable(failures, "ingresos", () =>
       this.syncTable(
@@ -1230,6 +1776,7 @@ class RemoteAdapter {
         { user_id: userId }
       )
     );
+    checkAlive();
 
     await this.trySyncTable(failures, "diario", () =>
       this.syncTable(
@@ -1325,3 +1872,57 @@ class RemoteAdapter {
 }
 
 export const remote = new RemoteAdapter();
+
+/** ¿Queda ALGO sin confirmar para `userId` — snapshot genérico (outbox) O
+    agua? Único criterio "de verdad ocioso" reutilizado por
+    waitForMutationConfirmed()/flushPendingOrTimeout() — nunca solo la
+    outbox genérica, o un fallo de agua pendiente podría darse por
+    confirmado sin de verdad estarlo (corrección de revisión, P1).
+    hasPendingWaterFor(userId) — explícito, nunca remote.hasPendingWater()
+    (que consulta implícitamente la sesión VIGENTE, que podría ya ser
+    otro usuario distinto de `userId` en este preciso momento). */
+function userIsFullyIdle(userId: string): boolean {
+  return !outbox.hasPending(userId) && !remote.hasPendingWaterFor(userId);
+}
+
+/** Espera a que la mutación `mutationId` de `userId` deje de estar activa:
+    "confirmed" si de verdad se borró (compare-and-delete) Y no quedó nada
+    más pendiente (outbox ni agua); "superseded" si mientras tanto una
+    mutación MÁS NUEVA la reemplazó en la outbox (esa seguirá su propio
+    ciclo, no es responsabilidad de este caller); "timeout" si se agotó el
+    plazo sin resolverse ninguna de las dos.
+    Corrección de revisión (P0/P1): usa addStatusListener() (nunca sustituye
+    onStatusChange) y vuelve a comprobar el estado justo DESPUÉS de
+    suscribirse — cierra la ventana de carrera en la que la confirmación
+    podría llegar entre el primer chequeo y quedar enganchado al listener. */
+export function waitForMutationConfirmed(
+  userId: string,
+  mutationId: string,
+  timeoutMs = 20_000,
+): Promise<"confirmed" | "superseded" | "timeout"> {
+  const check = (): "confirmed" | "superseded" | null => {
+    const env = outbox.readEnvelope(userId);
+    if (!env?.pending) return userIsFullyIdle(userId) ? "confirmed" : null; // aún puede quedar la RPC de agua en vuelo
+    if (env.pending.mutationId !== mutationId) return "superseded";
+    return null; // sigue siendo ESTA mutación, todavía sin confirmar
+  };
+  const immediate = check();
+  if (immediate) return Promise.resolve(immediate);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: "confirmed" | "superseded" | "timeout") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    const unsubscribe = remote.addStatusListener(() => {
+      const result = check();
+      if (result) finish(result);
+    });
+    const again = check(); // cierra la ventana de carrera descrita arriba
+    if (again) finish(again);
+  });
+}

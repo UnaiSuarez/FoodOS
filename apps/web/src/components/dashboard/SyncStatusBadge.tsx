@@ -1,6 +1,6 @@
 "use client";
 
-import { CloudAlert, CloudCheck, HardDrive, RefreshCw, WifiOff } from "lucide-react";
+import { CloudAlert, CloudCheck, HardDrive, RefreshCw, TriangleAlert, WifiOff } from "lucide-react";
 import type { SyncStatus } from "@/lib/state";
 
 const CONFIG: Record<SyncStatus, { icon: typeof CloudCheck; label: string; className: string }> = {
@@ -9,6 +9,10 @@ const CONFIG: Record<SyncStatus, { icon: typeof CloudCheck; label: string; class
   syncing: { icon: RefreshCw, label: "Sincronizando…", className: "syncing" },
   offline: { icon: WifiOff, label: "Sin conexión", className: "offline" },
   error: { icon: CloudAlert, label: "Error al sincronizar", className: "error" },
+  // Corrección de revisión: ni siquiera se pudo guardar de forma segura en
+  // este dispositivo (cuota/serialización) — distinto y más grave que
+  // "error" (que sí tiene una copia local durable esperando reintentar).
+  unsynced: { icon: TriangleAlert, label: "No se pudo guardar de forma segura", className: "error" },
 };
 
 /** E04-07: indicador de estado de guardado en la cabecera — antes un

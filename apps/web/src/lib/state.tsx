@@ -10,9 +10,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { User } from "@supabase/supabase-js";
+import type { AuthChangeEvent, User } from "@supabase/supabase-js";
 import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, WeightEntry } from "@foodos/types";
-import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced } from "./data-layer";
+import { Modal } from "@/components/dashboard/Modal";
+import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced, waitForMutationConfirmed, type PendingPush, type SyncPushStatus } from "./data-layer";
+import * as outbox from "./outbox";
 import { RealtimeHydrationGate } from "./realtime-hydration-gate";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
@@ -151,48 +153,308 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   return next;
 }
 
-export interface HydrateRemoteDeps {
+/** Núcleo PURO de una escritura de agua a un objetivo absoluto — clona y
+    fija `waterLog[date]`, sin tocar nada externo (red, outbox, localStorage
+    directo). Corrección de revisión (P1): setWaterAbsolute()/addWater()
+    usan esto DENTRO del updater de setState (donde React exige pureza —
+    puede invocarlo más de una vez en Strict Mode o descartar la
+    invocación bajo renderizado concurrente); el efecto externo
+    (remote.setWaterTargetDurable) vive fuera del updater, en el cuerpo del
+    callback, que React nunca reinvoca por su cuenta. Exportada para poder
+    probar la pureza sin renderizar React (no hay @testing-library en este
+    proyecto): invocarla dos veces con los mismos argumentos (simulando lo
+    que Strict Mode le haría al updater que la envuelve) nunca toca
+    `remote` ni `outbox` — ver state.test.tsx. */
+export function applyWaterTarget(state: FoodOSState, date: string, targetMl: number): FoodOSState {
+  const draft = structuredClone(state);
+  draft.waterLog[date] = Math.max(0, targetMl);
+  return draft;
+}
+
+export interface HydrateDeps {
   ensureBaseRows: () => Promise<void>;
   pullState: (defaults: FoodOSState) => Promise<FoodOSState>;
-  saveLocalState: (state: FoodOSState) => void;
-  schedulePush: (state: FoodOSState) => void;
-  isCancelled: () => boolean;
+  schedulePush: (op: PendingPush) => void;
+  /** true si la sesión (epoch) para la que se llamó ya no es la vigente —
+      se revalida en cada punto de reanudación tras un `await`. */
+  epochChanged: () => boolean;
+  /** Espera EXPLÍCITAMENTE (sin depender de que un evento de Realtime
+      llegue "por casualidad") a que `mutationId` se confirme, se sustituya
+      por una más nueva, o venza el plazo — ver waitForMutationConfirmed en
+      data-layer.ts. Corrección de revisión (P0). */
+  waitForMutationConfirmed: (userId: string, mutationId: string) => Promise<"confirmed" | "superseded" | "timeout">;
+}
+
+export interface HydrationCoordinator {
+  /** Comparte una única promesa entre llamadas con el mismo `userId+epoch`
+      (dedup real de INITIAL_SESSION + comprobación directa de sesión) —
+      otro usuario, u otro epoch del mismo usuario, obtiene una petición
+      real aparte. Nunca aplica un resultado a una sesión que ya cambió. */
+  hydrate(userId: string, epoch: number, defaults: FoodOSState, deps: HydrateDeps): Promise<FoodOSState | null>;
 }
 
 /**
- * Núcleo asíncrono de la hidratación remota autoritativa — extraído de
- * FoodOSProvider (nutrition-v3.1, corrección de revisión) para poder
- * probarlo con Vitest sin renderizar React (el proyecto no usa
- * @testing-library/react ni un entorno DOM en vitest). Dependencias
- * inyectables: FoodOSProvider las conecta a `remote`/saveLocalState reales;
- * los tests las sustituyen por promesas diferidas y espías para reproducir
- * la carrera asíncrona real (pullState pendiente, local antiguo cargado
- * mientras tanto) sin depender de leer el código fuente ni de temporizadores.
+ * Coordinador de hidratación remota — con IDENTIDAD DE INSTANCIA (creado
+ * por FoodOSProvider vía useRef, nunca un Map a nivel de módulo compartido
+ * entre renders/tests — corrección de revisión, bloqueante §8). Cada
+ * instancia de FoodOSProvider tiene su propio mapa de promesas en vuelo;
+ * los tests crean una instancia nueva cada vez, sin fugas entre casos.
  *
- * Devuelve el estado remoto ya normalizado (con la transición de motor
- * aplicada por normalizeState si tocaba) o `null` si se canceló mientras
- * el pull seguía en vuelo. Deliberadamente NO recibe el estado local como
- * parámetro — no puede empujarlo por error ni por descuido futuro, porque
- * no tiene forma de acceder a él. `schedulePush` solo se llama con un
- * snapshot derivado directamente de `pullState()`, nunca antes de que esa
- * promesa resuelva.
+ * Política ante el pendiente local (outbox) — ver diseño, "no lo llames
+ * reconciliación": si hay algo sin confirmar para `userId` ANTES de pedir a
+ * Supabase, se reenvía y se ESPERA explícitamente (waitForMutationConfirmed,
+ * sin depender de que un evento de Realtime llegue "por casualidad") a que
+ * esa mutación se confirme — el pull remoto no se pide hasta entonces,
+ * porque se descartaría igualmente (corrección de revisión, P0: la versión
+ * anterior pedía el pull de inmediato solo para tirarlo). Si aparece un
+ * pending NUEVO mientras el pull SÍ está en vuelo, se vuelve a comprobar
+ * justo antes de aplicar y también gana el local. Esto es "el último local
+ * sin confirmar gana", no una fusión campo a campo — riesgo documentado: si
+ * el MISMO usuario editó desde otro dispositivo mientras este tenía algo
+ * pendiente, ese cambio se pierde al reenviar. La solución real (versionado
+ * optimista en el servidor) queda fuera de este PR. Importante: el
+ * ESTADO VISIBLE en React nunca depende de este pull — FoodOSProvider ya
+ * pinta el envelope activo (con o sin pending) de inmediato al conocer el
+ * usuario, antes de llamar a hydrate() (ver el efecto de hidratación).
  */
-export async function hydrateRemoteState(
-  defaults: FoodOSState,
-  deps: HydrateRemoteDeps,
-): Promise<FoodOSState | null> {
-  await deps.ensureBaseRows();
-  const pulled = await deps.pullState(defaults);
-  if (deps.isCancelled()) return null;
-  const remoteState = normalizeState(pulled);
-  deps.saveLocalState(remoteState);
-  // Solo se persiste en remoto si normalizeState() cambió de verdad el
-  // sello de motor del perfil — un hydrate normal (perfil ya al día) sigue
-  // siendo puramente de lectura, nunca dispara una escritura de vuelta.
-  if (pulled.profile?.lastCalculationEngineVersion !== remoteState.profile?.lastCalculationEngineVersion) {
-    deps.schedulePush(remoteState);
+export function createHydrationCoordinator(): HydrationCoordinator {
+  const inFlight = new Map<string, Promise<FoodOSState | null>>();
+  return {
+    hydrate(userId, epoch, defaults, deps) {
+      const key = `${userId}:${epoch}`;
+      const existing = inFlight.get(key);
+      if (existing) return existing;
+
+      const promise = (async (): Promise<FoodOSState | null> => {
+        await deps.ensureBaseRows();
+
+        const envelopeBefore = outbox.readEnvelope(userId);
+        if (envelopeBefore?.pending) {
+          const mutationId = envelopeBefore.pending.mutationId;
+          deps.schedulePush({
+            userId, epoch,
+            mutationId,
+            revision: envelopeBefore.pending.revision,
+            state: envelopeBefore.state,
+          });
+          // Corrección de revisión (P0): antes se pedía el estado remoto YA
+          // (que se iba a descartar de todos modos, por seguir habiendo un
+          // pending) y se confiaba en que algo externo — un evento de
+          // Realtime — disparase un pull posterior una vez confirmado. Eso
+          // no está garantizado. Ahora se espera EXPLÍCITAMENTE, con la
+          // outbox como fuente de verdad, a que ESTA mutación concreta se
+          // resuelva antes de pedir nada — sin bloquear indefinidamente si
+          // la red no coopera (timeout) ni si una edición más nueva la
+          // reemplaza (esa sigue su propio ciclo).
+          const outcome = await deps.waitForMutationConfirmed(userId, mutationId);
+          if (deps.epochChanged()) return null;
+          if (outcome !== "confirmed") return null; // "timeout" o "superseded": el envelope activo ya está en pantalla (ver FoodOSProvider), no hay nada más que hacer en ESTE ciclo
+        }
+
+        const pulled = await deps.pullState(defaults);
+        if (deps.epochChanged()) return null;
+
+        const envelopeAfter = outbox.readEnvelope(userId);
+        if (envelopeAfter?.pending) {
+          // Llegado aquí, cualquier pending es necesariamente NUEVO (el que
+          // hubiera al principio ya se resolvió arriba, o esta función ya
+          // habría vuelto null) — se reprograma su envío sin condición.
+          deps.schedulePush({
+            userId, epoch,
+            mutationId: envelopeAfter.pending.mutationId,
+            revision: envelopeAfter.pending.revision,
+            state: envelopeAfter.state,
+          });
+          return null; // gana el pendiente local — el remoto se descarta para la UI esta vez
+        }
+
+        const remoteState = normalizeState(pulled);
+        outbox.writeEnvelope(userId, (env) => ({ ...env, userId, state: remoteState, pending: null }));
+        // Transición de motor v3.1 (u otra futura migración de solo
+        // lectura→escritura): si normalizeState() cambió el perfil, se
+        // persiste también en remoto — derivado del estado recién llegado
+        // del servidor, nunca del snapshot local.
+        if (pulled.profile?.lastCalculationEngineVersion !== remoteState.profile?.lastCalculationEngineVersion) {
+          const written = outbox.recordMutation(userId, remoteState, outbox.getTabClientId());
+          if (written.ok && written.envelope.pending) {
+            deps.schedulePush({ userId, epoch, mutationId: written.envelope.pending.mutationId, revision: written.envelope.pending.revision, state: remoteState });
+          }
+        }
+        return remoteState;
+      })();
+
+      inFlight.set(key, promise);
+      void promise.finally(() => {
+        if (inFlight.get(key) === promise) inFlight.delete(key);
+      });
+      return promise;
+    },
+  };
+}
+
+/** Decide qué estado debe verse en React AL CONOCER una sesión (login,
+    recarga con sesión ya activa, o recuperación de un aparcado por
+    expulsión involuntaria) — ANTES de esperar a ningún pull remoto.
+    Corrección de revisión (P0, hallazgo de mayor severidad de esta ronda):
+    antes se pintaba SIEMPRE defaultState y se esperaba a que
+    createHydrationCoordinator resolviera — pero si ya existía un envelope
+    activo con `pending` (p.ej. una mutación hecha justo antes de recargar
+    la página, en la MISMA sesión), el coordinador reprograma su reenvío
+    pero devuelve null (gana el pendiente local, nunca se pisa con un pull
+    remoto desactualizado) — y como devuelve null, la UI se quedaba
+    mostrando defaultState mientras el envío seguía en marcha en segundo
+    plano; si el usuario editaba en ese hueco, mutate() clonaba ese
+    defaultState y sustituía el envelope correcto por un snapshot
+    incompleto. Ahora se aplica el envelope activo (restaurado o ya
+    existente) de inmediato, sin esperar a nada remoto.
+    Pura y testeada aparte — mismo motivo que classifyAuthTransition: no
+    depender de renderizar el árbol completo de React (no hay
+    @testing-library en este proyecto). restoreParked() SÍ tiene efecto
+    secundario (mueve el aparcado a activo) — se llama aquí una única vez,
+    nunca por duplicado, así que quien la invoque no debe volver a llamarla
+    por su cuenta para el mismo `userId`. */
+export function resolveInitialStateForSession(userId: string, defaults: FoodOSState): FoodOSState {
+  // restoreParked() (P1, quinta ronda) nunca sobrescribe un envelope
+  // activo ya existente — si `value` viene null porque ya había uno, el
+  // siguiente readEnvelope() lo recoge igual. `cleanupOk` no se propaga
+  // aquí a propósito: no hay decisión de usuario que tomar al iniciar
+  // sesión (a diferencia del logout, donde sí se avisa) — un aparcado
+  // obsoleto que no se pudo limpiar queda simplemente ignorado a partir
+  // de ahora (nunca sobrescribirá nada) hasta que purgeExpiredParked()
+  // lo retire por TTL.
+  const restored = outbox.restoreParked(userId);
+  const active = restored.value ?? outbox.readEnvelope(userId);
+  return active ? normalizeState(active.state) : structuredClone(defaults);
+}
+
+/**
+ * ¿Este evento de Supabase Auth es un cambio REAL de sesión (debe
+ * incrementar epoch, cancelar timers/retries, reiniciar hidratación) o solo
+ * una renovación lógica del mismo usuario (debe conservarse tal cual — un
+ * TOKEN_REFRESHED no puede cancelar un guardado en curso)? Pura y testeada
+ * aparte (bloqueante §7 de la revisión):
+ * - Mismo userId (ninguno de los dos es null) + TOKEN_REFRESHED/
+ *   USER_UPDATED/SIGNED_IN → "same_session" (incluye el doble SIGNED_IN del
+ *   mismo usuario — idempotente, p.ej. eco de nuestra propia acción).
+ * - Cualquier otra combinación (userId distinto, SIGNED_OUT, o el primer
+ *   login desde null) → "real_change".
+ */
+export function classifyAuthTransition(
+  prevUserId: string | null,
+  newUserId: string | null,
+  event: AuthChangeEvent,
+): "same_session" | "real_change" {
+  const sameUser = newUserId !== null && newUserId === prevUserId;
+  if (sameUser && (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN")) {
+    return "same_session";
   }
-  return remoteState;
+  return "real_change";
+}
+
+/** Espera hasta `timeoutMs` a que TODO lo pendiente de `userId` quede
+    confirmado (push genérico Y RPC de agua) — usado por
+    requestSignOut()/resolveSignOutChoice() en la opción "esperar y salir".
+    Función de nivel de módulo (no un hook) para poder probarla directamente
+    con el mismo patrón de cliente Supabase falso + timers controlados que
+    el resto de data-layer.test.ts, sin necesitar renderizar FoodOSProvider.
+    "confirmed" solo si de verdad se vació; "timeout" si se agotó el plazo
+    antes; "error" no se usa hoy (el push reintenta solo hasta el timeout)
+    pero queda en el contrato para un futuro fail-fast explícito.
+    Corrección de revisión (P1): la versión anterior (a) solo miraba la
+    outbox genérica, nunca el agua pendiente — un logout con SOLO agua
+    pendiente salía en silencio con el cambio sin confirmar; (b) sustituía
+    temporalmente remote.onStatusChange entero, arriesgando perder una
+    confirmación que llegara entre leer el handler previo e instalar el
+    propio (y pisando cualquier otro oyente instalado mientras tanto);
+    ahora usa remote.addStatusListener() (nunca sustituye nada) y vuelve a
+    comprobar el estado justo tras suscribirse. Usa
+    remote.hasPendingWaterFor(userId) — EXPLÍCITO por userId, nunca
+    remote.hasPendingWater() (que consulta la sesión vigente, que en el
+    momento de resolverse esta promesa podría ya ser otro usuario). */
+export function flushPendingOrTimeout(userId: string, timeoutMs: number): Promise<"confirmed" | "timeout" | "error"> {
+  const isIdle = () => !outbox.hasPending(userId) && !remote.hasPendingWaterFor(userId);
+  if (isIdle()) return Promise.resolve("confirmed");
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: "confirmed" | "timeout" | "error") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    const unsubscribe = remote.addStatusListener((status) => {
+      if (status === "saved" && isIdle()) finish("confirmed");
+    });
+    if (isIdle()) finish("confirmed"); // cierra la ventana de carrera entre el primer chequeo y quedar suscrito
+  });
+}
+
+/**
+ * Aplica la decisión que el usuario tomó frente al diálogo de "tienes
+ * cambios sin sincronizar" (§4 del diseño) — separada de requestSignOut()
+ * para poder probarla sin React. NUNCA cierra sesión automáticamente en
+ * "wait" si el flush no confirmó de verdad (timeout o error): en ese caso
+ * vuelve "cancelled_timeout"/"cancelled_error" y la sesión sigue abierta,
+ * con el mismo diálogo disponible para reintentar.
+ */
+export interface SignOutOutcome {
+  /** Corrección de revisión (P1, sexta ronda): antes `status` era
+      "signed_out" incluso cuando `auth.signOut()` devolvía error — la app
+      ya se había puesto a sí misma en "sin sesión" (remote.user = null,
+      resetSessionState()) ANTES de conocer el resultado remoto.
+      Confirmado contra `@supabase/auth-js`: `_signOut()` devuelve el
+      error ANTES de ejecutar `_removeSession()` para errores que no sean
+      los casos explícitamente ignorados — la sesión persistida en
+      Supabase podía sobrevivir a una recarga pese a que la UI ya decía
+      "sesión cerrada". Ahora `remote.signOut()` NO toca nada local si
+      falla (ver su comentario grande en data-layer.ts), así que
+      "sign_out_failed" es un resultado real: la sesión (en memoria y en
+      Supabase) sigue activa, recuperable, reintentable. */
+  status: "signed_out" | "sign_out_failed" | "cancelled" | "cancelled_timeout" | "cancelled_error";
+  /** Corrección de revisión (P1): discard()/discardWaterPending()/
+      discardParkedWater() tragaban cualquier fallo de removeItem pese a
+      que el comentario afirmaba una garantía absoluta de privacidad —
+      solo era "mejor esfuerzo". `cleanupOk` le dice al caller si de
+      verdad se limpiaron los datos locales, para poder avisar en vez de
+      afirmar algo que no ocurrió. Solo tiene sentido cuando
+      `status === "signed_out"` (con cualquier otro status, `true`: no se
+      intentó limpiar nada, así que no hay "fallo de limpieza" que avisar). */
+  cleanupOk: boolean;
+  /** El error que devolvió `auth.signOut()`, si lo hubo — presente
+      exactamente cuando `status === "sign_out_failed"`. */
+  authError: unknown;
+}
+
+export async function resolveSignOutChoice(
+  userId: string,
+  choice: "wait" | "cancel" | "discard",
+): Promise<SignOutOutcome> {
+  if (choice === "cancel") return { status: "cancelled", cleanupOk: true, authError: null };
+  if (choice === "discard") {
+    const { ok, error, cleanupOk } = await remote.signOut();
+    return ok ? { status: "signed_out", cleanupOk, authError: null } : { status: "sign_out_failed", cleanupOk: true, authError: error };
+  }
+  const result = await flushPendingOrTimeout(userId, 15_000);
+  if (result === "timeout") return { status: "cancelled_timeout", cleanupOk: true, authError: null };
+  if (result === "error") return { status: "cancelled_error", cleanupOk: true, authError: null };
+  const { ok, error, cleanupOk } = await remote.signOut();
+  return ok ? { status: "signed_out", cleanupOk, authError: null } : { status: "sign_out_failed", cleanupOk: true, authError: error };
+}
+
+/** Avisa por toast si el logout SÍ se confirmó pero la limpieza local no
+    se pudo completar del todo — corrección de revisión (P1): antes se
+    afirmaba una garantía absoluta de privacidad que en realidad era solo
+    "mejor esfuerzo". Solo tiene sentido llamarla cuando `status` ya es
+    "signed_out" — el fallo de cierre REMOTO (`sign_out_failed`) se avisa
+    aparte, con su propio mensaje, porque es un problema completamente
+    distinto ("puede que el servidor siga viendo la sesión como activa",
+    no "puede que quede un rastro en este dispositivo"). */
+export function reportCleanupIssue(showToast: (message: string) => void, cleanupOk: boolean): void {
+  if (!cleanupOk) {
+    showToast("Sesión cerrada, pero no se pudieron borrar por completo los datos locales de este dispositivo.");
+  }
 }
 
 function stateDate(state: Pick<FoodOSState, "debugDate">): Date {
@@ -243,13 +505,44 @@ export interface PurchaseReviewItem {
 /** E04-07: estado de guardado que muestra la cabecera.
     - "local": no hay Supabase configurado — todo vive solo en este dispositivo,
       no hay "servidor" con el que estar sincronizado o no.
-    - "saved": el último cambio ya llegó al servidor.
-    - "syncing": hay un guardado remoto programado o en curso.
+    - "saved": ni el snapshot genérico ni la RPC de agua tienen nada
+      pendiente/en curso/en reintento — el último cambio de CUALQUIERA de
+      los dos ya llegó al servidor.
+    - "syncing": hay un guardado remoto (snapshot o agua) programado o en curso.
     - "offline": el navegador no tiene conexión (navigator.onLine) — un push
       fallaría igualmente, así que se distingue de "error" (que sí lo intentó).
-    - "error": el último intento de push falló y no ha vuelto a resolverse
-      (reintenta solo — ver PUSH_RETRY_MS en data-layer.ts). */
-export type SyncStatus = "local" | "saved" | "syncing" | "offline" | "error";
+    - "error": el último intento de push (snapshot o agua) falló y no ha
+      vuelto a resolverse (reintenta solo — ver PUSH_RETRY_MS en data-layer.ts).
+    - "unsynced": corrección de revisión — ni siquiera se pudo ESCRIBIR la
+      outbox local (cuota de localStorage superada, fallo de
+      serialización...). Peor que "error": no hay ni una copia durable del
+      cambio en este dispositivo. Se mantiene hasta que una mutación
+      posterior consiga escribir la outbox correctamente — nunca se resuelve
+      solo a "saved" en silencio. */
+export type SyncStatus = "local" | "saved" | "syncing" | "offline" | "error" | "unsynced";
+
+/** Calcula el SyncStatus final combinando todas las fuentes — extraída
+    como función PURA (corrección de revisión, P1) para poder testear que
+    "unsynced" agrega fuentes INDEPENDIENTES sin renderizar React: antes,
+    `hadUnsyncedWrite` era un único booleano compartido entre el fallo
+    durable del envelope genérico (mutate()) y el fallo durable del agua
+    (remote.onUnsyncedWrite) — un guardado genérico correcto limpiaba el
+    flag entero, incluso si el problema real seguía siendo el agua sin
+    persistir. Ahora cada fuente tiene su propio booleano; "unsynced" se
+    mantiene mientras CUALQUIERA de las dos siga en true, y cada éxito
+    limpia solo la suya. */
+export function computeSyncStatus(params: {
+  hasSupabaseConfig: boolean;
+  isOnline: boolean;
+  hadUnsyncedEnvelopeWrite: boolean;
+  hadUnsyncedWaterWrite: boolean;
+  pushStatus: SyncPushStatus;
+}): SyncStatus {
+  if (!params.hasSupabaseConfig) return "local";
+  if (!params.isOnline) return "offline";
+  if (params.hadUnsyncedEnvelopeWrite || params.hadUnsyncedWaterWrite) return "unsynced";
+  return params.pushStatus;
+}
 
 interface FoodOSContextValue {
   state: FoodOSState;
@@ -268,8 +561,25 @@ interface FoodOSContextValue {
   mutate: (fn: (draft: FoodOSState) => void) => void;
   /** Incrementa/decrementa el agua del día de forma atómica (sin conflictos entre tabs). */
   addWater: (ml: number) => void;
+  /** Fija el agua de una fecha concreta a un valor absoluto — usar para
+      "borrar hoy", deshacer, o poblar datos de ejemplo/demo. NUNCA escribir
+      waterLog a través de mutate() genérico (ver el comentario grande
+      sobre setWaterAbsolute más arriba): pushState() excluye water_log a
+      propósito y el cambio no llegaría a Supabase. */
+  setWaterAbsolute: (date: string, targetMl: number) => void;
   resetAll: () => void;
   seedDemo: () => void;
+  /** ÚNICO punto de entrada para cerrar sesión — nunca llamar a
+      remote.signOut() directamente desde un componente (ver diseño §4/§7).
+      Si hay cambios sin sincronizar, muestra la decisión explícita
+      (esperar y salir / cancelar / salir descartando) antes de proceder.
+      Devuelve "cancelled" si el usuario decide no cerrar sesión.
+      Devuelve "failed" (corrección de revisión, P1, sexta ronda) si
+      `auth.signOut()` no confirmó el cierre remoto — la sesión sigue
+      activa tal cual estaba, ya se avisó por toast, y el caller (el
+      componente) NO debe cerrar ningún modal ni mostrar un mensaje de
+      éxito. */
+  requestSignOut: () => Promise<"signed_out" | "cancelled" | "failed">;
 }
 
 /** Estado efímero de UI (toast + mascota) en un contexto aparte: cambia
@@ -303,7 +613,20 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   // E04-07: "saved" de entrada — sin Supabase se sobreescribe a "local" más
   // abajo antes del primer paint útil; con Supabase asumimos sincronizado
   // hasta el primer cambio (no hay nada pendiente al arrancar).
-  const [pushStatus, setPushStatus] = useState<"saved" | "syncing" | "error">("saved");
+  const [pushStatus, setPushStatus] = useState<SyncPushStatus>("saved");
+  // true si la ÚLTIMA escritura durable de esa fuente falló (cuota de
+  // localStorage, fallo de serialización) — fuerza "unsynced" incluso si
+  // el push por sí solo llega a tener éxito, hasta que una escritura
+  // posterior de esa MISMA fuente consiga persistir de verdad
+  // (corrección de revisión, bloqueante §9 punto 3). Corrección de
+  // revisión (P1, cuarta ronda): antes era UN solo booleano compartido
+  // entre el envelope genérico y el agua — un guardado genérico correcto
+  // (mutate()) limpiaba el aviso aunque el problema real siguiera siendo
+  // el agua sin persistir. Ahora cada fuente tiene el suyo — ver
+  // computeSyncStatus(), que exige que AMBAS estén en false para salir de
+  // "unsynced".
+  const [hadUnsyncedEnvelopeWrite, setHadUnsyncedEnvelopeWrite] = useState(false);
+  const [hadUnsyncedWaterWrite, setHadUnsyncedWaterWrite] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const realtimeUnsubRef = useRef<(() => void) | null>(null);
@@ -314,6 +637,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   // ese archivo y data-layer.ts/hasPendingPush() para el porqué completo).
   const hydrationGateRef = useRef(new RealtimeHydrationGate());
   const hydrateRemoteRef = useRef<() => Promise<void>>(async () => {});
+  // Identidad de instancia (bloqueante §8) — nunca un Map a nivel de módulo.
+  const hydrationCoordinatorRef = useRef(createHydrationCoordinator());
+  // Copia síncrona de authUser para leer dentro del callback de onAuthChange
+  // sin depender de una clausura sobre el estado de React (que quedaría
+  // obsoleta — el callback se registra una sola vez).
+  const authUserRef = useRef<User | null>(null);
+  // Petición de decisión al usuario cuando requestSignOut() encuentra algo
+  // pendiente — ver el modal renderizado al final de este componente.
+  const [signOutPrompt, setSignOutPrompt] = useState<{ resolve: (choice: "wait" | "cancel" | "discard") => void } | null>(null);
 
   // Con la escritura de localStorage diferida (debounce), al cerrar/recargar la
   // pestaña hay que volcar lo pendiente o se perderían los últimos ~300ms.
@@ -322,25 +654,45 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("pagehide", flushLocalState);
   }, []);
 
+  // Corrección de revisión (P1) — estrategia entre pestañas: la v2 del
+  // diseño proponía un listener de `storage` que nunca se llegó a
+  // implementar en la primera versión de este PR (el test existente solo
+  // comprobaba que clientId vive en sessionStorage, no probaba dos
+  // pestañas de verdad). Este listener SOLO detecta y converge esta
+  // pestaña al último envelope físicamente escrito en disco por OTRA
+  // pestaña del mismo usuario — nunca fusiona campo a campo. Límite
+  // documentado explícitamente (ver docs/SYNC_DECISIONES.md): dos pestañas
+  // pueden seguir generando mutaciones simultáneas con distinto
+  // mutationId — ninguna borra el `pending` de la otra por diseño de
+  // outbox.ts, pero "el último setItem físico gana" en disco, y dos
+  // pushes completos pueden llegar a Supabase en cualquier orden; esto NO
+  // resuelve esa carrera, solo evita que ESTA pestaña se quede mostrando
+  // un estado obsoleto sin ningún indicio de que otra pestaña ya avanzó.
+  useEffect(() => {
+    function onStorage(event: StorageEvent) {
+      const userId = authUserRef.current?.id;
+      if (!userId || event.key !== outbox.envelopeKey(userId)) return;
+      if (!event.newValue) return; // borrado (logout/discard) — lo gestiona el propio flujo de auth de ESTA pestaña, no este listener
+      const envelope = outbox.readEnvelope(userId);
+      if (envelope) setState(normalizeState(envelope.state));
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   // Hidratacion: primero localStorage, despues Supabase si hay sesion.
   useEffect(() => {
-    // nutrition-v3.1 (corrección de revisión — riesgo de carrera): la
-    // transición de motor (applyEngineVersionTransition, dentro de
-    // normalizeState) NUNCA se persiste aquí en modo Supabase — solo se
-    // aplica para que el primer render (con el estado LOCAL, todavía no
-    // confirmado por el servidor) muestre cifras coherentes. Persistirla ya
-    // — con mutate()/schedulePush() — programaría un push de un snapshot
-    // que puede quedar obsoleto en cuanto complete hydrateRemote() más
-    // abajo, pisando datos remotos más recientes con datos locales
-    // desactualizados. En modo exclusivamente local (sin Supabase) sí se
-    // persiste de inmediato — no hay hidratación remota que pueda
-    // adelantarse ni con la que competir.
+    outbox.purgeExpiredParked(); // una vez al arrancar — nunca queda un aparcado vencido (§4)
+    outbox.purgeExpiredParkedWater(); // misma política, almacén separado del agua (P1)
+
+    // Pintado instantáneo desde LOCAL_KEY (modo solo-local, o el hueco antes
+    // de saber si hay sesión) — nunca se copia a la outbox de una cuenta
+    // (bloqueante §1): esto es solo la primera pintura, se sustituye por
+    // completo en cuanto se conoce el usuario real más abajo.
     const localLoaded = normalizeState(loadLocalState(defaultState));
     setState(localLoaded);
     setHydrated(true);
 
-    // Sin Supabase: no hay nada remoto que esperar, el estado local es la
-    // verdad — la transición (si normalizeState la aplicó) se guarda ya.
     if (!hasSupabaseConfig()) {
       saveLocalState(localLoaded);
       setRemoteHydrated(true);
@@ -348,32 +700,34 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     }
     let cancelled = false;
 
-    const hydrateRemote = async () => {
-      // Mientras una hidratación está en curso, "aún no sabemos" el estado del
-      // servidor. Es clave porque onAuthChange (INITIAL_SESSION) limpia el
-      // estado a default (perfil null) y vuelve a hidratar: sin este reset,
-      // quedaría una ventana con remoteHydrated=true + perfil=null que haría
-      // asomar el onboarding a un usuario que sí tiene perfil.
+    const hydrateForUser = async (userId: string, epoch: number) => {
       setRemoteHydrated(false);
       try {
-        // Núcleo asíncrono extraído a hydrateRemoteState() — ver su
-        // comentario junto a la definición: pullState() es la única fuente
-        // de lo que se persiste/empuja de vuelta, nunca el estado local.
-        const remoteState = await hydrateRemoteState(defaultState, {
+        const result = await hydrationCoordinatorRef.current.hydrate(userId, epoch, defaultState, {
           ensureBaseRows: () => remote.ensureBaseRows(),
           pullState: (defaults) => remote.pullState(defaults),
-          saveLocalState,
-          schedulePush: (s) => remote.schedulePush(s),
-          isCancelled: () => cancelled,
+          schedulePush: (op) => remote.schedulePush(op),
+          epochChanged: () => remote.sessionEpoch !== epoch,
+          waitForMutationConfirmed: (uid, mutationId) => waitForMutationConfirmed(uid, mutationId),
         });
-        if (remoteState === null) return; // cancelado mientras el pull estaba en vuelo
-        setState(remoteState);
-        setMascotMessage("Datos sincronizados desde Supabase.");
+        if (cancelled || remote.sessionEpoch !== epoch) return; // la sesión ya cambió: no aplicar nada
+        if (result) {
+          setState(result);
+          setMascotMessage("Datos sincronizados desde Supabase.");
+        }
       } catch (error) {
         console.warn("FoodOS: fallo hidratando desde Supabase", error);
       } finally {
-        if (!cancelled) setRemoteHydrated(true);
+        if (!cancelled && remote.sessionEpoch === epoch) setRemoteHydrated(true);
       }
+    };
+    // Envoltorio sin argumentos para los callers que no conocen epoch/userId
+    // (el refresco en tiempo real, el "saved" diferido) — siempre usa la
+    // sesión VIGENTE en el momento de llamar, nunca una capturada antes.
+    const hydrateRemote = () => {
+      const uid = remote.user?.id;
+      if (!uid) return Promise.resolve();
+      return hydrateForUser(uid, remote.sessionEpoch);
     };
     hydrateRemoteRef.current = hydrateRemote;
 
@@ -413,6 +767,17 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           // Parche directo: no requiere ida a Supabase → prácticamente instantáneo.
           if (table === "water_log") {
             const { log_date, ml } = newRow as { log_date: string; ml: number };
+            // Corrección de revisión (P1): si hay un objetivo LOCAL más
+            // nuevo todavía sin confirmar para esta fecha, este evento
+            // puede ser el eco de una escritura ANTERIOR (o de otro
+            // dispositivo) que ya quedó obsoleta — aplicarlo pisaría
+            // temporalmente el valor que el usuario ya ve. Se ignora hasta
+            // que el upsert absoluto confirme y borre el pending; en ese
+            // momento el estado local YA muestra el objetivo (se aplicó
+            // de forma optimista al programarlo), así que no hace falta
+            // ningún otro paso para "aceptar el valor confirmado".
+            const uid = remote.user?.id;
+            if (uid && remote.pendingWaterTargetFor(uid, log_date) !== null) return;
             setState((cur) => {
               const next = { ...cur, waterLog: { ...cur.waterLog, [log_date]: Number(ml) } };
               saveLocalStateDebounced(next);
@@ -439,27 +804,82 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     void remote.init().then((ok) => {
       if (cancelled || !ok) return;
       setRemoteReady(true);
-      remote.onAuthChange((user) => {
+      remote.onAuthChange((event: AuthChangeEvent, user) => {
+        const newId = user?.id ?? null;
+        const prevId = authUserRef.current?.id ?? null;
+
+        // Bloqueante §7: un refresco de token del mismo usuario NO es un
+        // cambio de sesión — no incrementa epoch, no cancela nada, no
+        // reinicia hidratación. Idempotente frente a un doble SIGNED_IN del
+        // mismo usuario (p.ej. eco de nuestra propia acción). Lógica
+        // extraída a classifyAuthTransition() (pura, testeada aparte) para
+        // no depender de renderizar el efecto completo en los tests.
+        if (classifyAuthTransition(prevId, newId, event) === "same_session") {
+          authUserRef.current = user;
+          setAuthUser(user);
+          return;
+        }
+
+        // Cambio REAL de sesión (login, logout, o cambio de cuenta).
+        if (prevId && !remote.explicitSignOutInProgress) {
+          // SIGNED_OUT sin que lo iniciara requestSignOut(): expulsión
+          // involuntaria. Corrección de revisión (P1): antes, sin `pending`,
+          // no se hacía nada — el FoodOSState completo del usuario saliente
+          // se quedaba en localStorage sin TTL. resolveInvoluntaryLoss()
+          // aparca lo pendiente con TTL si lo hay (§4); si no hay nada
+          // pendiente, borra el envelope activo (ya sincronizado, sin razón
+          // para seguir en este dispositivo). Si fue un logout explícito,
+          // signOut() YA descartó el envelope por completo — no hay nada
+          // que resolver aquí.
+          outbox.resolveInvoluntaryLoss(prevId);
+        }
+        remote.resetSessionState();
+        const epoch = remote.sessionEpoch;
+        authUserRef.current = user;
         setAuthUser(user);
-        // Limpia suscripcion anterior antes de cualquier cambio de sesion.
         realtimeUnsubRef.current?.();
         realtimeUnsubRef.current = null;
-        if (user) {
-          // Nuevo usuario: limpiar estado local para evitar mezcla entre cuentas.
+        // Corrección de revisión (P1, quinta ronda): hadUnsyncedEnvelopeWrite/
+        // hadUnsyncedWaterWrite eran booleanos GLOBALES del provider, no
+        // aislados por sesión/usuario — si A sufría un fallo durable y la
+        // sesión cambiaba a B, B aparecía como "unsynced" desde el primer
+        // instante aunque no tuviera ningún fallo propio (y, al no
+        // limpiarse con un guardado genérico ajeno a esa fuente, podía
+        // quedarse así hasta que B hiciera su propia operación de esa
+        // fuente). Se reinician aquí, en cada cambio REAL de sesión — nunca
+        // en un TOKEN_REFRESHED/USER_UPDATED/SIGNED_IN del mismo usuario
+        // (esta rama de código no se alcanza para esos casos, ver el
+        // `return` de arriba) — el estado persistido (outbox/agua
+        // aparcada/pendiente) es lo que de verdad lleva la cuenta de qué
+        // sigue sin confirmar entre sesiones; este flag efímero de UI no
+        // debe sobrevivir al límite de una sesión.
+        setHadUnsyncedEnvelopeWrite(false);
+        setHadUnsyncedWaterWrite(false);
+
+        if (newId) {
           clearLocalState();
-          setState(structuredClone(defaultState));
-          void hydrateRemote().then(() => { if (!cancelled) setupRealtime(); });
+          // resolveInitialStateForSession() restaura un aparcado si lo hay
+          // (efecto secundario, se llama UNA sola vez aquí) y aplica el
+          // envelope activo resultante a React de inmediato — ver su
+          // comentario grande para el porqué (P0). El propio coordinador de
+          // hidratación (ver createHydrationCoordinator) relee ese mismo
+          // envelope y reprograma su push si tiene `pending` — no hace
+          // falta programarlo aquí también.
+          setState(resolveInitialStateForSession(newId, defaultState));
+          outbox.restoreParkedWater(newId); // recupera agua aparcada (misma política de TTL que el envelope genérico — P1)
+          remote.resumePendingWaterFor(newId); // agua persistida (aparcada o de una recarga) de este dispositivo (P0)
+          void hydrateForUser(newId, epoch).then(() => { if (!cancelled) setupRealtime(); });
         } else {
-          // Logout: limpiar todo.
           clearLocalState();
           setState(structuredClone(defaultState));
           setRealtimeConnected(false);
         }
       });
-      if (remote.user) {
-        setAuthUser(remote.user);
-        void hydrateRemote().then(() => { if (!cancelled) setupRealtime(); });
-      }
+      // Deliberadamente SIN un `if (remote.user) hydrateRemote()` aparte
+      // (bloqueante §8, doble hidratación inicial): supabase-js dispara
+      // onAuthStateChange inmediatamente con INITIAL_SESSION si ya hay
+      // sesión — el bloque de arriba ya la cubre. Duplicarlo aquí lanzaba
+      // dos pullState() concurrentes para el mismo usuario al arrancar.
     });
 
     return () => {
@@ -493,6 +913,20 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     return () => { remote.onPushError = null; };
   }, [showToast]);
 
+  // Corrección de revisión (P1): si ni siquiera se pudo escribir la copia
+  // LOCAL durable del agua pendiente (cuota de localStorage, fallo de
+  // serialización — ver persistWaterPending en data-layer.ts), es tan
+  // grave como el mismo fallo en mutate()/outbox.recordMutation() — pero
+  // en su PROPIO flag (hadUnsyncedWaterWrite), nunca compartido con el del
+  // envelope genérico (corrección de revisión, P1, cuarta ronda: antes un
+  // guardado genérico correcto podía limpiar el aviso de un fallo de agua
+  // que seguía sin resolverse). Se llama con cada intento (éxito o fallo),
+  // así que también es quien limpia esta fuente cuando por fin persiste.
+  useEffect(() => {
+    remote.onUnsyncedWrite = (ok) => setHadUnsyncedWaterWrite(!ok);
+    return () => { remote.onUnsyncedWrite = null; };
+  }, []);
+
   // E04-07: refleja en la cabecera cada transición de guardado remoto.
   // B2 (revisión externa, 2026-08-22): además, delega en hydrationGateRef
   // (ver scheduleHydrate más arriba y realtime-hydration-gate.ts) si esta
@@ -523,13 +957,22 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const syncStatus: SyncStatus = !hasSupabaseConfig()
-    ? "local"
-    : !isOnline
-      ? "offline"
-      : pushStatus;
+  const syncStatus: SyncStatus = computeSyncStatus({
+    hasSupabaseConfig: hasSupabaseConfig(),
+    isOnline,
+    hadUnsyncedEnvelopeWrite,
+    hadUnsyncedWaterWrite,
+    pushStatus,
+  });
 
   // Toda mutacion pasa por aqui: clona, aplica, persiste (local + remoto).
+  // Corrección de revisión (bloqueante §2 del diseño): para un usuario
+  // autenticado, la outbox (state+pending juntos, un solo setItem — ver
+  // outbox.ts) se escribe de forma SÍNCRONA aquí, ANTES de programar el
+  // push — nunca en un debounce que pudiera perder la mutación entera si
+  // el proceso muere antes de que dispare (pagehide sigue existiendo como
+  // defensa adicional para LOCAL_KEY del modo sin sesión, no como
+  // requisito para que la outbox exista).
   const mutate = useCallback((fn: (draft: FoodOSState) => void) => {
     setState((current) => {
       const draft = structuredClone(current);
@@ -545,25 +988,161 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           mode: draft.profile.goal,
         };
       }
-      saveLocalStateDebounced(draft);
-      remote.schedulePush(draft);
+
+      const userId = remote.user?.id ?? null;
+      if (userId === null) {
+        // Sin sesión: LOCAL_KEY es la única fuente de verdad, sin outbox.
+        saveLocalStateDebounced(draft);
+        return draft;
+      }
+
+      const epoch = remote.sessionEpoch;
+      const written = outbox.recordMutation(userId, draft, outbox.getTabClientId());
+      if (!written.ok) {
+        // Corrección de revisión (P1, cuarta ronda): SOLO su propia
+        // fuente (hadUnsyncedEnvelopeWrite) — nunca la del agua, que es
+        // un problema totalmente independiente.
+        setHadUnsyncedEnvelopeWrite(true);
+        showToast("No se pudo guardar de forma segura en este dispositivo.");
+        // Mejor esfuerzo: se intenta igualmente el push, pero con un
+        // mutationId que NUNCA podrá hacer compare-and-delete en la
+        // outbox (no llegó a escribirse) — así que runPush() jamás podrá
+        // emitir "saved" por esta mutación en concreto, ni aunque la red
+        // funcione — hadUnsyncedEnvelopeWrite es lo único que puede
+        // limpiar esto.
+        remote.schedulePush({ userId, epoch, mutationId: crypto.randomUUID(), revision: 0, state: draft });
+        return draft;
+      }
+      setHadUnsyncedEnvelopeWrite(false);
+      const pending = written.envelope.pending!;
+      remote.schedulePush({ userId, epoch, mutationId: pending.mutationId, revision: pending.revision, state: draft });
       return draft;
     });
+  }, [showToast]);
+
+  // Corrección de revisión (P1): setWaterAbsolute()/addWater() llamaban a
+  // remote.setWaterTargetDurable() DENTRO del updater de setState — los
+  // updaters deben ser puros (React puede invocarlos más de una vez en
+  // Strict Mode, o descartar la invocación bajo renderizado concurrente);
+  // llamar a un efecto externo (red, outbox) ahí dentro arriesgaba
+  // duplicar la operación. waterLogRef se mantiene sincronizado de forma
+  // SÍNCRONA (nunca vía useEffect, que llegaría un tick tarde) en cada
+  // llamada — así dos llamadas consecutivas en el mismo tick ya ven el
+  // valor correcto sin depender de que React haya vuelto a renderizar.
+  // El propio updater queda puro: solo clona y aplica applyWaterTarget();
+  // el efecto externo se dispara UNA vez, fuera de él.
+  const waterLogRef = useRef(state.waterLog);
+  useEffect(() => { waterLogRef.current = state.waterLog; }); // sin deps: resincroniza tras CUALQUIER commit (hidratación, Realtime, undo...)
+
+  /** Fija el agua de una fecha a un valor absoluto — optimista en local Y
+      durable en remoto (reconciliación por objetivo, ver
+      setWaterTargetDurable en data-layer.ts). Corrección de revisión (P0):
+      TODA mutación de waterLog debe pasar por aquí (o por addWater más
+      abajo, que la usa) — nunca por mutate() genérico, porque pushState()
+      excluye water_log a propósito (ver el comentario en pushState) y el
+      cambio nunca llegaría a Supabase aunque el badge dijera "Guardado"
+      (ver SettingsView.clearToday/deshacer/seedHistorico). */
+  const setWaterAbsolute = useCallback((date: string, targetMl: number) => {
+    const clamped = Math.max(0, targetMl);
+    // Corrección de revisión (P2, sexta ronda): antes esta validación solo
+    // vivía en remote.setWaterTargetDurable() — el ref, React y LOCAL_KEY
+    // ya se habían modificado por entonces, así que un NaN/decimal podía
+    // quedar visible localmente mientras la escritura remota se descartaba
+    // en silencio (local y remoto dejaban de coincidir en el mismo
+    // objetivo). Se valida AQUÍ, en el punto de entrada del contexto,
+    // antes de tocar el ref/React/almacenamiento — el mismo valor se
+    // acepta o se rechaza a la vez para ambos lados. Math.max() de arriba
+    // es cómputo puro, no toca nada compartido todavía.
+    if (!outbox.isValidCalendarDateKey(date) || !outbox.isValidWaterTarget(clamped)) {
+      console.warn("FoodOS: setWaterAbsolute() recibió una fecha/objetivo inválido — se ignora, no toca local ni remoto", { date, targetMl });
+      return;
+    }
+    waterLogRef.current = { ...waterLogRef.current, [date]: clamped };
+    setState((current) => {
+      const next = applyWaterTarget(current, date, clamped);
+      // saveLocalStateDebounced() se queda dentro del updater a propósito
+      // (a diferencia de remote.setWaterTargetDurable(), que NO): es un
+      // debounce que coalesce en una sola escritura final — invocarlo de
+      // más (Strict Mode) es, como mucho, trabajo redundante, nunca una
+      // operación duplicada de verdad (no tiene estado de reintento ni
+      // efectos de red). applyWaterTarget() en sí sigue siendo pura.
+      saveLocalStateDebounced(next);
+      return next;
+    });
+    remote.setWaterTargetDurable(date, clamped); // UNA sola vez, fuera del updater
   }, []);
 
   const addWater = useCallback((ml: number) => {
     // Respeta la fecha simulada (debugDate) en vez de asumir siempre "hoy" real.
     const date = state.debugDate ?? todayPlus(0);
-    // Actualiza local de forma optimista para respuesta inmediata en la UI.
+    // Lee del ref (sincronizado al instante por la propia llamada anterior,
+    // nunca solo por el efecto) — no del `state` capturado en el cierre del
+    // callback, que podría estar un render por detrás si addWater() se
+    // llama varias veces seguidas en el mismo evento.
+    const target = Math.max(0, (waterLogRef.current[date] ?? 0) + ml);
+    // Ver el comentario en setWaterAbsolute (P2, sexta ronda) — misma
+    // validación, en el mismo punto de entrada, antes de tocar nada
+    // compartido. Leer waterLogRef.current es una lectura pura, no muta.
+    if (!outbox.isValidCalendarDateKey(date) || !outbox.isValidWaterTarget(target)) {
+      console.warn("FoodOS: addWater() calculó un objetivo inválido — se ignora, no toca local ni remoto", { date, ml, target });
+      return;
+    }
+    waterLogRef.current = { ...waterLogRef.current, [date]: target };
     setState((current) => {
-      const draft = structuredClone(current);
-      draft.waterLog[date] = Math.max(0, (draft.waterLog[date] ?? 0) + ml);
-      saveLocalStateDebounced(draft);
-      return draft;
+      const next = applyWaterTarget(current, date, target);
+      saveLocalStateDebounced(next); // ver el comentario en setWaterAbsolute — idempotente, se queda dentro
+      return next;
     });
-    // RPC atómica: el servidor aplica el delta, sin sobreescribir entre tabs.
-    void remote.incrementWater(date, ml).catch((e) => console.warn("FoodOS: incrementWater falló", e));
+    // RPC atómica y durable (cola + reintento propios, integrados en el
+    // estado de sync global — ver setWaterTargetDurable en data-layer.ts):
+    // un fallo aquí ya no se pierde en un simple .catch(console.warn), y
+    // un reintento tras un fallo ambiguo nunca duplica mililitros (upsert
+    // absoluto e idempotente, ver processWaterQueue). UNA sola vez, fuera
+    // del updater.
+    remote.setWaterTargetDurable(date, target);
   }, [state.debugDate]);
+
+  /** ÚNICO punto de entrada para cerrar sesión (bloqueante §7) — centraliza
+      la decisión sobre datos pendientes en un solo sitio, para que ningún
+      callsite pueda saltársela llamando a remote.signOut() directamente. La
+      decisión en sí (flushPendingOrTimeout, resolveSignOutChoice) vive como
+      funciones exportadas de nivel de módulo — testeables directamente con
+      Vitest sin renderizar React. */
+  const requestSignOut = useCallback(async (): Promise<"signed_out" | "cancelled" | "failed"> => {
+    const userId = remote.user?.id;
+    // Corrección de revisión (P1): antes solo miraba outbox.hasPending(),
+    // nunca el agua pendiente — un cierre de sesión con SOLO agua
+    // pendiente (sin ningún cambio en el snapshot genérico) salía en
+    // silencio, sin ofrecer la decisión explícita del diseño §4.
+    // hasPendingWaterFor(userId) — explícito, coherente con el resto de
+    // esta corrección de revisión.
+    if (!userId || (!outbox.hasPending(userId) && !remote.hasPendingWaterFor(userId))) {
+      const { ok, cleanupOk } = await remote.signOut();
+      if (!ok) {
+        // Corrección de revisión (P1, sexta ronda): remote.signOut() ya NO
+        // tocó nada local (la sesión sigue activa tal cual) — nunca
+        // afirmar "sesión cerrada" en este caso.
+        showToast("No se pudo cerrar la sesión. Comprueba la conexión e inténtalo de nuevo.");
+        return "failed";
+      }
+      reportCleanupIssue(showToast, cleanupOk);
+      return "signed_out";
+    }
+    const choice = await new Promise<"wait" | "cancel" | "discard">((resolve) => setSignOutPrompt({ resolve }));
+    setSignOutPrompt(null);
+    const { status, cleanupOk } = await resolveSignOutChoice(userId, choice);
+    if (status === "cancelled_timeout" || status === "cancelled_error") {
+      showToast(status === "cancelled_timeout" ? "Sigue sin sincronizar — inténtalo de nuevo." : "No se pudo sincronizar — inténtalo de nuevo.");
+      return "cancelled";
+    }
+    if (status === "cancelled") return "cancelled";
+    if (status === "sign_out_failed") {
+      showToast("No se pudo cerrar la sesión. Comprueba la conexión e inténtalo de nuevo.");
+      return "failed";
+    }
+    reportCleanupIssue(showToast, cleanupOk);
+    return "signed_out";
+  }, [showToast]);
 
   const resetAll = useCallback(() => {
     clearLocalState();
@@ -616,7 +1195,18 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       kg: Math.round((78.4 - i * 0.12 + (weightJitter() - 0.5) * 0.3) * 10) / 10,
     }));
     saveLocalState(demo);
-    remote.schedulePush(demo);
+    const userId = remote.user?.id ?? null;
+    if (userId) {
+      const written = outbox.recordMutation(userId, demo, outbox.getTabClientId());
+      if (written.ok && written.envelope.pending) {
+        remote.schedulePush({ userId, epoch: remote.sessionEpoch, mutationId: written.envelope.pending.mutationId, revision: written.envelope.pending.revision, state: demo });
+      }
+      // demo.waterLog NO viaja en el snapshot genérico de arriba (pushState
+      // excluye water_log a propósito) — cada fecha se fija por separado a
+      // través de la RPC durable, igual que cualquier otra escritura de
+      // agua (ver setWaterAbsolute).
+      Object.entries(demo.waterLog).forEach(([date, ml]) => remote.setWaterTargetDurable(date, ml));
+    }
     setState(demo);
     setMascotMessage("Datos demo cargados. Configura tu perfil en Nutrición.");
     showToast("Datos demo cargados");
@@ -648,10 +1238,12 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       triggerMascot,
       mutate,
       addWater,
+      setWaterAbsolute,
       resetAll,
       seedDemo,
+      requestSignOut,
     }),
-    [state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, syncStatus, showToast, triggerMascot, mutate, addWater, resetAll, seedDemo]
+    [state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, syncStatus, showToast, triggerMascot, mutate, addWater, setWaterAbsolute, resetAll, seedDemo, requestSignOut]
   );
 
   const uiValue = useMemo<FoodOSUIValue>(
@@ -663,6 +1255,25 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     <FoodOSContext.Provider value={mainValue}>
       <FoodOSUIContext.Provider value={uiValue}>
         {children}
+        {signOutPrompt && (
+          <Modal title="Tienes cambios sin sincronizar" onClose={() => signOutPrompt.resolve("cancel")}>
+            <p>
+              Hay un cambio que todavía no ha llegado al servidor. Si cierras sesión ahora sin
+              esperar, podría perderse en este dispositivo.
+            </p>
+            <div className="recipe-detail-actions" style={{ marginTop: 20, flexDirection: "column", gap: 10 }}>
+              <button className="primary-button" onClick={() => signOutPrompt.resolve("wait")}>
+                Esperar a que se guarde y salir
+              </button>
+              <button className="secondary-button" onClick={() => signOutPrompt.resolve("cancel")}>
+                Cancelar
+              </button>
+              <button className="danger-button danger-button--small" onClick={() => signOutPrompt.resolve("discard")}>
+                Salir y descartar esos cambios
+              </button>
+            </div>
+          </Modal>
+        )}
       </FoodOSUIContext.Provider>
     </FoodOSContext.Provider>
   );
