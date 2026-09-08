@@ -2,8 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { FoodLogEntry } from "@foodos/types";
-import { actions, useFoodOS } from "@/lib/state";
-import { namesMatch } from "@/lib/utils";
+import { actions, availableForIngredient, deductFromInventoryFIFO, useFoodOS } from "@/lib/state";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -20,13 +19,15 @@ export function EditLogModal({ entry, onClose }: Props) {
   const isUnit = unit === "ud";
   const step = isUnit ? 1 : 5;
 
-  // For inventory entries: find matching lots and calculate available stock
+  // For inventory entries: find matching lots and calculate available stock.
+  // availableForIngredient convierte cada lote a la unidad de la entrada con
+  // reglas dimensionales (convertQty) — antes se sumaba la qty cruda de cada
+  // lote sin convertir, y un lote en "kg"/"ud" descuadraba el máximo editable
+  // de una entrada registrada en "g".
   const inventoryAvailable = useMemo(() => {
     if (entry.source !== "inventory") return Infinity;
-    return state.inventory
-      .filter((item) => namesMatch(item.name, entry.name))
-      .reduce((sum, item) => sum + item.qty, 0);
-  }, [entry, state.inventory]);
+    return availableForIngredient(state, entry.name, entry.unit ?? "g", entry.inventorySnapshot?.unitSize, entry.inventorySnapshot?.unitSizeUnit);
+  }, [entry, state]);
 
   // Max = original logged + what's still in inventory
   const maxQty = entry.source === "inventory"
@@ -59,19 +60,18 @@ export function EditLogModal({ entry, onClose }: Props) {
 
       // Sync inventory if this entry came from inventory
       if (entry.source === "inventory" && delta !== 0) {
-        const matches = draft.inventory
-          .filter((item) => namesMatch(item.name, entry.name))
-          .sort((a, b) => a.expires.localeCompare(b.expires));
-
         if (delta > 0) {
-          // Deduct more from inventory (FIFO)
-          let remaining = delta;
-          for (const match of matches) {
-            if (remaining <= 0) break;
-            const take = Math.min(match.qty, remaining);
-            match.qty = Math.round((match.qty - take) * 100) / 100;
-            remaining -= take;
-          }
+          // Deduct more from inventory — mismo núcleo FIFO con conversión
+          // estricta que cookRecipe (deductFromInventoryFIFO): el delta viene
+          // en la unidad de la entrada, cada lote puede estar en otra (kg, L,
+          // ud...) y un lote no convertible no se toca.
+          deductFromInventoryFIFO(draft, {
+            name: entry.name,
+            qty: delta,
+            unit,
+            unitSize: entry.inventorySnapshot?.unitSize,
+            unitSizeUnit: entry.inventorySnapshot?.unitSizeUnit,
+          });
           draft.inventory = draft.inventory.filter((i) => i.qty > 0);
         } else {
           // Corregir a la baja = "comí menos": rellena un lote existente, pero

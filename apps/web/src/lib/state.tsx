@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { AuthChangeEvent, User } from "@supabase/supabase-js";
-import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, UnitSizeUnit, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced, waitForMutationConfirmed, type PendingPush, type SyncPushStatus } from "./data-layer";
 import * as outbox from "./outbox";
@@ -21,7 +21,7 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { addDaysToDateKey, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
+import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -490,6 +490,7 @@ export interface PurchaseReviewItem {
   qty: number;
   unit: string;
   unitSize?: number;
+  unitSizeUnit?: UnitSizeUnit;
   storage: StorageName;
   store: string;
   /** Precio tal cual estaba en el carrito — puede llevar ahí días y no ser
@@ -1156,8 +1157,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), name: "Pechuga de pollo", qty: 260, unit: "g", storage: "Nevera", expires: todayPlus(1), price: 2.8, kcal: 165, protein: 31 },
       { id: uid(), name: "Arroz integral", qty: 500, unit: "g", storage: "Despensa", expires: todayPlus(60), price: 1.7, kcal: 360, protein: 8 },
       { id: uid(), name: "Tomate cherry", qty: 180, unit: "g", storage: "Nevera", expires: todayPlus(3), price: 1.4, kcal: 18, protein: 1 },
-      { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", unitSize: 125, storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
-      { id: uid(), name: "Huevos", qty: 6, unit: "ud", unitSize: 60, storage: "Nevera", expires: todayPlus(12), price: 1.8, kcal: 155, protein: 13 },
+      { id: uid(), name: "Yogur griego", qty: 1, unit: "ud", unitSize: 125, unitSizeUnit: "g", storage: "Nevera", expires: todayPlus(2), price: 0.9, kcal: 95, protein: 10 },
+      { id: uid(), name: "Huevos", qty: 6, unit: "ud", unitSize: 60, unitSizeUnit: "g", storage: "Nevera", expires: todayPlus(12), price: 1.8, kcal: 155, protein: 13 },
     ];
     demo.cart = [{ id: uid(), name: "Avena", qty: 1, unit: "ud", price: 1.4, store: "Mercadona", checked: false }];
     demo.incomeSources = [
@@ -1332,22 +1333,40 @@ export function pruneOrphanedQuickMeals(draft: FoodOSState): void {
   draft.plannerQuickMeals = draft.plannerQuickMeals.filter((qm) => referencedIds.has(qm.id));
 }
 
-/** Gramos/ml disponibles en inventario para un ingrediente, sumando todos
-    los lotes cuyo nombre casa (namesMatch). */
-function availableForIngredient(state: FoodOSState, ingredientName: string): number {
+/** Cantidad disponible en inventario para un ingrediente, EXPRESADA EN LA
+    UNIDAD DEL PROPIO INGREDIENTE, sumando los lotes cuyo nombre casa
+    (namesMatch) y cuya unidad es convertible sin inventar datos (convertQty):
+    masa↔masa y volumen↔volumen directo, masa↔volumen nunca sin densidad,
+    "ud" solo con unitSize Y unitSizeUnit válidos (que declaren si son gramos
+    o mililitros — un unitSize a secas no lo dice). Un lote no convertible
+    simplemente no cuenta — nunca se asume densidad 1, el unitSize por
+    defecto, ni de qué magnitud es. */
+export function availableForIngredient(
+  state: FoodOSState,
+  ingredientName: string,
+  unit: string = "g",
+  unitSize?: number,
+  unitSizeUnit?: UnitSizeUnit,
+): number {
   return state.inventory
     .filter((item) => namesMatch(item.name, ingredientName))
-    .reduce((sum, item) => sum + toGrams(item.qty, item.unit, item.unitSize), 0);
+    .reduce(
+      (sum, item) => sum + (convertQty(item.qty, item.unit, unit, {
+        fromUnitSize: item.unitSize, toUnitSize: unitSize,
+        fromUnitSizeUnit: item.unitSizeUnit, toUnitSizeUnit: unitSizeUnit,
+      }) ?? 0),
+      0,
+    );
 }
 
 /** E08-06: antes "tener" un ingrediente era solo que existiera ALGO con ese
     nombre en inventario, aunque fueran 5g de los 500g que pide la receta.
-    Ahora compara cantidades (convertidas a gramos/ml vía toGrams, misma
-    lógica que el resto de la app) — "tener" significa tener lo suficiente. */
+    Ahora compara cantidades en la unidad del ingrediente (convertQty, con
+    reglas dimensionales) — "tener" significa tener lo suficiente. */
 function hasEnoughForIngredient(state: FoodOSState, ingredient: Recipe["ingredients"][number]): boolean {
-  const available = availableForIngredient(state, ingredient.name);
+  const available = availableForIngredient(state, ingredient.name, ingredient.unit, ingredient.unitSize, ingredient.unitSizeUnit);
   if (available <= 0) return false;
-  return available >= toGrams(ingredient.quantity, ingredient.unit);
+  return available >= ingredient.quantity;
 }
 
 export function getRecipeMatch(state: FoodOSState, recipe: Recipe) {
@@ -1503,6 +1522,26 @@ export function findRememberedUnitSize(state: FoodOSState, name: string): number
     const entry = state.foodLog[i];
     if (entry.name.toLowerCase().trim() === key && entry.inventorySnapshot?.unitSize != null) {
       return entry.inventorySnapshot.unitSize;
+    }
+  }
+  return undefined;
+}
+
+/** Igual que findRememberedUnitSize, pero para su dimensión (unitSizeUnit).
+    Un unitSize recordado sin su unitSizeUnit no sirve para convertQty (ver
+    utils.ts) — sin esto, "recordar" el tamaño de una lata de refresco
+    perdería si era en g o en ml cada vez que se volviera a comprar. */
+export function findRememberedUnitSizeUnit(state: FoodOSState, name: string): UnitSizeUnit | undefined {
+  const key = name.toLowerCase().trim();
+  if (!key) return undefined;
+  const fromInventory = state.inventory.find(
+    (item) => item.name.toLowerCase().trim() === key && item.unitSize != null
+  );
+  if (fromInventory) return fromInventory.unitSizeUnit;
+  for (let i = state.foodLog.length - 1; i >= 0; i--) {
+    const entry = state.foodLog[i];
+    if (entry.name.toLowerCase().trim() === key && entry.inventorySnapshot?.unitSize != null) {
+      return entry.inventorySnapshot.unitSizeUnit;
     }
   }
   return undefined;
@@ -1825,10 +1864,12 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
         const key = ing.name.toLowerCase();
         if (inCart.has(key)) continue;
 
-        const inStock = state.inventory
-          .filter((inv) => namesMatch(inv.name, key))
-          .reduce((sum, inv) => sum + inv.qty, 0);
-
+        // Comparación en la unidad del ingrediente, con conversión estricta
+        // (availableForIngredient/convertQty): antes se restaba la qty cruda
+        // del inventario sin convertir unidades — 1 lote de "1 kg" contaba
+        // como "1" frente a una receta que pide "200 g" y el ingrediente
+        // aparecía como faltante aunque sobrara de él.
+        const inStock = availableForIngredient(state, key, ing.unit, ing.unitSize, ing.unitSizeUnit);
         const shortfall = Math.max(0, ing.quantity - inStock);
         if (shortfall <= 0) continue;
 
@@ -1891,9 +1932,9 @@ export function getMealPlanShoppingList(
       for (const ing of recipe.ingredients) {
         const key = ing.name.toLowerCase();
         if (inCart.has(key)) continue;
-        const inStock = state.inventory
-          .filter((inv) => namesMatch(inv.name, key))
-          .reduce((sum, inv) => sum + inv.qty, 0);
+        // En la unidad del ingrediente, igual que getPlanShoppingList — ver
+        // el comentario allí.
+        const inStock = availableForIngredient(state, key, ing.unit, ing.unitSize, ing.unitSizeUnit);
         const shortfall = Math.max(0, ing.quantity - inStock);
         if (shortfall <= 0) continue;
         const existing = needed.get(key);
@@ -2176,6 +2217,59 @@ function restoreInventoryQty(
   return false;
 }
 
+/** Descuenta `qty` (en `unit`) de los lotes de inventario que casan por
+    nombre, FIFO por caducidad, con conversión ESTRICTA de unidades
+    (convertQty): un lote cuya unidad no es convertible sin inventar datos
+    (masa↔volumen sin densidad, "ud" sin unitSize+unitSizeUnit válidos que
+    declaren si es masa o volumen) se SALTA — nunca se descuenta mal ni con
+    defaults. Núcleo compartido de cookRecipe y de la edición al alza del
+    diario (EditLogModal), que antes tenían cada uno su copia del bucle sin
+    conversión. Devuelve lo consumido por lote (con snapshot) para poder
+    revertirlo después; el caller decide si purga los lotes a 0. */
+export function deductFromInventoryFIFO(
+  draft: FoodOSState,
+  params: { name: string; qty: number; unit: string; unitSize?: number; unitSizeUnit?: UnitSizeUnit },
+): NonNullable<FoodLogEntry["consumedIngredients"]> {
+  const consumed: NonNullable<FoodLogEntry["consumedIngredients"]> = [];
+  if (!(params.qty > 0)) return consumed;
+  const matches = draft.inventory
+    .filter((item) => namesMatch(item.name, params.name))
+    .sort((a, b) => a.expires.localeCompare(b.expires)); // FIFO: lotes más próximos a caducar primero
+  let remaining = params.qty; // en la unidad del ingrediente/entrada
+  for (const match of matches) {
+    if (remaining <= 0) break;
+    const convOpts = {
+      fromUnitSize: match.unitSize, toUnitSize: params.unitSize,
+      fromUnitSizeUnit: match.unitSizeUnit, toUnitSizeUnit: params.unitSizeUnit,
+    };
+    const lotInRefUnits = convertQty(match.qty, match.unit, params.unit, convOpts);
+    if (lotInRefUnits == null || lotInRefUnits <= 0) continue; // no convertible: no se toca
+    const takeRef = Math.min(lotInRefUnits, remaining);
+    const takeLotRaw = convertQty(takeRef, params.unit, match.unit, {
+      fromUnitSize: params.unitSize, toUnitSize: match.unitSize,
+      fromUnitSizeUnit: params.unitSizeUnit, toUnitSizeUnit: match.unitSizeUnit,
+    });
+    if (takeLotRaw == null) continue; // simétrico a la conversión de arriba — no debería ocurrir
+    const takeLot = Math.round(takeLotRaw * 100) / 100;
+    if (takeLot <= 0) continue;
+    match.qty = Math.round((match.qty - takeLot) * 100) / 100;
+    remaining -= convertQty(takeLot, match.unit, params.unit, convOpts) ?? takeRef;
+    consumed.push({
+      inventoryItemId: match.id,
+      name: match.name,
+      qty: takeLot,
+      unit: match.unit,
+      snapshot: {
+        storage: match.storage, expires: match.expires, price: match.price,
+        kcal: match.kcal, protein: match.protein, carbs: match.carbs, fat: match.fat,
+        salt: match.salt, fiber: match.fiber, sugars: match.sugars,
+        unitSize: match.unitSize, unitSizeUnit: match.unitSizeUnit,
+      },
+    });
+  }
+  return consumed;
+}
+
 export const actions = {
   /** Descarta una sugerencia de stock bajo; desaparece hasta que se re-añade al inventario. */
   dismissSuggestion(draft: FoodOSState, name: string) {
@@ -2194,27 +2288,14 @@ export const actions = {
     if (opts?.deductIngredients) {
       for (const ing of recipe.ingredients) {
         const needed = opts?.qtyOverrides?.[ing.name] ?? ing.quantity * ratio;
-        const matches = draft.inventory
-          .filter((item) => namesMatch(item.name, ing.name))
-          .sort((a, b) => a.expires.localeCompare(b.expires)); // FIFO: lotes más próximos a caducar primero
-        let remaining = needed;
-        for (const match of matches) {
-          if (remaining <= 0) break;
-          const take = Math.min(match.qty, remaining);
-          match.qty = Math.round((match.qty - take) * 100) / 100;
-          remaining -= take;
-          consumedIngredients.push({
-            inventoryItemId: match.id,
-            name: match.name,
-            qty: take,
-            unit: match.unit,
-            snapshot: {
-              storage: match.storage, expires: match.expires, price: match.price,
-              kcal: match.kcal, protein: match.protein, carbs: match.carbs, fat: match.fat,
-              salt: match.salt, fiber: match.fiber, sugars: match.sugars, unitSize: match.unitSize,
-            },
-          });
-        }
+        // Conversión estricta por lote (deductFromInventoryFIFO/convertQty):
+        // antes se comparaba la cantidad de la receta (p.ej. 200 g) contra la
+        // qty cruda del lote SIN convertir la unidad — un lote de "1 kg"
+        // contaba como "1" y cocinar 200 g de arroz vaciaba el kilo entero y
+        // seguía descontando de los siguientes lotes.
+        consumedIngredients.push(
+          ...deductFromInventoryFIFO(draft, { name: ing.name, qty: needed, unit: ing.unit, unitSize: ing.unitSize, unitSizeUnit: ing.unitSizeUnit }),
+        );
       }
       draft.inventory = draft.inventory.filter((item) => item.qty > 0);
     }
@@ -2267,6 +2348,7 @@ export const actions = {
         fiber: item.fiber,
         sugars: item.sugars,
         unitSize: item.unitSize,
+        unitSizeUnit: item.unitSizeUnit,
       },
     });
     item.qty = Math.round((item.qty - consumed) * 100) / 100;
@@ -2388,6 +2470,7 @@ export const actions = {
           qty: item.qty,
           unit: item.unit || existing?.unit || foodData?.unit || "g",
           unitSize: item.unitSize ?? existing?.unitSize,
+          unitSizeUnit: item.unitSizeUnit ?? existing?.unitSizeUnit,
           storage: existing?.storage ?? foodData?.storage ?? "Despensa",
           store: item.store,
           estimatedPrice: item.price,
@@ -2428,6 +2511,7 @@ export const actions = {
         carbs: existing?.carbs ?? foodData?.carbs,
         fat: existing?.fat ?? foodData?.fat,
         unitSize: item.unitSize,
+        unitSizeUnit: item.unitSizeUnit,
         salt: existing?.salt,
         fiber: existing?.fiber,
         sugars: existing?.sugars,
@@ -2459,6 +2543,7 @@ export const actions = {
         carbs: existing?.carbs ?? foodData?.carbs,
         fat: existing?.fat ?? foodData?.fat,
         unitSize: item.unitSize ?? existing?.unitSize,
+        unitSizeUnit: item.unitSizeUnit ?? existing?.unitSizeUnit,
         salt: existing?.salt,
         fiber: existing?.fiber,
         sugars: existing?.sugars,

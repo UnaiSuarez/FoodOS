@@ -4,6 +4,15 @@
 
 export type StorageName = "Nevera" | "Congelador" | "Despensa";
 
+/** Dimensión física que declara un `unitSize`: "g" para un conteo de sólido
+    (ej. 1 huevo = 60 g), "ml" para líquido (ej. 1 lata = 250 ml). Sin esta
+    etiqueta, `unitSize` es un número que no dice de qué magnitud es — un 60
+    podría ser gramos o mililitros y nada distingue un caso del otro. Ver
+    convertQty() en apps/web/src/lib/utils.ts: sin unitSizeUnit (o si no
+    coincide con la dimensión pedida), la conversión de "ud" a masa o
+    volumen se rehúsa (null) en vez de asumir. */
+export type UnitSizeUnit = "g" | "ml";
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -27,8 +36,14 @@ export interface InventoryItem {
   fiber?: number;
   /** Azúcares por 100 g en g (de OFF) */
   sugars?: number;
-  /** Gramos/ml que representa 1 unidad cuando unit==="ud" (ej. una lata de 250 ml). Si no se indica, se asume 60. */
+  /** Cantidad que representa 1 unidad cuando unit==="ud" (ej. una lata de 250 ml).
+      Si no se indica, se asume 60 — solo como ESCALA para estimar macros
+      (ver toGrams en utils.ts), nunca para descontar/comparar contra masa o
+      volumen sin que unitSizeUnit declare de qué magnitud es. */
   unitSize?: number;
+  /** Dimensión de unitSize ("g" o "ml") — ver UnitSizeUnit. Sin ella,
+      convertQty() no puede usar unitSize para cruzar a masa o volumen. */
+  unitSizeUnit?: UnitSizeUnit;
   /** Marca del producto (de OFF), si está disponible. */
   brand?: string;
   /** URL de la foto del producto (de OFF) — solo se enlaza, no se descarga ni se aloja. */
@@ -56,8 +71,10 @@ export interface CartItem {
   /** Motivo concreto por el que está en el carrito, ej. "Para: Bowl de pollo".
       Para items de receta/plan; se muestra bajo el nombre en el carrito. */
   reason?: string;
-  /** Gramos/ml que representa 1 unidad cuando unit==="ud", heredado del item de inventario origen. */
+  /** Cantidad que representa 1 unidad cuando unit==="ud", heredado del item de inventario origen. */
   unitSize?: number;
+  /** Dimensión de unitSize ("g"/"ml"), heredada del item de inventario origen. */
+  unitSizeUnit?: UnitSizeUnit;
 }
 
 export type MovementType = "expense" | "income";
@@ -115,8 +132,11 @@ export interface RecipeIngredient {
   proteinPer100?: number;
   carbsPer100?: number;
   fatPer100?: number;
-  /** Gramos/ml por unidad cuando unit==="ud" (ej. 1 huevo = 60g). Si no se indica, se asume 60. */
+  /** Cantidad por unidad cuando unit==="ud" (ej. 1 huevo = 60g). Si no se indica, se asume 60
+      solo como escala para macros — ver nota de unitSizeUnit en InventoryItem. */
   unitSize?: number;
+  /** Dimensión de unitSize ("g" o "ml") — ver UnitSizeUnit en InventoryItem. */
+  unitSizeUnit?: UnitSizeUnit;
 }
 
 export interface Recipe {
@@ -171,6 +191,7 @@ export interface InventorySnapshot {
   fiber?: number;
   sugars?: number;
   unitSize?: number;
+  unitSizeUnit?: UnitSizeUnit;
 }
 
 /** Entrada del diario de comidas (espejo de la tabla food_log). */

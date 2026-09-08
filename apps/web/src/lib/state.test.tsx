@@ -6,6 +6,7 @@ import * as outbox from "./outbox";
 import {
   actions,
   applyWaterTarget,
+  availableForIngredient,
   classifyAuthTransition,
   computeSyncStatus,
   countLowProteinDays,
@@ -14,6 +15,7 @@ import {
   flushPendingOrTimeout,
   getFoodSpend,
   getIngredientStatus,
+  getMealPlanShoppingList,
   getRecipeMatch,
   normalizeState,
   reportCleanupIssue,
@@ -976,5 +978,156 @@ describe("getFoodSpend — ventana de 7 días de calendario exactos (auditoría 
       { id: "b", type: "expense", amount: 99, category: "Comida", description: "", date: "2026-01-03" }, // hoy-7 → fuera
     ];
     expect(getFoodSpend(state)).toBe(10);
+  });
+});
+
+// ── Auditoría 2026-09: unidades y ventanas de tiempo en selectores de dominio ──
+// Los descuentos/faltantes de inventario comparaban la cantidad de la receta
+// (p.ej. "200 g") contra la qty CRUDA de cada lote sin convertir su unidad —
+// un lote de "1 kg" contaba como "1". hasEnoughForIngredient ya convertía con
+// toGrams desde E08-06; estos tests fijan que el resto de rutas (cocinar,
+// listas de la compra del plan) usan la misma conversión.
+
+describe("cookRecipe — descuento FIFO consciente de unidades (auditoría 2026-09)", () => {
+  it("cocinar 200 g descuenta 0.2 de un lote de 1 kg, no el kilo entero", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ id: "kg-lot", name: "Arroz", qty: 1, unit: "kg" })];
+    const r = recipe([{ name: "Arroz", quantity: 200, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    expect(draft.inventory).toHaveLength(1);
+    expect(draft.inventory[0].qty).toBeCloseTo(0.8, 2);
+    const entry = draft.foodLog[draft.foodLog.length - 1];
+    expect(entry.consumedIngredients).toEqual([
+      expect.objectContaining({ qty: 0.2, unit: "kg" }),
+    ]);
+  });
+
+  it("se comporta igual que siempre cuando receta y lote comparten unidad", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ id: "g-lot", name: "Pollo", qty: 500, unit: "g" })];
+    const r = recipe([{ name: "Pollo", quantity: 200, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    expect(draft.inventory[0].qty).toBe(300);
+  });
+
+  it("con lotes 'ud' usa unitSize + unitSizeUnit para convertir (2 ud de 125 g cubren 250 g)", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ id: "ud-lot", name: "Yogur", qty: 2, unit: "ud", unitSize: 125, unitSizeUnit: "g" })];
+    const r = recipe([{ name: "Yogur", quantity: 250, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    expect(draft.inventory).toHaveLength(0); // 250 g = las 2 ud completas
+  });
+
+  // Ronda de corrección: unitSize sin unitSizeUnit no dice si es masa o
+  // volumen — antes "ud" cruzaba a cualquiera de las dos con el mismo
+  // número. Estos tres casos fijan que ahora eso es imposible.
+  it("con lotes 'ud' líquidos (unitSizeUnit: 'ml') cubre un ingrediente en ml, pero NUNCA en g", () => {
+    const draftMl = structuredClone(defaultState);
+    // 2 latas de 250 ml = 500 ml disponibles.
+    draftMl.inventory = [inv({ id: "ud-lata", name: "Refresco", qty: 2, unit: "ud", unitSize: 250, unitSizeUnit: "ml" })];
+    const rMl = recipe([{ name: "Refresco", quantity: 300, unit: "ml" }]);
+    actions.cookRecipe(draftMl, rMl, 1, { deductIngredients: true });
+    expect(draftMl.inventory[0].qty).toBe(0.8); // quedan 200 ml = 0.8 latas
+
+    const draftG = structuredClone(defaultState);
+    draftG.inventory = [inv({ id: "ud-lata", name: "Refresco", qty: 2, unit: "ud", unitSize: 250, unitSizeUnit: "ml" })];
+    const rG = recipe([{ name: "Refresco", quantity: 200, unit: "g" }]); // mismatch: se pide en masa
+    actions.cookRecipe(draftG, rG, 1, { deductIngredients: true });
+    expect(draftG.inventory[0].qty).toBe(2); // intacto — declarado como ml, no g
+  });
+
+  it("un lote 'ud' con unitSizeUnit legacy ausente no se descuenta ni contra g ni contra ml", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ id: "ud-legacy", name: "Yogur", qty: 2, unit: "ud", unitSize: 125 })]; // sin unitSizeUnit
+    const r = recipe([{ name: "Yogur", quantity: 250, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    expect(draft.inventory[0].qty).toBe(2); // intacto — unitSize sin dimensión declarada no cuenta
+  });
+});
+
+describe("getMealPlanShoppingList — faltantes conscientes de unidades (auditoría 2026-09)", () => {
+  it("1 kg en despensa cubre una receta que pide 200 g — no sugiere comprar", () => {
+    const r = recipe([{ name: "Arroz", quantity: 200, unit: "g" }]);
+    const state: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [r],
+      inventory: [inv({ name: "Arroz", qty: 1, unit: "kg" })],
+      mealPlan: { "2026-01-05": { lunch: "r-1" } },
+    };
+    expect(getMealPlanShoppingList(state, ["2026-01-05"])).toHaveLength(0);
+  });
+
+  it("expresa el déficit en la unidad del ingrediente y nunca sugiere cantidad 0", () => {
+    const r = recipe([{ name: "Arroz", quantity: 500, unit: "g" }]);
+    const state: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [r],
+      inventory: [inv({ name: "Arroz", qty: 0.2, unit: "kg" })], // 200 g reales
+      mealPlan: { "2026-01-05": { lunch: "r-1" } },
+    };
+    const list = getMealPlanShoppingList(state, ["2026-01-05"]);
+    expect(list).toHaveLength(1);
+    expect(list[0].qty).toBe(300);
+    expect(list[0].unit).toBe("g");
+  });
+});
+
+// ── Ronda de cierre: mezclas dimensionales en los flujos de inventario ─────
+describe("deducción/disponibilidad — impedir mezclas dimensionales (ronda de cierre)", () => {
+  it("cocinar un ingrediente en g NUNCA descuenta de un lote en ml (masa↔volumen sin densidad)", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [
+      inv({ id: "ml-lot", name: "Leche", qty: 500, unit: "ml", expires: "2099-01-01" }),
+      inv({ id: "g-lot", name: "Leche", qty: 300, unit: "g", expires: "2099-01-02" }),
+    ];
+    const r = recipe([{ name: "Leche", quantity: 200, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    const mlLot = draft.inventory.find((i) => i.id === "ml-lot");
+    const gLot = draft.inventory.find((i) => i.id === "g-lot");
+    expect(mlLot?.qty).toBe(500); // intacto — no convertible sin densidad
+    expect(gLot?.qty).toBe(100);  // los 200 g salen del lote convertible
+  });
+
+  it("un lote 'ud' SIN unitSize válido no se descuenta contra un ingrediente en g (nunca el 60 por defecto)", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ id: "ud-lot", name: "Huevos", qty: 6, unit: "ud" })]; // sin unitSize
+    const r = recipe([{ name: "Huevos", quantity: 120, unit: "g" }]);
+    actions.cookRecipe(draft, r, 1, { deductIngredients: true });
+    expect(draft.inventory[0].qty).toBe(6); // intacto
+    const entry = draft.foodLog[draft.foodLog.length - 1];
+    expect(entry.consumedIngredients).toBeUndefined();
+  });
+
+  it("hasEnough/getRecipeMatch: un lote en ml no cubre un ingrediente en g", () => {
+    const state = { ...structuredClone(defaultState), inventory: [inv({ name: "Caldo", qty: 1000, unit: "ml" })] };
+    const r = recipe([{ name: "Caldo", quantity: 200, unit: "g" }]);
+    expect(getRecipeMatch(state, r).pct).toBe(0);
+  });
+
+  it("availableForIngredient: un lote 'ud' líquido no cuenta para un ingrediente en g, y viceversa", () => {
+    const state = {
+      ...structuredClone(defaultState),
+      inventory: [inv({ name: "Aceite", qty: 1, unit: "ud", unitSize: 500, unitSizeUnit: "ml" as const })],
+    };
+    expect(availableForIngredient(state, "Aceite", "ml")).toBe(500); // declarado en ml: cuenta
+    expect(availableForIngredient(state, "Aceite", "g")).toBe(0);    // pedido en g: no cuenta
+  });
+
+  it("availableForIngredient ignora lotes con cantidades corruptas (NaN/negativas)", () => {
+    const state = {
+      ...structuredClone(defaultState),
+      inventory: [
+        inv({ id: "bad-1", name: "Arroz", qty: Number.NaN, unit: "g" }),
+        inv({ id: "bad-2", name: "Arroz", qty: -50, unit: "g" }),
+        inv({ id: "ok", name: "Arroz", qty: 300, unit: "g" }),
+      ],
+    };
+    expect(availableForIngredient(state, "Arroz", "g")).toBe(300);
+  });
+
+  it("ingrediente en 'ud' se cubre por conteo directo con lotes 'ud', sin necesitar unitSize", () => {
+    const state = { ...structuredClone(defaultState), inventory: [inv({ name: "Huevos", qty: 6, unit: "ud" })] };
+    const r = recipe([{ name: "Huevos", quantity: 2, unit: "ud" }]);
+    expect(getRecipeMatch(state, r).pct).toBe(100);
   });
 });

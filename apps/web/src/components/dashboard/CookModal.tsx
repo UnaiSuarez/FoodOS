@@ -2,8 +2,8 @@
 
 import { useMemo, useState } from "react";
 import type { MealType, Recipe } from "@foodos/types";
-import { actions, getPendingMacros, useFoodOS } from "@/lib/state";
-import { eur, namesMatch, toGrams, uid } from "@/lib/utils";
+import { actions, availableForIngredient, getPendingMacros, useFoodOS } from "@/lib/state";
+import { eur, toGrams, uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -53,18 +53,21 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     cost: scaledCost,
   };
 
-  // Ingredient status with aggregated qty from all matching inventory lots
+  // Ingredient status with aggregated qty from all matching inventory lots.
+  // availableForIngredient suma los lotes convertibles EN LA UNIDAD DEL
+  // INGREDIENTE (reglas dimensionales de convertQty) — antes se sumaba la qty
+  // cruda de cada lote sin convertir unidades, y un lote de "1 kg" contaba
+  // como "1" frente a una receta que pide "200 g" (aparecía como faltante con
+  // el kilo entero en casa).
   const ingStatus = useMemo(() => {
     return recipe.ingredients.map((ing) => {
       const scaledQty = Math.round(ing.quantity * ratio * 10) / 10;
       const needed = qtyOverrides[ing.name] ?? scaledQty;
-      const available = state.inventory
-        .filter((item) => namesMatch(item.name, ing.name))
-        .reduce((sum, item) => sum + item.qty, 0);
+      const available = availableForIngredient(state, ing.name, ing.unit, ing.unitSize, ing.unitSizeUnit);
       const status = available >= needed ? "ok" : available > 0 ? "partial" : "missing";
       return { name: ing.name, unit: ing.unit, needed, scaledQty, available: Math.round(available * 10) / 10, status };
     });
-  }, [recipe, ratio, state.inventory, qtyOverrides]);
+  }, [recipe, ratio, state, qtyOverrides]);
 
   const missingCount = ingStatus.filter((i) => i.status !== "ok").length;
   const pending = getPendingMacros(state);

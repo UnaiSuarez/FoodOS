@@ -1,4 +1,4 @@
-import type { MealType } from "@foodos/types";
+import type { MealType, UnitSizeUnit } from "@foodos/types";
 
 const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB
 
@@ -249,7 +249,12 @@ export function namesMatch(a: string, b: string): boolean {
     por defecto) para unidades sueltas ("ud"). Única fuente de verdad para esta
     conversión — antes había 5+ copias ligeramente distintas entre sí (algunas
     sin soporte para oz/lb/cucharada/pizca, causando cálculos silenciosamente
-    incorrectos para esas unidades). */
+    incorrectos para esas unidades).
+    OJO: esta función es una ESCALA numérica sin conciencia de dimensión (trata
+    g y ml como el mismo escalar, y "ud" sin unitSize como 60 g) — vale para
+    estimaciones (macros de un item) pero NO para comparar/descontar entre
+    unidades arbitrarias. Para eso usa convertQty(), que aplica las reglas
+    dimensionales y devuelve null en vez de inventar datos. */
 export function toGrams(qty: number, unit: string, unitSize = 60): number {
   switch (unit) {
     case "kg": return qty * 1000;
@@ -261,4 +266,93 @@ export function toGrams(qty: number, unit: string, unitSize = 60): number {
     case "ud": return qty * unitSize;
     default:   return qty; // g, ml
   }
+}
+
+/** Dimensión física de una unidad, para impedir conversiones sin sentido:
+    - "mass": g, kg, oz, lb — y unidades desconocidas (passthrough como g,
+      mismo criterio que toGrams).
+    - "volume": ml, L, cucharada — 1 cucharada = 15 ml es una equivalencia de
+      volumen EXACTA (por definición de la propia unidad), no una
+      aproximación; cucharada↔g sigue siendo masa↔volumen y por tanto null
+      sin densidad (ver más abajo), igual que ml↔g.
+    - "count": ud — un conteo puro; solo convertible a masa o volumen cuando
+      quien llama declara la dimensión de su unitSize vía unitSizeUnit (ver
+      convertQty). Nunca se asume qué representa un unitSize a secas.
+    - "approx": pizca — medida culinaria SIN cantidad universal conocida (a
+      diferencia de cucharada). No convierte a ninguna otra dimensión, ni
+      siquiera con unitSize: solo pizca↔pizca (identidad) tiene sentido. */
+export type UnitDimension = "mass" | "volume" | "count" | "approx";
+
+export function unitDimension(unit: string): UnitDimension {
+  switch (unit) {
+    case "ml":
+    case "L":
+    case "cucharada": return "volume";
+    case "ud": return "count";
+    case "pizca": return "approx";
+    default: return "mass";
+  }
+}
+
+/** Conversión ESTRICTA entre unidades para comparar/descontar cantidades:
+    - g↔kg (y oz/lb) directo; ml↔L↔cucharada directo (volumen↔volumen).
+    - masa↔volumen NUNCA sin densidad → null (no se asume densidad 1;
+      cucharada→g cae aquí igual que ml→g: sin una equivalencia específica
+      del ingrediente, es null — ver fromUnitSizeUnit/toUnitSizeUnit para el
+      único puente permitido, y solo vía "ud").
+    - "pizca" NUNCA cruza a otra dimensión — ni siquiera declarando
+      unitSizeUnit: no tiene cantidad universal conocida, a diferencia de
+      cucharada. Solo pizca↔pizca (identidad, arriba) es válido.
+    - "ud" solo convierte a masa o volumen cuando el lado "ud" declara
+      fromUnitSizeUnit/toUnitSizeUnit y coincide con la dimensión real del
+      otro lado ("g"→masa, "ml"→volumen); un unitSize sin esa etiqueta (o
+      con la etiqueta equivocada) no dice si son gramos o mililitros, así
+      que se rehúsa en vez de asumir. "ud"↔"ud" sí es directo (mismo
+      conteo, sin necesitar unitSize).
+    - Cantidades negativas, NaN o infinitas → null (nunca se propagan).
+    Devuelve null cuando la conversión requeriría inventar un dato; quien
+    llama decide qué hacer (normalmente: tratar ese lote como no disponible
+    y no tocarlo). */
+export function convertQty(
+  qty: number,
+  fromUnit: string,
+  toUnit: string,
+  opts: {
+    fromUnitSize?: number; toUnitSize?: number;
+    fromUnitSizeUnit?: UnitSizeUnit; toUnitSizeUnit?: UnitSizeUnit;
+  } = {},
+): number | null {
+  if (!Number.isFinite(qty) || qty < 0) return null;
+  if (fromUnit === toUnit) return qty; // incluye ud↔ud (conteo directo, sin unitSize) y pizca↔pizca
+
+  const fromDim = unitDimension(fromUnit);
+  const toDim = unitDimension(toUnit);
+
+  // pizca: sin equivalencia universal en ninguna dimensión — nunca bridging.
+  if (fromDim === "approx" || toDim === "approx") return null;
+
+  if (fromDim !== "count" && toDim !== "count" && fromDim !== toDim) {
+    return null; // masa↔volumen (incl. cucharada) sin densidad
+  }
+
+  // Lado "ud": su unitSize es un número sin dimensión propia — solo se usa
+  // para cruzar a masa o volumen si unitSizeUnit declara explícitamente cuál
+  // de las dos es, y coincide con la dimensión real del otro lado.
+  if (fromDim === "count") {
+    const needed: UnitSizeUnit = toDim === "volume" ? "ml" : "g";
+    if (opts.fromUnitSizeUnit !== needed) return null;
+  }
+  if (toDim === "count") {
+    const needed: UnitSizeUnit = fromDim === "volume" ? "ml" : "g";
+    if (opts.toUnitSizeUnit !== needed) return null;
+  }
+
+  const fromScale = fromUnit === "ud"
+    ? (opts.fromUnitSize != null && opts.fromUnitSize > 0 ? opts.fromUnitSize : null)
+    : toGrams(1, fromUnit);
+  const toScale = toUnit === "ud"
+    ? (opts.toUnitSize != null && opts.toUnitSize > 0 ? opts.toUnitSize : null)
+    : toGrams(1, toUnit);
+  if (fromScale == null || toScale == null) return null;
+  return (qty * fromScale) / toScale;
 }
