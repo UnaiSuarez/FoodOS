@@ -1318,10 +1318,13 @@ class RemoteAdapter {
       fiber: row.fiber_per_100 != null ? Number(row.fiber_per_100) : undefined,
       sugars: row.sugars_per_100 != null ? Number(row.sugars_per_100) : undefined,
       unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
-      // unit_size_unit: columna pendiente de migración (ver
-      // supabase/migrations/*_unit_size_dimension.sql) — hasta que se
-      // aplique, row.unit_size_unit es undefined y unitSize se comporta
-      // como antes (solo escala para estimaciones, ver toGrams en utils.ts).
+      // unit_size_unit: columna añadida por la migración del PR
+      // db/unit-size-dimension (rama/PR aparte, no vive en esta) — DEBE
+      // estar aplicada en remoto antes de desplegar este código, o el
+      // propio .select() de arriba (que ya la referencia) fallaría contra
+      // Postgrest para inventario Y carrito enteros, no solo este campo.
+      // Fila legacy con NULL → unitSizeUnit queda undefined, unitSize se
+      // comporta como antes (solo escala para estimaciones, ver toGrams).
       unitSizeUnit: row.unit_size_unit ?? undefined,
       brand: row.brand ?? undefined,
       imageUrl: row.image_url ?? undefined,
@@ -1719,8 +1722,8 @@ class RemoteAdapter {
           fiber_per_100: item.fiber ?? null,
           sugars_per_100: item.sugars ?? null,
           unit_size: item.unitSize ?? null,
-          // Requiere la migración supabase/migrations/*_unit_size_dimension.sql
-          // (añade la columna) aplicada ANTES de desplegar este cambio.
+          // Requiere la migración del PR db/unit-size-dimension aplicada
+          // ANTES de desplegar este cambio (ver nota en el pull, arriba).
           unit_size_unit: item.unitSizeUnit ?? null,
           brand: item.brand ?? null,
           image_url: item.imageUrl ?? null,
@@ -1746,7 +1749,7 @@ class RemoteAdapter {
           store: item.store || null,
           checked: Boolean(item.checked),
           unit_size: item.unitSize ?? null,
-          // Ídem: requiere la migración de shopping_items aplicada antes.
+          // Ídem: requiere la migración de shopping_items (db/unit-size-dimension) aplicada antes.
           unit_size_unit: item.unitSizeUnit ?? null,
         }),
         { user_id: userId, list_id: this.shoppingListId! }

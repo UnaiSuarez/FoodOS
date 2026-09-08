@@ -1130,4 +1130,37 @@ describe("deducción/disponibilidad — impedir mezclas dimensionales (ronda de 
     const r = recipe([{ name: "Huevos", quantity: 2, unit: "ud" }]);
     expect(getRecipeMatch(state, r).pct).toBe(100);
   });
+
+  // Revisión exhaustiva de persistencia (ronda de separación db/app): todo
+  // snapshot de inventario (InventorySnapshot) debe llevar unitSizeUnit para
+  // que, si el item original ya no existe, restoreInventoryQty lo recree con
+  // su dimensión intacta — no solo con el número desnudo de unitSize. Este
+  // contrato es compartido por los 3 sitios que construyen un snapshot
+  // (deductFromInventoryFIFO, consumeInventoryItem, LogMealModal.confirmDish);
+  // se fija aquí a través de la vía genérica de restauración.
+  it("returnIngredientsToInventory recrea un item borrado conservando unitSizeUnit del snapshot", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = []; // el item original ya no existe: fuerza el camino de recreación
+    const entry: FoodOSState["foodLog"][number] = {
+      id: "e1", date: "2026-01-05", time: "12:00", name: "Refresco en lata",
+      qty: null, unit: null, kcal: 140, protein: 0, carbs: 35, fat: 0,
+      source: "manual", mealType: "lunch",
+      consumedIngredients: [{
+        inventoryItemId: "ya-no-existe",
+        name: "Refresco en lata",
+        qty: 1,
+        unit: "ud",
+        snapshot: {
+          storage: "Nevera", expires: "2026-02-01", price: 0.9,
+          kcal: 140, protein: 0, carbs: 35, fat: 0,
+          unitSize: 330, unitSizeUnit: "ml",
+        },
+      }],
+    };
+    draft.foodLog = [entry];
+    actions.returnIngredientsToInventory(draft, entry);
+    const restored = draft.inventory.find((i) => i.name === "Refresco en lata");
+    expect(restored?.unitSize).toBe(330);
+    expect(restored?.unitSizeUnit).toBe("ml"); // no solo el número: también su magnitud
+  });
 });
