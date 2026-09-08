@@ -8,9 +8,11 @@ import {
   applyWaterTarget,
   classifyAuthTransition,
   computeSyncStatus,
+  countLowProteinDays,
   createHydrationCoordinator,
   defaultState,
   flushPendingOrTimeout,
+  getFoodSpend,
   getIngredientStatus,
   getRecipeMatch,
   normalizeState,
@@ -941,5 +943,38 @@ describe("flushPendingOrTimeout / resolveSignOutChoice — logout explícito (bl
     messages.length = 0;
     reportCleanupIssue(showToast, true);
     expect(messages).toHaveLength(0);
+  });
+});
+
+// ── Auditoría 2026-09: ventanas de tiempo en selectores de dominio ─────────
+describe("countLowProteinDays — los días sin registro no cuentan (auditoría 2026-09)", () => {
+  it("una cuenta sin diario no muestra '3/3 días de baja proteína'", () => {
+    const state = structuredClone(defaultState);
+    state.nutrition.protein = 150;
+    expect(countLowProteinDays(state)).toBe(0);
+  });
+
+  it("sí cuenta un día CON registro que se queda por debajo del 80% del objetivo", () => {
+    const state = structuredClone(defaultState);
+    state.nutrition.protein = 150;
+    state.debugDate = "2026-01-10";
+    state.foodLog.push({
+      id: "e1", date: "2026-01-09", time: "12:00", name: "Comida floja",
+      qty: null, unit: null, kcal: 400, protein: 20, carbs: 10, fat: 10,
+      source: "manual", mealType: "lunch",
+    });
+    expect(countLowProteinDays(state)).toBe(1);
+  });
+});
+
+describe("getFoodSpend — ventana de 7 días de calendario exactos (auditoría 2026-09)", () => {
+  it("incluye hoy-6 y excluye hoy-7 (antes contaba 8 días)", () => {
+    const state = structuredClone(defaultState);
+    state.debugDate = "2026-01-10";
+    state.expenses = [
+      { id: "a", type: "expense", amount: 10, category: "Comida", description: "", date: "2026-01-04" }, // hoy-6 → dentro
+      { id: "b", type: "expense", amount: 99, category: "Comida", description: "", date: "2026-01-03" }, // hoy-7 → fuera
+    ];
+    expect(getFoodSpend(state)).toBe(10);
   });
 });

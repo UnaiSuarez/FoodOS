@@ -1681,9 +1681,14 @@ export function generateWeeklyPlan(state: FoodOSState): WeeklyDayPlan[] {
 }
 
 // Gasto de comida de los ultimos 7 dias (ventana del presupuesto semanal).
+// -6 y no -7: la ventana incluye HOY, así que "últimos 7 días" = hoy y los 6
+// anteriores. Con -7 se contaban 8 días de calendario — el gasto mostrado
+// junto a "Comida (7 días)" podía incluir una compra de hace una semana justa
+// y descuadrar el presupuesto frente a las ventanas semanales de
+// getWeeklySavingsHistory (que sí son de 7 días).
 export function getFoodSpend(state: FoodOSState): number {
   const weekAgo = dateFromKey(getToday(state));
-  weekAgo.setDate(weekAgo.getDate() - 7);
+  weekAgo.setDate(weekAgo.getDate() - 6);
   weekAgo.setHours(0, 0, 0, 0);
   return state.expenses
     .filter((expense) => expense.type === "expense" && expense.category === "Comida")
@@ -1848,7 +1853,7 @@ export function getPlanShoppingList(state: FoodOSState): import("@foodos/types")
     .map(([name, data]) => ({
       id: uid(),
       name,
-      qty: Math.round(data.qty),
+      qty: Math.max(1, Math.ceil(data.qty)), // ceil: un déficit de 0.4 ud debe sugerir comprar 1, nunca 0
       unit: data.unit,
       price: Math.round(data.price * 100) / 100,
       store: "Mercadona",
@@ -1912,7 +1917,7 @@ export function getMealPlanShoppingList(
     .map(([name, data]) => ({
       id: uid(),
       name,
-      qty: Math.round(data.qty),
+      qty: Math.max(1, Math.ceil(data.qty)), // ceil: un déficit de 0.4 ud debe sugerir comprar 1, nunca 0
       unit: data.unit,
       price: Math.round(data.price * 100) / 100,
       store: state.settings?.defaultStore ?? "Mercadona",
@@ -1939,7 +1944,11 @@ export function getProteinRanking(
     .slice(0, 6);
 }
 
-/** Número de días en los últimos 3 en que la proteína consumida fue < 80% del objetivo. */
+/** Número de días en los últimos 3 en que la proteína consumida fue < 80% del
+    objetivo. Solo cuentan días CON algo registrado en el diario: un día sin
+    entradas no es "comiste poca proteína", es "no hay datos" — antes una
+    cuenta recién creada (o un fin de semana sin registrar) mostraba el aviso
+    rojo "⚠ Baja proteína 3/3 días" sin que el usuario hubiera anotado nada. */
 export function countLowProteinDays(state: FoodOSState): number {
   const target = state.nutrition.protein;
   if (!target) return 0;
@@ -1947,9 +1956,9 @@ export function countLowProteinDays(state: FoodOSState): number {
   const base = state.debugDate ?? todayPlus(0);
   for (let i = 1; i <= 3; i++) {
     const date = dateOffset(base, -i);
-    const dayTotal = state.foodLog
-      .filter((e) => e.date === date)
-      .reduce((sum, e) => sum + e.protein, 0);
+    const entries = state.foodLog.filter((e) => e.date === date);
+    if (entries.length === 0) continue;
+    const dayTotal = entries.reduce((sum, e) => sum + e.protein, 0);
     if (dayTotal < target * 0.8) count++;
   }
   return count;
