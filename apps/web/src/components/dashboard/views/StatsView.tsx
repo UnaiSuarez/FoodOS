@@ -9,7 +9,7 @@ import {
   getWeeklyMacroHistory,
   useFoodOS,
 } from "@/lib/state";
-import { dateFromKey, eur } from "@/lib/utils";
+import { dateFromKey, dateOffset, eur } from "@/lib/utils";
 
 export function StatsView() {
   const { state } = useFoodOS();
@@ -20,8 +20,15 @@ export function StatsView() {
   const latestWeight = getLatestWeight(state);
 
   const sorted = [...state.weightLog].sort((a, b) => a.date.localeCompare(b.date));
-  const last7 = sorted.slice(-7);
-  const prev7 = sorted.slice(-14, -7);
+  // Ventanas por FECHA real (últimos 7 días vs. los 7 anteriores), no por
+  // número de registros: con pesajes esporádicos, slice(-7) podía comparar
+  // "las últimas 7 mediciones" (que abarcan un mes) contra las 7 previas y
+  // etiquetarlo "vs sem. anterior" sin ser semanas de verdad.
+  const todayKey = getToday(state);
+  const last7Start = dateOffset(todayKey, -6);
+  const prev7Start = dateOffset(todayKey, -13);
+  const last7 = sorted.filter((e) => e.date >= last7Start && e.date <= todayKey);
+  const prev7 = sorted.filter((e) => e.date >= prev7Start && e.date < last7Start);
   const avgLast = last7.length ? last7.reduce((s, e) => s + e.kg, 0) / last7.length : null;
   const avgPrev = prev7.length ? prev7.reduce((s, e) => s + e.kg, 0) / prev7.length : null;
   const weightTrend =
