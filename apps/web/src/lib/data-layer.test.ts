@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettings, FoodOSState, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
 import { remote } from "./data-layer";
 import * as outbox from "./outbox";
+import { NUTRITION_ENGINE_VERSION } from "./nutrition";
+import { todayPlus } from "./utils";
 
 // ─── Cliente Supabase falso ─────────────────────────────────────────────────
 // Reproduce la forma "thenable" del query builder de supabase-js: cada
@@ -71,6 +73,28 @@ function makeFakeClient(config: Record<string, FakeTableConfig>, calls: CallReco
         },
         in(col: string, vals: unknown[]) {
           calls.push({ table, op: "in", args: [col, vals] });
+          return builder;
+        },
+        // PR A: getNutritionGoalsRange(WithStatus) encadena .gte/.lte/.order
+        // tras .select().eq() — no afectaban a pushState (que no las usa),
+        // se añaden aquí como no-ops encadenables, igual que .eq()/.in().
+        gte(col: string, val: unknown) {
+          calls.push({ table, op: "gte", args: [col, val] });
+          return builder;
+        },
+        lte(col: string, val: unknown) {
+          calls.push({ table, op: "lte", args: [col, val] });
+          return builder;
+        },
+        order(col: string, opts?: unknown) {
+          calls.push({ table, op: "order", args: [col, opts] });
+          return builder;
+        },
+        maybeSingle() {
+          return builder;
+        },
+        limit(n: number) {
+          calls.push({ table, op: "limit", args: n });
           return builder;
         },
         then(resolve: (v: PGResult) => unknown, reject?: (e: unknown) => unknown) {
@@ -142,8 +166,49 @@ function makeState(overrides: Partial<FoodOSState> = {}): FoodOSState {
     stepsLog: {},
     pendingAdjustmentProposal: null,
     lastAdjustmentDecisionAt: null,
+    nutritionGoalsHistory: {},
     ...overrides,
   } as FoodOSState;
+}
+
+function physicalProfile(overrides: Partial<PhysicalProfile> = {}): PhysicalProfile {
+  return {
+    age: 30, sex: "male", heightCm: 178, weightKg: 78, bodyFatPct: null,
+    activityLevel: "sedentary", goal: "maintain", gymDays: [1, 3, 5],
+    allergies: [], excludedFoods: [],
+    ...overrides,
+  };
+}
+
+/**
+ * PR A: el upsert de nutrition_goals ahora exige perfil + una entrada del
+ * ledger de HOY que coincida exactamente con state.nutrition (ver el gate
+ * en pushState) — el gate en sí se prueba aparte (nutrition-history.test.ts
+ * / data-layer.test.ts "pushState — gate de nutrition_goals"). Los tests de
+ * ESTE bloque prueban el mecanismo general de sync (propagación de
+ * errores, reintento idempotente) usando nutrition_goals como una tabla
+ * representativa más — necesitan que el gate SÍ deje pasar el upsert para
+ * seguir ejercitándolo, de ahí este helper.
+ */
+function makeStateWithMatchingGoal(overrides: Partial<FoodOSState> = {}): FoodOSState {
+  const base = makeState(overrides);
+  const todayKey = base.debugDate ?? todayPlus(0);
+  return {
+    ...base,
+    profile: base.profile ?? physicalProfile(),
+    nutritionGoalsHistory: {
+      ...base.nutritionGoalsHistory,
+      [todayKey]: {
+        kcal: base.nutrition.kcal,
+        protein: base.nutrition.protein,
+        carbs: base.nutrition.carbs,
+        fat: base.nutrition.fat,
+        mode: base.nutrition.mode,
+        calculationVersion: NUTRITION_ENGINE_VERSION,
+        recordedAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+  };
 }
 
 // `remote` es un singleton — se resetean sus campos internos (algunos
@@ -256,7 +321,10 @@ describe("pushState — perfil", () => {
     config.user_profiles = { upsert: { error: { message: "RLS: permiso denegado" } } };
     const calls = setup(config);
 
-    await expect(remote.pushState(testCtx(), makeState())).rejects.toThrow(/perfil.*RLS: permiso denegado/);
+    // PR A: nutrition_goals ahora exige perfil + ledger coincidente (ver
+    // makeStateWithMatchingGoal) para que su upsert se intente en absoluto
+    // — el fallo simulado es en user_profiles, no en el gate.
+    await expect(remote.pushState(testCtx(), makeStateWithMatchingGoal())).rejects.toThrow(/perfil.*RLS: permiso denegado/);
 
     // Mejor esfuerzo: el resto de tablas se intenta igualmente (son
     // independientes del perfil) — no se corta la cadena al primer fallo.
@@ -354,7 +422,86 @@ describe("pushState — objetivos nutricionales", () => {
     config.nutrition_goals = { upsert: { error: { message: "check constraint" } } };
     setup(config);
 
-    await expect(remote.pushState(testCtx(), makeState())).rejects.toThrow(/objetivos nutricionales.*check constraint/);
+    await expect(remote.pushState(testCtx(), makeStateWithMatchingGoal())).rejects.toThrow(/objetivos nutricionales.*check constraint/);
+  });
+});
+
+// PR A (diseño, ronda de revisión "cuenta sin perfil no debe crear ningún
+// objetivo histórico"): el upsert de nutrition_goals SOLO se ejecuta cuando
+// hay perfil + una entrada del ledger para goal_date que coincide EXACTAMENTE
+// con state.nutrition (kcal/proteína/carbohidratos/grasa/modo) + esa entrada
+// trae una versión de motor válida. Si algo no cuadra, se omite el upsert
+// POR COMPLETO — nunca se persiste el placeholder 2200/150/225/70 (ni con
+// v1, ni con null, ni con ninguna otra versión).
+describe("pushState — gate de nutrition_goals (nunca un placeholder etiquetado)", () => {
+  it("cuenta sin perfil → cero llamadas a nutrition_goals.upsert (aunque el ledger tuviera por error una entrada de hoy)", async () => {
+    const config = successConfig();
+    const calls = setup(config);
+    const state = makeState({
+      profile: null,
+      nutritionGoalsHistory: {
+        [todayPlus(0)]: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp", calculationVersion: NUTRITION_ENGINE_VERSION, recordedAt: null },
+      },
+    });
+
+    await expect(remote.pushState(testCtx(), state)).resolves.toBeUndefined();
+
+    expect(calls.some((c) => c.table === "nutrition_goals" && c.op === "upsert")).toBe(false);
+  });
+
+  it("ledger ausente para hoy (aunque haya perfil) → cero upsert", async () => {
+    const config = successConfig();
+    const calls = setup(config);
+    const state = makeState({ profile: physicalProfile(), nutritionGoalsHistory: {} });
+
+    await expect(remote.pushState(testCtx(), state)).resolves.toBeUndefined();
+
+    expect(calls.some((c) => c.table === "nutrition_goals" && c.op === "upsert")).toBe(false);
+  });
+
+  it("ledger presente pero DIVERGENTE de state.nutrition (p.ej. el perfil cambió y el ledger todavía no se actualizó) → cero upsert", async () => {
+    const config = successConfig();
+    const calls = setup(config);
+    const state = makeState({
+      profile: physicalProfile(),
+      nutrition: { kcal: 2600, protein: 180, carbs: 260, fat: 80, mode: "muscle_gain" }, // ya cambió
+      nutritionGoalsHistory: {
+        [todayPlus(0)]: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp", calculationVersion: NUTRITION_ENGINE_VERSION, recordedAt: null }, // todavía el anterior
+      },
+    });
+
+    await expect(remote.pushState(testCtx(), state)).resolves.toBeUndefined();
+
+    expect(calls.some((c) => c.table === "nutrition_goals" && c.op === "upsert")).toBe(false);
+  });
+
+  it("ledger válido y COINCIDENTE con state.nutrition → upsert con la calculation_version de esa entrada (nunca la constante a ciegas)", async () => {
+    const config = successConfig();
+    const calls = setup(config);
+    const state = makeStateWithMatchingGoal();
+
+    await expect(remote.pushState(testCtx(), state)).resolves.toBeUndefined();
+
+    const upsertCall = calls.find((c) => c.table === "nutrition_goals" && c.op === "upsert");
+    expect(upsertCall).toBeDefined();
+    const payload = upsertCall!.args as Record<string, unknown>;
+    expect(payload.calculation_version).toBe(NUTRITION_ENGINE_VERSION);
+    expect(payload.kcal_target).toBe(state.nutrition.kcal);
+  });
+
+  it("regresión de payload: una cuenta sin perfil / con los targets placeholder por defecto (2200/150/225/70) nunca etiqueta esa fila como generada por el motor actual", async () => {
+    const config = successConfig();
+    const calls = setup(config);
+    // profile: null ⇒ nutrition se queda en el placeholder literal del
+    // estado por defecto — exactamente el caso que NO debe fingir venir de
+    // NUTRITION_ENGINE_VERSION.
+    const state = makeState({ profile: null });
+    expect(state.nutrition).toEqual({ kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp" });
+
+    await remote.pushState(testCtx(), state);
+
+    const upsertCall = calls.find((c) => c.table === "nutrition_goals" && c.op === "upsert");
+    expect(upsertCall).toBeUndefined(); // ni siquiera se llega a construir un payload
   });
 });
 
@@ -392,8 +539,8 @@ describe("pushState — fallos múltiples", () => {
     config.nutrition_goals = { upsert: { error: { message: "err-objetivos" } } };
     setup(config);
 
-    await expect(remote.pushState(testCtx(), makeState())).rejects.toThrow(/err-perfil/);
-    await expect(remote.pushState(testCtx(), makeState())).rejects.toThrow(/err-objetivos/);
+    await expect(remote.pushState(testCtx(), makeStateWithMatchingGoal())).rejects.toThrow(/err-perfil/);
+    await expect(remote.pushState(testCtx(), makeStateWithMatchingGoal())).rejects.toThrow(/err-objetivos/);
   });
 });
 
@@ -402,7 +549,9 @@ describe("pushState — reintento idempotente tras éxito parcial", () => {
     const config = successConfig();
     config.user_profiles = { upsert: { error: { message: "caída temporal" } } };
     const calls = setup(config);
-    const state = makeState({ profile: null, nutrition: { kcal: 2000, protein: 140, carbs: 200, fat: 60, mode: "fat_loss" } });
+    // PR A: nutrition_goals ahora exige perfil + ledger coincidente — el
+    // fallo simulado sigue siendo en user_profiles, no en el gate.
+    const state = makeStateWithMatchingGoal({ nutrition: { kcal: 2000, protein: 140, carbs: 200, fat: 60, mode: "fat_loss" } });
 
     await expect(remote.pushState(testCtx(), state)).rejects.toThrow(/perfil/);
     const goalCallsFirstAttempt = calls.filter((c) => c.table === "nutrition_goals" && c.op === "upsert");
@@ -496,7 +645,10 @@ describe("runPush (vía schedulePush) — no marca guardado en error y reintenta
     const statuses: string[] = [];
     remote.onStatusChange = (s) => statuses.push(s);
 
-    const state = makeState();
+    // PR A: nutrition_goals ahora exige perfil + ledger coincidente para
+    // que su upsert se intente — el fallo/recuperación simulados son en
+    // esa tabla, no en el gate.
+    const state = makeStateWithMatchingGoal();
     remote.schedulePush(testPush(state));
     expect(statuses).toEqual(["syncing"]);
 
@@ -1598,5 +1750,69 @@ describe("hasPendingPush()/hasPendingWater() — ven lo persistido en disco, no 
     outbox.writeWaterPending("user-1", { "2026-08-24": 500 });
 
     expect(remote.hasPendingWater()).toBe(true);
+  });
+});
+
+// PR A (diseño §5): distingue explícitamente "sin dato todavía" (loading),
+// "listo" (ready) y "fallo real" (error) — un fallo de red nunca debe
+// traducirse en un array vacío indistinguible de un histórico legítimamente
+// vacío. getNutritionGoalsRange (el método antiguo, sin cambios de
+// contrato) sigue devolviendo [] en error, para sus 3 llamadas existentes.
+describe("getNutritionGoalsRangeWithStatus / getNutritionGoalsRange", () => {
+  it("sin sesión: ok:true con rows:[] — NO es un error, es 'no aplica'", async () => {
+    setup(successConfig());
+    const r = remote as unknown as { user: unknown };
+    r.user = null;
+    const result = await remote.getNutritionGoalsRangeWithStatus("2026-08-01", "2026-09-01");
+    expect(result).toEqual({ ok: true, rows: [] });
+  });
+
+  it("éxito: ok:true con las filas saneadas (todas las columnas, no solo kcal)", async () => {
+    const config = successConfig();
+    config.nutrition_goals = {
+      select: {
+        data: [
+          { goal_date: "2026-08-15", kcal_target: 2200, protein_target_g: 150, carbs_target_g: 225, fat_target_g: 70, mode: "recomp", calculation_version: "nutrition-v3.1" },
+          { goal_date: "2026-08-16", kcal_target: 2500, protein_target_g: 160, carbs_target_g: 250, fat_target_g: 75, mode: "recomp", calculation_version: "nutrition-v3.1" },
+        ],
+        error: null,
+      },
+    };
+    setup(config);
+
+    const result = await remote.getNutritionGoalsRangeWithStatus("2026-08-01", "2026-09-01");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows[0]).toEqual({ goalDate: "2026-08-15", kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp", calculationVersion: "nutrition-v3.1" });
+    }
+  });
+
+  it("fallo real de consulta: ok:false con el mensaje de error — nunca se traduce en un array vacío silencioso", async () => {
+    const config = successConfig();
+    config.nutrition_goals = { select: { error: { message: "connection reset" } } };
+    setup(config);
+
+    const result = await remote.getNutritionGoalsRangeWithStatus("2026-08-01", "2026-09-01");
+    expect(result).toEqual({ ok: false, error: "connection reset" });
+  });
+
+  it("getNutritionGoalsRange (contrato antiguo, sus 3 llamadas existentes no cambian): sigue devolviendo [] en error, sin lanzar", async () => {
+    const config = successConfig();
+    config.nutrition_goals = { select: { error: { message: "connection reset" } } };
+    setup(config);
+
+    await expect(remote.getNutritionGoalsRange("2026-08-01", "2026-09-01")).resolves.toEqual([]);
+  });
+
+  it("getNutritionGoalsRange (contrato antiguo) sigue devolviendo {goalDate, kcalTarget} en éxito", async () => {
+    const config = successConfig();
+    config.nutrition_goals = {
+      select: { data: [{ goal_date: "2026-08-15", kcal_target: 2200, protein_target_g: 150, carbs_target_g: 225, fat_target_g: 70, mode: "recomp", calculation_version: "nutrition-v3.1" }], error: null },
+    };
+    setup(config);
+
+    const rows = await remote.getNutritionGoalsRange("2026-08-01", "2026-09-01");
+    expect(rows).toEqual([{ goalDate: "2026-08-15", kcalTarget: 2200 }]);
   });
 });
