@@ -18,6 +18,7 @@ import {
   getMealPlanShoppingList,
   getRecipeMatch,
   normalizeState,
+  recordTodayNutritionGoal,
   reportCleanupIssue,
   resolveInitialStateForSession,
   resolveSignOutChoice,
@@ -354,6 +355,61 @@ describe("normalizeState — transición de motor v3.1 (sin contaminación entre
   });
 });
 
+// ─── PR A: recordTodayNutritionGoal — separación estricta de normalizeState ──
+
+describe("recordTodayNutritionGoal / normalizeState — separación (PR A, punto 1)", () => {
+  it("normalizeState() NUNCA añade la entrada de hoy, aunque el perfil esté completo y no exista ninguna entrada previa", () => {
+    const state: FoodOSState = { ...defaultState, profile: physicalProfile(), debugDate: "2026-09-10" };
+    const normalized = normalizeState(state);
+    expect(normalized.nutritionGoalsHistory).toEqual({});
+  });
+
+  it("recordTodayNutritionGoal() sin perfil devuelve la MISMA referencia (no-op)", () => {
+    const state: FoodOSState = { ...defaultState, profile: null };
+    expect(recordTodayNutritionGoal(state)).toBe(state);
+  });
+
+  it("recordTodayNutritionGoal() con perfil añade la entrada de hoy, con calculationVersion = NUTRITION_ENGINE_VERSION", () => {
+    const state: FoodOSState = { ...defaultState, profile: physicalProfile(), debugDate: "2026-09-10" };
+    const result = recordTodayNutritionGoal(state, () => "2026-09-10T08:00:00.000Z");
+    expect(result).not.toBe(state);
+    const entry = result.nutritionGoalsHistory["2026-09-10"];
+    expect(entry).toBeDefined();
+    expect(entry.calculationVersion).toBe(NUTRITION_ENGINE_VERSION);
+    expect(entry.mode).toBe("maintain"); // physicalProfile() por defecto
+    expect(entry.recordedAt).toBe("2026-09-10T08:00:00.000Z");
+  });
+
+  it("recordTodayNutritionGoal() es idempotente: una segunda llamada con el MISMO perfil devuelve la MISMA referencia (no crea una entrada distinta, no dispara push)", () => {
+    const state: FoodOSState = { ...defaultState, profile: physicalProfile(), debugDate: "2026-09-10" };
+    const once = recordTodayNutritionGoal(state);
+    const twice = recordTodayNutritionGoal(once);
+    expect(twice).toBe(once);
+  });
+
+  it("recordTodayNutritionGoal() nunca toca una fecha ya pasada del ledger", () => {
+    const state: FoodOSState = {
+      ...defaultState,
+      profile: physicalProfile(),
+      debugDate: "2026-09-10",
+      nutritionGoalsHistory: {
+        "2026-09-01": { kcal: 1800, protein: 130, carbs: 180, fat: 55, mode: "fat_loss", calculationVersion: "nutrition-v1", recordedAt: null },
+      },
+    };
+    const result = recordTodayNutritionGoal(state);
+    expect(result.nutritionGoalsHistory["2026-09-01"]).toEqual(state.nutritionGoalsHistory["2026-09-01"]);
+  });
+
+  it("recordTodayNutritionGoal() actualiza la entrada de hoy si el perfil cambió respecto a la ya registrada (no es un no-op)", () => {
+    const state: FoodOSState = { ...defaultState, profile: physicalProfile({ weightKg: 70 }), debugDate: "2026-09-10" };
+    const first = recordTodayNutritionGoal(state);
+    const changed: FoodOSState = { ...first, profile: physicalProfile({ weightKg: 95, goal: "muscle_gain" }) };
+    const second = recordTodayNutritionGoal(changed);
+    expect(second).not.toBe(changed);
+    expect(second.nutritionGoalsHistory["2026-09-10"].mode).toBe("muscle_gain");
+  });
+});
+
 // ─── Reproducción EJECUTABLE de la carrera asíncrona (corrección de revisión) ──
 // Los tests anteriores (normalizeState llamado por separado, o inspección
 // de texto fuente) podían pasar aunque reapareciera un
@@ -469,11 +525,59 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     expect(schedulePushCalls[0].state.profile!.adaptiveCalibrationStartedAt).toBe("2026-01-10"); // sin tocar
   });
 
-  it("perfil remoto YA al día: no llama a schedulePush en absoluto (hydrate normal, puramente de lectura)", async () => {
-    const pull = deferred<FoodOSState>();
-    const schedulePushCalls: unknown[] = [];
+  it("perfil remoto YA al día (motor): la primera hidratación registra el objetivo de hoy (PR A) — una segunda hidratación con el mismo perfil ya no empuja nada", async () => {
+    // PR A: sin transición de motor pendiente, la ÚNICA razón para empujar
+    // en la primera hidratación es registrar por primera vez el objetivo
+    // de hoy en el ledger — exactamente la escritura durable que pide el
+    // diseño ("primer arranque del día crea una sola escritura"). Una
+    // segunda hidratación con el MISMO perfil no produce una entrada
+    // distinta ⇒ cero escrituras adicionales ("segunda recarga con entrada
+    // idéntica").
+    const remoteProfile = physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION, weightKg: 82 });
     const coordinator = createHydrationCoordinator();
 
+    const pull1 = deferred<FoodOSState>();
+    const schedulePushCalls1: unknown[] = [];
+    const hydratePromise1 = coordinator.hydrate(TEST_USER, 0, defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: () => pull1.promise,
+      schedulePush: (op) => schedulePushCalls1.push(op),
+      epochChanged: () => false,
+      waitForMutationConfirmed: async () => "confirmed",
+    });
+    pull1.resolve({ ...defaultState, profile: remoteProfile });
+    const result1 = await hydratePromise1;
+
+    expect(schedulePushCalls1).toHaveLength(1);
+    expect(result1!.profile!.weightKg).toBe(82);
+
+    // Simula que el push de la primera hidratación SE CONFIRMÓ de verdad
+    // (compare-and-delete real, no solo el mock de waitForMutationConfirmed
+    // que no toca la outbox) — sin esto, la segunda hidratación vería
+    // `pending` todavía puesto y reintentaría por esa razón, ajena al ledger.
+    const mutationId1 = (schedulePushCalls1[0] as { mutationId: string }).mutationId;
+    expect(outbox.deleteIfMatches(TEST_USER, mutationId1)).toBe(true);
+
+    const pull2 = deferred<FoodOSState>();
+    const schedulePushCalls2: unknown[] = [];
+    const hydratePromise2 = coordinator.hydrate(TEST_USER, 1, defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: () => pull2.promise,
+      schedulePush: (op) => schedulePushCalls2.push(op),
+      epochChanged: () => false,
+      waitForMutationConfirmed: async () => "confirmed",
+    });
+    pull2.resolve({ ...defaultState, profile: remoteProfile });
+    const result2 = await hydratePromise2;
+
+    expect(schedulePushCalls2).toHaveLength(0);
+    expect(result2!.profile!.weightKg).toBe(82);
+  });
+
+  it("[ronda 3, punto 2] tras registrar el objetivo de hoy, el envelope queda con `pending` — listo para el mecanismo de reintento genérico ya existente (no se inventa uno nuevo)", async () => {
+    const coordinator = createHydrationCoordinator();
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: Array<{ mutationId: string }> = [];
     const hydratePromise = coordinator.hydrate(TEST_USER, 0, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull.promise,
@@ -481,15 +585,87 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
       epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
+    pull.resolve({ ...defaultState, profile: physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION }) });
+    await hydratePromise;
 
-    pull.resolve({
-      ...defaultState,
-      profile: physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION, weightKg: 82 }),
+    expect(schedulePushCalls).toHaveLength(1);
+    // El reintento en sí (temporizador, backoff) es el mecanismo YA
+    // existente de remote.schedulePush()/runPush() (ver data-layer.test.ts,
+    // "no marca guardado en error y reintenta") — aquí solo se prueba que
+    // esta escritura entra correctamente en él (envelope con `pending`
+    // apuntando exactamente a la mutación programada).
+    const envelope = outbox.readEnvelope(TEST_USER);
+    expect(envelope?.pending?.mutationId).toBe(schedulePushCalls[0].mutationId);
+  });
+
+  it("[ronda 3, punto 3] aislamiento por cuenta: el ledger de A nunca aparece en la hidratación de B, ni se persiste ni se empuja desde B; al volver a A reaparece el suyo desde su propia clave local", async () => {
+    const userA = "user-A-aislamiento";
+    const userB = "user-B-aislamiento";
+    // lastCalculationEngineVersion ya al día en ambos perfiles: la única
+    // razón de empujar en la primera hidratación debe ser la población del
+    // ledger (PR A), no una transición de motor no relacionada con este test.
+    const profileA = physicalProfile({ weightKg: 70, goal: "fat_loss", lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION });
+    const profileB = physicalProfile({ weightKg: 95, goal: "muscle_gain", lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION });
+
+    // A hidrata primero — su ledger queda escrito bajo la clave de outbox de A.
+    const pullA = deferred<FoodOSState>();
+    const pushA: unknown[] = [];
+    const hydrateA = createHydrationCoordinator().hydrate(userA, 0, defaultState, {
+      ensureBaseRows: async () => {}, pullState: () => pullA.promise, schedulePush: (op) => pushA.push(op),
+      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
     });
-    const result = await hydratePromise;
+    pullA.resolve({ ...defaultState, profile: profileA });
+    const resultA = await hydrateA;
+    const ledgerAKeys = Object.keys(resultA!.nutritionGoalsHistory);
+    expect(ledgerAKeys).toHaveLength(1);
+    const ledgerAEntry = resultA!.nutritionGoalsHistory[ledgerAKeys[0]];
 
-    expect(schedulePushCalls).toHaveLength(0);
-    expect(result!.profile!.weightKg).toBe(82);
+    // B hidrata — usuario DISTINTO, cuya clave de outbox nunca se ha
+    // tocado. El coordinador no tiene forma de ver el ledger de A.
+    const pullB = deferred<FoodOSState>();
+    const pushB: unknown[] = [];
+    const hydrateB = createHydrationCoordinator().hydrate(userB, 0, defaultState, {
+      ensureBaseRows: async () => {}, pullState: () => pullB.promise, schedulePush: (op) => pushB.push(op),
+      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
+    });
+    pullB.resolve({ ...defaultState, profile: profileB });
+    const resultB = await hydrateB;
+    const ledgerBKeys = Object.keys(resultB!.nutritionGoalsHistory);
+    expect(ledgerBKeys).toHaveLength(1);
+    const ledgerBEntry = resultB!.nutritionGoalsHistory[ledgerBKeys[0]];
+
+    // B nunca ve la entrada de A (ni siquiera coincide por valor: perfiles
+    // distintos ⇒ targets distintos).
+    expect(ledgerBEntry).not.toEqual(ledgerAEntry);
+
+    // El envelope de A en disco sigue intacto — B no lo tocó ni lo pisó.
+    const envelopeA = outbox.readEnvelope(userA);
+    expect(envelopeA?.state.nutritionGoalsHistory).toEqual(resultA!.nutritionGoalsHistory);
+    // Tampoco se persistió ni se empujó nada de B bajo la clave de A.
+    expect(envelopeA?.state.profile?.weightKg).toBe(70);
+
+    // Simula que el push de A se confirmó de verdad (compare-and-delete
+    // real) antes de la segunda hidratación — igual que en el test de
+    // "perfil remoto ya al día", sin esto el mock de
+    // waitForMutationConfirmed no limpia `pending` y la segunda
+    // hidratación reintentaría por esa razón, ajena al ledger.
+    expect(pushA).toHaveLength(1);
+    const mutationIdA = (pushA[0] as { mutationId: string }).mutationId;
+    expect(outbox.deleteIfMatches(userA, mutationIdA)).toBe(true);
+
+    // Volver a A: reaparece SU propio ledger desde SU propia clave — no
+    // algo mezclado con B, y como nada cambió, ya no hace falta empujar.
+    const pullA2 = deferred<FoodOSState>();
+    const pushA2: unknown[] = [];
+    const hydrateA2 = createHydrationCoordinator().hydrate(userA, 1, defaultState, {
+      ensureBaseRows: async () => {}, pullState: () => pullA2.promise, schedulePush: (op) => pushA2.push(op),
+      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
+    });
+    pullA2.resolve({ ...defaultState, profile: profileA });
+    const resultA2 = await hydrateA2;
+
+    expect(resultA2!.nutritionGoalsHistory).toEqual(resultA!.nutritionGoalsHistory);
+    expect(pushA2).toHaveLength(0);
   });
 
   it("epoch cambiado mientras el pull estaba en vuelo: devuelve null y no llama a schedulePush, aunque el pull acabe resolviendo", async () => {
