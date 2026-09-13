@@ -11,11 +11,12 @@ import type {
   MealType,
   NutritionCalculationSnapshot,
   PhysicalProfile,
+  SanitizedRemoteGoalRow,
   Sex,
   StorageName,
 } from "@foodos/types";
 import type { AuthChangeEvent, SupabaseClient, User } from "@supabase/supabase-js";
-import { migrateLegacyTrainingActivity } from "./nutrition";
+import { migrateLegacyTrainingActivity, sanitizeRemoteGoalRow } from "./nutrition";
 import * as outbox from "./outbox";
 import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
@@ -543,6 +544,50 @@ class RemoteAdapter {
   }
 
   /**
+   * PR A: variante consciente de error de getNutritionGoalsRange (abajo) —
+   * trae TODAS las columnas de macros/mode/versión (ya existían en la
+   * tabla, ver 20260729222903_nutrition_engine_snapshots.sql), saneadas
+   * (sanitizeRemoteGoalRow), y distingue explícitamente "sin sesión" (no es
+   * un error: ok:true, rows:[]) de un fallo real de red/consulta (ok:false).
+   * Usada por useNutritionGoalsRangeState (NutritionView.tsx) para poder
+   * mostrar loading/error en vez de traducir un fallo en 60 días
+   * "unknown_target" — ver diseño §5/§6. Método NUEVO: no se toca
+   * getNutritionGoalsRange ni sus 3 llamadas existentes (feature adaptativa
+   * ya auditada), que siguen exactamente igual debajo. */
+  async getNutritionGoalsRangeWithStatus(
+    fromDateKey: string,
+    toDateKey: string,
+  ): Promise<{ ok: true; rows: Array<{ goalDate: string } & SanitizedRemoteGoalRow> } | { ok: false; error: string }> {
+    if (!this.client || !this.user) return { ok: true, rows: [] }; // sin sesión no es un fallo, es "no aplica"
+    try {
+      const { data, error } = await this.client
+        .from("nutrition_goals")
+        .select("goal_date, kcal_target, protein_target_g, carbs_target_g, fat_target_g, mode, calculation_version")
+        .eq("user_id", this.user.id)
+        .gte("goal_date", fromDateKey)
+        .lte("goal_date", toDateKey)
+        .order("goal_date", { ascending: true });
+      if (error) return { ok: false, error: errorMessage(error) };
+      const rows = (data ?? [])
+        .map((row) =>
+          sanitizeRemoteGoalRow({
+            goal_date: row.goal_date,
+            kcal_target: row.kcal_target,
+            protein_target_g: row.protein_target_g,
+            carbs_target_g: row.carbs_target_g,
+            fat_target_g: row.fat_target_g,
+            mode: row.mode,
+            calculation_version: row.calculation_version,
+          }),
+        )
+        .filter((row): row is { goalDate: string } & SanitizedRemoteGoalRow => row !== null);
+      return { ok: true, rows };
+    } catch (err) {
+      return { ok: false, error: errorMessage(err) };
+    }
+  }
+
+  /**
    * Objetivos calóricos históricos por fecha (nutrition_goals), para
    * construir el targetByDate real que necesita calcIntakeCoverage — ver
    * docs/NUTRITION_V3_DECISIONES.md §2.3. La tabla ya guarda una fila por
@@ -552,29 +597,20 @@ class RemoteAdapter {
    * inclusive, formato YYYY-MM-DD. No lanza: si falla, el caller debe tratar
    * el resultado vacío como "sin histórico disponible para esa ventana"
    * (calcIntakeCoverage ya excluye días sin dato, así que un array vacío es
-   * un estado válido, no un error). */
+   * un estado válido, no un error). Sin cambios de contrato (PR A): ahora es
+   * un envoltorio fino sobre getNutritionGoalsRangeWithStatus que preserva
+   * exactamente la forma/comportamiento anteriores para sus 3 llamadas ya
+   * existentes. */
   async getNutritionGoalsRange(
     fromDateKey: string,
     toDateKey: string,
   ): Promise<Array<{ goalDate: string; kcalTarget: number }>> {
-    if (!this.client || !this.user) return [];
-    try {
-      const { data, error } = await this.client
-        .from("nutrition_goals")
-        .select("goal_date, kcal_target")
-        .eq("user_id", this.user.id)
-        .gte("goal_date", fromDateKey)
-        .lte("goal_date", toDateKey)
-        .order("goal_date", { ascending: true });
-      if (error || !data) {
-        console.warn("FoodOS: no se pudo leer el histórico de nutrition_goals", error);
-        return [];
-      }
-      return data.map((row) => ({ goalDate: row.goal_date as string, kcalTarget: Number(row.kcal_target) }));
-    } catch (err) {
-      console.warn("FoodOS: error de red leyendo el histórico de nutrition_goals", err);
+    const result = await this.getNutritionGoalsRangeWithStatus(fromDateKey, toDateKey);
+    if (!result.ok) {
+      console.warn("FoodOS: no se pudo leer el histórico de nutrition_goals", result.error);
       return [];
     }
+    return result.rows.map((row) => ({ goalDate: row.goalDate, kcalTarget: row.kcal }));
   }
 
   /** Mapea una fila de nutrition_adjustment_proposals al tipo de la app. */
@@ -1683,19 +1719,43 @@ class RemoteAdapter {
     }
     checkAlive();
 
-    const { error: goalError } = await client.from("nutrition_goals").upsert(
-      {
-        user_id: userId,
-        goal_date: state.debugDate ?? today(),
-        kcal_target: state.nutrition.kcal,
-        protein_target_g: state.nutrition.protein,
-        carbs_target_g: state.nutrition.carbs,
-        fat_target_g: state.nutrition.fat,
-        mode: state.nutrition.mode,
-      },
-      { onConflict: "user_id,goal_date" }
-    );
-    if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
+    // PR A (diseño §1): el upsert SOLO se ejecuta cuando hay perfil Y una
+    // entrada del ledger para esta fecha exacta Y esa entrada coincide con
+    // state.nutrition (kcal/proteína/carbohidratos/grasa/modo) Y trae una
+    // versión de motor válida — es decir, cuando el ledger confirma que
+    // ESTOS targets concretos los produjo ESA versión concreta. Si algo no
+    // cuadra (cuenta sin perfil, placeholder 2200/150/225/70, ledger
+    // todavía no actualizado tras un cambio, etc.) se omite el upsert POR
+    // COMPLETO — nunca se persiste un objetivo con una versión inventada,
+    // null, ni heredada del default de la columna.
+    const goalDateKey = state.debugDate ?? today();
+    const todayGoalEntry = state.nutritionGoalsHistory?.[goalDateKey];
+    const goalEntryMatchesCurrentTargets =
+      !!state.profile &&
+      !!todayGoalEntry &&
+      !!todayGoalEntry.calculationVersion &&
+      todayGoalEntry.kcal === state.nutrition.kcal &&
+      todayGoalEntry.protein === state.nutrition.protein &&
+      todayGoalEntry.carbs === state.nutrition.carbs &&
+      todayGoalEntry.fat === state.nutrition.fat &&
+      todayGoalEntry.mode === state.nutrition.mode;
+
+    if (goalEntryMatchesCurrentTargets) {
+      const { error: goalError } = await client.from("nutrition_goals").upsert(
+        {
+          user_id: userId,
+          goal_date: goalDateKey,
+          kcal_target: state.nutrition.kcal,
+          protein_target_g: state.nutrition.protein,
+          carbs_target_g: state.nutrition.carbs,
+          fat_target_g: state.nutrition.fat,
+          mode: state.nutrition.mode,
+          calculation_version: todayGoalEntry.calculationVersion,
+        },
+        { onConflict: "user_id,goal_date" }
+      );
+      if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
+    }
     checkAlive();
 
     // Cada syncTable() es independiente de las demás (tablas sin relación

@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { AuthChangeEvent, User } from "@supabase/supabase-js";
-import type { AppSettings, DailyTargets, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, StorageName, UnitSizeUnit, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, DayAdherenceStatus, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, ResolvedDailyGoal, StorageName, UnitSizeUnit, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced, waitForMutationConfirmed, type PendingPush, type SyncPushStatus } from "./data-layer";
 import * as outbox from "./outbox";
@@ -19,7 +19,7 @@ import { RealtimeHydrationGate } from "./realtime-hydration-gate";
 import { hasSupabaseConfig } from "./supabase";
 import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
-import { applyEngineVersionTransition, calcDailyTargets, isGymDay, monthlyAmountOf, weeklyCycle } from "./nutrition";
+import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 
@@ -49,6 +49,7 @@ export const defaultState: FoodOSState = {
   savedRecipeIds: [],
   profile: null,
   nutrition: { kcal: 2200, protein: 150, carbs: 225, fat: 70, mode: "recomp" },
+  nutritionGoalsHistory: {},
   weeklyBudget: 70,
   bankSynced: false,
   mascotId: "zana",
@@ -93,6 +94,14 @@ export function normalizeState(state: FoodOSState): FoodOSState {
   next.routines ||= [];
   next.workoutLog ||= [];
   next.stepsLog ||= {};
+  // PR A: solo saneamiento/retención — NUNCA crea la entrada de hoy aquí.
+  // normalizeState() se ejecuta sobre estado local potencialmente obsoleto
+  // ANTES de que termine pullState() (ver createHydrationCoordinator) — si
+  // grabara aquí, un perfil local desactualizado podría fijar un objetivo
+  // incorrecto para hoy antes de que llegue el perfil remoto real.
+  // `todayPlus(0)` es SIEMPRE el reloj real, nunca next.debugDate: simular
+  // otra fecha con fines de QA no debe poder borrar historial real.
+  next.nutritionGoalsHistory = sanitizeNutritionGoalsLedger(next.nutritionGoalsHistory, todayPlus(0));
   next.settings = { ...DEFAULT_SETTINGS, ...(next.settings ?? {}), lowStockThresholds: { ...DEFAULT_SETTINGS.lowStockThresholds, ...(next.settings?.lowStockThresholds ?? {}) } };
   // Migracion: las comidas antiguas sin fecha (consumedMeals) pasan al diario datado.
   const legacy = next as FoodOSState & { consumedMeals?: Array<MacroTotals & { id: string; name: string }>; consumed?: MacroTotals };
@@ -151,6 +160,51 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     };
   }
   return next;
+}
+
+/**
+ * PR A — PURA. Añade/actualiza ÚNICAMENTE la entrada de HOY del ledger a
+ * partir de state.profile; nunca toca una fecha ya pasada. Devuelve la
+ * MISMA referencia de `state` si la entrada resultante sería equivalente a
+ * la ya existente (mismos kcal/proteína/carbohidratos/grasa/modo — la
+ * versión es informativa y no entra en esta comparación) — quien llama usa
+ * `=== ` para saber si hace falta programar un push, sin depender de
+ * ninguna señal de sincronización global.
+ *
+ * NUNCA se llama dentro de normalizeState() — solo desde un momento
+ * autoritativo explícito: (1) modo local puro, tras cargar y normalizar el
+ * estado local; (2) cuenta Supabase, tras completar la hidratación remota
+ * (dentro de la misma transición que instala el estado ganador); (3)
+ * cualquier mutate() del usuario con perfil presente (ya recalcula
+ * state.nutrition en el mismo sitio — ver más abajo).
+ *
+ * `now` se inyecta (nunca `new Date()` directo) para mantener la función
+ * pura y los tests deterministas.
+ */
+export function recordTodayNutritionGoal(
+  state: FoodOSState,
+  now: () => string = () => new Date().toISOString(),
+): FoodOSState {
+  if (!state.profile) return state;
+  const dateKey = getToday(state);
+  const targets = calcDailyTargets(state.profile, isGymDay(state.profile, stateDate(state)), state.macroPreference);
+  const existing = state.nutritionGoalsHistory[dateKey];
+  const sameAsExisting =
+    existing &&
+    existing.kcal === targets.kcal &&
+    existing.protein === targets.protein &&
+    existing.carbs === targets.carbs &&
+    existing.fat === targets.fat &&
+    existing.mode === state.profile.goal;
+  if (sameAsExisting) return state;
+
+  const entry = {
+    kcal: targets.kcal, protein: targets.protein, carbs: targets.carbs, fat: targets.fat,
+    mode: state.profile.goal,
+    calculationVersion: NUTRITION_ENGINE_VERSION,
+    recordedAt: now(),
+  };
+  return { ...state, nutritionGoalsHistory: { ...state.nutritionGoalsHistory, [dateKey]: entry } };
 }
 
 /** Núcleo PURO de una escritura de agua a un objetivo absoluto — clona y
@@ -268,19 +322,51 @@ export function createHydrationCoordinator(): HydrationCoordinator {
           return null; // gana el pendiente local — el remoto se descarta para la UI esta vez
         }
 
-        const remoteState = normalizeState(pulled);
-        outbox.writeEnvelope(userId, (env) => ({ ...env, userId, state: remoteState, pending: null }));
+        // PR A (diseño §3): el ledger local de objetivos nunca lo conoce
+        // pullState() (reconstruye desde `defaults`, no desde el estado de
+        // este usuario) — se fusiona explícitamente desde la clave local
+        // de ESTE `userId` (el parámetro de esta función, no un `prev` de
+        // React que podría no estar ligado inequívocamente a la sesión
+        // vigente) ANTES de normalizar, para que sanitizeNutritionGoalsLedger
+        // reciba el histórico real y no lo pise un objeto en blanco.
+        const ownLedger = envelopeAfter?.state.nutritionGoalsHistory ?? {};
+        const remoteState = normalizeState({ ...pulled, nutritionGoalsHistory: ownLedger });
+
+        let toPersist = remoteState;
         // Transición de motor v3.1 (u otra futura migración de solo
         // lectura→escritura): si normalizeState() cambió el perfil, se
         // persiste también en remoto — derivado del estado recién llegado
         // del servidor, nunca del snapshot local.
-        if (pulled.profile?.lastCalculationEngineVersion !== remoteState.profile?.lastCalculationEngineVersion) {
-          const written = outbox.recordMutation(userId, remoteState, outbox.getTabClientId());
-          if (written.ok && written.envelope.pending) {
-            deps.schedulePush({ userId, epoch, mutationId: written.envelope.pending.mutationId, revision: written.envelope.pending.revision, state: remoteState });
-          }
+        let needsPush = pulled.profile?.lastCalculationEngineVersion !== remoteState.profile?.lastCalculationEngineVersion;
+
+        // Objetivo de hoy (PR A, diseño §1/§2): se registra AQUÍ, en la
+        // MISMA transición funcional que instala el estado ganador de la
+        // hidratación — nunca en normalizeState() ni en un efecto posterior
+        // atado a remoteHydrated (evitaría la carrera perfil-local-obsoleto
+        // vs. remoto-nuevo: en este punto `remoteState.profile` YA es el
+        // ganador correcto, sea el recién llegado de Supabase o, si
+        // aplicara, el de un pending que hubiera ganado — ese caso ya
+        // habría retornado null arriba). recordTodayNutritionGoal devuelve
+        // la MISMA referencia si la entrada sería equivalente a la ya
+        // existente — con eso basta para decidir si hace falta empujar,
+        // sin depender de outbox.hasPending() (señal global, no específica
+        // de un cambio nutricional — un gasto o un registro de agua
+        // pendientes no deben disparar esto).
+        const withTodayGoal = recordTodayNutritionGoal(remoteState);
+        if (withTodayGoal !== remoteState) {
+          toPersist = withTodayGoal;
+          needsPush = true;
         }
-        return remoteState;
+
+        if (needsPush) {
+          const written = outbox.recordMutation(userId, toPersist, outbox.getTabClientId());
+          if (written.ok && written.envelope.pending) {
+            deps.schedulePush({ userId, epoch, mutationId: written.envelope.pending.mutationId, revision: written.envelope.pending.revision, state: toPersist });
+          }
+        } else {
+          outbox.writeEnvelope(userId, (env) => ({ ...env, userId, state: toPersist, pending: null }));
+        }
+        return toPersist;
       })();
 
       inFlight.set(key, promise);
@@ -691,14 +777,28 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     // (bloqueante §1): esto es solo la primera pintura, se sustituye por
     // completo en cuanto se conoce el usuario real más abajo.
     const localLoaded = normalizeState(loadLocalState(defaultState));
-    setState(localLoaded);
-    setHydrated(true);
 
     if (!hasSupabaseConfig()) {
-      saveLocalState(localLoaded);
+      // Sin Supabase configurado, este es el ÚNICO estado que existirá
+      // jamás para esta sesión: es el momento autoritativo para modo local
+      // puro (PR A, diseño §1/§2). Una sola transición funcional — nunca
+      // dos setState — para que la grabación del objetivo de hoy y la
+      // pintura inicial sean atómicas.
+      const authoritative = recordTodayNutritionGoal(localLoaded);
+      setState(authoritative);
+      setHydrated(true);
+      saveLocalState(authoritative);
       setRemoteHydrated(true);
       return;
     }
+
+    // Pintado instantáneo desde LOCAL_KEY (el hueco antes de saber si hay
+    // sesión) — NUNCA autoritativo: si hay cuenta, un perfil local aquí
+    // podría estar obsoleto frente al remoto que está a punto de llegar.
+    // recordTodayNutritionGoal() NO se llama en esta rama — solo tras
+    // completar la hidratación remota (ver hydrateForUser más abajo).
+    setState(localLoaded);
+    setHydrated(true);
     let cancelled = false;
 
     const hydrateForUser = async (userId: string, epoch: number) => {
@@ -988,6 +1088,16 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           fat: targets.fat,
           mode: draft.profile.goal,
         };
+        // PR A: mutate() solo se invoca desde acciones explícitas del
+        // usuario, siempre DESPUÉS de que la hidratación ya completó — es
+        // por construcción un momento autoritativo (nunca hay un perfil
+        // local obsoleto en juego aquí, a diferencia de la carga inicial).
+        // Reutiliza recordTodayNutritionGoal en vez de duplicar la
+        // comparación/no-op; como mutate() ya empuja TODO el draft a través
+        // del mecanismo de outbox/push de más abajo, esto NO programa un
+        // push aparte — viaja dentro de la misma mutación.
+        const withTodayGoal = recordTodayNutritionGoal(draft);
+        if (withTodayGoal !== draft) draft.nutritionGoalsHistory = withTodayGoal.nutritionGoalsHistory;
       }
 
       const userId = remote.user?.id ?? null;
@@ -2031,59 +2141,51 @@ export function getMonthlyFinanceHistory(
   });
 }
 
-/** Totales de macros por día en los últimos N días (para gráficas). */
-export function getWeeklyMacroHistory(
-  state: FoodOSState,
-  days = 7
-): Array<{ date: string; kcal: number; protein: number; carbs: number; fat: number }> {
-  const base = state.debugDate ?? todayPlus(0);
-  return Array.from({ length: days }, (_, i) => {
-    const date = dateOffset(base, -(days - 1 - i));
-    const entries = state.foodLog.filter((e) => e.date === date);
-    return {
-      date,
-      kcal: Math.round(entries.reduce((s, e) => s + e.kcal, 0)),
-      protein: Math.round(entries.reduce((s, e) => s + e.protein, 0)),
-      carbs: Math.round(entries.reduce((s, e) => s + e.carbs, 0)),
-      fat: Math.round(entries.reduce((s, e) => s + e.fat, 0)),
-    };
-  });
-}
-
-/** Por cada uno de los últimos N días, devuelve si se cumplieron los objetivos de macros.
- *  hit: proteína ≥80% target Y kcal entre 80–115% target.
- *  partial: se cumple uno de los dos.
- *  miss: ninguno (o sin datos). */
+/**
+ * PR A: por cada uno de los últimos N días, clasifica la adherencia usando
+ * el objetivo HISTÓRICO REAL de ESA fecha (resolvedGoals, ver
+ * resolveHistoricalGoal en nutrition.ts) — nunca el objetivo de hoy
+ * (state.nutrition) aplicado retroactivamente, que era el bug original.
+ * `resolvedGoals` lo construye quien llama (un hook de UI) combinando el
+ * rango remoto ya fetcheado con state.nutritionGoalsHistory; una fecha
+ * ausente del mapa se trata como "unknown" (nunca se inventa aquí).
+ *
+ * hit: proteína ≥80% target Y kcal entre 80–115% target (mismos umbrales
+ * que la implementación previa — sin cambios de semántica, ver diseño §7).
+ * partial: se cumple uno de los dos. unlogged: objetivo conocido, sin
+ * ingesta. unknown_target: sin objetivo histórico resuelto.
+ */
 export function getMacroAdherenceHistory(
   state: FoodOSState,
-  days = 28
-): Array<{ date: string; status: "hit" | "partial" | "miss" | "empty" }> {
-  const targetKcal = state.nutrition.kcal;
-  const targetProtein = state.nutrition.protein;
+  resolvedGoals: Map<string, ResolvedDailyGoal>,
+  days = 28,
+): Array<{ date: string; status: DayAdherenceStatus }> {
   const base = state.debugDate ?? todayPlus(0);
   return Array.from({ length: days }, (_, i) => {
     const date = dateOffset(base, -(days - 1 - i));
+    const resolved: ResolvedDailyGoal =
+      resolvedGoals.get(date) ?? { status: "unknown", targets: null, mode: null, source: null, calculationVersion: null };
     const entries = state.foodLog.filter((e) => e.date === date);
-    if (!entries.length) return { date, status: "empty" };
-    const kcal = entries.reduce((s, e) => s + e.kcal, 0);
-    const protein = entries.reduce((s, e) => s + e.protein, 0);
-    const protOk = targetProtein > 0 && protein >= targetProtein * 0.8;
-    const kcalOk = targetKcal > 0 && kcal >= targetKcal * 0.8 && kcal <= targetKcal * 1.15;
-    if (protOk && kcalOk) return { date, status: "hit" };
-    if (protOk || kcalOk) return { date, status: "partial" };
-    return { date, status: "miss" };
+    const dayTotals: MacroTotals | null = entries.length
+      ? {
+          kcal: entries.reduce((s, e) => s + e.kcal, 0),
+          protein: entries.reduce((s, e) => s + e.protein, 0),
+          carbs: entries.reduce((s, e) => s + e.carbs, 0),
+          fat: entries.reduce((s, e) => s + e.fat, 0),
+        }
+      : null;
+    return { date, status: classifyDayAdherence(resolved, dayTotals) };
   });
 }
 
-/** Racha actual: días consecutivos terminando hoy con status "hit". */
-export function getAdherenceStreak(state: FoodOSState): number {
-  const history = getMacroAdherenceHistory(state, 60);
-  let streak = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].status === "hit") streak++;
-    else break;
-  }
-  return streak;
+/** Racha actual: días consecutivos terminando hoy con status "hit".
+ *  unknown_target/unlogged cortan la continuidad igual que miss/partial —
+ *  no se puede presentar una racha continua sobre días sin verificar. Toma
+ *  el historial YA calculado (no `state`) para que quien llama construya
+ *  `resolvedGoals` una sola vez y lo reutilice tanto para el % como para
+ *  la racha (misma ventana de 60 días, ver diseño §6). */
+export function getAdherenceStreak(history: Array<{ status: DayAdherenceStatus }>): number {
+  return getAdherenceStreakFromStatuses(history.map((h) => h.status));
 }
 
 export function expiryBadge(expires: string): { label: string; cls: string } {
