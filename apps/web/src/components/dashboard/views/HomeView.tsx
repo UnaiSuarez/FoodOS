@@ -7,13 +7,11 @@ import {
   actions,
   allRecipes,
   findPlanEntry,
-  getAdherenceStreak,
   getBudgetLeft,
   getConsumedToday,
   getDinnerSuggestion,
   getFoodSpend,
   getLowStockSuggestions,
-  getMacroAdherenceHistory,
   getMascot,
   getPendingMacros,
   getRecipeMatch,
@@ -23,6 +21,9 @@ import {
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
+import { useAdherenceWindow } from "@/lib/nutrition-history";
+
+const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 import { clampPct, dateFromKey, daysUntil, eur, namesMatch } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
 import { CookModal } from "../CookModal";
@@ -60,10 +61,11 @@ export function HomeView({
   const stepsGoal = state.settings?.stepsGoal ?? 8000;
   const stepsPct = Math.min(100, Math.round((stepsToday / stepsGoal) * 100));
 
-  /* Racha de adherencia */
-  const streak = getAdherenceStreak(state);
-  const adherenceHistory = getMacroAdherenceHistory(state, 7);
-  const hitThisWeek = adherenceHistory.filter(d => d.status === "hit").length;
+  /* Racha de adherencia — PR A: objetivo histórico real de cada fecha, no
+     el de hoy aplicado retroactivamente (ver diseño). */
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
+  const streak = adherence.streak;
+  const hitThisWeek = adherence.history.slice(-7).filter((d) => d.status === "hit").length;
 
   /* Stock bajo */
   const lowStock = getLowStockSuggestions(state).slice(0, 3);

@@ -2,21 +2,24 @@
 
 import type { WeightEntry } from "@foodos/types";
 import {
-  getAdherenceStreak,
   getLatestWeight,
   getMonthlyFinanceHistory,
   getToday,
-  getWeeklyMacroHistory,
   useFoodOS,
 } from "@/lib/state";
+import { useAdherenceWindow } from "@/lib/nutrition-history";
 import { dateFromKey, dateOffset, eur } from "@/lib/utils";
+
+const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 
 export function StatsView() {
   const { state } = useFoodOS();
 
   const monthly = getMonthlyFinanceHistory(state, 6);
-  const macroHistory = getWeeklyMacroHistory(state, 28);
-  const streak = getAdherenceStreak(state);
+  // PR A: cada día compara contra SU objetivo histórico real, no el de hoy.
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
+  const macroHistory = adherence.history.slice(-28);
+  const streak = adherence.streak;
   const latestWeight = getLatestWeight(state);
 
   const sorted = [...state.weightLog].sort((a, b) => a.date.localeCompare(b.date));
@@ -171,14 +174,10 @@ export function StatsView() {
             <span className="badge blue legend">■ Kcal</span>
           </div>
         </div>
-        <StatsMacroChart
-          data={macroHistory}
-          targetKcal={state.nutrition.kcal}
-          targetProtein={state.nutrition.protein}
-        />
+        <StatsMacroChart data={macroHistory} />
         <p className="chart-legend">
-          Verde = % proteína · Azul = % calorías · Objetivos: {state.nutrition.kcal} kcal /{" "}
-          {state.nutrition.protein}g prot
+          Verde = % proteína · Azul = % calorías, cada día contra SU objetivo histórico real.
+          {!adherence.historyComplete && " Cargando histórico completo…"}
         </p>
       </article>
     </section>
@@ -353,12 +352,8 @@ function StatsWeightChart({ entries }: { entries: WeightEntry[] }) {
 
 function StatsMacroChart({
   data,
-  targetKcal,
-  targetProtein,
 }: {
-  data: Array<{ date: string; kcal: number; protein: number }>;
-  targetKcal: number;
-  targetProtein: number;
+  data: import("@/lib/nutrition-history").AdherenceWindow["history"];
 }) {
   const W = 700, H = 90, PAD = 10;
   const days = data.length;
@@ -384,8 +379,12 @@ function StatsMacroChart({
         strokeDasharray="4 3"
       />
       {data.map((day, i) => {
-        const kcalPct = targetKcal > 0 ? Math.min(1, day.kcal / targetKcal) : 0;
-        const protPct = targetProtein > 0 ? Math.min(1, day.protein / targetProtein) : 0;
+        const kcal = day.consumed?.kcal ?? 0;
+        const protein = day.consumed?.protein ?? 0;
+        const targetKcal = day.targets?.kcal ?? 0;
+        const targetProtein = day.targets?.protein ?? 0;
+        const kcalPct = targetKcal > 0 ? Math.min(1, kcal / targetKcal) : 0;
+        const protPct = targetProtein > 0 ? Math.min(1, protein / targetProtein) : 0;
         const x = PAD + i * gap + (gap - barW) / 2;
         const dateObj = new Date(`${day.date}T12:00:00`);
         const dow = dateObj.getDay();
@@ -393,22 +392,30 @@ function StatsMacroChart({
 
         return (
           <g key={day.date}>
-            <rect
-              x={x}
-              y={H - kcalPct * H}
-              width={barW}
-              height={kcalPct * H}
-              fill="rgba(59,130,246,0.28)"
-              rx="2"
-            />
-            <rect
-              x={x + barW * 0.18}
-              y={H - protPct * H}
-              width={barW * 0.64}
-              height={protPct * H}
-              fill="var(--green)"
-              rx="1"
-            />
+            {day.status === "unknown_target" ? (
+              // Sin objetivo histórico registrado ese día — marca neutra,
+              // nunca una barra al 0% (que se leería como "incumplido").
+              <rect x={x} y={H - 3} width={barW} height={3} fill="rgba(150,163,144,0.35)" rx="1" />
+            ) : (
+              <>
+                <rect
+                  x={x}
+                  y={H - kcalPct * H}
+                  width={barW}
+                  height={kcalPct * H}
+                  fill="rgba(59,130,246,0.28)"
+                  rx="2"
+                />
+                <rect
+                  x={x + barW * 0.18}
+                  y={H - protPct * H}
+                  width={barW * 0.64}
+                  height={protPct * H}
+                  fill="var(--green)"
+                  rx="1"
+                />
+              </>
+            )}
             {showLabel && (
               <text
                 x={x + barW / 2}
@@ -425,7 +432,7 @@ function StatsMacroChart({
       })}
     </svg>
     <table className="sr-only">
-      <caption>Calorías y proteína de los últimos 28 días, con el % del objetivo diario alcanzado</caption>
+      <caption>Calorías y proteína de los últimos 28 días, con el % del objetivo histórico de cada día alcanzado</caption>
       <thead>
         <tr>
           <th scope="col">Día</th>
@@ -439,10 +446,16 @@ function StatsMacroChart({
         {data.map((day) => (
           <tr key={day.date}>
             <td>{day.date}</td>
-            <td>{Math.round(day.kcal)} kcal</td>
-            <td>{targetKcal > 0 ? Math.round(Math.min(1, day.kcal / targetKcal) * 100) : 0}%</td>
-            <td>{Math.round(day.protein)} g</td>
-            <td>{targetProtein > 0 ? Math.round(Math.min(1, day.protein / targetProtein) * 100) : 0}%</td>
+            {day.status === "unknown_target" ? (
+              <td colSpan={4}>Sin objetivo registrado ese día</td>
+            ) : (
+              <>
+                <td>{Math.round(day.consumed?.kcal ?? 0)} kcal</td>
+                <td>{day.targets && day.targets.kcal > 0 ? Math.round(Math.min(1, (day.consumed?.kcal ?? 0) / day.targets.kcal) * 100) : 0}%</td>
+                <td>{Math.round(day.consumed?.protein ?? 0)} g</td>
+                <td>{day.targets && day.targets.protein > 0 ? Math.round(Math.min(1, (day.consumed?.protein ?? 0) / day.targets.protein) * 100) : 0}%</td>
+              </>
+            )}
           </tr>
         ))}
       </tbody>
