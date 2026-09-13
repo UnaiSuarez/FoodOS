@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
-import type { ActivityLevel, ActivityModelVersion, BodyFatSource, CardioIntensity, CardioType, ConfidenceLevel, DailyTargets, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, StrengthIntensity, TrainingActivityProfile, WeightEntry } from "@foodos/types";
+import type { ActivityLevel, ActivityModelVersion, BodyFatSource, CardioIntensity, CardioType, ConfidenceLevel, DailyTargets, DayAdherenceStatus, EquipmentAccess, ExperienceLevel, GoalMode, MacroPreference, NutritionCalculationSnapshot, NutritionSafetyResult, PhysicalProfile, Sex, StrengthIntensity, TrainingActivityProfile, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { Tabs, TabPanel } from "@/components/ui";
 import {
@@ -10,17 +10,17 @@ import {
   bestRecipe,
   countLowProteinDays,
   findRecipe,
-  getAdherenceStreak,
   getConsumedToday,
   getKcalBurnedToday,
   getLatestWeight,
-  getMacroAdherenceHistory,
   getProteinRanking,
   getToday,
   getTodayLog,
-  getWeeklyMacroHistory,
   useFoodOS,
 } from "@/lib/state";
+import { useAdherenceWindow } from "@/lib/nutrition-history";
+
+const NUTRITION_ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 import {
   ACTIVITY_LABELS,
   adjustmentCooldownDaysLeft,
@@ -1713,9 +1713,11 @@ function AdjustmentProposalPanel() {
 
 function MacroWeekChart() {
   const { state } = useFoodOS();
-  const history = getWeeklyMacroHistory(state, 7);
-  const targetKcal = state.nutrition.kcal || 2000;
-  const targetProtein = state.nutrition.protein || 150;
+  // PR A: cada día compara contra SU objetivo histórico real (resuelto por
+  // resolveHistoricalGoal), nunca el objetivo de hoy aplicado
+  // retroactivamente — ver diseño.
+  const adherence = useAdherenceWindow(state, getToday(state), NUTRITION_ADHERENCE_WINDOW_DAYS);
+  const history = adherence.history.slice(-7);
 
   const W = 560, H = 100, PAD = 20;
   const gap = (W - PAD * 2) / 7;
@@ -1743,8 +1745,12 @@ function MacroWeekChart() {
         {/* Línea objetivo 100% */}
         <line x1={PAD} y1={1} x2={W - PAD} y2={1} stroke="rgba(74,222,128,0.25)" strokeWidth="1" strokeDasharray="4 3" />
         {history.map((day, i) => {
-          const kcalPct = Math.min(1, day.kcal / targetKcal);
-          const protPct = Math.min(1, day.protein / targetProtein);
+          const kcal = day.consumed?.kcal ?? 0;
+          const protein = day.consumed?.protein ?? 0;
+          const targetKcal = day.targets?.kcal ?? 0;
+          const targetProtein = day.targets?.protein ?? 0;
+          const kcalPct = targetKcal > 0 ? Math.min(1, kcal / targetKcal) : 0;
+          const protPct = targetProtein > 0 ? Math.min(1, protein / targetProtein) : 0;
           const x = PAD + i * gap + (gap - BAR_W) / 2;
           const barKcalH = kcalPct * H;
           const barProtH = protPct * H;
@@ -1753,10 +1759,16 @@ function MacroWeekChart() {
           const label = DAY_LABELS[dow === 0 ? 6 : dow - 1];
           return (
             <g key={day.date}>
-              <rect x={x} y={H - barKcalH} width={BAR_W} height={barKcalH} fill="rgba(59,130,246,0.28)" rx="3" />
-              <rect x={x + BAR_W * 0.2} y={H - barProtH} width={BAR_W * 0.6} height={barProtH} fill="var(--macro-protein)" rx="2" />
+              {day.status === "unknown_target" ? (
+                <rect x={x} y={H - 3} width={BAR_W} height={3} fill="rgba(150,163,144,0.35)" rx="1" />
+              ) : (
+                <>
+                  <rect x={x} y={H - barKcalH} width={BAR_W} height={barKcalH} fill="rgba(59,130,246,0.28)" rx="3" />
+                  <rect x={x + BAR_W * 0.2} y={H - barProtH} width={BAR_W * 0.6} height={barProtH} fill="var(--macro-protein)" rx="2" />
+                </>
+              )}
               <text x={x + BAR_W / 2} y={H + 18} textAnchor="middle" fill="rgba(150,163,144,0.85)" fontSize="11">{label}</text>
-              {day.protein > 0 && (
+              {day.status !== "unknown_target" && protein > 0 && (
                 <text
                   x={x + BAR_W / 2}
                   y={Math.max(11, H - barProtH - 4)}
@@ -1778,7 +1790,7 @@ function MacroWeekChart() {
           (visualmente oculta, el .chart-legend de abajo ya explica el
           color a quien sí ve las barras) da el mismo dato día a día. */}
       <table className="sr-only">
-        <caption>Calorías y proteína de los últimos 7 días, con el % del objetivo diario alcanzado</caption>
+        <caption>Calorías y proteína de los últimos 7 días, con el % del objetivo histórico de cada día alcanzado</caption>
         <thead>
           <tr>
             <th scope="col">Día</th>
@@ -1792,16 +1804,23 @@ function MacroWeekChart() {
           {history.map((day) => (
             <tr key={day.date}>
               <td>{day.date}</td>
-              <td>{Math.round(day.kcal)} kcal</td>
-              <td>{Math.round(Math.min(1, day.kcal / targetKcal) * 100)}%</td>
-              <td>{Math.round(day.protein)} g</td>
-              <td>{Math.round(Math.min(1, day.protein / targetProtein) * 100)}%</td>
+              {day.status === "unknown_target" ? (
+                <td colSpan={4}>Sin objetivo registrado ese día</td>
+              ) : (
+                <>
+                  <td>{Math.round(day.consumed?.kcal ?? 0)} kcal</td>
+                  <td>{day.targets && day.targets.kcal > 0 ? Math.round(Math.min(1, (day.consumed?.kcal ?? 0) / day.targets.kcal) * 100) : 0}%</td>
+                  <td>{Math.round(day.consumed?.protein ?? 0)} g</td>
+                  <td>{day.targets && day.targets.protein > 0 ? Math.round(Math.min(1, (day.consumed?.protein ?? 0) / day.targets.protein) * 100) : 0}%</td>
+                </>
+              )}
             </tr>
           ))}
         </tbody>
       </table>
       <p className="chart-legend">
         Las barras verdes muestran % de proteína alcanzado. Las azules, % de calorías.
+        {!adherence.historyComplete && " Cargando histórico completo…"}
       </p>
     </article>
   );
@@ -1811,29 +1830,36 @@ function MacroWeekChart() {
 
 function MacroAdherencePanel() {
   const { state } = useFoodOS();
-  const history = getMacroAdherenceHistory(state, 28);
-  const streak  = getAdherenceStreak(state);
+  // PR A: cada día compara contra SU objetivo histórico real — el % y la
+  // racha excluyen unknown_target/unlogged del denominador (ver diseño §7),
+  // y ninguno de los dos se presenta como fracaso nutricional.
+  const adherence = useAdherenceWindow(state, getToday(state), NUTRITION_ADHERENCE_WINDOW_DAYS);
+  const history = adherence.history.slice(-28);
+  const streak  = adherence.streak;
 
-  const last7   = history.slice(-7);
+  const last7 = history.slice(-7);
+  const last7Evaluable = last7.filter((d) => d.status !== "unknown_target" && d.status !== "unlogged");
   const hitDays = last7.filter((d) => d.status === "hit").length;
-  const avgKcal = Math.round(
-    last7.reduce((s, d) => {
-      const entries = state.foodLog.filter((e) => e.date === d.date);
-      return s + entries.reduce((ss, e) => ss + e.kcal, 0);
-    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
-  );
-  const avgProt = Math.round(
-    last7.reduce((s, d) => {
-      const entries = state.foodLog.filter((e) => e.date === d.date);
-      return s + entries.reduce((ss, e) => ss + e.protein, 0);
-    }, 0) / Math.max(1, last7.filter((d) => d.status !== "empty").length)
-  );
+  const avgKcal = last7Evaluable.length
+    ? Math.round(last7Evaluable.reduce((s, d) => s + (d.consumed?.kcal ?? 0), 0) / last7Evaluable.length)
+    : null;
+  const avgProt = last7Evaluable.length
+    ? Math.round(last7Evaluable.reduce((s, d) => s + (d.consumed?.protein ?? 0), 0) / last7Evaluable.length)
+    : null;
 
-  const statusColor: Record<string, string> = {
-    hit:     "var(--green)",
-    partial: "var(--amber)",
-    miss:    "rgba(239,68,68,0.55)",
-    empty:   "rgba(150,163,144,0.15)",
+  const statusColor: Record<DayAdherenceStatus, string> = {
+    hit:            "var(--green)",
+    partial:        "var(--amber)",
+    miss:           "rgba(239,68,68,0.55)",
+    unlogged:       "rgba(150,163,144,0.15)",
+    unknown_target: "rgba(150,163,144,0.15)",
+  };
+  const statusLabel: Record<DayAdherenceStatus, string> = {
+    hit: "objetivo cumplido",
+    partial: "parcial",
+    miss: "no cumplido",
+    unlogged: "sin registrar",
+    unknown_target: "sin objetivo registrado",
   };
 
   return (
@@ -1857,16 +1883,16 @@ function MacroAdherencePanel() {
           </div>
           <div className="adherence-week-stats">
             <div className="adherence-stat">
-              <span>{hitDays}/7</span>
-              <small>días objetivo esta semana</small>
+              <span>{hitDays}/{last7Evaluable.length || 7}</span>
+              <small>días objetivo esta semana{last7Evaluable.length < 7 ? " (evaluables)" : ""}</small>
             </div>
             <div className="adherence-stat">
-              <span>{avgKcal} kcal</span>
-              <small>promedio vs {state.nutrition.kcal} objetivo</small>
+              <span>{avgKcal != null ? `${avgKcal} kcal` : "—"}</span>
+              <small>promedio vs objetivo de cada día</small>
             </div>
             <div className="adherence-stat">
-              <span>{avgProt}g</span>
-              <small>proteína promedio vs {state.nutrition.protein}g</small>
+              <span>{avgProt != null ? `${avgProt}g` : "—"}</span>
+              <small>proteína promedio vs objetivo de cada día</small>
             </div>
           </div>
         </div>
@@ -1891,7 +1917,7 @@ function MacroAdherencePanel() {
             <div
               key={day.date}
               className="adherence-cell"
-              title={`${day.date}: ${day.status === "hit" ? "objetivo cumplido" : day.status === "partial" ? "parcial" : day.status === "miss" ? "no cumplido" : "sin datos"}`}
+              title={`${day.date}: ${statusLabel[day.status]}`}
               style={{ background: statusColor[day.status] }}
             />
           ))}
@@ -1901,8 +1927,11 @@ function MacroAdherencePanel() {
           <span style={{ color: "var(--green)" }}>■ Cumplido</span>
           <span style={{ color: "var(--amber)" }}>■ Parcial (proteína O kcal)</span>
           <span style={{ color: "rgba(239,68,68,0.75)" }}>■ No cumplido</span>
-          <span style={{ color: "rgba(150,163,144,0.5)" }}>■ Sin datos</span>
+          <span style={{ color: "rgba(150,163,144,0.5)" }}>■ Sin registrar / sin objetivo</span>
         </div>
+        {!adherence.historyComplete && (
+          <p className="chart-legend">Cargando histórico completo — el % y la racha pueden ajustarse al confirmarse.</p>
+        )}
       </div>
     </article>
   );

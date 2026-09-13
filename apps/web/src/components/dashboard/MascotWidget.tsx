@@ -2,8 +2,11 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { getMascot, useFoodOS, useFoodOSUI, getAdherenceStreak, getToday } from "@/lib/state";
+import { getMascot, useFoodOS, useFoodOSUI, getToday } from "@/lib/state";
 import type { MascotState } from "@/lib/state";
+import { useAdherenceWindow } from "@/lib/nutrition-history";
+
+const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 
 const LAST_VISIT_KEY = "foodos-mascot-last-visit";
 
@@ -27,8 +30,14 @@ export function MascotWidget() {
   }, [mascot.tagline, state.debugDate, triggerMascot]);
 
   // Streak celebration: ≥7 days → streak anim once per day
+  // PR A: la racha usa el objetivo histórico real de cada fecha (no el de
+  // hoy aplicado retroactivamente) — mientras el rango remoto no esté listo
+  // (historyComplete=false), se omite la celebración para no anunciar una
+  // racha que todavía podría cambiar al confirmarse el histórico completo.
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
   useEffect(() => {
-    const streak = getAdherenceStreak(state);
+    if (!adherence.historyComplete) return;
+    const streak = adherence.streak;
     if (streak >= 7) {
       const key = `foodos-streak-celebrated-${getToday(state)}`;
       if (!sessionStorage.getItem(key)) {
@@ -36,7 +45,7 @@ export function MascotWidget() {
         setTimeout(() => triggerMascot("streak", `¡${streak} días consecutivos cumpliendo macros! 🔥`), 1200);
       }
     }
-  }, [state, triggerMascot]);
+  }, [adherence.historyComplete, adherence.streak, state, triggerMascot]);
 
   // Show speech bubble when message changes
   useEffect(() => {
