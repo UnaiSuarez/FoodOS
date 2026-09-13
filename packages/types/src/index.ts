@@ -666,6 +666,57 @@ export interface NutritionGoal extends MacroTotals {
   mode: GoalMode;
 }
 
+/**
+ * PR A (coherencia histórica nutricional) — entrada congelada del histórico
+ * LOCAL de objetivos nutricionales: qué target aplicó en ESTE DISPOSITIVO
+ * para una fecha concreta. `mode`/`calculationVersion`/`recordedAt` son
+ * metadatos informativos — nunca deciden qué número se usa ni disparan un
+ * recálculo (ver resolveHistoricalGoal en nutrition.ts).
+ */
+export interface NutritionGoalLedgerEntry extends MacroTotals {
+  /** null si el valor original no era un GoalMode reconocido — nunca se
+   *  sustituye por un valor inventado como "recomp". */
+  mode: GoalMode | null;
+  /** Motor que produjo ESTOS targets exactos, o null si se desconoce. */
+  calculationVersion: string | null;
+  /** Momento de escritura local (ISO), o null si no era parseable — puro diagnóstico. */
+  recordedAt: string | null;
+}
+
+/** Clave = fecha YYYY-MM-DD. Nunca se reescribe para una fecha ya pasada —
+ *  ver recordTodayNutritionGoal en state.tsx. */
+export type NutritionGoalsLedger = Record<string, NutritionGoalLedgerEntry>;
+
+/** Fila de nutrition_goals ya saneada (fechas/números/mode/versión
+ *  validados) — ver sanitizeRemoteGoalRow en nutrition.ts. */
+export interface SanitizedRemoteGoalRow extends MacroTotals {
+  mode: GoalMode | null;
+  calculationVersion: string | null;
+}
+
+export type ResolvedGoalStatus = "known" | "unknown";
+
+/** Resultado del resolver puro central — nunca incluye "future-planned":
+ *  las fechas futuras usan la proyección del plan actual (weeklyCycle/
+ *  calcDailyTargets), no este resolver histórico. */
+export interface ResolvedDailyGoal {
+  status: ResolvedGoalStatus;
+  targets: MacroTotals | null;
+  mode: GoalMode | null;
+  source: "remote" | "local" | null;
+  calculationVersion: string | null;
+}
+
+/**
+ * Estados de adherencia diaria:
+ * - unknown_target: no existe objetivo histórico resuelto para esa fecha.
+ * - unlogged: objetivo conocido, pero sin ingesta registrada ese día.
+ * - hit/partial/miss: objetivo conocido y hay datos suficientes para evaluar.
+ * unknown_target y unlogged se excluyen del porcentaje y cortan la racha,
+ * pero NUNCA se presentan como fracaso nutricional (ver diseño PR A).
+ */
+export type DayAdherenceStatus = "unknown_target" | "unlogged" | "hit" | "partial" | "miss";
+
 /** Preferencia de reparto grasa/carbohidratos dentro del rango EFSA (20-35% kcal en grasa). */
 export type MacroPreference = "higher_carbohydrate" | "balanced" | "higher_fat";
 
@@ -995,6 +1046,11 @@ export interface FoodOSState {
   /** null hasta completar el onboarding de nutricion. */
   profile: PhysicalProfile | null;
   nutrition: NutritionGoal;
+  /** PR A — histórico local de objetivos nutricionales por fecha, ver
+   *  NutritionGoalsLedger. Se sanea (nunca se crea una entrada) dentro de
+   *  normalizeState(); la entrada de HOY solo se graba en momentos
+   *  autoritativos explícitos (recordTodayNutritionGoal). */
+  nutritionGoalsHistory: NutritionGoalsLedger;
   weeklyBudget: number;
   bankSynced: boolean;
   mascotId: string;

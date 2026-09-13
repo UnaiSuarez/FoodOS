@@ -13,16 +13,21 @@ import type {
   CardioType,
   ConfidenceLevel,
   DailyTargets,
+  DayAdherenceStatus,
   EquipmentAccess,
   ExperienceLevel,
   GoalMode,
   IntakeCoverageResult,
   MacroPreference,
   MacroTotals,
+  NutritionGoalLedgerEntry,
+  NutritionGoalsLedger,
   NutritionSafetyResult,
   PhysicalProfile,
   Recipe,
+  ResolvedDailyGoal,
   SafetyWarning,
+  SanitizedRemoteGoalRow,
   StrengthIntensity,
   TdeeBreakdown,
   TdeeUncertainty,
@@ -31,6 +36,7 @@ import type {
   WeightTrajectoryAssessment,
   WeightTrendResult,
 } from "@foodos/types";
+import { addDaysToDateKey, isValidCalendarDateKey } from "./utils";
 
 /**
  * Versión del motor de cálculo nutricional — única fuente de verdad para
@@ -2326,4 +2332,226 @@ export function monthlyAmountOf(
     case "yearly":   return amount / 12;
     default:         return amount;
   }
+}
+
+// ─── Histórico de objetivos nutricionales — ledger + resolver (PR A) ────────
+//
+// Diseño acordado (ver el hilo de aprobación, no repetido aquí en detalle):
+// - Cero carry-forward: una fecha sin fila remota NI local es "unknown" —
+//   nunca se reconstruye copiando un objetivo vecino (gym/descanso podrían
+//   diferir) ni con el perfil actual.
+// - El resolver histórico NUNCA incluye fechas futuras — esas usan
+//   weeklyCycle()/calcDailyTargets() con el plan/perfil actual, no esto.
+// - "Hoy" tiene prioridad distinta de "pasado": ver resolveHistoricalGoal.
+// - calculation_version es informativo — nunca decide qué número se usa.
+
+/** GoalMode válidos. Duplica intencionadamente el array homónimo (privado)
+ *  de data-layer.ts: nutrition.ts no debe depender de la capa de datos, y
+ *  ambos se derivan del mismo tipo GoalMode — un modo nuevo obliga a tocar
+ *  los dos sitios visiblemente (un array de strings desincronizado no lo
+ *  detecta el compilador). */
+export const GOAL_MODES: GoalMode[] = ["fat_loss", "muscle_gain", "recomp", "maintain"];
+
+const LEDGER_RETENTION_DAYS = 60; // [hoy-59, hoy] inclusive — cubre al consumidor más largo (racha, 60 días)
+const MAX_REASONABLE_KCAL = 20000;
+const MAX_REASONABLE_MACRO_G = 2000;
+const MAX_CALCULATION_VERSION_LENGTH = 64;
+
+function isFiniteNonNegative(n: unknown, max: number): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= max;
+}
+
+function sanitizeMode(raw: unknown): GoalMode | null {
+  return typeof raw === "string" && GOAL_MODES.includes(raw as GoalMode) ? (raw as GoalMode) : null;
+}
+
+function sanitizeCalculationVersion(raw: unknown): string | null {
+  return typeof raw === "string" && raw.length > 0 && raw.length <= MAX_CALCULATION_VERSION_LENGTH ? raw : null;
+}
+
+function sanitizeLedgerRow(raw: unknown): NutritionGoalLedgerEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (!isFiniteNonNegative(r.kcal, MAX_REASONABLE_KCAL)) return null;
+  if (!isFiniteNonNegative(r.protein, MAX_REASONABLE_MACRO_G)) return null;
+  if (!isFiniteNonNegative(r.carbs, MAX_REASONABLE_MACRO_G)) return null;
+  if (!isFiniteNonNegative(r.fat, MAX_REASONABLE_MACRO_G)) return null;
+  const recordedAt = typeof r.recordedAt === "string" && !Number.isNaN(Date.parse(r.recordedAt)) ? r.recordedAt : null;
+  return {
+    kcal: r.kcal as number, protein: r.protein as number, carbs: r.carbs as number, fat: r.fat as number,
+    mode: sanitizeMode(r.mode),
+    calculationVersion: sanitizeCalculationVersion(r.calculationVersion),
+    recordedAt,
+  };
+}
+
+/**
+ * PURA — sanitización/retención del ledger existente. Nunca añade la
+ * entrada de hoy (eso es responsabilidad exclusiva de
+ * recordTodayNutritionGoal, en un momento autoritativo explícito).
+ *
+ * `realTodayKey` debe ser SIEMPRE el reloj real (todayPlus(0)) — NUNCA
+ * state.debugDate: simular otra fecha con fines de QA no debe poder borrar
+ * historial real fuera de la ventana de retención relativa a esa fecha
+ * simulada. Claves duplicadas son estructuralmente imposibles en `raw` una
+ * vez que pasó por JSON.parse (un objeto JS no puede tener dos claves
+ * iguales) — no hace falta lógica adicional para ese caso.
+ */
+export function sanitizeNutritionGoalsLedger(raw: unknown, realTodayKey: string): NutritionGoalsLedger {
+  const result: NutritionGoalsLedger = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return result;
+  const retentionFloor = addDaysToDateKey(realTodayKey, -(LEDGER_RETENTION_DAYS - 1));
+  for (const [dateKey, rowRaw] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isValidCalendarDateKey(dateKey)) continue;
+    if (dateKey < retentionFloor || dateKey > realTodayKey) continue;
+    const row = sanitizeLedgerRow(rowRaw);
+    if (!row) continue;
+    result[dateKey] = row;
+  }
+  return result;
+}
+
+/** Sanea una fila cruda de `nutrition_goals` (snake_case, tal cual la
+ *  devuelve Supabase) — mismos criterios que sanitizeLedgerRow, adaptados a
+ *  las columnas reales de la tabla. Descarta la fila entera si la fecha o
+ *  cualquiera de los 4 macros no es válido; mode/calculation_version
+ *  degradan a null en vez de descartar (son metadatos, no el número). */
+export function sanitizeRemoteGoalRow(row: {
+  goal_date: unknown;
+  kcal_target: unknown;
+  protein_target_g: unknown;
+  carbs_target_g: unknown;
+  fat_target_g: unknown;
+  mode: unknown;
+  calculation_version: unknown;
+}): ({ goalDate: string } & SanitizedRemoteGoalRow) | null {
+  const goalDate = String(row.goal_date ?? "");
+  if (!isValidCalendarDateKey(goalDate)) return null;
+  const kcal = Number(row.kcal_target);
+  const protein = Number(row.protein_target_g);
+  const carbs = Number(row.carbs_target_g);
+  const fat = Number(row.fat_target_g);
+  if (!isFiniteNonNegative(kcal, MAX_REASONABLE_KCAL)) return null;
+  if (!isFiniteNonNegative(protein, MAX_REASONABLE_MACRO_G)) return null;
+  if (!isFiniteNonNegative(carbs, MAX_REASONABLE_MACRO_G)) return null;
+  if (!isFiniteNonNegative(fat, MAX_REASONABLE_MACRO_G)) return null;
+  return {
+    goalDate, kcal, protein, carbs, fat,
+    mode: sanitizeMode(row.mode),
+    calculationVersion: sanitizeCalculationVersion(row.calculation_version),
+  };
+}
+
+function macrosEqual(a: MacroTotals, b: MacroTotals): boolean {
+  return a.kcal === b.kcal && a.protein === b.protein && a.carbs === b.carbs && a.fat === b.fat;
+}
+
+function knownGoal(entry: MacroTotals & { mode: GoalMode | null; calculationVersion: string | null }, source: "remote" | "local"): ResolvedDailyGoal {
+  return {
+    status: "known",
+    targets: { kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat },
+    mode: entry.mode,
+    source,
+    calculationVersion: entry.calculationVersion,
+  };
+}
+
+function unknownGoal(): ResolvedDailyGoal {
+  return { status: "unknown", targets: null, mode: null, source: null, calculationVersion: null };
+}
+
+/**
+ * Selector puro central: fecha + histórico remoto + histórico local →
+ * objetivo resuelto | desconocido. Única fuente de verdad para las 5+
+ * vistas que comparan días pasados contra un objetivo — ninguna debe
+ * reconstruir esta prioridad por su cuenta.
+ *
+ * - Pasado (`dateKey < todayKey`): el remoto es la fuente duradera; el
+ *   local solo cubre su ausencia (offline, sin cuenta, o aún no
+ *   sincronizado). Sin carry-forward: sin fila en ninguna fuente → unknown.
+ * - Hoy (`dateKey === todayKey`): "hoy" sigue siendo mutable en ESTE
+ *   dispositivo. recordTodayNutritionGoal (state.tsx) solo escribe la
+ *   entrada local en momentos autoritativos — si difiere de la fila remota
+ *   (o esta no existe todavía), el local es por construcción más reciente
+ *   que lo que el remoto ha podido reflejar. No se consulta ninguna señal
+ *   de sincronización (outbox.hasPending es global a todo el snapshot,
+ *   no específica de un cambio nutricional) — la comparación de valores
+ *   basta y no se dispara si no hubo cambio real.
+ * - Futuro (`dateKey > todayKey`): fuera de este resolver — lanza. Usar la
+ *   proyección del plan actual (weeklyCycle/calcDailyTargets).
+ */
+export function resolveHistoricalGoal(
+  dateKey: string,
+  todayKey: string,
+  remoteByDate: Map<string, SanitizedRemoteGoalRow>,
+  localHistory: NutritionGoalsLedger,
+): ResolvedDailyGoal {
+  if (dateKey > todayKey) {
+    throw new Error("resolveHistoricalGoal: fecha futura — usar la proyección del plan actual, no el resolver histórico");
+  }
+  const remote = remoteByDate.get(dateKey);
+  const local = localHistory[dateKey];
+
+  if (dateKey === todayKey) {
+    if (local && (!remote || !macrosEqual(local, remote) || local.mode !== remote.mode)) return knownGoal(local, "local");
+    if (remote) return knownGoal(remote, "remote");
+    if (local) return knownGoal(local, "local");
+    return unknownGoal();
+  }
+
+  if (remote) return knownGoal(remote, "remote");
+  if (local) return knownGoal(local, "local");
+  return unknownGoal();
+}
+
+/**
+ * Clasifica un día ya resuelto. Mismos umbrales que la implementación
+ * previa de getMacroAdherenceHistory (0.8 proteína; kcal entre 0.8 y 1.15) —
+ * sin cambios de semántica, solo de origen del objetivo.
+ * unlogged (objetivo conocido, sin ingesta) nunca es "miss" — igual
+ * criterio que countLowProteinDays: sin datos no es lo mismo que incumplir.
+ */
+export function classifyDayAdherence(resolved: ResolvedDailyGoal, dayTotals: MacroTotals | null): DayAdherenceStatus {
+  if (resolved.status === "unknown") return "unknown_target";
+  if (!dayTotals) return "unlogged";
+  const target = resolved.targets!;
+  const protOk = target.protein > 0 && dayTotals.protein >= target.protein * 0.8;
+  const kcalOk = target.kcal > 0 && dayTotals.kcal >= target.kcal * 0.8 && dayTotals.kcal <= target.kcal * 1.15;
+  if (protOk && kcalOk) return "hit";
+  if (protOk || kcalOk) return "partial";
+  return "miss";
+}
+
+export interface AdherenceStats {
+  hitDays: number;
+  /** Total menos los días unknown_target/unlogged — denominador real del %. */
+  evaluableDays: number;
+  totalDays: number;
+  /** null si evaluableDays === 0 — nunca un falso 0%. */
+  pct: number | null;
+}
+
+/** unknown_target y unlogged se excluyen del numerador Y del denominador. */
+export function getAdherenceStats(history: DayAdherenceStatus[]): AdherenceStats {
+  const evaluable = history.filter((s) => s !== "unknown_target" && s !== "unlogged");
+  const hit = evaluable.filter((s) => s === "hit").length;
+  return {
+    hitDays: hit,
+    evaluableDays: evaluable.length,
+    totalDays: history.length,
+    pct: evaluable.length > 0 ? hit / evaluable.length : null,
+  };
+}
+
+/** Racha desde el día más reciente hacia atrás. unknown_target/unlogged
+ *  cortan la continuidad igual que miss/partial — no son fracaso
+ *  nutricional, pero tampoco se pueden saltar sin verificar: no se puede
+ *  presentar una racha continua sobre una semana sin objetivos. */
+export function getAdherenceStreakFromStatuses(history: DayAdherenceStatus[]): number {
+  let streak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i] === "hit") streak++;
+    else break;
+  }
+  return streak;
 }

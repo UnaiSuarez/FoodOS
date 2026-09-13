@@ -96,6 +96,19 @@ export function dateFromKey(dateKey: string): Date {
   return new Date(`${dateKey}T12:00:00`);
 }
 
+/** Valida que `dateKey` sea una fecha de calendario real en formato
+ *  YYYY-MM-DD — una regex por sí sola acepta "2026-02-30" (JS Date la
+ *  normaliza en silencio a 2026-03-02, sin avisar). Reutiliza
+ *  dateFromKey/dateKeyFromDate (ancladas a mediodía LOCAL, nunca UTC) en vez
+ *  de un parser propio: si el roundtrip no devuelve la misma cadena, la
+ *  fecha no existe. PR A (coherencia histórica nutricional): primera
+ *  implementación de esta validación en el repo — no había ninguna previa
+ *  que reutilizar en la capa de sincronización. */
+export function isValidCalendarDateKey(dateKey: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return false;
+  return dateKeyFromDate(dateFromKey(dateKey)) === dateKey;
+}
+
 export function addDaysToDateKey(dateKey: string, days: number): string {
   const date = dateFromKey(dateKey);
   date.setDate(date.getDate() + days);
