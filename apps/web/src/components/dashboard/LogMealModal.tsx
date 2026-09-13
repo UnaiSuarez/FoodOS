@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MacroTotals, MealType, Recipe } from "@foodos/types";
+import type { MacroTotals, MealType, Recipe, UnitSizeUnit } from "@foodos/types";
 import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealFromPhoto, estimateMealMacros } from "@/lib/ai-inventory";
@@ -25,6 +25,11 @@ interface DishIngredient {
   fromInventoryId?: string;
   /** Gramos/ml por unidad cuando unit==="ud", heredado del item de inventario. */
   unitSize?: number;
+  /** Dimensión de unitSize, heredada del item de inventario — se propaga al
+      snapshot de consumedIngredients (confirmDish) para que, si el item se
+      recrea al borrar esta entrada (restoreInventoryQty), no pierda la
+      dimensión que ya tenía declarada. */
+  unitSizeUnit?: UnitSizeUnit;
 }
 
 interface DishSuggestion {
@@ -38,6 +43,7 @@ interface DishSuggestion {
   fatPer100: number;
   invId?: string;
   unitSize?: number;
+  unitSizeUnit?: UnitSizeUnit;
 }
 
 function calcIngMacros(ing: DishIngredient): MacroTotals {
@@ -239,6 +245,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
           fatPer100,
           invId: item.id,
           unitSize: item.unitSize,
+          unitSizeUnit: item.unitSizeUnit,
         };
       });
 
@@ -296,6 +303,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         fatPer100: s.fatPer100,
         fromInventoryId: s.invId,
         unitSize: s.unitSize,
+        unitSizeUnit: s.unitSizeUnit,
       },
     ]);
     setDishSearch("");
@@ -335,7 +343,8 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
             snapshot: {
               storage: item.storage, expires: item.expires, price: item.price,
               kcal: item.kcal, protein: item.protein, carbs: item.carbs, fat: item.fat,
-              salt: item.salt, fiber: item.fiber, sugars: item.sugars, unitSize: item.unitSize,
+              salt: item.salt, fiber: item.fiber, sugars: item.sugars,
+              unitSize: item.unitSize, unitSizeUnit: item.unitSizeUnit,
             },
           });
         }
@@ -415,6 +424,13 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         qty: dishPortions,
         unit: "ud",
         unitSize: gramsPerPortion,
+        // "g": dishTotalGrams (y por tanto gramsPerPortion) viene de sumar
+        // toGrams() de cada ingrediente — la misma convención "per 100 g"
+        // que ya usa el resto de la app para macros, sea el ingrediente
+        // sólido o líquido. No es una suposición nueva: es declarar la
+        // dimensión que este cálculo YA asume, para que el plato guardado
+        // sea utilizable en conversiones estrictas (convertQty).
+        unitSizeUnit: "g",
         storage: dishStorage,
         expires: todayPlus(3),
         price: 0,

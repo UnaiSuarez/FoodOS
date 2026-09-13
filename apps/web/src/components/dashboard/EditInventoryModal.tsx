@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { InventoryItem, StorageName } from "@foodos/types";
+import type { InventoryItem, StorageName, UnitSizeUnit } from "@foodos/types";
 import { isImageUrlReferencedElsewhere, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { Modal } from "./Modal";
@@ -19,6 +19,11 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
     kcal: item.kcal,
     protein: item.protein,
     unitSize: item.unitSize ?? 60,
+    // Ronda de corrección: unitSize por sí solo no dice si son gramos o
+    // mililitros. Si el item es legacy (sin unitSizeUnit guardado), NO se
+    // asume "g" en silencio — queda sin elegir y save() bloquea hasta que
+    // el usuario lo confirme explícitamente (fuerza la migración al editar).
+    unitSizeUnit: item.unitSizeUnit as UnitSizeUnit | undefined,
     imageUrl: item.imageUrl as string | undefined,
   });
 
@@ -29,6 +34,8 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
   function save() {
     if (!form.name.trim()) { showToast("El nombre no puede estar vacío"); return; }
     if (!(form.qty > 0)) { showToast("La cantidad debe ser mayor que 0"); return; }
+    if (form.unit === "ud" && !(form.unitSize > 0)) { showToast("El tamaño por unidad debe ser mayor que 0"); return; }
+    if (form.unit === "ud" && !form.unitSizeUnit) { showToast("Indica si el tamaño por unidad es en gramos o mililitros"); return; }
     const newImageUrl = form.imageUrl?.trim() || undefined;
     // Si se reemplazó o quitó la foto, limpiar la anterior de Storage — salvo
     // que otro lote la siga usando (comprobado con el estado ANTES de mutar).
@@ -47,6 +54,7 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       it.kcal = form.kcal;
       it.protein = form.protein;
       it.unitSize = form.unit === "ud" ? form.unitSize : undefined;
+      it.unitSizeUnit = form.unit === "ud" ? form.unitSizeUnit : undefined;
       it.imageUrl = newImageUrl;
       // Si el usuario corrige kcal/proteína a mano, ya no es una estimación
       // de IA sin revisar — quitamos el aviso.
@@ -79,13 +87,26 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
           </select>
         </label>
         {form.unit === "ud" && (
-          <label>
-            Tamaño por unidad (g/ml)
-            <input
-              type="number" min="1" step="1" value={form.unitSize}
-              onChange={(e) => setField("unitSize", Number(e.target.value))}
-            />
-          </label>
+          <>
+            <label>
+              Tamaño por unidad
+              <input
+                type="number" min="1" step="1" value={form.unitSize}
+                onChange={(e) => setField("unitSize", Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Ese tamaño es en...
+              <select
+                value={form.unitSizeUnit ?? ""}
+                onChange={(e) => setField("unitSizeUnit", (e.target.value || undefined) as UnitSizeUnit | undefined)}
+              >
+                <option value="" disabled>Selecciona una magnitud…</option>
+                <option value="g">Gramos (sólido, ej. 1 huevo = 60 g)</option>
+                <option value="ml">Mililitros (líquido, ej. 1 lata = 250 ml)</option>
+              </select>
+            </label>
+          </>
         )}
         <label>
           Almacén
