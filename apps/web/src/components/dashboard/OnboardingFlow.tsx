@@ -103,7 +103,14 @@ export function OnboardingFlow({ onDone }: Props) {
     mutate((draft) => { draft.profile = profile; });
 
     // Snapshot inicial — mismo criterio que ProfileForm: solo en este evento
-    // explícito (completar onboarding), nunca desde un render.
+    // explícito (completar onboarding), nunca desde un render. Decisión
+    // explícita (corrección de revisión, P1 "no se revisaron realmente los
+    // cinco callsites"): MEJOR ESFUERZO — el perfil ya se guardó arriba vía
+    // mutate() (que sí pasa por el gate y por la outbox); esto es solo un
+    // registro de trazabilidad ("cómo se calculó"), nunca condiciona
+    // ninguna mutación posterior. `blocked`/`unavailable`/`error` no
+    // necesitan aviso propio aquí — no hay ningún camino feliz del que
+    // excluirlos.
     void remote.saveNutritionSnapshot({
       calculationVersion: NUTRITION_ENGINE_VERSION,
       triggerReason: "initial_calculation",

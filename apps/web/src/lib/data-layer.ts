@@ -58,6 +58,27 @@ class AbortedPushError extends Error {
 // una operación de red: en curso, confirmada, o fallida.
 export type SyncPushStatus = "syncing" | "saved" | "error";
 
+/** Contrato de bloqueo explícito para las escrituras directas a Supabase que
+    NO pasan por outbox/schedulePush (uploadProductImage, deleteProductImage,
+    saveNutritionSnapshot, createAdjustmentReview — ver diseño v5 de
+    hidratación, corrección §4/§9). Nunca colapsar "sin sesión"/"bloqueado
+    por el gate"/"error real" en el mismo `null`/`void` que antes: el caller
+    debe poder distinguir "no aplica" (unavailable) de "espera, no ahora"
+    (blocked) de "falló de verdad" (error) — solo "ok" habilita el camino
+    feliz (mostrar éxito, encadenar una mutación local dependiente).
+    "stale-session" (corrección de revisión, P1 "falta proteger operaciones
+    directas que cambian de sesión mientras esperan"): la operación empezó
+    para un usuario/epoch que ya no es el vigente cuando se comprobó tras un
+    `await` — el caller debe IGNORARLO POR COMPLETO (nunca mostrar éxito, ni
+    error, ni encadenar ninguna mutación local: lo que se estaba mirando ya
+    no existe). */
+export type RemoteMutationResult<T> =
+  | { kind: "ok"; value: T }
+  | { kind: "blocked" }
+  | { kind: "unavailable" }
+  | { kind: "stale-session" }
+  | { kind: "error"; error: unknown };
+
 // Capa de persistencia de FoodOS.
 // - Local: localStorage, siempre activa.
 // - Remota: Supabase (supabase/schema.sql). Se activa con .env.local y sesion.
@@ -184,6 +205,48 @@ class RemoteAdapter {
       viene a continuación es explícito (la decisión sobre lo pendiente ya
       se tomó) y no debe tratarlo como una expulsión involuntaria a aparcar. */
   explicitSignOutInProgress = false;
+
+  /** Gate EXCLUSIVO de las 5 escrituras directas a Supabase que no pasan por
+      outbox/schedulePush (diseño v5 de hidratación, corrección §3/§6).
+      Empieza CERRADO (fail-closed: un singleton reutilizado entre montajes o
+      tests no debe arrancar en "permitido" por defecto) — FoodOSProvider lo
+      abre explícitamente solo cuando ya sabemos que es seguro escribir
+      directamente: modo local puro, o sesión Supabase con
+      canAcceptRemoteMutations(scope) === true. NUNCA se consulta desde
+      schedulePush/runPush/pushState/ensureBaseRows/pullState/el reenvío de
+      un pending — esas son operaciones de RECUPERACIÓN interna, validadas
+      solo por epoch/generación (isCurrent()), jamás por este booleano: si lo
+      bloquearan, un resetAll() con un pending real en la outbox nunca
+      podría confirmarse (el propio pending necesita schedulePush para
+      resolverse, y la hidratación nunca terminaría de esperarlo) — deadlock
+      documentado explícitamente en la revisión que motivó esta separación. */
+  private userMutationsAllowed = false;
+
+  setUserMutationsAllowed(allowed: boolean): void {
+    this.userMutationsAllowed = allowed;
+  }
+
+  /** Corrección de revisión (P1, "falta proteger operaciones directas que
+      cambian de sesión mientras esperan"): el gate solo se comprueba ANTES
+      del primer `await` de cada escritura directa — una vez en vuelo, nada
+      impedía que la sesión cambiara de A a B mientras la operación seguía
+      esperando red, y que el resultado (URL subida, propuesta creada,
+      ajuste aceptado) se aplicara sobre el estado de B. Cada una de las 5
+      escrituras directas captura esta identidad ANTES de su primer await y
+      la revuelve a comprobar tras CADA await posterior (sessionIdentityChanged) —
+      si cambió, se descarta como "stale-session" en vez de devolver "ok".
+      Usa `identity.userId` (nunca `this.user?.id` releído tarde) para
+      cualquier dato que vaya a Supabase (user_id de una fila, carpeta de
+      Storage) — así, aunque la sesión cambie A MITAD de una llamada ya
+      enviada, el destino sigue siendo el de la sesión que la inició. */
+  private captureSessionIdentity(): { userId: string; epoch: number } | null {
+    if (!this.user) return null;
+    return { userId: this.user.id, epoch: this.sessionEpoch };
+  }
+
+  private sessionIdentityChanged(identity: { userId: string; epoch: number }): boolean {
+    return this.user?.id !== identity.userId || this.sessionEpoch !== identity.epoch;
+  }
 
   // ── RPC de agua: cola propia, separada del snapshot genérico, pero
   // integrada en el estado de sincronización visible (ver hasPendingWater
@@ -337,6 +400,11 @@ class RemoteAdapter {
     // de tocar nada compartido — ver processWaterQueue().
     this.activeWaterWorker = null;
     this.waterHasError = false;
+    // Corrección de revisión (bloqueante §6, diseño v5): fail-closed en TODO
+    // cambio real de sesión — FoodOSProvider decide cuándo reabrirlo (nunca
+    // este método, que no sabe si el usuario nuevo ya está listo para
+    // aceptar mutaciones directas).
+    this.userMutationsAllowed = false;
   }
 
   async init(): Promise<boolean> {
@@ -475,51 +543,133 @@ class RemoteAdapter {
   }
 
   /** Sube una foto de producto (data-URL JPEG ya comprimida) a Storage y
-      devuelve su URL pública. null si no hay sesión — el caller decide el
-      fallback (guardar el base64 en el estado, modo local). Así el estado
-      solo lleva URLs y no ~30-80KB de base64 por foto en cada serialización. */
-  async uploadProductImage(dataUrl: string): Promise<string | null> {
-    if (!this.client || !this.user) return null;
-    const blob = await (await fetch(dataUrl)).blob();
-    const path = `${this.user.id}/${crypto.randomUUID()}.jpg`;
-    const { error } = await this.client.storage
-      .from("product-images")
-      .upload(path, blob, { contentType: "image/jpeg" });
-    if (error) throw error;
-    return this.client.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+      devuelve su URL pública. Corrección de revisión (§4/§9, diseño v5):
+      antes colapsaba "sin sesión" en el mismo `null` que un caller no podía
+      distinguir de "bloqueado ahora mismo" — con RemoteMutationResult,
+      "unavailable" (sin sesión) y "blocked" (gate cerrado, sincronización en
+      curso) son casos DISTINTOS del caller, y ninguno de los dos permite
+      mostrar éxito. El caller decide el fallback (guardar el base64 en el
+      estado, modo local) SOLO para "unavailable" y "error" — así el estado
+      solo lleva URLs y no ~30-80KB de base64 por foto en cada serialización
+      cuando SÍ hay sesión y el gate está abierto. "blocked" y "stale-session"
+      no llaman a onChange: ver ImagePickerField.tsx. */
+  async uploadProductImage(dataUrl: string): Promise<RemoteMutationResult<string>> {
+    if (!this.userMutationsAllowed) return { kind: "blocked" };
+    if (!this.client || !this.user) return { kind: "unavailable" };
+    const identity = this.captureSessionIdentity()!;
+    const client = this.client;
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      // `identity.userId`, no `this.user.id` releído aquí — la carpeta de
+      // destino queda fijada a la sesión que INICIÓ la subida.
+      const path = `${identity.userId}/${crypto.randomUUID()}.jpg`;
+      const { error } = await client.storage
+        .from("product-images")
+        .upload(path, blob, { contentType: "image/jpeg" });
+      if (this.sessionIdentityChanged(identity)) {
+        // La subida pudo haber tenido éxito igualmente. Este intento de
+        // limpieza es MEJOR ESFUERZO, nunca una garantía (corrección de
+        // revisión, P1 §7): `client` sigue siendo el mismo objeto, pero para
+        // cuando esto se ejecuta ya lleva la sesión de B — RLS normalmente
+        // solo deja borrar la carpeta del usuario AUTENTICADO ahora mismo
+        // (B), así que este remove() bajo la ruta de A probablemente
+        // FALLARÁ y dejará un huérfano en Storage; nunca se afirma lo
+        // contrario. `.catch()` explícito: es fire-and-forget (`void`), un
+        // rechazo sin capturar aquí sería una unhandled rejection real.
+        if (!error) {
+          void client.storage.from("product-images").remove([path]).catch((cleanupError) => {
+            console.warn("FoodOS: no se pudo limpiar la subida huérfana tras un cambio de sesión (mejor esfuerzo, esperable por RLS)", cleanupError);
+          });
+        }
+        return { kind: "stale-session" };
+      }
+      if (error) return { kind: "error", error };
+      const publicUrl = client.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+      return { kind: "ok", value: publicUrl };
+    } catch (error) {
+      // Corrección de revisión (P1, "las cinco escrituras directas
+      // comprueban A→B al resolver pero no al rechazar"): sin esto, una
+      // subida iniciada por A cuya promesa RECHAZA (en vez de resolver con
+      // `{error}`) devolvía `kind:"error"` sin comprobar identidad — el
+      // caller (ImagePickerField) entraba en su fallback y ejecutaba
+      // `onChange(dataUrl)` sobre el formulario de B con un dataUrl que
+      // nunca fue suyo. Misma comprobación que en el camino de éxito, ahora
+      // también en el de rechazo.
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      return { kind: "error", error };
+    }
   }
 
   /** Borra una foto de producto de Storage cuando ya no la referencia ningún
-      item (comprobarlo antes con isImageUrlReferencedElsewhere). No lanza: es
-      limpieza de mejor esfuerzo, un fallo aquí no debe romper la mutación que
-      la disparó (borrar/editar el item). Ignora URLs que no sean de nuestro
-      bucket (fotos base64 legacy, o una URL externa pegada a mano). */
-  async deleteProductImage(url: string): Promise<void> {
-    if (!this.client || !this.user) return;
+      item (comprobarlo antes con isImageUrlReferencedElsewhere). Limpieza de
+      mejor esfuerzo: un fallo, un "unavailable" o un "blocked" no debe romper
+      la mutación que la disparó (borrar/editar el item) — todos los
+      callsites actuales son `void remote.deleteProductImage(...)` y así
+      siguen siéndolo; RemoteMutationResult existe aquí solo para que un
+      futuro caller que SÍ necesite saber el resultado pueda distinguirlo,
+      sin cambiar el comportamiento fire-and-forget de hoy. Ignora URLs que no
+      sean de nuestro bucket (fotos base64 legacy, o una URL externa pegada a
+      mano) — ninguno de esos casos es "blocked" ni "error", son "ok" con
+      valor vacío: no había nada que borrar, no es un fallo. */
+  async deleteProductImage(url: string): Promise<RemoteMutationResult<void>> {
+    if (!this.userMutationsAllowed) return { kind: "blocked" };
+    if (!this.client || !this.user) return { kind: "unavailable" };
+    const identity = this.captureSessionIdentity()!;
+    const client = this.client;
     const marker = "/product-images/";
     const idx = url.indexOf(marker);
-    if (idx === -1) return;
+    if (idx === -1) return { kind: "ok", value: undefined };
     const path = url.slice(idx + marker.length);
-    if (!path.startsWith(`${this.user.id}/`)) return; // defensivo: solo la carpeta propia
-    const { error } = await this.client.storage.from("product-images").remove([path]);
-    if (error) console.warn("FoodOS: no se pudo borrar la imagen huérfana de Storage", error);
+    if (!path.startsWith(`${identity.userId}/`)) return { kind: "ok", value: undefined }; // defensivo: solo la carpeta propia de la sesión que llamó
+    // Corrección de revisión (P1, "deleteProductImage() no captura una
+    // excepción de storage.remove()"): sin try/catch, un rechazo real (no
+    // el `{error}` habitual de supabase-js, sino una excepción de red/CDP)
+    // se propagaba como promesa rechazada — como los dos callsites actuales
+    // son `void remote.deleteProductImage(...)` (fire-and-forget), eso es
+    // una unhandled rejection real, no solo teórica.
+    try {
+      const { error } = await client.storage.from("product-images").remove([path]);
+      // El borrado ya se envió/aplicó bajo `identity.userId` (fijado antes
+      // del await) — un cambio de sesión mientras tanto no puede haber
+      // afectado a los archivos de OTRO usuario; esto solo decide qué le
+      // reportamos al caller original, que además ya trata esta función
+      // como mejor esfuerzo.
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      if (error) {
+        console.warn("FoodOS: no se pudo borrar la imagen huérfana de Storage", error);
+        return { kind: "error", error };
+      }
+      return { kind: "ok", value: undefined };
+    } catch (error) {
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      console.warn("FoodOS: error borrando la imagen huérfana de Storage", error);
+      return { kind: "error", error };
+    }
   }
 
   /** Guarda un snapshot inmutable de cómo se calculó un objetivo nutricional y
       enlaza nutrition_goals de hoy con él (source_snapshot_id). Llamar SOLO
       desde eventos explícitos del usuario (guardar perfil, cambiar objetivo,
       recalcular manualmente) — nunca desde un render o el sync periódico, o
-      generaría un snapshot por cada tecla. No lanza: si falla, el perfil ya
-      se guardó igualmente — perder la trazabilidad de un snapshot no debe
-      bloquear al usuario. */
-  async saveNutritionSnapshot(snapshot: NutritionCalculationSnapshot): Promise<void> {
-    if (!this.client || !this.user) return;
-    const userId = this.user.id;
+      generaría un snapshot por cada tecla. Todos los callsites actuales son
+      `void remote.saveNutritionSnapshot(...)`: si falla, el perfil ya se
+      guardó igualmente (viaja por mutate()/outbox, aparte) — perder la
+      trazabilidad de un snapshot no debe bloquear al usuario.
+      RemoteMutationResult (§4/§9, diseño v5) distingue "blocked" (gate
+      cerrado) de "unavailable" (sin sesión) de "error" (falló de verdad) —
+      ningún callsite actual consume el resultado hoy, pero el contrato
+      queda listo para el que sí necesite reaccionar a un bloqueo. */
+  async saveNutritionSnapshot(snapshot: NutritionCalculationSnapshot): Promise<RemoteMutationResult<void>> {
+    if (!this.userMutationsAllowed) return { kind: "blocked" };
+    if (!this.client || !this.user) return { kind: "unavailable" };
+    const identity = this.captureSessionIdentity()!;
+    const client = this.client;
     try {
-      const { data, error } = await this.client
+      const { data, error } = await client
         .from("nutrition_calculation_snapshots")
         .insert({
-          user_id: userId,
+          user_id: identity.userId,
           calculation_version: snapshot.calculationVersion,
           trigger_reason: snapshot.triggerReason,
           input_snapshot: snapshot.inputSnapshot,
@@ -531,15 +681,31 @@ class RemoteAdapter {
         })
         .select("id")
         .single();
-      if (error || !data) { console.warn("FoodOS: no se pudo guardar el snapshot nutricional", error); return; }
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      if (error || !data) {
+        console.warn("FoodOS: no se pudo guardar el snapshot nutricional", error);
+        return { kind: "error", error };
+      }
 
-      await this.client
+      const { error: linkError } = await client
         .from("nutrition_goals")
         .update({ source_snapshot_id: data.id, calculation_version: snapshot.calculationVersion })
-        .eq("user_id", userId)
+        .eq("user_id", identity.userId)
         .eq("goal_date", today());
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
+      if (linkError) {
+        console.warn("FoodOS: snapshot guardado pero no se pudo enlazar a nutrition_goals", linkError);
+        return { kind: "error", error: linkError };
+      }
+      return { kind: "ok", value: undefined };
     } catch (err) {
+      // Corrección de revisión (P1, "las cinco escrituras directas
+      // comprueban A→B al resolver pero no al rechazar") — misma
+      // comprobación que en los dos caminos de éxito de arriba, ahora
+      // también cuando la promesa RECHAZA en vez de resolver con `{error}`.
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
       console.warn("FoodOS: error guardando el snapshot nutricional", err);
+      return { kind: "error", error: err };
     }
   }
 
@@ -645,19 +811,32 @@ class RemoteAdapter {
       Llamar SOLO desde el botón explícito "Generar propuesta" — nunca
       automáticamente desde un render o temporizador. Devuelve la propuesta
       creada (o null si no procedía o falló). */
+  /** Corrección de revisión (§4/§9, diseño v5): antes devolvía
+      `AdjustmentProposal | null`, donde `null` mezclaba tres causas muy
+      distintas — sin sesión, la revisión concluyó que no procede proponer
+      nada (`!decision.shouldPropose`, un resultado VÁLIDO, no un fallo), y
+      un fallo real de Supabase. Con RemoteMutationResult, "unavailable" y
+      "blocked" quedan aparte de "error"; `!decision.shouldPropose` sigue
+      siendo `{kind:"ok", value:null}` — sigue siendo éxito (la revisión se
+      guardó y concluyó que no hace falta ajuste), simplemente sin propuesta
+      que mostrar — el caller (NutritionView) ya trataba ese `null` como "no
+      hay nada que mostrar todavía" sin toast de error específico, y ese
+      comportamiento se conserva íntegro. */
   async createAdjustmentReview(params: {
     snapshot: NutritionCalculationSnapshot;
     decision: AdjustmentDecision;
     evidence: AdjustmentProposalEvidence;
-  }): Promise<AdjustmentProposal | null> {
-    if (!this.client || !this.user) return null;
-    const userId = this.user.id;
+  }): Promise<RemoteMutationResult<AdjustmentProposal | null>> {
+    if (!this.userMutationsAllowed) return { kind: "blocked" };
+    if (!this.client || !this.user) return { kind: "unavailable" };
+    const identity = this.captureSessionIdentity()!;
+    const client = this.client;
     try {
       const { snapshot, decision, evidence } = params;
-      const { data: snapshotRow, error: snapshotError } = await this.client
+      const { data: snapshotRow, error: snapshotError } = await client
         .from("nutrition_calculation_snapshots")
         .insert({
-          user_id: userId,
+          user_id: identity.userId,
           calculation_version: snapshot.calculationVersion,
           trigger_reason: snapshot.triggerReason,
           input_snapshot: snapshot.inputSnapshot,
@@ -669,17 +848,22 @@ class RemoteAdapter {
         })
         .select("id")
         .single();
+      // Corrección de revisión (P1): comprobar identidad AQUÍ, antes de
+      // seguir — una propuesta creada para A nunca debe terminar
+      // instalándose en el estado local de B (ver el caller en
+      // NutritionView.tsx, que solo hace mutate() si kind==="ok").
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
       if (snapshotError || !snapshotRow) {
         console.warn("FoodOS: no se pudo guardar el snapshot de revisión adaptativa", snapshotError);
-        return null;
+        return { kind: "error", error: snapshotError };
       }
 
-      if (!decision.shouldPropose) return null;
+      if (!decision.shouldPropose) return { kind: "ok", value: null };
 
-      const { data: proposalRow, error: proposalError } = await this.client
+      const { data: proposalRow, error: proposalError } = await client
         .from("nutrition_adjustment_proposals")
         .insert({
-          user_id: userId,
+          user_id: identity.userId,
           snapshot_id: snapshotRow.id,
           current_target_kcal: decision.proposedTargetKcal - decision.deltaKcal,
           proposed_target_kcal: decision.proposedTargetKcal,
@@ -689,15 +873,20 @@ class RemoteAdapter {
         })
         .select("id, current_target_kcal, proposed_target_kcal, delta_kcal, reason, status, created_at, resolved_at, evidence")
         .single();
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
       if (proposalError || !proposalRow) {
         console.warn("FoodOS: no se pudo guardar la propuesta de ajuste", proposalError);
-        return null;
+        return { kind: "error", error: proposalError };
       }
 
-      return this.mapAdjustmentProposalRow(proposalRow);
+      return { kind: "ok", value: this.mapAdjustmentProposalRow(proposalRow) };
     } catch (err) {
+      // Corrección de revisión (P1, "las cinco escrituras directas
+      // comprueban A→B al resolver pero no al rechazar") — misma
+      // comprobación que en los dos caminos de éxito de arriba.
+      if (this.sessionIdentityChanged(identity)) return { kind: "stale-session" };
       console.warn("FoodOS: error creando la revisión adaptativa", err);
-      return null;
+      return { kind: "error", error: err };
     }
   }
 
@@ -727,9 +916,20 @@ class RemoteAdapter {
     mode?: GoalMode | null;
     finalSnapshot?: NutritionCalculationSnapshot | null;
   }): Promise<AcceptAdjustmentResult> {
+    // Corrección de revisión (§4/§9, diseño v5): AcceptAdjustmentResult ya
+    // distinguía éxito de fallo (a diferencia de las otras 4 escrituras
+    // directas) — lo único que faltaba era el gate. Se reutiliza el MISMO
+    // campo `error` ya existente (nunca se introduce un segundo contrato en
+    // paralelo): el caller ya hace `if (!result.ok) showToast(...)` para
+    // cualquier fallo, así que "bloqueado por sincronización en curso" cae
+    // en el mismo camino ya probado, sin tocar ningún callsite.
+    if (!this.userMutationsAllowed) {
+      return { ok: false, error: "Cuenta sincronizándose todavía — inténtalo de nuevo en unos segundos." };
+    }
     if (!this.client || !this.user) {
       return { ok: false, error: "Sin conexión con el servidor — no se pudo aplicar el cambio." };
     }
+    const identity = this.captureSessionIdentity()!;
     try {
       const s = params.finalSnapshot;
       const { data, error } = await this.client.rpc("fn_accept_nutrition_adjustment", {
@@ -754,6 +954,15 @@ class RemoteAdapter {
             }
           : null,
       });
+      // Corrección de revisión (P1): la sesión pudo cambiar de A a B
+      // mientras el RPC estaba en vuelo — un `acceptAdjustmentProposal`
+      // iniciado por A no puede hacer que el caller (NutritionView.tsx)
+      // ejecute mutate() sobre el estado de B. `staleSession:true` es
+      // explícito para que el caller pueda ignorarlo en silencio, distinto
+      // de un fallo real que sí merece un aviso.
+      if (this.sessionIdentityChanged(identity)) {
+        return { ok: false, error: "La sesión cambió mientras se procesaba esta acción.", staleSession: true };
+      }
       if (error) {
         console.warn("FoodOS: fn_accept_nutrition_adjustment devolvió un error", error);
         return { ok: false, error: error.message };
@@ -764,6 +973,12 @@ class RemoteAdapter {
       }
       return { ok: true, status: row.status, newOffsetKcal: row.new_offset_kcal };
     } catch (err) {
+      // Corrección de revisión (P1, "las cinco escrituras directas
+      // comprueban A→B al resolver pero no al rechazar") — misma
+      // comprobación que en el camino de éxito de arriba.
+      if (this.sessionIdentityChanged(identity)) {
+        return { ok: false, error: "La sesión cambió mientras se procesaba esta acción.", staleSession: true };
+      }
       console.warn("FoodOS: error de red respondiendo a la propuesta de ajuste", err);
       return { ok: false, error: err instanceof Error ? err.message : "Error de red desconocido." };
     }
@@ -1070,7 +1285,17 @@ class RemoteAdapter {
   }
 
   // Crea (si faltan) perfil, almacenes base y lista de compra, y cachea ids.
-  async ensureBaseRows(): Promise<void> {
+  // `signal` (diseño v5 de hidratación): esta versión de postgrest-js no
+  // expone `.abortSignal()` encadenable (ver el comentario grande sobre
+  // `checkAlive()` en pushState() más abajo — misma limitación exacta) así
+  // que ninguna petición YA en vuelo se cancela a nivel de red; lo que sí se
+  // gana es no encadenar MÁS pasos tras saber que el intento ya quedó
+  // obsoleto. Cada paso de aquí (upsert de perfil, creación de almacenes) es
+  // idempotente — repetirlo en un intento posterior no duplica nada, así
+  // que un corte a medias nunca deja resultados incorrectos, solo trabajo de
+  // red potencialmente redundante.
+  async ensureBaseRows(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
     const client = this.client!;
     const userId = this.user!.id;
 
@@ -1105,6 +1330,7 @@ class RemoteAdapter {
       }
       this.almacenIdByName[name] = row.id;
     }
+    if (signal?.aborted) return; // el intento ya quedó obsoleto — no encadenar la consulta de la lista de compra
 
     const { data: lists } = await client
       .from("shopping_lists")
@@ -1125,8 +1351,11 @@ class RemoteAdapter {
     }
   }
 
-  // Reconstruye el estado de la app desde las tablas.
-  async pullState(defaults: FoodOSState): Promise<FoodOSState> {
+  // Reconstruye el estado de la app desde las tablas. `signal` (diseño v5):
+  // misma limitación de cancelación que ensureBaseRows() — cooperativa, no
+  // de red — documentada allí.
+  async pullState(defaults: FoodOSState, signal?: AbortSignal): Promise<FoodOSState> {
+    if (signal?.aborted) throw new DOMException("pullState abortado antes de empezar", "AbortError");
     const client = this.client!;
     const userId = this.user!.id;
     const state = structuredClone(defaults);
@@ -1209,6 +1438,7 @@ class RemoteAdapter {
       const [label, res] = failed;
       throw new Error(`pullState: fallo consultando "${label}": ${res.error!.message}`);
     }
+    if (signal?.aborted) throw new DOMException("pullState abortado tras recibir la respuesta", "AbortError"); // el intento ya quedó obsoleto — no malgastar CPU reconstruyendo un estado que se va a descartar
 
     const almacenNameById = Object.fromEntries(
       Object.entries(this.almacenIdByName).map(([name, id]) => [id, name])
@@ -1964,39 +2194,64 @@ function userIsFullyIdle(userId: string): boolean {
     más pendiente (outbox ni agua); "superseded" si mientras tanto una
     mutación MÁS NUEVA la reemplazó en la outbox (esa seguirá su propio
     ciclo, no es responsabilidad de este caller); "timeout" si se agotó el
-    plazo sin resolverse ninguna de las dos.
-    Corrección de revisión (P0/P1): usa addStatusListener() (nunca sustituye
-    onStatusChange) y vuelve a comprobar el estado justo DESPUÉS de
-    suscribirse — cierra la ventana de carrera en la que la confirmación
-    podría llegar entre el primer chequeo y quedar enganchado al listener. */
+    plazo sin resolverse ninguna de las dos; "aborted" (diseño v5 de
+    hidratación) si `signal` se abortó — el intento que llamó a esto ya
+    quedó obsoleto (sustituido o su sesión cambió), nunca es un error real.
+    Corrección de revisión (P0/P1, y de nuevo en la ronda del diseño v5):
+    usa addStatusListener() (nunca sustituye onStatusChange); TODO se
+    inicializa (settled/timer/unsubscribe) ANTES de poder llamar a `finish`,
+    para que `finish` sea idempotente desde el primer instante sin depender
+    del orden de instalación; el listener/timer/suscripción de abort se
+    instalan y SOLO DESPUÉS se vuelve a comprobar el estado una última vez —
+    cierra la ventana de carrera en la que la confirmación (o el abort)
+    podría llegar entre el primer chequeo y quedar enganchado. */
 export function waitForMutationConfirmed(
   userId: string,
   mutationId: string,
+  signal?: AbortSignal,
   timeoutMs = 20_000,
-): Promise<"confirmed" | "superseded" | "timeout"> {
+): Promise<"confirmed" | "superseded" | "timeout" | "aborted"> {
   const check = (): "confirmed" | "superseded" | null => {
     const env = outbox.readEnvelope(userId);
     if (!env?.pending) return userIsFullyIdle(userId) ? "confirmed" : null; // aún puede quedar la RPC de agua en vuelo
     if (env.pending.mutationId !== mutationId) return "superseded";
     return null; // sigue siendo ESTA mutación, todavía sin confirmar
   };
+  if (signal?.aborted) return Promise.resolve("aborted");
   const immediate = check();
   if (immediate) return Promise.resolve(immediate);
   return new Promise((resolve) => {
+    // Corrección de revisión (§4, diseño v5): declarar TODO (settled, timer,
+    // unsubscribe, cleanup, finish) antes de instalar nada — así ningún
+    // listener puede dispararse en una ventana donde `finish` todavía no
+    // existiera o `cleanup` fuera a tocar un `timer`/`unsubscribe` sin
+    // inicializar.
     let settled = false;
-    const finish = (result: "confirmed" | "superseded" | "timeout") => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let unsubscribe: () => void = () => {};
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (result: "confirmed" | "superseded" | "timeout" | "aborted") => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
-      unsubscribe();
+      cleanup();
       resolve(result);
     };
-    const timer = setTimeout(() => finish("timeout"), timeoutMs);
-    const unsubscribe = remote.addStatusListener(() => {
+    const onAbort = () => finish("aborted");
+    signal?.addEventListener("abort", onAbort);
+    timer = setTimeout(() => finish("timeout"), timeoutMs);
+    unsubscribe = remote.addStatusListener(() => {
       const result = check();
       if (result) finish(result);
     });
-    const again = check(); // cierra la ventana de carrera descrita arriba
+    // Cierra la ventana entre la comprobación inicial y quedar enganchado a
+    // listener+timer+abort: si cualquiera de las tres condiciones ya era
+    // cierta en ese hueco, se resuelve aquí (idempotente vía `finish`).
+    if (signal?.aborted) { finish("aborted"); return; }
+    const again = check();
     if (again) finish(again);
   });
 }

@@ -39,6 +39,10 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
     const newImageUrl = form.imageUrl?.trim() || undefined;
     // Si se reemplazó o quitó la foto, limpiar la anterior de Storage — salvo
     // que otro lote la siga usando (comprobado con el estado ANTES de mutar).
+    // Decisión explícita (corrección de revisión, P1): MEJOR ESFUERZO — la
+    // mutación del item (abajo) NUNCA depende de que este borrado tenga
+    // éxito; si queda bloqueado/sin sesión/falla, el peor caso es una
+    // imagen huérfana en Storage, nunca un dato local incorrecto.
     if (item.imageUrl && item.imageUrl !== newImageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
       void remote.deleteProductImage(item.imageUrl);
     }

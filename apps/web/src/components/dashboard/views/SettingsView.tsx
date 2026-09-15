@@ -93,7 +93,12 @@ export function SettingsView({
     resetAll();
     setShowDeleteZone(false);
     setDeleteWord("");
-    showToast(authUser ? "Datos de este dispositivo eliminados." : "Todos los datos han sido eliminados.");
+    // Corrección de revisión (§7/§8, diseño v5): con sesión activa,
+    // resetAll() ya muestra su propio toast preciso ("Descartando la copia
+    // local — recuperando tu cuenta desde la nube…") — uno adicional aquí
+    // sería redundante y, peor, decía "eliminados" cuando en realidad se
+    // van a volver a descargar. Sin sesión, resetAll() también toastea
+    // ("Datos locales borrados") — tampoco hace falta un segundo aquí.
   }
 
   function shiftDebugDate(deltaDays: number) {
@@ -531,7 +536,7 @@ export function SettingsView({
         </p>
         {!showDeleteZone ? (
           <button className="danger-button" onClick={() => setShowDeleteZone(true)}>
-            {authUser ? "Borrar datos de este dispositivo" : "Borrar todos los datos"}
+            {authUser ? "Descartar copia local y volver a descargar" : "Borrar todos los datos"}
           </button>
         ) : (
           <div className="delete-confirm-zone">
