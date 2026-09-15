@@ -7,21 +7,24 @@ import {
   actions,
   applyWaterTarget,
   availableForIngredient,
+  canAcceptRemoteMutations,
   classifyAuthTransition,
   computeSyncStatus,
   countLowProteinDays,
-  createHydrationCoordinator,
   defaultState,
   flushPendingOrTimeout,
   getFoodSpend,
   getIngredientStatus,
   getMealPlanShoppingList,
   getRecipeMatch,
+  type HydrationScope,
   normalizeState,
   recordTodayNutritionGoal,
   reportCleanupIssue,
+  resolveHydrationUiMode,
   resolveInitialStateForSession,
   resolveSignOutChoice,
+  runHydrationAttempt,
 } from "./state";
 
 function inv(overrides: Partial<InventoryItem>): InventoryItem {
@@ -411,15 +414,18 @@ describe("recordTodayNutritionGoal / normalizeState — separación (PR A, punto
 });
 
 // ─── Reproducción EJECUTABLE de la carrera asíncrona (corrección de revisión) ──
-// Los tests anteriores (normalizeState llamado por separado, o inspección
-// de texto fuente) podían pasar aunque reapareciera un
-// hydrateRemoteState() (la función original de una fase anterior) se
-// sustituyó por createHydrationCoordinator() — con identidad de instancia
-// (bloqueante §8 de la revisión) y ya sin recibir saveLocalState como
-// dependencia inyectada: ahora escribe directamente el envelope de la
-// outbox (outbox.writeEnvelope), la misma persistencia real que usa
-// mutate(). deps.schedulePush recibe un PendingPush completo
-// (userId/epoch/mutationId/revision/state), no un FoodOSState pelado.
+// createHydrationCoordinator() (con su Map interno de promesas en vuelo)
+// desapareció en el diseño v5: la deduplicación por identidad de sesión
+// ahora vive en FoodOSProvider (attemptRef/generación — ver
+// state.tsx/requestHydration/replaceHydration), no en esta función pura.
+// runHydrationAttempt() ejecuta SIEMPRE de principio a fin — su cobertura
+// aquí es sobre el CONTRATO de un intento (HydrateOutcome) y la lógica de
+// negocio (ledger, pendiente local, transición de motor); la deduplicación
+// real entre llamadas concurrentes, el ownership del AbortController y el
+// backoff se prueban en el test del provider real (ver
+// foodos-provider.test.tsx, jsdom). deps.schedulePush recibe un PendingPush
+// completo (userId/epoch/mutationId/revision/state), no un FoodOSState
+// pelado.
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => { resolve = res; });
@@ -433,23 +439,21 @@ beforeEach(() => {
   sessionStorage.clear();
 });
 
-describe("createHydrationCoordinator — sin push del snapshot local antiguo durante la hidratación (reproducción de la carrera)", () => {
+describe("runHydrationAttempt — sin push del snapshot local antiguo durante la hidratación (reproducción de la carrera)", () => {
   it("mientras pullState() está pendiente no se llama a schedulePush; al resolver con un perfil remoto más reciente y motor antiguo, se llama a schedulePush UNA sola vez con un snapshot que conserva todos los datos remotos, y solo transiciona sello+calibración cuando corresponde", async () => {
     const pull = deferred<FoodOSState>();
     const schedulePushCalls: Array<{ userId: string; epoch: number; mutationId: string; revision: number; state: FoodOSState }> = [];
     let ensureBaseRowsCalled = false;
-    const coordinator = createHydrationCoordinator();
 
     // "Perfil local antiguo" en OTRO usuario — documenta que la outbox del
-    // usuario que se está hidratando (TEST_USER) empieza vacía; el
-    // coordinador no tiene forma de ver datos de otro usuario en absoluto.
+    // usuario que se está hidratando (TEST_USER) empieza vacía; el intento
+    // no tiene forma de ver datos de otro usuario en absoluto.
     void physicalProfile({ weightKg: 90, goal: "fat_loss", adaptiveKcalOffsetKcal: -50 });
 
-    const hydratePromise = coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcomePromise = runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => { ensureBaseRowsCalled = true; },
       pullState: () => pull.promise,
       schedulePush: (op) => schedulePushCalls.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
 
@@ -476,7 +480,8 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     });
     pull.resolve({ ...defaultState, profile: remoteProfile });
 
-    const result = await hydratePromise;
+    const outcome = await outcomePromise;
+    expect(outcome.kind).toBe("applied");
 
     expect(schedulePushCalls).toHaveLength(1);
     const pushed = schedulePushCalls[0];
@@ -493,7 +498,7 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     expect(pushed.state.profile!.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
     expect(pushed.state.profile!.adaptiveCalibrationStartedAt).not.toBe("2026-02-15");
 
-    expect(result).toEqual(pushed.state);
+    expect(outcome.kind === "applied" && outcome.state).toEqual(pushed.state);
 
     // La outbox real quedó escrita con exactamente ese mutationId — es lo
     // que runPush() usará para el compare-and-delete al confirmar.
@@ -504,13 +509,11 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
   it("perfil remoto NO afectado (legacy_total_pal): sella la versión (schedulePush SÍ se llama, hay algo nuevo que guardar), pero NO reinicia la calibración", async () => {
     const pull = deferred<FoodOSState>();
     const schedulePushCalls: Array<{ state: FoodOSState }> = [];
-    const coordinator = createHydrationCoordinator();
 
-    const hydratePromise = coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcomePromise = runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull.promise,
       schedulePush: (op) => schedulePushCalls.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
 
@@ -518,7 +521,8 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
       ...defaultState,
       profile: physicalProfile({ activityModelVersion: "legacy_total_pal", adaptiveCalibrationStartedAt: "2026-01-10" }),
     });
-    await hydratePromise;
+    const outcome = await outcomePromise;
+    expect(outcome.kind).toBe("applied");
 
     expect(schedulePushCalls).toHaveLength(1);
     expect(schedulePushCalls[0].state.profile!.lastCalculationEngineVersion).toBe(NUTRITION_ENGINE_VERSION);
@@ -534,22 +538,21 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     // distinta ⇒ cero escrituras adicionales ("segunda recarga con entrada
     // idéntica").
     const remoteProfile = physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION, weightKg: 82 });
-    const coordinator = createHydrationCoordinator();
 
     const pull1 = deferred<FoodOSState>();
     const schedulePushCalls1: unknown[] = [];
-    const hydratePromise1 = coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcomePromise1 = runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull1.promise,
       schedulePush: (op) => schedulePushCalls1.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
     pull1.resolve({ ...defaultState, profile: remoteProfile });
-    const result1 = await hydratePromise1;
+    const outcome1 = await outcomePromise1;
+    expect(outcome1.kind).toBe("applied");
 
     expect(schedulePushCalls1).toHaveLength(1);
-    expect(result1!.profile!.weightKg).toBe(82);
+    expect(outcome1.kind === "applied" && outcome1.state.profile!.weightKg).toBe(82);
 
     // Simula que el push de la primera hidratación SE CONFIRMÓ de verdad
     // (compare-and-delete real, no solo el mock de waitForMutationConfirmed
@@ -560,33 +563,31 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
 
     const pull2 = deferred<FoodOSState>();
     const schedulePushCalls2: unknown[] = [];
-    const hydratePromise2 = coordinator.hydrate(TEST_USER, 1, defaultState, {
+    const outcomePromise2 = runHydrationAttempt(TEST_USER, 1, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull2.promise,
       schedulePush: (op) => schedulePushCalls2.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
     pull2.resolve({ ...defaultState, profile: remoteProfile });
-    const result2 = await hydratePromise2;
+    const outcome2 = await outcomePromise2;
+    expect(outcome2.kind).toBe("applied");
 
     expect(schedulePushCalls2).toHaveLength(0);
-    expect(result2!.profile!.weightKg).toBe(82);
+    expect(outcome2.kind === "applied" && outcome2.state.profile!.weightKg).toBe(82);
   });
 
   it("[ronda 3, punto 2] tras registrar el objetivo de hoy, el envelope queda con `pending` — listo para el mecanismo de reintento genérico ya existente (no se inventa uno nuevo)", async () => {
-    const coordinator = createHydrationCoordinator();
     const pull = deferred<FoodOSState>();
     const schedulePushCalls: Array<{ mutationId: string }> = [];
-    const hydratePromise = coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcomePromise = runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull.promise,
       schedulePush: (op) => schedulePushCalls.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "confirmed",
     });
     pull.resolve({ ...defaultState, profile: physicalProfile({ lastCalculationEngineVersion: NUTRITION_ENGINE_VERSION }) });
-    await hydratePromise;
+    await outcomePromise;
 
     expect(schedulePushCalls).toHaveLength(1);
     // El reintento en sí (temporizador, backoff) es el mecanismo YA
@@ -610,26 +611,30 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     // A hidrata primero — su ledger queda escrito bajo la clave de outbox de A.
     const pullA = deferred<FoodOSState>();
     const pushA: unknown[] = [];
-    const hydrateA = createHydrationCoordinator().hydrate(userA, 0, defaultState, {
+    const outcomeAPromise = runHydrationAttempt(userA, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {}, pullState: () => pullA.promise, schedulePush: (op) => pushA.push(op),
-      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
+      waitForMutationConfirmed: async () => "confirmed",
     });
     pullA.resolve({ ...defaultState, profile: profileA });
-    const resultA = await hydrateA;
+    const outcomeA = await outcomeAPromise;
+    expect(outcomeA.kind).toBe("applied");
+    const resultA = outcomeA.kind === "applied" ? outcomeA.state : null;
     const ledgerAKeys = Object.keys(resultA!.nutritionGoalsHistory);
     expect(ledgerAKeys).toHaveLength(1);
     const ledgerAEntry = resultA!.nutritionGoalsHistory[ledgerAKeys[0]];
 
     // B hidrata — usuario DISTINTO, cuya clave de outbox nunca se ha
-    // tocado. El coordinador no tiene forma de ver el ledger de A.
+    // tocado. El intento no tiene forma de ver el ledger de A.
     const pullB = deferred<FoodOSState>();
     const pushB: unknown[] = [];
-    const hydrateB = createHydrationCoordinator().hydrate(userB, 0, defaultState, {
+    const outcomeBPromise = runHydrationAttempt(userB, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {}, pullState: () => pullB.promise, schedulePush: (op) => pushB.push(op),
-      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
+      waitForMutationConfirmed: async () => "confirmed",
     });
     pullB.resolve({ ...defaultState, profile: profileB });
-    const resultB = await hydrateB;
+    const outcomeB = await outcomeBPromise;
+    expect(outcomeB.kind).toBe("applied");
+    const resultB = outcomeB.kind === "applied" ? outcomeB.state : null;
     const ledgerBKeys = Object.keys(resultB!.nutritionGoalsHistory);
     expect(ledgerBKeys).toHaveLength(1);
     const ledgerBEntry = resultB!.nutritionGoalsHistory[ledgerBKeys[0]];
@@ -657,91 +662,195 @@ describe("createHydrationCoordinator — sin push del snapshot local antiguo dur
     // algo mezclado con B, y como nada cambió, ya no hace falta empujar.
     const pullA2 = deferred<FoodOSState>();
     const pushA2: unknown[] = [];
-    const hydrateA2 = createHydrationCoordinator().hydrate(userA, 1, defaultState, {
+    const outcomeA2Promise = runHydrationAttempt(userA, 1, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {}, pullState: () => pullA2.promise, schedulePush: (op) => pushA2.push(op),
-      epochChanged: () => false, waitForMutationConfirmed: async () => "confirmed",
+      waitForMutationConfirmed: async () => "confirmed",
     });
     pullA2.resolve({ ...defaultState, profile: profileA });
-    const resultA2 = await hydrateA2;
+    const outcomeA2 = await outcomeA2Promise;
+    expect(outcomeA2.kind).toBe("applied");
 
-    expect(resultA2!.nutritionGoalsHistory).toEqual(resultA!.nutritionGoalsHistory);
+    expect(outcomeA2.kind === "applied" && outcomeA2.state.nutritionGoalsHistory).toEqual(resultA!.nutritionGoalsHistory);
     expect(pushA2).toHaveLength(0);
   });
 
-  it("epoch cambiado mientras el pull estaba en vuelo: devuelve null y no llama a schedulePush, aunque el pull acabe resolviendo", async () => {
+  it("signal.aborted mientras el pull estaba en vuelo: devuelve {kind:\"stale-session\"} y no llama a schedulePush, aunque el pull acabe resolviendo (clasificación por signal, diseño v5 §2)", async () => {
     const pull = deferred<FoodOSState>();
     const schedulePushCalls: unknown[] = [];
-    let changed = false;
-    const coordinator = createHydrationCoordinator();
+    const controller = new AbortController();
 
-    const hydratePromise = coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcomePromise = runHydrationAttempt(TEST_USER, 0, controller.signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: () => pull.promise,
       schedulePush: (op) => schedulePushCalls.push(op),
-      epochChanged: () => changed,
       waitForMutationConfirmed: async () => "confirmed",
     });
 
-    changed = true; // p.ej. la sesión cambió mientras el pull seguía en vuelo
+    controller.abort(); // p.ej. sustituido por una generación nueva mientras el pull seguía en vuelo
     pull.resolve({ ...defaultState, profile: physicalProfile({ weightKg: 99 }) });
 
-    const result = await hydratePromise;
-    expect(result).toBeNull();
+    const outcome = await outcomePromise;
+    expect(outcome).toEqual({ kind: "stale-session" });
     expect(schedulePushCalls).toHaveLength(0);
     expect(outbox.readEnvelope(TEST_USER)).toBeNull(); // tampoco se escribió nada
   });
 
-  it("hay un pendiente local ANTES de pedir a Supabase: el remoto se descarta para la UI, gana el pendiente (política documentada, no es fusión real)", async () => {
+  it("una excepción inesperada de pullState() se clasifica como {kind:\"failed\"} (nunca lanza — corrección §1: contrato inequívoco, sin rejection sin manejar)", async () => {
+    const outcome = await runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: async () => { throw new Error("fallo de red simulado"); },
+      schedulePush: () => {},
+      waitForMutationConfirmed: async () => "confirmed",
+    });
+    expect(outcome.kind).toBe("failed");
+    expect(outcome.kind === "failed" && (outcome.error as Error).message).toBe("fallo de red simulado");
+  });
+
+  it("hay un pendiente local ANTES de pedir a Supabase que confirma a tiempo: sigue adelante y pide el pull (gana `confirmed`, no `deferred`)", async () => {
+    const written = outbox.recordMutation(TEST_USER, { ...defaultState, weeklyBudget: 555 }, "tab-1");
+    expect(written.ok).toBe(true);
+    const mutationId = (written as { ok: true; envelope: { pending: { mutationId: string } } }).envelope.pending.mutationId;
+    const schedulePushCalls: Array<{ mutationId: string }> = [];
+
+    const outcome = await runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
+      ensureBaseRows: async () => {},
+      pullState: async () => ({ ...defaultState, weeklyBudget: 111 }),
+      schedulePush: (op) => schedulePushCalls.push(op),
+      // "confirmed" de verdad significa que el compare-and-delete YA
+      // ocurrió (lo hace runPush() en producción) — el mock lo simula
+      // explícitamente; si no lo hiciera, envelopeAfter seguiría viendo el
+      // mismo pending y esto degradaría a "deferred" (ver el siguiente test).
+      waitForMutationConfirmed: async () => { outbox.deleteIfMatches(TEST_USER, mutationId); return "confirmed"; },
+    });
+
+    expect(outcome.kind).toBe("applied");
+    expect(outcome.kind === "applied" && outcome.state.weeklyBudget).toBe(111); // el remoto SÍ se aplicó — el pendiente original ya se había confirmado
+    // Un único schedulePush: el reenvío INCONDICIONAL del pendiente
+    // original al detectarlo (antes de esperar su confirmación) — sin
+    // perfil (defaultState.profile es null) no hay objetivo de hoy que
+    // registrar ni transición de motor, así que nada más se empuja tras
+    // aplicar el remoto.
+    expect(schedulePushCalls).toHaveLength(1);
+    expect(schedulePushCalls[0].mutationId).toBe(mutationId);
+  });
+
+  it("hay un pendiente local que NUNCA confirma (timeout de waitForMutationConfirmed): {kind:\"deferred\", reason:\"pending-timeout\"} — el remoto NUNCA se aplica a la UI mientras haya algo local sin resolver (política documentada, no es fusión real)", async () => {
     const written = outbox.recordMutation(TEST_USER, { ...defaultState, weeklyBudget: 555 }, "tab-1");
     expect(written.ok).toBe(true);
     const schedulePushCalls: Array<{ mutationId: string }> = [];
-    const coordinator = createHydrationCoordinator();
+    let pullCalled = false;
 
-    const result = await coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcome = await runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
-      pullState: async () => ({ ...defaultState, weeklyBudget: 111 }), // "más reciente" en el servidor
+      pullState: async () => { pullCalled = true; return { ...defaultState, weeklyBudget: 111 }; },
       schedulePush: (op) => schedulePushCalls.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "timeout",
     });
 
-    expect(result).toBeNull(); // el remoto NUNCA se aplica a la UI mientras haya algo local pendiente
+    expect(outcome).toEqual({ kind: "deferred", reason: "pending-timeout" });
+    expect(pullCalled).toBe(false); // ni siquiera se pide el pull — se descartaría igualmente
     expect(schedulePushCalls).toHaveLength(1);
     expect(schedulePushCalls[0].mutationId).toBe((written as { ok: true; envelope: { pending: { mutationId: string } } }).envelope.pending.mutationId);
   });
 
-  it("dos llamadas para el mismo userId+epoch comparten la misma promesa (dedup real — corrige el bug de doble hidratación inicial); otro usuario obtiene una petición aparte", async () => {
-    const coordinator = createHydrationCoordinator();
-    let pullCallsForA = 0;
-    let pullCallsForB = 0;
+  it("una mutación NUEVA sustituye a la que se estaba esperando (superseded): {kind:\"deferred\", reason:\"pending-superseded\"}, sin pedir el pull", async () => {
+    outbox.recordMutation(TEST_USER, { ...defaultState, weeklyBudget: 555 }, "tab-1");
 
-    const promiseA1 = coordinator.hydrate("user-a", 0, defaultState, {
+    const outcome = await runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
-      pullState: async () => { pullCallsForA++; return { ...defaultState, weeklyBudget: 1 }; },
+      pullState: async () => ({ ...defaultState, weeklyBudget: 111 }),
       schedulePush: () => {},
-      epochChanged: () => false,
-      waitForMutationConfirmed: async () => "confirmed",
+      waitForMutationConfirmed: async () => "superseded",
     });
-    const promiseA2 = coordinator.hydrate("user-a", 0, defaultState, {
-      ensureBaseRows: async () => {},
-      pullState: async () => { pullCallsForA++; return { ...defaultState, weeklyBudget: 2 }; },
-      schedulePush: () => {},
-      epochChanged: () => false,
-      waitForMutationConfirmed: async () => "confirmed",
-    });
-    expect(promiseA1).toBe(promiseA2); // misma promesa exacta — la segunda llamada nunca ejecuta su propio pullState
 
-    const promiseB = coordinator.hydrate("user-b", 0, defaultState, {
+    expect(outcome).toEqual({ kind: "deferred", reason: "pending-superseded" });
+  });
+
+  it("aparece un pendiente NUEVO mientras el pull SÍ estaba en vuelo: {kind:\"deferred\", reason:\"pending-superseded\"} — gana el local, el remoto se descarta para esta UI", async () => {
+    const pull = deferred<FoodOSState>();
+    const schedulePushCalls: Array<{ mutationId: string }> = [];
+
+    const outcomePromise = runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
-      pullState: async () => { pullCallsForB++; return { ...defaultState, weeklyBudget: 3 }; },
-      schedulePush: () => {},
-      epochChanged: () => false,
+      pullState: () => pull.promise,
+      schedulePush: (op) => schedulePushCalls.push(op),
       waitForMutationConfirmed: async () => "confirmed",
     });
 
-    await Promise.all([promiseA1, promiseB]);
-    expect(pullCallsForA).toBe(1); // solo la primera llamada disparó pullState de verdad
-    expect(pullCallsForB).toBe(1);
+    // Dos microtasks: una para que se asiente el `await ensureBaseRows()`,
+    // otra para que el código llegue a comprobar `envelopeBefore` (vacío) y
+    // quede realmente suspendido dentro de `await pullState()` — sin esto,
+    // el recordMutation de abajo se ejecutaría ANTES de que
+    // runHydrationAttempt() hubiera llegado siquiera a mirar la outbox por
+    // primera vez (ambas líneas comparten el mismo tick sin este `await`),
+    // y el escenario dejaría de ser "aparece MIENTRAS el pull está en
+    // vuelo" para convertirse en "ya estaba antes de empezar".
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Mientras el pull está en vuelo, el usuario edita algo — la outbox
+    // recibe un pending NUEVO que runHydrationAttempt() no podía conocer
+    // al empezar.
+    const written = outbox.recordMutation(TEST_USER, { ...defaultState, weeklyBudget: 999 }, "tab-1");
+    expect(written.ok).toBe(true);
+
+    pull.resolve({ ...defaultState, weeklyBudget: 111 });
+    const outcome = await outcomePromise;
+
+    expect(outcome).toEqual({ kind: "deferred", reason: "pending-superseded" });
+    expect(schedulePushCalls).toHaveLength(1);
+    expect(schedulePushCalls[0].mutationId).toBe((written as { ok: true; envelope: { pending: { mutationId: string } } }).envelope.pending.mutationId);
+  });
+});
+
+describe("canAcceptRemoteMutations / resolveHydrationUiMode — derivación única del gate y del modo de UI (diseño v5)", () => {
+  const base: HydrationScope = { userId: TEST_USER, epoch: 0, generation: 1, phase: "loading", hasLocalBaseline: false };
+
+  // Corrección de revisión (bloqueante P1, "política contradictoria con
+  // baseline"): antes canAcceptRemoteMutations() exigía phase==="ready" sin
+  // excepción, mientras resolveHydrationUiMode() YA mostraba un dashboard
+  // editable con baseline en loading/error — dos políticas distintas para
+  // la misma pantalla. Ahora es una única decisión: canAcceptRemoteMutations
+  // === (resolveHydrationUiMode() === "dashboard"), sin excepción.
+  // hasSupabaseConfig() lee process.env UNA vez al cargar el módulo — en
+  // este proceso de test nunca hay NEXT_PUBLIC_SUPABASE_URL/ANON_KEY
+  // definidas, así que aquí siempre se comporta como "modo local puro". El
+  // caso complementario (scope null CON Supabase configurado — p.ej. justo
+  // tras un logout, donde debe dar FALSE) se prueba en
+  // foodos-provider.test.tsx, que sí mockea hasSupabaseConfig()===true.
+  it("canAcceptRemoteMutations: null en modo local puro (sin Supabase configurado) siempre true — se hereda el mismo dashboard editable de siempre", () => {
+    expect(canAcceptRemoteMutations(null)).toBe(true);
+  });
+
+  it("canAcceptRemoteMutations: CON baseline, true también en loading/error — mismo comportamiento offline ya aceptado en el resto de la app", () => {
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: true, phase: "loading" })).toBe(true);
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: true, phase: "error" })).toBe(true);
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: true, phase: "ready" })).toBe(true);
+  });
+
+  it("canAcceptRemoteMutations: SIN baseline, false en loading/error (recovery-screen: ni el dashboard se muestra) — true en cuanto llega a ready", () => {
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: false, phase: "loading" })).toBe(false);
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: false, phase: "error" })).toBe(false);
+    expect(canAcceptRemoteMutations({ ...base, hasLocalBaseline: false, phase: "ready" })).toBe(true);
+  });
+
+  it("resolveHydrationUiMode: sin scope (local puro o sesión aún sin empezar) siempre dashboard", () => {
+    expect(resolveHydrationUiMode(null)).toBe("dashboard");
+  });
+
+  it("resolveHydrationUiMode: con hasLocalBaseline, dashboard SIEMPRE — incluso en loading o error", () => {
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: true, phase: "loading" })).toBe("dashboard");
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: true, phase: "error" })).toBe("dashboard");
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: true, phase: "ready" })).toBe("dashboard");
+  });
+
+  it("resolveHydrationUiMode: sin baseline, recovery-screen en loading Y en error — nunca un loading distinto sin controles (§5)", () => {
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: false, phase: "loading" })).toBe("recovery-screen");
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: false, phase: "error" })).toBe("recovery-screen");
+  });
+
+  it("resolveHydrationUiMode: sin baseline pero ya ready, dashboard", () => {
+    expect(resolveHydrationUiMode({ ...base, hasLocalBaseline: false, phase: "ready" })).toBe("dashboard");
   });
 });
 
@@ -799,18 +908,16 @@ describe("resolveInitialStateForSession — el envelope activo se aplica a React
     expect(initialState.weeklyBudget).toBe(4242); // el estado inicial YA viene del envelope, nunca de defaultState
 
     // 4: hidratación remota "antigua" (un snapshot desactualizado en el
-    // servidor) — createHydrationCoordinator la reprograma para reenvío y
-    // descarta el pull para la UI mientras siga habiendo un pendiente.
+    // servidor) — runHydrationAttempt() reprograma su reenvío y descarta el
+    // pull para la UI mientras siga habiendo un pendiente.
     const scheduled: Array<{ mutationId: string; state: FoodOSState }> = [];
-    const coordinator = createHydrationCoordinator();
-    const result = await coordinator.hydrate(TEST_USER, 0, defaultState, {
+    const outcome = await runHydrationAttempt(TEST_USER, 0, new AbortController().signal, defaultState, {
       ensureBaseRows: async () => {},
       pullState: async () => ({ ...defaultState, weeklyBudget: 111 }), // "remoto antiguo" — nunca debe llegar a la UI
       schedulePush: (op) => scheduled.push(op),
-      epochChanged: () => false,
       waitForMutationConfirmed: async () => "timeout", // el push sigue reintentando en segundo plano; esta hidratación no bloquea
     });
-    expect(result).toBeNull(); // el remoto antiguo NUNCA se aplicó a la UI
+    expect(outcome).toEqual({ kind: "deferred", reason: "pending-timeout" }); // el remoto antiguo NUNCA se aplicó a la UI
     expect(scheduled).toHaveLength(1); // sí reprogramó el reenvío de lo pendiente
 
     // 5: nueva edición ANTES de confirmar — parte del envelope actual
@@ -855,7 +962,7 @@ describe("applyWaterTarget — puro, sin efectos secundarios (P1: side effects f
 });
 
 describe("computeSyncStatus — fuentes de 'unsynced' independientes (P1, cuarta ronda: antes un único booleano compartido)", () => {
-  const base = { hasSupabaseConfig: true, isOnline: true, hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false, pushStatus: "saved" as const };
+  const base = { hasSupabaseConfig: true, isOnline: true, hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false, pushStatus: "saved" as const, hydrationError: false };
 
   it("sin Supabase configurado: siempre 'local', pase lo que pase con las demás fuentes", () => {
     expect(computeSyncStatus({ ...base, hasSupabaseConfig: false, hadUnsyncedWaterWrite: true })).toBe("local");
@@ -894,6 +1001,32 @@ describe("computeSyncStatus — fuentes de 'unsynced' independientes (P1, cuarta
       expect(computeSyncStatus({ ...base, pushStatus })).toBe(pushStatus);
     });
   });
+
+  // Corrección de revisión (bloqueante P0, "el badge todavía puede decir
+  // 'Guardado'"): antes computeSyncStatus() ni siquiera recibía
+  // hydrationScope — un fallo de pullState() podía quedar completamente
+  // oculto detrás de un push "saved", que es exactamente el bug original
+  // que motivó todo este diseño.
+  it("un error de hidratación con el push en 'saved' produce 'hydration-error' — NUNCA 'saved'", () => {
+    expect(computeSyncStatus({ ...base, pushStatus: "saved", hydrationError: true })).toBe("hydration-error");
+  });
+
+  it("un error de hidratación con el push 'syncing' también produce 'hydration-error' (nunca 'syncing')", () => {
+    expect(computeSyncStatus({ ...base, pushStatus: "syncing", hydrationError: true })).toBe("hydration-error");
+  });
+
+  it("precedencia acordada: unsynced > error de push > hydration-error > syncing/saved", () => {
+    // unsynced gana a un error de hidratación.
+    expect(computeSyncStatus({ ...base, hadUnsyncedEnvelopeWrite: true, pushStatus: "saved", hydrationError: true })).toBe("unsynced");
+    // Un error de PUSH real gana a un error de hidratación.
+    expect(computeSyncStatus({ ...base, pushStatus: "error", hydrationError: true })).toBe("error");
+    // offline gana a todo lo demás, incluido un error de hidratación.
+    expect(computeSyncStatus({ ...base, isOnline: false, pushStatus: "saved", hydrationError: true })).toBe("offline");
+    // Sin ningún error de push/unsynced/offline, el error de hidratación sí se ve.
+    expect(computeSyncStatus({ ...base, pushStatus: "saved", hydrationError: true })).toBe("hydration-error");
+    // Y cuando hydrationError es false, el pushStatus real vuelve a mandar.
+    expect(computeSyncStatus({ ...base, pushStatus: "saved", hydrationError: false })).toBe("saved");
+  });
 });
 
 describe("Aislamiento de hadUnsyncedEnvelopeWrite/hadUnsyncedWaterWrite por sesión (P1, quinta ronda)", () => {
@@ -919,7 +1052,7 @@ describe("Aislamiento de hadUnsyncedEnvelopeWrite/hadUnsyncedWaterWrite por sesi
   it("fallo de agua de A no contamina a B: un cambio real de sesión reinicia hadUnsyncedWaterWrite antes de que B haga nada", () => {
     const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: true }, "user-a", "user-b", "SIGNED_OUT");
     expect(afterTransition.hadUnsyncedWaterWrite).toBe(false);
-    expect(computeSyncStatus({ hasSupabaseConfig: true, isOnline: true, ...afterTransition, pushStatus: "saved" })).toBe("saved"); // B no aparece "unsynced" sin haber fallado nada él
+    expect(computeSyncStatus({ hasSupabaseConfig: true, isOnline: true, ...afterTransition, pushStatus: "saved", hydrationError: false })).toBe("saved"); // B no aparece "unsynced" sin haber fallado nada él
   });
 
   it("fallo de envelope de A no contamina a B", () => {

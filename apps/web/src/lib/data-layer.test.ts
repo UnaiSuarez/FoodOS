@@ -8,8 +8,8 @@
 // resto de tablas se sigue intentando (mejor esfuerzo — son independientes
 // entre sí) y que reintentar el mismo snapshot es idempotente.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings, FoodOSState, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
-import { remote } from "./data-layer";
+import type { AppSettings, FoodOSState, NutritionCalculationSnapshot, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
+import { remote, waitForMutationConfirmed } from "./data-layer";
 import * as outbox from "./outbox";
 import { NUTRITION_ENGINE_VERSION } from "./nutrition";
 import { todayPlus } from "./utils";
@@ -35,6 +35,10 @@ interface FakeTableConfig {
   upsert?: PGResultOrGate;
   select?: PGResultOrGate;
   delete?: PGResultOrGate;
+  /** Diseño v5: saveNutritionSnapshot()/createAdjustmentReview() usan
+      .insert({...}).select("id").single() — antes no hacía falta este op
+      porque ningún test tocaba esas funciones directamente. */
+  insert?: PGResultOrGate;
 }
 interface CallRecord {
   table: string;
@@ -57,8 +61,20 @@ function makeFakeClient(config: Record<string, FakeTableConfig>, calls: CallReco
           calls.push({ table, op: "upsert", args: payload });
           return builder;
         },
+        insert(payload: unknown) {
+          op = "insert";
+          calls.push({ table, op: "insert", args: payload });
+          return builder;
+        },
         select(cols: string) {
-          op = "select";
+          // Diseño v5: saveNutritionSnapshot()/createAdjustmentReview() usan
+          // .insert({...}).select("id").single() — aquí .select() es "estas
+          // columnas de vuelta", no un query nuevo, así que NO debe pisar el
+          // verbo de escritura que ya se registró (insert/upsert/update/
+          // delete). Cuando .select() es la PRIMERA llamada de la cadena
+          // (el caso ya existente: lecturas puras) sigue fijando `op` igual
+          // que siempre.
+          if (op === null) op = "select";
           calls.push({ table, op: "select", args: cols });
           return builder;
         },
@@ -91,6 +107,9 @@ function makeFakeClient(config: Record<string, FakeTableConfig>, calls: CallReco
           return builder;
         },
         maybeSingle() {
+          return builder;
+        },
+        single() {
           return builder;
         },
         limit(n: number) {
@@ -231,6 +250,7 @@ function resetRemote() {
     waterRetryTimer: ReturnType<typeof setTimeout> | null;
     activeWaterWorker: unknown;
     waterHasError: boolean;
+    userMutationsAllowed: boolean;
   };
   if (r.pushTimer) clearTimeout(r.pushTimer);
   if (r.pushRetryTimer) clearTimeout(r.pushRetryTimer);
@@ -250,6 +270,13 @@ function resetRemote() {
   r.waterRetryTimer = null;
   r.activeWaterWorker = null;
   r.waterHasError = false;
+  // Diseño v5 de hidratación: el gate real empieza CERRADO (fail-closed,
+  // §6) — se conserva ese mismo valor por defecto aquí a propósito (ver
+  // "el gate empieza cerrado" en el describe de userMutationsAllowed más
+  // abajo). Nunca afecta a pushState/ensureBaseRows/pullState (no gateados);
+  // cualquier test que SÍ ejercite una de las 5 escrituras directas por su
+  // camino normal debe abrirlo explícitamente primero.
+  r.userMutationsAllowed = false;
   remote.onPushError = null;
   remote.onStatusChange = null;
   remote.onUnsyncedWrite = null;
@@ -1814,5 +1841,449 @@ describe("getNutritionGoalsRangeWithStatus / getNutritionGoalsRange", () => {
 
     const rows = await remote.getNutritionGoalsRange("2026-08-01", "2026-09-01");
     expect(rows).toEqual([{ goalDate: "2026-08-15", kcalTarget: 2200 }]);
+  });
+});
+
+// ─── Diseño v5 de hidratación — gate de las 5 escrituras directas (§4/§6/§9) ──
+function makeSnapshot(): NutritionCalculationSnapshot {
+  return {
+    calculationVersion: NUTRITION_ENGINE_VERSION,
+    triggerReason: "profile_changed",
+    inputSnapshot: {
+      age: 30, sex: "male", heightCm: 180, weightKg: 80,
+      goal: "recomp", activityLevel: "moderate", macroPreference: "balanced",
+      activityModelVersion: "legacy_total_pal",
+    },
+    restingEnergy: { valueKcal: 1800, method: "mifflin_st_jeor" },
+    tdee: { valueKcal: 2500 },
+    calorieTarget: { kcal: 2200, dayType: "rest" },
+    macros: { kcal: 2200, protein: 150, carbs: 225, fat: 70, fiber: 30 },
+    safety: { automaticPlanAllowed: true, requiresConfirmation: false, warnings: [] },
+  };
+}
+
+describe("userMutationsAllowed — gate de las 5 escrituras directas (diseño v5, §4/§6)", () => {
+  it("con el gate cerrado (valor por defecto — fail-closed, §6), las 5 devuelven 'blocked' (o su equivalente) SIN tocar el cliente, incluso con sesión y cliente ya listos", async () => {
+    const calls = setup(successConfig()); // client/user válidos — el gate debe bloquear ANTES de llegar a usarlos
+    // r.userMutationsAllowed sigue en `false` (resetRemote() no lo abre).
+
+    expect(await remote.uploadProductImage("data:image/jpeg;base64,AAAA")).toEqual({ kind: "blocked" });
+    expect(await remote.deleteProductImage("https://x/storage/v1/object/public/product-images/user-1/a.jpg")).toEqual({ kind: "blocked" });
+    expect(await remote.saveNutritionSnapshot(makeSnapshot())).toEqual({ kind: "blocked" });
+    expect(
+      await remote.createAdjustmentReview({
+        snapshot: makeSnapshot(),
+        decision: { shouldPropose: false, proposedTargetKcal: 0, deltaKcal: 0, reason: "", trajectory: null, blockingReasons: [] },
+        evidence: {} as never,
+      }),
+    ).toEqual({ kind: "blocked" });
+
+    const accept = await remote.acceptAdjustmentProposal({ proposalId: "p1", accepted: false, goalDate: "2026-09-15" });
+    expect(accept.ok).toBe(false);
+    expect(accept.ok === false && accept.error).toMatch(/sincronizándose/i);
+
+    expect(calls).toHaveLength(0); // ninguna de las 5 llegó a tocar el cliente
+  });
+
+  it("con el gate abierto, saveNutritionSnapshot llega hasta Supabase y devuelve 'ok'", async () => {
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: { data: { id: "snap-1" }, error: null } };
+    config.nutrition_goals = { ...config.nutrition_goals, update: { error: null } };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const result = await remote.saveNutritionSnapshot(makeSnapshot());
+    expect(result).toEqual({ kind: "ok", value: undefined });
+  });
+
+  it("con el gate abierto pero sin sesión, las 4 escrituras directas (fuera de acceptAdjustmentProposal) devuelven 'unavailable' — nunca lo mismo que 'blocked'", async () => {
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    // client/user siguen null (resetRemote()) — sin sesión real.
+
+    expect(await remote.uploadProductImage("data:image/jpeg;base64,AAAA")).toEqual({ kind: "unavailable" });
+    expect(await remote.deleteProductImage("https://x/storage/v1/object/public/product-images/user-1/a.jpg")).toEqual({ kind: "unavailable" });
+    expect(await remote.saveNutritionSnapshot(makeSnapshot())).toEqual({ kind: "unavailable" });
+    const review = await remote.createAdjustmentReview({
+      snapshot: makeSnapshot(),
+      decision: { shouldPropose: true, proposedTargetKcal: 2000, deltaKcal: -200, reason: "test", trajectory: null, blockingReasons: [] },
+      evidence: {} as never,
+    });
+    expect(review).toEqual({ kind: "unavailable" });
+  });
+
+  it("createAdjustmentReview: decision.shouldPropose===false es 'ok' con value:null (éxito sin propuesta, NUNCA confundido con un fallo) — conserva el comportamiento previo a RemoteMutationResult", async () => {
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: { data: { id: "snap-1" }, error: null } };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const result = await remote.createAdjustmentReview({
+      snapshot: makeSnapshot(),
+      decision: { shouldPropose: false, proposedTargetKcal: 0, deltaKcal: 0, reason: "", trajectory: null, blockingReasons: [] },
+      evidence: {} as never,
+    });
+    expect(result).toEqual({ kind: "ok", value: null });
+  });
+});
+
+describe("waitForMutationConfirmed — abort, timeout y confirmación casi simultáneos (diseño v5, §4)", () => {
+  it("signal ya abortada antes de llamar: resuelve 'aborted' de inmediato, sin instalar listener ni timer", async () => {
+    outbox.recordMutation("user-1", makeState(), "tab-1");
+    const controller = new AbortController();
+    controller.abort();
+    const result = await waitForMutationConfirmed("user-1", "any-mutation-id", controller.signal, 5000);
+    expect(result).toBe("aborted");
+  });
+
+  it("abort DURANTE la espera: resuelve 'aborted' exactamente una vez, limpia su listener de status (una confirmación posterior no cambia el resultado ya entregado)", async () => {
+    const written = outbox.recordMutation("user-1", makeState(), "tab-1");
+    const mutationId = (written as { ok: true; envelope: { pending: { mutationId: string } } }).envelope.pending.mutationId;
+    const controller = new AbortController();
+
+    const resultPromise = waitForMutationConfirmed("user-1", mutationId, controller.signal, 5000);
+    controller.abort();
+    const result = await resultPromise;
+    expect(result).toBe("aborted");
+
+    // Una confirmación real DESPUÉS del abort no debe poder resolver de
+    // nuevo (la promesa ya se entregó) ni dejar un listener vivo que
+    // reaccione a partir de ahora — notifyStatus() es privado, se invoca
+    // aquí vía cast (mismo patrón de caja blanca que resetRemote() usa para
+    // el resto de campos privados de RemoteAdapter). Si quedara un listener
+    // zombi tocando una promesa ya resuelta, un segundo `resolve()` de una
+    // Promise nativa es un no-op silencioso — la aserción real de "una sola
+    // vez" es que `result` siga siendo exactamente "aborted" tras esto.
+    outbox.deleteIfMatches("user-1", mutationId);
+    (remote as unknown as { notifyStatus: (s: "syncing" | "saved" | "error") => void }).notifyStatus("saved");
+    expect(result).toBe("aborted");
+  });
+
+  it("timeout y confirmación casi simultáneos: si la confirmación llega ANTES del timer (mismo tick), gana 'confirmed' — nunca las dos", async () => {
+    vi.useFakeTimers();
+    const written = outbox.recordMutation("user-1", makeState(), "tab-1");
+    const mutationId = (written as { ok: true; envelope: { pending: { mutationId: string } } }).envelope.pending.mutationId;
+
+    const resultPromise = waitForMutationConfirmed("user-1", mutationId, undefined, 1000);
+    outbox.deleteIfMatches("user-1", mutationId);
+    // Dispara el addStatusListener() interno de waitForMutationConfirmed,
+    // aún dentro de la ventana de 1000ms — mismo mecanismo real que
+    // runPush() usa al confirmar (notifyStatus es privado; ver el cast de
+    // arriba).
+    (remote as unknown as { notifyStatus: (s: "syncing" | "saved" | "error") => void }).notifyStatus("saved");
+    await vi.advanceTimersByTimeAsync(2000); // si algo fuera mal y no se hubiera limpiado el timer, esto lo dispararía igual
+
+    const result = await resultPromise;
+    expect(result).toBe("confirmed");
+    vi.useRealTimers();
+  });
+
+  it("cierra la ventana entre la comprobación inicial y quedar enganchado al listener: si la mutación YA estaba confirmada al llamar, resuelve 'confirmed' de inmediato sin instalar nada que limpiar después", async () => {
+    // Sin ninguna outbox pendiente y sin agua pendiente — userIsFullyIdle() true desde el principio.
+    const result = await waitForMutationConfirmed("user-1", "irrelevant", undefined, 5000);
+    expect(result).toBe("confirmed");
+  });
+});
+
+// ─── A→B: cambio de sesión mientras una escritura directa está en vuelo
+// (diseño v5, corrección P1 "falta proteger operaciones directas que
+// cambian de sesión mientras esperan") ──────────────────────────────────
+// Deliberadamente SIN un `.catch()` de seguridad aquí: el propio código de
+// producción bajo prueba debe ser quien registra el único manejador real de
+// `promise` (vía su `await` síncrono nada más llamar al mock) — añadir un
+// catch aquí enmascararía justo lo que la prueba de "sin unhandled
+// rejection" (más abajo) necesita verificar de verdad.
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+/** Simula el cambio de sesión A→B directamente sobre los campos privados de
+    RemoteAdapter — mismo patrón de caja blanca que setup()/resetRemote(). */
+function switchSessionTo(userId: string, epoch: number) {
+  const r = remote as unknown as { user: { id: string } | null; sessionEpoch: number };
+  r.user = { id: userId };
+  r.sessionEpoch = epoch;
+}
+
+describe("A→B — cambio de sesión mientras una escritura directa está en vuelo", () => {
+  it("createAdjustmentReview (propuesta): si la sesión cambia mientras el insert está en vuelo, resuelve 'stale-session' y escribe SIEMPRE bajo el userId de A", async () => {
+    const gate = deferred<PGResult>();
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: () => gate.promise };
+    const calls = setup(config); // remote.user = "user-1" (A), sessionEpoch = 0
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const resultPromise = remote.createAdjustmentReview({
+      snapshot: makeSnapshot(),
+      decision: { shouldPropose: false, proposedTargetKcal: 0, deltaKcal: 0, reason: "", trajectory: null, blockingReasons: [] },
+      evidence: {} as never,
+    });
+
+    // La sesión cambia a B MIENTRAS el insert de A sigue suspendido.
+    switchSessionTo("user-b", 1);
+
+    gate.resolve({ data: { id: "snap-1" }, error: null }); // el insert "tuvo éxito" justo cuando ya había cambiado la sesión
+    const result = await resultPromise;
+
+    expect(result).toEqual({ kind: "stale-session" });
+    const insertCall = calls.find((c) => c.table === "nutrition_calculation_snapshots" && c.op === "insert");
+    expect((insertCall!.args as { user_id: string }).user_id).toBe("user-1"); // SIEMPRE A — capturado antes del await, nunca releído
+  });
+
+  it("acceptAdjustmentProposal (aceptación): si la sesión cambia mientras el RPC está en vuelo, resuelve ok:false con staleSession:true — el caller lo ignora en silencio", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const gate = deferred<{ data: unknown; error: unknown }>();
+    (remote.client as unknown as { rpc: (name: string, params: unknown) => Promise<{ data: unknown; error: unknown }> }).rpc = () => gate.promise;
+
+    const resultPromise = remote.acceptAdjustmentProposal({ proposalId: "p1", accepted: false, goalDate: "2026-09-15" });
+
+    switchSessionTo("user-b", 1);
+
+    gate.resolve({ data: { ok: true, status: "rejected", new_offset_kcal: null }, error: null });
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.staleSession).toBe(true);
+  });
+
+  it("uploadProductImage (subida): si la sesión cambia mientras la subida está en vuelo, resuelve 'stale-session' y la carpeta de destino/limpieza sigue siendo SIEMPRE la de A", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    // fetch(dataUrl) real (Node/undici) sobre una data: URL introduce su
+    // propia cadena de promesas internas de duración incierta — se
+    // sustituye por un fetch falso e INSTANTÁNEO para que el único punto de
+    // suspensión real en este test sea el gate de storage.upload() de abajo
+    // (cuya resolución SÍ controlamos con precisión).
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      blob: () => Promise.resolve(new Blob(["x"])),
+    } as unknown as Response);
+
+    const gate = deferred<{ error: { message: string } | null }>();
+    let uploadedPath = "";
+    const removedPaths: string[] = [];
+    (remote.client as unknown as { storage: unknown }).storage = {
+      from: (_bucket: string) => ({
+        upload: (path: string) => { uploadedPath = path; return gate.promise; },
+        remove: (paths: string[]) => { removedPaths.push(...paths); return Promise.resolve({ error: null }); },
+        getPublicUrl: (path: string) => ({ data: { publicUrl: `https://x/storage/v1/object/public/product-images/${path}` } }),
+      }),
+    };
+
+    const resultPromise = remote.uploadProductImage("data:image/jpeg;base64,AAAA");
+
+    // Deja que fetch(dataUrl).blob() (ambos ahora síncronos-vía-microtask)
+    // resuelvan y la llamada llegue hasta storage.upload().
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(uploadedPath).not.toBe(""); // confirma que sí llegamos a upload() antes de cambiar de sesión
+
+    // AHORA, con la subida ya en vuelo, cambia la sesión a B.
+    switchSessionTo("user-b", 1);
+
+    gate.resolve({ error: null }); // la subida en sí "tuvo éxito" justo cuando ya había cambiado la sesión
+    const result = await resultPromise;
+
+    expect(result).toEqual({ kind: "stale-session" });
+    expect(uploadedPath.startsWith("user-1/")).toBe(true); // la carpeta de destino fue SIEMPRE la de A, nunca B
+    expect(removedPaths).toEqual([uploadedPath]); // limpieza de mejor esfuerzo, en la carpeta de A — nunca toca nada de B
+
+    fetchSpy.mockRestore();
+  });
+});
+
+// ─── A→B + RECHAZO: la promesa en vuelo no resuelve con {error}, sino que
+// RECHAZA de verdad (excepción de red/CDP) — corrección de revisión (P1,
+// "las cinco escrituras directas comprueban A→B al resolver pero no al
+// rechazar"). Cada `catch` debe comprobar identidad ANTES de clasificar
+// como "error real" — si no, un rechazo tardío de A puede acabar
+// devolviendo `kind:"error"` (en vez de "stale-session") justo cuando ya
+// pertenece a B, y el caller podría reaccionar sobre el estado de B con
+// datos que nunca fueron suyos (ver el caso crítico de ImagePickerField.tsx
+// documentado en la revisión: `onChange(dataUrl)` ejecutándose para B). ──
+describe("A→B + rechazo: el catch de las cinco escrituras directas comprueba identidad ANTES de clasificar como error real", () => {
+  it("uploadProductImage: si storage.upload() RECHAZA tras cambiar de sesión, resuelve 'stale-session' (nunca 'error')", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      blob: () => Promise.resolve(new Blob(["x"])),
+    } as unknown as Response);
+
+    const gate = deferred<{ error: { message: string } | null }>();
+    let uploadedPath = "";
+    (remote.client as unknown as { storage: unknown }).storage = {
+      from: (_bucket: string) => ({
+        upload: (path: string) => { uploadedPath = path; return gate.promise; },
+        remove: () => Promise.resolve({ error: null }),
+        getPublicUrl: (path: string) => ({ data: { publicUrl: `https://x/${path}` } }),
+      }),
+    };
+
+    const resultPromise = remote.uploadProductImage("data:image/jpeg;base64,AAAA");
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(uploadedPath).not.toBe(""); // confirma que ya alcanzamos upload() antes de cambiar de sesión
+
+    switchSessionTo("user-b", 1);
+    gate.reject(new Error("fetch failed: connection reset")); // RECHAZO real, no un {error} de postgrest/storage
+    const result = await resultPromise;
+
+    expect(result).toEqual({ kind: "stale-session" });
+    fetchSpy.mockRestore();
+  });
+
+  it("uploadProductImage: en la MISMA sesión, un rechazo real de storage.upload() sigue devolviendo 'error' normal (nunca se convierte en falso stale-session)", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      blob: () => Promise.resolve(new Blob(["x"])),
+    } as unknown as Response);
+    const boom = new Error("fetch failed: connection reset");
+    (remote.client as unknown as { storage: unknown }).storage = {
+      from: (_bucket: string) => ({
+        upload: () => Promise.reject(boom),
+        remove: () => Promise.resolve({ error: null }),
+        getPublicUrl: (path: string) => ({ data: { publicUrl: `https://x/${path}` } }),
+      }),
+    };
+
+    const result = await remote.uploadProductImage("data:image/jpeg;base64,AAAA");
+
+    expect(result).toEqual({ kind: "error", error: boom });
+    fetchSpy.mockRestore();
+  });
+
+  it("deleteProductImage: si storage.remove() RECHAZA tras cambiar de sesión, resuelve 'stale-session' — y nunca queda como unhandled rejection (fire-and-forget en producción)", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const gate = deferred<{ error: unknown }>();
+    (remote.client as unknown as { storage: unknown }).storage = {
+      from: (_bucket: string) => ({ remove: () => gate.promise }),
+    };
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      // Callsites reales son `void remote.deleteProductImage(...)` — se
+      // reproduce aquí tal cual, sin adjuntar ningún manejador propio.
+      void remote.deleteProductImage("https://x/storage/v1/object/public/product-images/user-1/a.jpg");
+      const resultPromise = remote.deleteProductImage("https://x/storage/v1/object/public/product-images/user-1/a.jpg");
+      await Promise.resolve(); await Promise.resolve();
+
+      switchSessionTo("user-b", 1);
+      gate.reject(new Error("network error"));
+      const result = await resultPromise;
+
+      expect(result).toEqual({ kind: "stale-session" });
+      // Deja correr la cola de microtasks/macrotasks para que Node tuviera
+      // oportunidad de reportar cualquier unhandled rejection pendiente.
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("deleteProductImage: en la MISMA sesión, un rechazo real de storage.remove() sigue devolviendo 'error' normal", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const boom = new Error("network error");
+    (remote.client as unknown as { storage: unknown }).storage = {
+      from: (_bucket: string) => ({ remove: () => Promise.reject(boom) }),
+    };
+
+    const result = await remote.deleteProductImage("https://x/storage/v1/object/public/product-images/user-1/a.jpg");
+
+    expect(result).toEqual({ kind: "error", error: boom });
+  });
+
+  it("saveNutritionSnapshot: si el insert RECHAZA tras cambiar de sesión, resuelve 'stale-session'", async () => {
+    const gate = deferred<PGResult>();
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: () => gate.promise };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const resultPromise = remote.saveNutritionSnapshot(makeSnapshot());
+    switchSessionTo("user-b", 1);
+    gate.reject(new Error("fetch failed"));
+    const result = await resultPromise;
+
+    expect(result).toEqual({ kind: "stale-session" });
+  });
+
+  it("saveNutritionSnapshot: en la MISMA sesión, un rechazo real del insert sigue devolviendo 'error' normal", async () => {
+    const boom = new Error("fetch failed");
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: () => Promise.reject(boom) };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const result = await remote.saveNutritionSnapshot(makeSnapshot());
+
+    expect(result).toEqual({ kind: "error", error: boom });
+  });
+
+  it("createAdjustmentReview: si el insert RECHAZA tras cambiar de sesión, resuelve 'stale-session'", async () => {
+    const gate = deferred<PGResult>();
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: () => gate.promise };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const resultPromise = remote.createAdjustmentReview({
+      snapshot: makeSnapshot(),
+      decision: { shouldPropose: false, proposedTargetKcal: 0, deltaKcal: 0, reason: "", trajectory: null, blockingReasons: [] },
+      evidence: {} as never,
+    });
+    switchSessionTo("user-b", 1);
+    gate.reject(new Error("fetch failed"));
+    const result = await resultPromise;
+
+    expect(result).toEqual({ kind: "stale-session" });
+  });
+
+  it("createAdjustmentReview: en la MISMA sesión, un rechazo real del insert sigue devolviendo 'error' normal", async () => {
+    const boom = new Error("fetch failed");
+    const config = successConfig();
+    config.nutrition_calculation_snapshots = { insert: () => Promise.reject(boom) };
+    setup(config);
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+
+    const result = await remote.createAdjustmentReview({
+      snapshot: makeSnapshot(),
+      decision: { shouldPropose: false, proposedTargetKcal: 0, deltaKcal: 0, reason: "", trajectory: null, blockingReasons: [] },
+      evidence: {} as never,
+    });
+
+    expect(result).toEqual({ kind: "error", error: boom });
+  });
+
+  it("acceptAdjustmentProposal: si el RPC RECHAZA tras cambiar de sesión, resuelve ok:false con staleSession:true", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    const gate = deferred<{ data: unknown; error: unknown }>();
+    (remote.client as unknown as { rpc: (name: string, params: unknown) => Promise<{ data: unknown; error: unknown }> }).rpc = () => gate.promise;
+
+    const resultPromise = remote.acceptAdjustmentProposal({ proposalId: "p1", accepted: false, goalDate: "2026-09-15" });
+    switchSessionTo("user-b", 1);
+    gate.reject(new Error("fetch failed"));
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.staleSession).toBe(true);
+  });
+
+  it("acceptAdjustmentProposal: en la MISMA sesión, un rechazo real del RPC sigue devolviendo un error normal (staleSession ausente)", async () => {
+    setup(successConfig());
+    (remote as unknown as { userMutationsAllowed: boolean }).userMutationsAllowed = true;
+    (remote.client as unknown as { rpc: (name: string, params: unknown) => Promise<never> }).rpc = () => Promise.reject(new Error("fetch failed"));
+
+    const result = await remote.acceptAdjustmentProposal({ proposalId: "p1", accepted: false, goalDate: "2026-09-15" });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.staleSession).toBeUndefined();
+    expect(result.ok === false && result.error).toBe("fetch failed");
   });
 });
