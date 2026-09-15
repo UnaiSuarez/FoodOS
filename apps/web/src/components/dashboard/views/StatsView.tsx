@@ -7,19 +7,20 @@ import {
   getToday,
   useFoodOS,
 } from "@/lib/state";
-import { useAdherenceWindow } from "@/lib/nutrition-history";
+import { adherenceFreshnessNote, isNeutralAdherenceStatus, useAdherenceWindow } from "@/lib/nutrition-history";
 import { dateFromKey, dateOffset, eur } from "@/lib/utils";
 
 const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 
 export function StatsView() {
-  const { state } = useFoodOS();
+  const { state, authUser } = useFoodOS();
 
   const monthly = getMonthlyFinanceHistory(state, 6);
   // PR A: cada día compara contra SU objetivo histórico real, no el de hoy.
-  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS, authUser?.id ?? "local");
   const macroHistory = adherence.history.slice(-28);
   const streak = adherence.streak;
+  const freshnessNote = adherenceFreshnessNote(adherence.remoteStatus);
   const latestWeight = getLatestWeight(state);
 
   const sorted = [...state.weightLog].sort((a, b) => a.date.localeCompare(b.date));
@@ -64,7 +65,9 @@ export function StatsView() {
         <article className="metric-card">
           <span>Racha de macros</span>
           <strong>{streak}</strong>
-          <small>días objetivo consecutivos</small>
+          <small>
+            días objetivo consecutivos{!adherence.historyComplete ? " (provisional)" : ""}
+          </small>
         </article>
         <article className="metric-card">
           <span>Peso actual</span>
@@ -175,9 +178,9 @@ export function StatsView() {
           </div>
         </div>
         <StatsMacroChart data={macroHistory} />
-        <p className="chart-legend">
+        <p className="chart-legend" role={adherence.remoteStatus === "error" ? "alert" : undefined}>
           Verde = % proteína · Azul = % calorías, cada día contra SU objetivo histórico real.
-          {!adherence.historyComplete && " Cargando histórico completo…"}
+          {freshnessNote && ` ${freshnessNote}`}
         </p>
       </article>
     </section>
@@ -379,6 +382,7 @@ function StatsMacroChart({
         strokeDasharray="4 3"
       />
       {data.map((day, i) => {
+        const isNeutral = isNeutralAdherenceStatus(day.status);
         const kcal = day.consumed?.kcal ?? 0;
         const protein = day.consumed?.protein ?? 0;
         const targetKcal = day.targets?.kcal ?? 0;
@@ -392,8 +396,8 @@ function StatsMacroChart({
 
         return (
           <g key={day.date}>
-            {day.status === "unknown_target" ? (
-              // Sin objetivo histórico registrado ese día — marca neutra,
+            {isNeutral ? (
+              // Sin objetivo histórico o sin consumo ese día — marca neutra,
               // nunca una barra al 0% (que se leería como "incumplido").
               <rect x={x} y={H - 3} width={barW} height={3} fill="rgba(150,163,144,0.35)" rx="1" />
             ) : (
@@ -447,7 +451,9 @@ function StatsMacroChart({
           <tr key={day.date}>
             <td>{day.date}</td>
             {day.status === "unknown_target" ? (
-              <td colSpan={4}>Sin objetivo registrado ese día</td>
+              <td colSpan={4}>Sin objetivo registrado</td>
+            ) : day.status === "unlogged" ? (
+              <td colSpan={4}>Sin consumo registrado</td>
             ) : (
               <>
                 <td>{Math.round(day.consumed?.kcal ?? 0)} kcal</td>

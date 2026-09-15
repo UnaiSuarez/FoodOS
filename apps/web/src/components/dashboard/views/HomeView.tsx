@@ -21,13 +21,13 @@ import {
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
-import { useAdherenceWindow } from "@/lib/nutrition-history";
-
-const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
+import { adherenceFreshnessNote, describeEvaluableFraction, useAdherenceWindow } from "@/lib/nutrition-history";
 import { clampPct, dateFromKey, daysUntil, eur, namesMatch } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
 import { CookModal } from "../CookModal";
 import type { ViewId } from "../DashboardShell";
+
+const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 
 export function HomeView({
   goTo,
@@ -36,7 +36,7 @@ export function HomeView({
   goTo: (view: ViewId) => void;
   openRecipe: (id: string) => void;
 }) {
-  const { state, mutate, addWater, showToast, setMascotMessage, triggerMascot } = useFoodOS();
+  const { state, authUser, mutate, addWater, showToast, setMascotMessage, triggerMascot } = useFoodOS();
   const [consumeItem, setConsumeItem] = useState<InventoryItem | null>(null);
   const [cookingRecipe, setCookingRecipe] = useState<import("@foodos/types").Recipe | null>(null);
   const [whatToEatOpen, setWhatToEatOpen] = useState(false);
@@ -63,9 +63,14 @@ export function HomeView({
 
   /* Racha de adherencia — PR A: objetivo histórico real de cada fecha, no
      el de hoy aplicado retroactivamente (ver diseño). */
-  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS, authUser?.id ?? "local");
   const streak = adherence.streak;
-  const hitThisWeek = adherence.history.slice(-7).filter((d) => d.status === "hit").length;
+  const adherenceLast7 = adherence.history.slice(-7);
+  // PR A (revisión — P3): el denominador es el número REAL de días
+  // evaluables (excluye unknown_target/unlogged) — nunca "/7" a ciegas.
+  const adherenceLast7Evaluable = adherenceLast7.filter((d) => d.status !== "unknown_target" && d.status !== "unlogged");
+  const hitThisWeek = adherenceLast7.filter((d) => d.status === "hit").length;
+  const adherenceFreshness = adherenceFreshnessNote(adherence.remoteStatus);
 
   /* Stock bajo */
   const lowStock = getLowStockSuggestions(state).slice(0, 3);
@@ -205,8 +210,11 @@ export function HomeView({
                 </>
               )}
               {streak >= 2 && (
-                <span className="badge green" title={`${streak} días consecutivos cumpliendo objetivos`}>
-                  🔥 {streak}d
+                <span
+                  className="badge green"
+                  title={`${streak} días consecutivos cumpliendo objetivos${!adherence.historyComplete ? " (provisional, histórico incompleto)" : ""}`}
+                >
+                  🔥 {streak}d{!adherence.historyComplete ? "…" : ""}
                 </span>
               )}
             </div>
@@ -553,16 +561,40 @@ export function HomeView({
             <h3>Tu plan de hoy</h3>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {state.profile && (
-              <span className="badge" title="Días esta semana con objetivos de macros cumplidos">
-                {hitThisWeek}/7 días ✓
-              </span>
-            )}
+            {state.profile && (() => {
+              // PR A (revisión — P3): denominador = días realmente
+              // evaluables esa semana (excluye unknown_target/unlogged) —
+              // con cero evaluables no hay fracción que mostrar en absoluto,
+              // nunca un "0/7" que se leería como fracaso.
+              const weekFraction = describeEvaluableFraction(hitThisWeek, adherenceLast7Evaluable.length);
+              return (
+                <span
+                  className="badge"
+                  title={`Días esta semana con objetivos de macros cumplidos${adherenceFreshness ? ` — ${adherenceFreshness}` : ""}`}
+                >
+                  {weekFraction.hasEvaluableDays ? `${weekFraction.label} días ✓` : "Sin días evaluables"}
+                  {!adherence.historyComplete ? "…" : ""}
+                </span>
+              );
+            })()}
             <button className="text-button" onClick={() => goTo("planner")}>
               {plannedCount === 0 ? "Planificar →" : "Editar →"}
             </button>
           </div>
         </div>
+
+        {/* PR A (revisión — P2): antes solo iba en el `title` del badge —
+            invisible en móvil, donde no hay hover. Nota visible, distinta
+            para loading/error (`adherenceFreshnessNote`, compartida con
+            NutritionView/StatsView) — "ready" no renderiza nada. */}
+        {adherenceFreshness && (
+          <p
+            className="chart-legend"
+            role={adherence.remoteStatus === "error" ? "alert" : "status"}
+          >
+            {adherenceFreshness}
+          </p>
+        )}
 
         {plannedCount === 0 ? (
           <p className="today-plan-empty">
