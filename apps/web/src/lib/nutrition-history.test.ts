@@ -14,6 +14,17 @@ import {
   sanitizeRemoteGoalRow,
 } from "./nutrition";
 import { addDaysToDateKey, isValidCalendarDateKey } from "./utils";
+import {
+  adherenceFreshnessNote,
+  describeEvaluableFraction,
+  isNeutralAdherenceStatus,
+  maskRangeStateForScope,
+  reduceNutritionGoalsRangeState,
+  resetLastGoodForScope,
+  type ScopedRangeState,
+} from "./nutrition-history";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 function entry(overrides: Partial<NutritionGoalLedgerEntry> = {}): NutritionGoalLedgerEntry {
   return {
@@ -312,5 +323,313 @@ describe("sanitizeRemoteGoalRow", () => {
     });
     expect(result?.mode).toBeNull();
     expect(result?.kcal).toBe(2200);
+  });
+});
+
+// ─── Ronda de revisión: P1, P2, P3, P4, P5 (nutrition-history.ts) ──────────
+
+describe("[revisión P1] reduceNutritionGoalsRangeState — el error conserva el último resultado bueno", () => {
+  it("ready -> refetch (loading) -> error conserva el último goalsByDate válido, NUNCA un Map vacío", () => {
+    const goodMap = new Map([["2026-09-01", remoteRow()]]);
+
+    // 1. Primera carga correcta con objetivos.
+    let step = reduceNutritionGoalsRangeState(new Map(), { type: "fetch-success", goalsByDate: goodMap });
+    expect(step.next).toEqual({ status: "ready", goalsByDate: goodMap });
+
+    // 2. Cambia el rango/fecha y empieza una recarga.
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-start" });
+    expect(step.next).toEqual({ status: "loading" });
+
+    // 3. La recarga falla.
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-error", error: "network down" });
+
+    // El resultado queda en "error" CONSERVANDO el último goalsByDate válido
+    // — el bug corregido devolvía aquí un Map vacío porque inspeccionaba el
+    // `prev` de React (ya en "loading", sin datos) en vez de un valor que
+    // sobreviviera esa transición.
+    expect(step.next).toEqual({ status: "error", error: "network down", goalsByDate: goodMap });
+    expect((step.next as { goalsByDate: Map<string, unknown> }).goalsByDate.size).toBe(1);
+  });
+
+  it("un error en la CARGA INICIAL (sin ready previo) conserva un Map vacío, no lanza ni inventa datos", () => {
+    let step = reduceNutritionGoalsRangeState(new Map(), { type: "fetch-start" });
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-error", error: "timeout" });
+    expect(step.next).toEqual({ status: "error", error: "timeout", goalsByDate: new Map() });
+  });
+
+  it("tras un error, una recarga posterior con éxito reemplaza el goalsByDate por el nuevo (no acumula el viejo)", () => {
+    const oldMap = new Map([["2026-08-01", remoteRow({ kcal: 2000 })]]);
+    let step = reduceNutritionGoalsRangeState(new Map(), { type: "fetch-success", goalsByDate: oldMap });
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-start" });
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-error", error: "network down" });
+    const newMap = new Map([["2026-09-01", remoteRow({ kcal: 2400 })]]);
+    step = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-success", goalsByDate: newMap });
+    expect(step.next).toEqual({ status: "ready", goalsByDate: newMap });
+  });
+});
+
+describe("[revisión P2] adherenceFreshnessNote — loading y error son distinguibles, ready no tiene nota", () => {
+  it("loading y error nunca comparten el mismo texto", () => {
+    const loadingNote = adherenceFreshnessNote("loading");
+    const errorNote = adherenceFreshnessNote("error");
+    expect(loadingNote).not.toBeNull();
+    expect(errorNote).not.toBeNull();
+    expect(loadingNote).not.toBe(errorNote);
+  });
+
+  it("ready no muestra ninguna nota (las cifras ya son completas)", () => {
+    expect(adherenceFreshnessNote("ready")).toBeNull();
+  });
+});
+
+describe("[revisión P3] describeEvaluableFraction — cero días evaluables nunca produce una fracción /7 (ni ninguna otra)", () => {
+  it("cero días evaluables -> '—', hasEvaluableDays:false (nunca '0/7')", () => {
+    const result = describeEvaluableFraction(0, 0);
+    expect(result).toEqual({ label: "—", hasEvaluableDays: false });
+    expect(result.label).not.toMatch(/\/7/);
+  });
+
+  it("con días evaluables, el denominador es el conteo REAL, no un 7 fijo", () => {
+    expect(describeEvaluableFraction(2, 3)).toEqual({ label: "2/3", hasEvaluableDays: true });
+    expect(describeEvaluableFraction(0, 7)).toEqual({ label: "0/7", hasEvaluableDays: true }); // 0 hits pero SÍ 7 evaluables — válido, distinto de "0 evaluables"
+  });
+});
+
+describe("[revisión P5] isNeutralAdherenceStatus — unlogged nunca se trata como 0%/fallo", () => {
+  it("unknown_target y unlogged son neutros", () => {
+    expect(isNeutralAdherenceStatus("unknown_target")).toBe(true);
+    expect(isNeutralAdherenceStatus("unlogged")).toBe(true);
+  });
+  it("hit/partial/miss NO son neutros — solo esos muestran porcentajes evaluados", () => {
+    expect(isNeutralAdherenceStatus("hit")).toBe(false);
+    expect(isNeutralAdherenceStatus("partial")).toBe(false);
+    expect(isNeutralAdherenceStatus("miss")).toBe(false);
+  });
+});
+
+describe("[revisión P4] NutritionView — MacroWeekChart y MacroAdherencePanel comparten una única consulta", () => {
+  // Este proyecto no tiene infraestructura de renderizado de React en los
+  // tests (entorno vitest "node", sin jsdom/@testing-library — ver
+  // vitest.config.ts) y añadirla queda fuera del alcance de esta corrección
+  // puntual. La garantía verificable sin renderizar es ESTRUCTURAL: ninguno
+  // de los dos paneles llama a useAdherenceWindow/useNutritionGoalsRangeState
+  // por su cuenta (ambos reciben `adherence` ya resuelto por props), y el
+  // único punto que sí llama al hook (NutritionTodayAdherence) lo hace una
+  // sola vez y reparte el MISMO resultado a los dos — por semántica de
+  // React, un valor pasado por prop nunca duplica la llamada al hook que lo
+  // produjo. Este test falla si alguno de los dos paneles reintrodujera su
+  // propia llamada al hook (la regresión concreta reportada).
+  const source = fs.readFileSync(
+    path.resolve(__dirname, "../components/dashboard/views/NutritionView.tsx"),
+    "utf-8",
+  );
+
+  function bodyOf(fnName: string): string {
+    const start = source.indexOf(`function ${fnName}(`);
+    expect(start, `no se encontró function ${fnName}(`).toBeGreaterThan(-1);
+    // Recorta hasta el cierre de la función siguiente ("\n}\n") — suficiente
+    // para estas funciones concretas, todas definidas a nivel de módulo.
+    const end = source.indexOf("\n}\n", start);
+    return source.slice(start, end);
+  }
+
+  it("MacroWeekChart no llama a useAdherenceWindow ni a useNutritionGoalsRangeState", () => {
+    const body = bodyOf("MacroWeekChart");
+    expect(body).not.toMatch(/useAdherenceWindow\(/);
+    expect(body).not.toMatch(/useNutritionGoalsRangeState\(/);
+  });
+
+  it("MacroAdherencePanel no llama a useAdherenceWindow ni a useNutritionGoalsRangeState", () => {
+    const body = bodyOf("MacroAdherencePanel");
+    expect(body).not.toMatch(/useAdherenceWindow\(/);
+    expect(body).not.toMatch(/useNutritionGoalsRangeState\(/);
+  });
+
+  it("NutritionTodayAdherence llama a useAdherenceWindow EXACTAMENTE una vez y pasa el mismo resultado a ambos paneles", () => {
+    const body = bodyOf("NutritionTodayAdherence");
+    const hookCalls = body.match(/useAdherenceWindow\(/g) ?? [];
+    expect(hookCalls).toHaveLength(1);
+    expect(body).toMatch(/<MacroWeekChart adherence=\{adherence\}/);
+    expect(body).toMatch(/<MacroAdherencePanel adherence=\{adherence\}/);
+  });
+});
+
+// ─── Segunda ronda de revisión: P1 (aislamiento por cuenta), P2 (HomeView) ──
+
+describe("[revisión 2, P1] resetLastGoodForScope — aislamiento del histórico por cuenta", () => {
+  it("A ready -> cambio DIRECTO a B (misma fecha/ventana) -> B loading/error/success nunca muestra el mapa de A", () => {
+    const aMap = new Map([["2026-09-01", remoteRow({ kcal: 1800 })]]);
+    // A está "ready" con su propio mapa.
+    let scoped = { scopeKey: "user-A", goalsByDate: aMap };
+
+    // Supabase cambia DIRECTAMENTE de sesión A->B (p.ej. sincronización de
+    // auth entre pestañas) — misma fecha/ventana, solo cambia scopeKey.
+    scoped = resetLastGoodForScope(scoped, "user-B");
+    expect(scoped.scopeKey).toBe("user-B");
+    expect(scoped.goalsByDate.size).toBe(0); // el mapa de A ya no está disponible
+
+    // B: loading — nunca lleva datos de A (el estado "loading" no tiene
+    // campo goalsByDate en absoluto).
+    let step = reduceNutritionGoalsRangeState(scoped.goalsByDate, { type: "fetch-start" });
+    expect(step.next).toEqual({ status: "loading" });
+
+    // B: si la consulta falla, el fallback tampoco puede ser el mapa de A.
+    let failed = reduceNutritionGoalsRangeState(step.lastGood, { type: "fetch-error", error: "network down" });
+    expect(failed.next).toEqual({ status: "error", error: "network down", goalsByDate: new Map() });
+    expect((failed.next as { goalsByDate: Map<string, unknown> }).goalsByDate.has("2026-09-01")).toBe(false);
+
+    // B: si la consulta tiene éxito, es con SU propio mapa — nunca el de A,
+    // aunque comparta la misma clave de fecha.
+    const bMap = new Map([["2026-09-01", remoteRow({ kcal: 2600 })]]);
+    const succeeded = reduceNutritionGoalsRangeState(failed.lastGood, { type: "fetch-success", goalsByDate: bMap });
+    expect(succeeded.next).toEqual({ status: "ready", goalsByDate: bMap });
+    const readyState = succeeded.next as { goalsByDate: Map<string, SanitizedRemoteGoalRow> };
+    expect(readyState.goalsByDate.get("2026-09-01")?.kcal).toBe(2600); // nunca 1800 (el de A)
+  });
+
+  it("mismo scopeKey no resetea nada — devuelve la MISMA referencia (conserva el mapa entre recargas de la misma cuenta)", () => {
+    const map = new Map([["2026-09-01", remoteRow()]]);
+    const current = { scopeKey: "user-A", goalsByDate: map };
+    const result = resetLastGoodForScope(current, "user-A");
+    expect(result).toBe(current);
+  });
+
+  it("de local ('local', sin sesión) a una cuenta real también resetea — un guest no puede heredar ni contaminar el histórico de la cuenta", () => {
+    const guestMap = new Map([["2026-09-01", remoteRow({ kcal: 1500 })]]);
+    const result = resetLastGoodForScope({ scopeKey: "local", goalsByDate: guestMap }, "user-A");
+    expect(result.scopeKey).toBe("user-A");
+    expect(result.goalsByDate.size).toBe(0);
+  });
+});
+
+describe("[revisión 2, P1 — estructural] useNutritionGoalsRangeState depara scopeKey como dependencia real del efecto", () => {
+  // No hay infraestructura de renderizado de React en este proyecto (ver el
+  // bloque [revisión P4] más abajo) — se verifica que el array de
+  // dependencias del useEffect incluye `scopeKey` literalmente, que es lo
+  // que garantiza que un cambio de cuenta (sin cambiar fecha/ventana)
+  // vuelve a disparar el efecto.
+  const source = fs.readFileSync(path.resolve(__dirname, "./nutrition-history.ts"), "utf-8");
+
+  it("el useEffect de useNutritionGoalsRangeState depende de [scopeKey, referenceDate, windowDays]", () => {
+    expect(source).toMatch(/\}, \[scopeKey, referenceDate, windowDays\]\);/);
+  });
+
+  it("useNutritionGoalsRangeState resetea lastGoodRef vía resetLastGoodForScope dentro del efecto, antes de cualquier fetch", () => {
+    const start = source.indexOf("export function useNutritionGoalsRangeState(");
+    const effectStart = source.indexOf("useEffect(() => {", start);
+    const resetCall = source.indexOf("resetLastGoodForScope(lastGoodRef.current, scopeKey)", effectStart);
+    const fetchCall = source.indexOf("getNutritionGoalsRangeWithStatus(", effectStart);
+    expect(resetCall).toBeGreaterThan(effectStart);
+    expect(resetCall).toBeLessThan(fetchCall);
+  });
+
+  it("[revisión 3] el valor DEVUELTO por el hook pasa por maskRangeStateForScope — el aislamiento no depende solo del efecto", () => {
+    // Corrección del fallo de timing: modificar el ref dentro del efecto no
+    // protege el primer render tras un cambio de scopeKey, porque ese
+    // render lee `useState`, no el ref. La corrección real está en el
+    // `return` del hook, no en el efecto — este test falla si alguien
+    // revierte a `return scopedRangeState.value` (o similar) sin pasar por
+    // la máscara.
+    const start = source.indexOf("export function useNutritionGoalsRangeState(");
+    const end = source.indexOf("\n}\n", start);
+    const body = source.slice(start, end);
+    expect(body).toMatch(/return maskRangeStateForScope\(scopedRangeState, scopeKey\);/);
+  });
+});
+
+describe("[revisión 3, P1] enmascarado por ámbito EN EL RENDER — el primer render tras un cambio de cuenta nunca expone el estado anterior", () => {
+  it("estado interno ready(A) + ámbito solicitado B => el valor visible es 'loading', SIN que haya corrido ningún efecto", () => {
+    // Reproduce exactamente el escenario del fallo reportado: React ya
+    // renderiza con scopeKey="user-B" (la prop/deps cambiaron), pero
+    // useEffect todavía no se ha ejecutado — el estado interno de
+    // useState sigue siendo el `ready` de A. maskRangeStateForScope es lo
+    // que se evalúa en ESE render exacto, antes de cualquier efecto.
+    const mapA = new Map([["2026-09-01", remoteRow({ kcal: 1800 })]]);
+    const internalStateStillA: ScopedRangeState = {
+      scopeKey: "user-A",
+      value: { status: "ready", goalsByDate: mapA },
+    };
+    const visibleForB = maskRangeStateForScope(internalStateStillA, "user-B");
+    expect(visibleForB).toEqual({ status: "loading" });
+  });
+
+  it("B error SIN resultado previo propio => mapa vacío, nunca el mapa de A (secuencia completa: reset -> fetch-start -> fetch-error -> máscara)", () => {
+    const mapA = new Map([["2026-09-01", remoteRow({ kcal: 1800 })]]);
+    let lastGood = { scopeKey: "user-A", goalsByDate: mapA };
+    let internal: ScopedRangeState = { scopeKey: "user-A", value: { status: "ready", goalsByDate: mapA } };
+
+    // Render transitorio (justo tras el cambio de cuenta, antes del efecto).
+    expect(maskRangeStateForScope(internal, "user-B")).toEqual({ status: "loading" });
+
+    // El efecto de B corre: resetea el fallback interno de A...
+    lastGood = resetLastGoodForScope(lastGood, "user-B");
+    // ...arranca en loading (mismo scopeKey ya)...
+    const started = reduceNutritionGoalsRangeState(lastGood.goalsByDate, { type: "fetch-start" });
+    internal = { scopeKey: "user-B", value: started.next };
+    expect(maskRangeStateForScope(internal, "user-B")).toEqual({ status: "loading" });
+
+    // ...y la consulta de B falla, sin ningún resultado previo PROPIO de B.
+    const failed = reduceNutritionGoalsRangeState(lastGood.goalsByDate, { type: "fetch-error", error: "network down" });
+    internal = { scopeKey: "user-B", value: failed.next };
+    const visible = maskRangeStateForScope(internal, "user-B");
+    expect(visible).toEqual({ status: "error", error: "network down", goalsByDate: new Map() });
+    expect((visible as { goalsByDate: Map<string, unknown> }).goalsByDate.has("2026-09-01")).toBe(false); // nunca el 1800 de A
+  });
+
+  it("un estado interno obsoleto etiquetado como 'user-A' queda enmascarado al pedir 'user-B', y no borra el ready de B ya establecido", () => {
+    // IMPORTANTE sobre lo que este test prueba y lo que NO prueba: es un
+    // test puro sobre maskRangeStateForScope, no un test end-to-end del
+    // ciclo de efectos de React. No ejecuta useEffect, no simula una
+    // promesa en vuelo ni su cleanup — solo construye a mano un
+    // ScopedRangeState ya etiquetado "user-A" (como si, hipotéticamente,
+    // hubiera quedado ahí) y comprueba que la máscara lo descarta al pedir
+    // "user-B". La protección real contra que una respuesta tardía de A
+    // LLEGUE A ESCRIBIR ese estado es el cleanup `cancelled` dentro del
+    // useEffect del hook (no cubierto por este test, que no renderiza
+    // React) — lo que este test aporta es la garantía complementaria: aun
+    // si algo dejara un estado obsoleto ahí, la máscara en el render
+    // impide que se muestre.
+    const mapB = new Map([["2026-09-01", remoteRow({ kcal: 2600 })]]);
+    const stateAfterBReady: ScopedRangeState = { scopeKey: "user-B", value: { status: "ready", goalsByDate: mapB } };
+    expect(maskRangeStateForScope(stateAfterBReady, "user-B")).toEqual({ status: "ready", goalsByDate: mapB });
+
+    const staleInternalStateFromA: ScopedRangeState = {
+      scopeKey: "user-A",
+      value: { status: "ready", goalsByDate: new Map([["2026-09-01", remoteRow({ kcal: 9999 })]]) },
+    };
+    expect(maskRangeStateForScope(staleInternalStateFromA, "user-B")).toEqual({ status: "loading" });
+    // Y el B ya establecido, pedido de nuevo, sigue intacto.
+    expect(maskRangeStateForScope(stateAfterBReady, "user-B")).toEqual({ status: "ready", goalsByDate: mapB });
+  });
+
+  it("misma cuenta A durante una recarga (refetch) SÍ puede conservar y mostrar su último resultado bueno", () => {
+    const mapA = new Map([["2026-09-01", remoteRow({ kcal: 1800 })]]);
+    const stateReadyA: ScopedRangeState = { scopeKey: "user-A", value: { status: "ready", goalsByDate: mapA } };
+    // Pedir la máscara para el MISMO scopeKey nunca oculta nada — devuelve
+    // exactamente el mismo `value` (misma referencia).
+    expect(maskRangeStateForScope(stateReadyA, "user-A")).toBe(stateReadyA.value);
+  });
+});
+
+describe("[revisión 2, P2] HomeView — el error es visible, no solo en el atributo title", () => {
+  const source = fs.readFileSync(
+    path.resolve(__dirname, "../components/dashboard/views/HomeView.tsx"),
+    "utf-8",
+  );
+
+  it("renderiza adherenceFreshness como contenido VISIBLE de un elemento, no solo dentro de title=", () => {
+    // Antes de esta corrección, adherenceFreshness solo aparecía dentro de
+    // un `title={...}` — invisible en móvil (sin hover). Ahora debe
+    // aparecer también como children de un elemento (fuera de un atributo).
+    expect(source).toMatch(/>\s*\{adherenceFreshness\}\s*<\/p>/);
+  });
+
+  it("usa role=\"alert\" específicamente cuando remoteStatus es \"error\" (no en loading)", () => {
+    expect(source).toMatch(/role=\{adherence\.remoteStatus === "error" \? "alert" : "status"\}/);
+  });
+
+  it("adherenceFreshnessNote (compartida) sigue distinguiendo loading de error con textos distintos", () => {
+    expect(adherenceFreshnessNote("loading")).not.toBe(adherenceFreshnessNote("error"));
+    expect(adherenceFreshnessNote("ready")).toBeNull();
   });
 });

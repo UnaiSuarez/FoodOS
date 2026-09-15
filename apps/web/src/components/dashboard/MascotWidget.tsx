@@ -11,7 +11,7 @@ const ADHERENCE_WINDOW_DAYS = 60; // cubre la racha — ver diseño §6
 const LAST_VISIT_KEY = "foodos-mascot-last-visit";
 
 export function MascotWidget() {
-  const { state, triggerMascot } = useFoodOS();
+  const { state, authUser, triggerMascot } = useFoodOS();
   const { mascotMessage, mascotState } = useFoodOSUI();
   const mascot = getMascot(state.mascotId);
   const [bubble, setBubble] = useState(false);
@@ -34,7 +34,7 @@ export function MascotWidget() {
   // hoy aplicado retroactivamente) — mientras el rango remoto no esté listo
   // (historyComplete=false), se omite la celebración para no anunciar una
   // racha que todavía podría cambiar al confirmarse el histórico completo.
-  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS);
+  const adherence = useAdherenceWindow(state, getToday(state), ADHERENCE_WINDOW_DAYS, authUser?.id ?? "local");
   useEffect(() => {
     if (!adherence.historyComplete) return;
     const streak = adherence.streak;
