@@ -483,7 +483,13 @@ export interface AdjustmentProposal {
  */
 export type AcceptAdjustmentResult =
   | { ok: true; status: "accepted" | "rejected"; newOffsetKcal: number | null }
-  | { ok: false; error: string };
+  // `staleSession` (corrección de revisión, P1 "falta proteger operaciones
+  // directas que cambian de sesión mientras esperan"): opcional para no
+  // romper ningún caller existente — todos ya tratan cualquier `ok:false`
+  // como "no aplicar la mutación local, mostrar aviso". Un caller que
+  // quiera distinguir "de verdad falló" de "la sesión cambió mientras
+  // tanto, ignóralo en silencio" puede comprobar este campo explícitamente.
+  | { ok: false; error: string; staleSession?: true };
 
 /** Perfil fisico del usuario (PDF §9.1). Todos los campos editables. */
 export interface PhysicalProfile {

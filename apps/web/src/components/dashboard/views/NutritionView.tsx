@@ -400,6 +400,9 @@ function ProfileForm({ onSaved }: { onSaved: () => void }) {
     // (guardar perfil), nunca desde un render. No bloquea el guardado si falla.
     // safety puede llevar confirmedDespiteWarning:true (N10) — queda en el
     // snapshot como constancia de que el aviso no se ignoró en silencio.
+    // Decisión explícita (corrección de revisión, P1): MEJOR ESFUERZO — el
+    // perfil ya se guardó por separado vía mutate() (gateado); esto es solo
+    // trazabilidad, nunca condiciona una mutación posterior.
     void remote.saveNutritionSnapshot({
       calculationVersion: NUTRITION_ENGINE_VERSION,
       triggerReason: profile ? "profile_changed" : "initial_calculation",
@@ -1431,7 +1434,11 @@ function AdjustmentProposalPanel() {
       finalSnapshot,
     });
     if (!result.ok) {
-      showToast(`No se pudo aplicar el ajuste: ${result.error}`);
+      // Corrección de revisión (P1): la sesión pudo cambiar (A→B) mientras
+      // el RPC estaba en vuelo — un `staleSession` se ignora POR COMPLETO,
+      // nunca con un toast (desde B, esto simplemente no ocurrió); solo un
+      // fallo real (RLS, red, propuesta ya resuelta) merece aviso.
+      if (!result.staleSession) showToast(`No se pudo aplicar el ajuste: ${result.error}`);
       return;
     }
 
@@ -1471,10 +1478,20 @@ function AdjustmentProposalPanel() {
       ...buildAdjustmentEvidence(diagnostics, adaptive.warnings, NUTRITION_ENGINE_VERSION),
       profileFingerprint: currentFingerprint,
     };
-    const created = await remote.createAdjustmentReview({ snapshot, decision, evidence });
-    if (created) {
-      mutate((draft) => { draft.pendingAdjustmentProposal = created; });
+    // createAdjustmentReview() ya no devuelve `AdjustmentProposal | null`
+    // directo — RemoteMutationResult distingue "ok" (con o sin propuesta:
+    // decision.shouldPropose===false también es "ok", simplemente sin
+    // valor) de "blocked"/"unavailable"/"error" (diseño v5, §9). Solo
+    // "ok" con valor real activa el camino feliz — el resto conserva
+    // exactamente el mismo mensaje que antes mostraba cualquier `null`.
+    const result = await remote.createAdjustmentReview({ snapshot, decision, evidence });
+    if (result.kind === "ok" && result.value) {
+      mutate((draft) => { draft.pendingAdjustmentProposal = result.value; });
       showToast("Propuesta de ajuste generada — revísala abajo.");
+    } else if (result.kind === "stale-session") {
+      // Corrección de revisión (P1): la sesión cambió (A→B) mientras se
+      // generaba la propuesta — se ignora POR COMPLETO, nunca se instala en
+      // el estado de B ni se muestra ningún aviso (desde B, no ocurrió).
     } else {
       showToast("No se pudo generar la propuesta (revisa tu conexión).");
     }
@@ -1506,7 +1523,8 @@ function AdjustmentProposalPanel() {
       if (!safety.automaticPlanAllowed) {
         const result = await remote.acceptAdjustmentProposal({ proposalId: pending.id, accepted: false, goalDate: today });
         if (!result.ok) {
-          showToast(`No se pudo rechazar la propuesta: ${result.error}`);
+          // Corrección de revisión (P1): staleSession se ignora en silencio.
+          if (!result.staleSession) showToast(`No se pudo rechazar la propuesta: ${result.error}`);
           return;
         }
         mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });
@@ -1526,7 +1544,8 @@ function AdjustmentProposalPanel() {
     } else {
       const result = await remote.acceptAdjustmentProposal({ proposalId: pending.id, accepted: false, goalDate: today });
       if (!result.ok) {
-        showToast(`No se pudo rechazar la propuesta: ${result.error}`);
+        // Corrección de revisión (P1): staleSession se ignora en silencio.
+        if (!result.staleSession) showToast(`No se pudo rechazar la propuesta: ${result.error}`);
         return;
       }
       mutate((draft) => { draft.pendingAdjustmentProposal = null; draft.lastAdjustmentDecisionAt = today; });

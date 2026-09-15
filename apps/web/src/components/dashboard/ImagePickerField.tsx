@@ -2,6 +2,8 @@
 
 import { useRef, useState } from "react";
 import { remote } from "@/lib/data-layer";
+import { useFoodOS } from "@/lib/state";
+import { hasSupabaseConfig } from "@/lib/supabase";
 import { resizeImageFile } from "@/lib/utils";
 import { Modal } from "./Modal";
 
@@ -16,6 +18,7 @@ interface Props {
 /** Selector de imagen de producto: URL manual, cámara o galería, con vista
     previa ampliable y un placeholder genérico cuando no hay ninguna. */
 export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
+  const { showToast } = useFoodOS();
   const [urlMode, setUrlMode] = useState(false);
   const [zoom, setZoom] = useState(false);
   const [error, setError] = useState("");
@@ -30,13 +33,40 @@ export function ImagePickerField({ imageUrl, brand, onChange }: Props) {
     try {
       const dataUrl = await resizeImageFile(file);
       // Con sesión, la foto va a Supabase Storage y el estado solo lleva la URL
-      // (el base64 pesaba 30-80KB por foto en cada localStorage/push). Sin
-      // sesión o si Storage falla, se degrada al base64 de siempre.
-      try {
-        const publicUrl = await remote.uploadProductImage(dataUrl);
-        onChange(publicUrl ?? dataUrl);
-      } catch (uploadError) {
-        console.warn("FoodOS: subida a Storage falló, usando imagen local", uploadError);
+      // (el base64 pesaba 30-80KB por foto en cada localStorage/push).
+      // Corrección de revisión (bloqueante P0, "el manejo de
+      // uploadProductImage viola el contrato"): los cinco resultados de
+      // RemoteMutationResult ("ok"/"blocked"/"unavailable"/"stale-session"/
+      // "error") ya NO se colapsan en el mismo fallback — antes "blocked"
+      // completaba el formulario igual que un éxito, justo lo que el gate
+      // estaba tratando de impedir.
+      const result = await remote.uploadProductImage(dataUrl);
+      if (result.kind === "ok") {
+        onChange(result.value);
+      } else if (result.kind === "unavailable") {
+        // Sin sesión real (modo local, o un hueco transitorio sin cuenta)
+        // — comportamiento de siempre: la foto vive en base64 hasta que
+        // haya sesión con la que sincronizarla.
+        onChange(dataUrl);
+      } else if (result.kind === "blocked") {
+        // Gate cerrado (cuenta sincronizándose todavía) — NUNCA se
+        // completa el formulario con una foto que ni siquiera se intentó
+        // subir; nada de onChange() aquí.
+        showToast("Cuenta sincronizándose todavía — vuelve a intentarlo en un momento.");
+      } else if (result.kind === "stale-session") {
+        // Corrección de revisión (P1): la sesión cambió mientras la subida
+        // estaba en vuelo (A→B) — el caller la IGNORA POR COMPLETO, nunca
+        // adjunta la URL de A al formulario que ahora pertenece a B. Sin
+        // aviso: desde la perspectiva de B, esto simplemente no ocurrió.
+      } else {
+        // "error": el intento SÍ se hizo y falló de verdad. Degradar a
+        // base64 sigue siendo mejor que perder la foto, pero con Supabase
+        // configurado no puede quedar disfrazado de guardado sincronizado
+        // normal — aviso explícito.
+        console.warn("FoodOS: subida a Storage falló, usando imagen local", result.error);
+        if (hasSupabaseConfig()) {
+          showToast("No se pudo subir la foto al servidor — se guarda solo en este dispositivo.");
+        }
         onChange(dataUrl);
       }
     } catch (error) {

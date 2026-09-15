@@ -348,6 +348,37 @@
   to { transform: rotate(360deg); }
 }
 
+/* Diseño v5 de hidratación: aviso persistente e independiente de
+   SyncStatusBadge — con baseline local, el dashboard sigue mostrándose
+   mientras la sincronización inicial falla, pero este aviso nunca debe
+   quedar oculto detrás de lo que el badge agregado esté mostrando (§8). */
+.hydration-error-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin: 0 24px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-size: 13px;
+}
+
+.hydration-error-notice span {
+  flex: 1;
+}
+
+.hydration-error-notice-retry {
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 @media (max-width: 680px) {
   /* En móvil la cabecera ya está apretada (E04-05) — el texto largo del
      estado no cabe junto al título sin envolver de forma fea. Se deja solo

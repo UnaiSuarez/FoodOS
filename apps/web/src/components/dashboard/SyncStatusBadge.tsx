@@ -13,6 +13,14 @@ const CONFIG: Record<SyncStatus, { icon: typeof CloudCheck; label: string; class
   // este dispositivo (cuota/serialización) — distinto y más grave que
   // "error" (que sí tiene una copia local durable esperando reintentar).
   unsynced: { icon: TriangleAlert, label: "No se pudo guardar de forma segura", className: "error" },
+  // Corrección de revisión (bloqueante P0, "el badge todavía puede decir
+  // 'Guardado'"): la hidratación inicial (pullState/ensureBaseRows/
+  // confirmación de un pendiente) falló — independientemente de que el
+  // ÚLTIMO push del snapshot local haya confirmado "saved". Sin esto, un
+  // fallo real de sincronización inicial quedaba oculto detrás de "Guardado"
+  // en la cabecera. Ver computeSyncStatus() en state.tsx para la precedencia
+  // completa (unsynced > error de push > hydration-error > syncing/saved).
+  "hydration-error": { icon: CloudAlert, label: "No se pudo verificar tu cuenta", className: "error" },
 };
 
 /** E04-07: indicador de estado de guardado en la cabecera — antes un

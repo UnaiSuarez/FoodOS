@@ -946,7 +946,11 @@ export function InventoryView() {
                           // Limpiar su foto de Storage si ningún otro lote la usa
                           // (comprobación con el estado ANTES de mutar) — pero solo
                           // cuando expire la ventana de deshacer: borrarla antes
-                          // dejaría la foto rota si el usuario deshace.
+                          // dejaría la foto rota si el usuario deshace. Decisión
+                          // explícita (corrección de revisión, P1): MEJOR
+                          // ESFUERZO — el borrado del item ya ocurrió arriba
+                          // (mutate(), gateado); esto nunca condiciona ninguna
+                          // mutación posterior, solo limpia Storage cuando puede.
                           if (item.imageUrl && !isImageUrlReferencedElsewhere(state, item.imageUrl, item.id)) {
                             const url = item.imageUrl;
                             setTimeout(() => {

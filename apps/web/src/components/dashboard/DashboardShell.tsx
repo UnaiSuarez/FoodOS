@@ -23,9 +23,10 @@ import {
   ChevronsRight,
   Search,
   Star,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
-import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot } from "@/lib/state";
+import { FoodOSProvider, useFoodOS, useFoodOSUI, getMascot, resolveHydrationUiMode } from "@/lib/state";
 import { VIEWS, NAV_GROUPS, type ViewId } from "@/lib/dashboard-views";
 import { SyncStatusBadge } from "./SyncStatusBadge";
 import { QuickAddButton } from "./QuickAddButton";
@@ -197,7 +198,7 @@ function BottomTabButton({
 }
 
 function DashboardInner() {
-  const { state, hydrated, remoteReady, remoteHydrated, authUser, realtimeConnected, syncStatus, showToast, mutate } =
+  const { state, hydrated, remoteReady, remoteHydrated, hydrationScope, retryHydrationNow, authUser, realtimeConnected, syncStatus, showToast, mutate, requestSignOut } =
     useFoodOS();
   const router = useRouter();
   const pathname = usePathname();
@@ -525,6 +526,53 @@ function DashboardInner() {
   // Supabase listo pero sin sesión — la redirección está en vuelo
   if (needsAuth && remoteReady && !authUser) return null;
 
+  // Diseño v5 de hidratación: sin baseline local (dispositivo/cuenta nuevos
+  // para esta sesión), no hay nada legítimo que mostrar todavía — ni
+  // siquiera el dashboard vacío, que podría confundirse con "esta cuenta no
+  // tiene datos" cuando en realidad es "todavía no hemos podido
+  // preguntarle a Supabase". Cubre tanto loading como error (nunca deja al
+  // usuario sin Reintentar/Cerrar sesión, ni siquiera mientras carga).
+  if (needsAuth && authUser && resolveHydrationUiMode(hydrationScope) === "recovery-screen") {
+    const isError = hydrationScope?.phase === "error";
+    const reasonText =
+      hydrationScope?.errorReason === "waiting-for-local-save"
+        ? "Sigue esperando a que se confirme un guardado pendiente de este dispositivo."
+        : hydrationScope?.errorReason === "timeout"
+          ? "El servidor está tardando más de lo normal en responder."
+          : "No se pudo completar la sincronización inicial.";
+    return (
+      <div className="auth-checking" role={isError ? "alert" : "status"} aria-live="polite">
+        <p className="eyebrow">FoodOS</p>
+        <p>{isError ? reasonText : "Descargando tus datos desde la nube…"}</p>
+        <p className="form-intro">
+          {isError
+            ? "Puede ser un problema de conexión o que el servicio no responda ahora mismo."
+            : "Esto solo tarda unos segundos la primera vez en un dispositivo nuevo."}
+        </p>
+        <div className="auth-checking-actions">
+          {/* Corrección de revisión (bloqueante P1, "botón activo durante
+              loading"): deshabilitado mientras "loading" — cada clic
+              llamaba a replaceHydration(), abortando un intento válido en
+              curso y empezando otro idéntico. retryHydrationNow() ya
+              incluye el mismo guard por defensa en profundidad; esto es la
+              señal visible de que no hay nada que reintentar todavía. */}
+          <button className="primary-button" onClick={retryHydrationNow} disabled={!isError}>
+            Reintentar
+          </button>
+          <button
+            className="secondary-button"
+            onClick={async () => {
+              const result = await requestSignOut();
+              if (result === "signed_out") showToast("Sesión cerrada.");
+            }}
+          >
+            Cerrar sesión
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
     {hydrated && showOnboarding && (
@@ -641,6 +689,42 @@ function DashboardInner() {
             <SyncStatusBadge status={syncStatus} />
           </div>
         </header>
+
+        {/* Diseño v5 de hidratación: independiente de la precedencia del
+            badge agregado (SyncStatusBadge) — un hydration-error puede
+            quedar oculto detrás de "syncing"/"saved" si el badge ya
+            resolvió otra cosa. Con baseline local, el dashboard sigue
+            mostrándose (los datos que ya tenías siguen siendo válidos),
+            pero este aviso persistente e independiente informa de que la
+            sincronización inicial no se pudo completar. Corrección de
+            revisión: "Reintentar" Y "Cerrar sesión" siempre juntos aquí
+            también — un pending-timeout no debe dejar al usuario sin una
+            salida clara solo porque el dashboard con baseline sí es
+            navegable (Ajustes también permite cerrar sesión, pero eso no
+            excusa a este aviso de ofrecerlo directamente). */}
+        {needsAuth && hydrationScope?.phase === "error" && (
+          <div className="hydration-error-notice" role="alert">
+            <TriangleAlert size={16} aria-hidden="true" />
+            <span>
+              {hydrationScope.errorReason === "waiting-for-local-save"
+                ? "Sigue esperando a que se confirme un guardado pendiente — mostrando la última copia conocida."
+                : "No se pudo sincronizar con tu cuenta — mostrando la última copia conocida en este dispositivo."}
+            </span>
+            <button type="button" className="hydration-error-notice-retry" onClick={retryHydrationNow}>
+              Reintentar
+            </button>
+            <button
+              type="button"
+              className="hydration-error-notice-retry"
+              onClick={async () => {
+                const result = await requestSignOut();
+                if (result === "signed_out") showToast("Sesión cerrada.");
+              }}
+            >
+              Cerrar sesión
+            </button>
+          </div>
+        )}
 
         {hydrated ? (
           <ViewErrorBoundary key={view}>
