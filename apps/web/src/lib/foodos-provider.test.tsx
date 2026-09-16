@@ -135,10 +135,21 @@ function makeFakeClient(opts: {
   // VERDAD (mismo camino que produce remote.subscribeRealtime() en
   // producción), no solo un sustituto vía el evento `online`.
   const realtimeHandlersByTable: Record<string, () => void> = {};
+  // Contadores expuestos para los tests de arranque en frío/transiciones de
+  // sesión (ronda 3, diseño v5 §Realtime) — NO se usaban antes de esta
+  // ronda; ningún test existente los consulta, así que añadirlos aquí es
+  // puramente aditivo. A diferencia del fake de data-layer.test.ts, este NO
+  // necesita deduplicar por topic (subscribeRealtime() real ya lo garantiza
+  // por construcción con topics únicos por generación) — aquí solo importa
+  // CUÁNTAS VECES se llamó a channel()/removeChannel(), para comprobar
+  // "exactamente un canal" / "ningún canal nuevo" a este nivel de integración.
+  let channelCallCount = 0;
+  let removeChannelCallCount = 0;
 
   const client = {
     from: (table: string) => makeBuilder(table),
     channel: (_name: string) => {
+      channelCallCount++;
       const channelObj = {
         on: (_event: string, filter: { table?: string }, handler: () => void) => {
           if (filter?.table) realtimeHandlersByTable[filter.table] = handler;
@@ -151,7 +162,9 @@ function makeFakeClient(opts: {
       };
       return channelObj;
     },
-    removeChannel: async () => {},
+    removeChannel: async () => { removeChannelCallCount++; },
+    __getChannelCallCount: () => channelCallCount,
+    __getRemoveChannelCallCount: () => removeChannelCallCount,
     __emitPostgresChange: (table: string) => realtimeHandlersByTable[table]?.(),
     auth: {
       getSession: async () => ({ data: { session: opts.initialSession ?? null } }),
@@ -188,6 +201,8 @@ function resetRemoteForTest() {
     waterRetryTimer: ReturnType<typeof setTimeout> | null;
     activeWaterWorker: unknown;
     waterHasError: boolean;
+    realtimeGeneration: number;
+    realtimePendingTeardown: Promise<void>;
   };
   if (r.pushTimer) clearTimeout(r.pushTimer);
   if (r.pushRetryTimer) clearTimeout(r.pushRetryTimer);
@@ -207,6 +222,8 @@ function resetRemoteForTest() {
   r.waterRetryTimer = null;
   r.activeWaterWorker = null;
   r.waterHasError = false;
+  r.realtimeGeneration = 0;
+  r.realtimePendingTeardown = Promise.resolve();
   remote.onPushError = null;
   remote.onStatusChange = null;
   remote.onUnsyncedWrite = null;
@@ -716,5 +733,216 @@ describe("FoodOSProvider — ownership único del intento de hidratación (dise�
 
     expect(mutateResult).toBe(true);
     expect(holder.current?.state.weeklyBudget).toBe(42);
+  });
+});
+
+// ─── Arranque en frío y transiciones de sesión con Realtime (diseño v5
+// §Realtime, ronda 3 de revisión) ───────────────────────────────────────────
+// A diferencia del resto del archivo (ownership de la HIDRATACIÓN), este
+// bloque verifica el otro riesgo que la ronda 3 pidió demostrar con
+// FoodOSProvider real: que classifyAuthTransition() puramente por identidad
+// no rompe el arranque en frío (authUserRef empieza en null de verdad, nunca
+// "A" antes de que llegue el primer INITIAL_SESSION(A) — ver el comentario
+// grande de classifyAuthTransition en state.tsx) y que setupRealtime() crea
+// exactamente un canal por cambio real de sesión, nunca de más ni de menos.
+// __getChannelCallCount()/__getRemoveChannelCallCount() (añadidos al fake
+// client más arriba) son contadores GLOBALES del cliente — suficientes aquí
+// porque cada test usa su propio cliente fresco.
+function channelCalls(client: unknown) {
+  return (client as { __getChannelCallCount: () => number }).__getChannelCallCount();
+}
+function removeChannelCalls(client: unknown) {
+  return (client as { __getRemoveChannelCallCount: () => number }).__getRemoveChannelCallCount();
+}
+function emitAuth(client: unknown, event: string, session: { user: { id: string } } | null) {
+  (client as { __emitAuth: (e: string, s: { user: { id: string } } | null) => void }).__emitAuth(event, session);
+}
+
+describe("FoodOSProvider — arranque en frío y transiciones de sesión con Realtime (diseño v5 §Realtime, ronda 3)", () => {
+  it("arranque en frío CON sesión persistida A: hidrata exactamente una vez, crea exactamente un canal Realtime, y termina con el scope perteneciendo a A", async () => {
+    const { client } = makeFakeClient({ initialSession: { user: { id: USER_ID } } });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    // Si authUserRef.current NO estuviera garantizado null antes del primer
+    // INITIAL_SESSION(A), classifyAuthTransition(prevId="A", newId="A")
+    // devolvería "same_session" — ni replaceHydration() ni setupRealtime()
+    // llegarían a ejecutarse nunca, y esto se quedaría en "loading" para
+    // siempre (o, peor, sin ningún hydrationScope). Que termine en "ready"
+    // con exactamente un canal ES la prueba de que el arranque en frío sigue
+    // siendo "real_change", tal y como concluyó la verificación de la
+    // ronda 3 (authUserRef solo se escribe dentro de este mismo callback).
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    expect(holder.current?.hydrationScope?.userId).toBe(USER_ID);
+    expect(holder.current?.authUser?.id).toBe(USER_ID);
+    expect(channelCalls(client)).toBe(1);
+  });
+
+  it("arranque en frío SIN sesión: no hidrata y no crea ningún canal Realtime", async () => {
+    const { client } = makeFakeClient({ initialSession: null });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope).toBeNull();
+    expect(holder.current?.authUser).toBeNull();
+    expect(channelCalls(client)).toBe(0);
+  });
+
+  it("primer login null→A: hidrata y se suscribe a Realtime exactamente una vez", async () => {
+    const { client } = makeFakeClient({ initialSession: null });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope).toBeNull();
+    expect(channelCalls(client)).toBe(0);
+
+    await act(async () => {
+      emitAuth(client, "SIGNED_IN", { user: { id: USER_ID } });
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    expect(holder.current?.hydrationScope?.userId).toBe(USER_ID);
+    expect(channelCalls(client)).toBe(1);
+  });
+
+  it("tras A ya inicializado, varios eventos con el MISMO UUID no reinician la hidratación, no crean un canal nuevo y no avanzan la generación", async () => {
+    const { client } = makeFakeClient({ initialSession: { user: { id: USER_ID } } });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    const generationAfterColdStart = holder.current?.hydrationScope?.generation;
+    const channelCallsAfterColdStart = channelCalls(client);
+    expect(channelCallsAfterColdStart).toBe(1);
+
+    await act(async () => {
+      // TOKEN_REFRESHED/USER_UPDATED/INITIAL_SESSION del MISMO usuario — los
+      // tres deben clasificar como "same_session" bajo la regla puramente
+      // por identidad, exactamente igual que un SIGNED_IN eco de la propia
+      // sesión (no solo la lista blanca de eventos que existía antes).
+      emitAuth(client, "TOKEN_REFRESHED", { user: { id: USER_ID } });
+      emitAuth(client, "USER_UPDATED", { user: { id: USER_ID } });
+      emitAuth(client, "INITIAL_SESSION", { user: { id: USER_ID } });
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    expect(holder.current?.hydrationScope?.generation).toBe(generationAfterColdStart); // ninguna generación nueva
+    expect(channelCalls(client)).toBe(channelCallsAfterColdStart); // ningún canal nuevo
+  });
+
+  it("A→B (cambio de cuenta): crea una nueva propiedad de sesión — generación nueva y un canal Realtime nuevo", async () => {
+    const { client } = makeFakeClient({ initialSession: { user: { id: USER_ID } } });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    const generationA = holder.current?.hydrationScope?.generation;
+    const channelCallsAfterA = channelCalls(client);
+    expect(channelCallsAfterA).toBe(1);
+
+    await act(async () => {
+      emitAuth(client, "SIGNED_IN", { user: { id: "user-b" } });
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    expect(holder.current?.hydrationScope?.userId).toBe("user-b");
+    expect(holder.current?.hydrationScope?.generation).not.toBe(generationA);
+    expect(channelCalls(client)).toBe(channelCallsAfterA + 1); // un canal nuevo para B
+    expect(removeChannelCalls(client)).toBeGreaterThanOrEqual(1); // el de A se desmontó
+  });
+
+  it("A→null (logout): desmonta el canal Realtime de la sesión saliente y no crea ninguno nuevo", async () => {
+    const { client } = makeFakeClient({ initialSession: { user: { id: USER_ID } } });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    const channelCallsAfterA = channelCalls(client);
+    expect(channelCallsAfterA).toBe(1);
+
+    await act(async () => {
+      emitAuth(client, "SIGNED_OUT", null);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope).toBeNull();
+    expect(holder.current?.authUser).toBeNull();
+    expect(channelCalls(client)).toBe(channelCallsAfterA); // ningún canal nuevo (no hay usuario nuevo)
+    expect(removeChannelCalls(client)).toBeGreaterThanOrEqual(1); // el de A se desmontó
+  });
+
+  it("logout→login RÁPIDO del MISMO usuario A: crea una nueva propiedad de sesión (generación y canal nuevos), nunca reutiliza la anterior", async () => {
+    const { client } = makeFakeClient({ initialSession: { user: { id: USER_ID } } });
+    clientHolder.client = client;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    const generationA1 = holder.current?.hydrationScope?.generation;
+    const channelCallsAfterA1 = channelCalls(client);
+    expect(channelCallsAfterA1).toBe(1);
+
+    await act(async () => {
+      // Logout y login del MISMO usuario disparados seguidos, sin esperar
+      // entre medias — replica un logout→login real (p. ej.
+      // reautenticación tras un token caducado) sin dar tiempo a que nada
+      // "se asiente" entre ambos eventos.
+      emitAuth(client, "SIGNED_OUT", null);
+      emitAuth(client, "SIGNED_IN", { user: { id: USER_ID } });
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    });
+
+    expect(holder.current?.hydrationScope?.phase).toBe("ready");
+    expect(holder.current?.hydrationScope?.userId).toBe(USER_ID);
+    expect(holder.current?.hydrationScope?.generation).not.toBe(generationA1); // nueva propiedad de sesión, no la reutiliza
+    expect(channelCalls(client)).toBe(channelCallsAfterA1 + 1); // canal nuevo, no el mismo objeto reutilizado
+    expect(removeChannelCalls(client)).toBeGreaterThanOrEqual(1); // el de la primera A se desmontó
   });
 });
