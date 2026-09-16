@@ -33,10 +33,13 @@ import * as outbox from "./outbox";
 // ─── Mock de ./supabase — hasSupabaseConfig()/getSupabase() ────────────────
 // clientHolder vive fuera del factory de vi.mock (que se hoistea por encima
 // de este módulo) para poder sustituir el cliente falso en cada test sin
-// tener que re-mockear el módulo entero.
+// tener que re-mockear el módulo entero. supabaseConfigHolder sigue el mismo
+// patrón para poder simular "modo local" (sin Supabase configurado) en un
+// test puntual sin afectar al resto — por defecto true, como antes.
 const clientHolder: { client: unknown } = vi.hoisted(() => ({ client: null }));
+const supabaseConfigHolder: { value: boolean } = vi.hoisted(() => ({ value: true }));
 vi.mock("./supabase", () => ({
-  hasSupabaseConfig: () => true,
+  hasSupabaseConfig: () => supabaseConfigHolder.value,
   getSupabase: () => clientHolder.client,
 }));
 
@@ -236,6 +239,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   resetRemoteForTest();
+  supabaseConfigHolder.value = true;
   container = document.createElement("div");
   document.body.appendChild(container);
 });
@@ -666,10 +670,18 @@ describe("FoodOSProvider — ownership único del intento de hidratación (dise�
 
     const stateBefore = holder.current?.state;
 
-    act(() => { holder.current?.mutate((draft) => { draft.weeklyBudget = 999999; }); });
+    // Corrección de revisión (contrato booleano de mutate()): con el gate
+    // cerrado, mutate() debe devolver `false` — es la única señal que un
+    // caller (p.ej. borrar una receta) puede usar para decidir si mostrar
+    // éxito, en vez de reimplementar su propia comprobación de
+    // canAcceptRemoteMutations()/hydrationScope por separado.
+    let mutateResult: boolean | undefined;
+    act(() => { mutateResult = holder.current?.mutate((draft) => { draft.weeklyBudget = 999999; }); });
     act(() => { holder.current?.addWater(500); });
     act(() => { holder.current?.setWaterAbsolute("2026-09-15", 1234); });
     act(() => { holder.current?.seedDemo(); });
+
+    expect(mutateResult).toBe(false);
 
     // React ni siquiera re-renderizó con un estado distinto — mismo objeto
     // de referencia que antes de las cuatro llamadas (setState() nunca se
@@ -682,5 +694,27 @@ describe("FoodOSProvider — ownership único del intento de hidratación (dise�
     // Tampoco se escribió NADA en la outbox de este usuario — ni el snapshot
     // completo que mutate()/seedDemo() habrían programado.
     expect(outbox.readEnvelope(USER_ID)).toBeNull();
+  });
+
+  it("mutate() devuelve true y aplica el cambio en modo local (sin Supabase configurado) — corrección del contrato booleano", async () => {
+    // Sin configuración de Supabase, canAcceptRemoteMutations(null) ===
+    // !hasSupabaseConfig() === true: el gate está abierto desde el
+    // principio, sin necesidad de sesión ni de hidratación alguna — este es
+    // el modo "app sin cuenta" normal, no un caso raro.
+    supabaseConfigHolder.value = false;
+    const { Capture, holder } = makeCapture();
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(<FoodOSProvider><Capture /></FoodOSProvider>);
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(holder.current?.hydrationScope).toBeNull(); // sin Supabase, nunca hay intento de hidratación
+
+    let mutateResult: boolean | undefined;
+    act(() => { mutateResult = holder.current?.mutate((draft) => { draft.weeklyBudget = 42; }); });
+
+    expect(mutateResult).toBe(true);
+    expect(holder.current?.state.weeklyBudget).toBe(42);
   });
 });
