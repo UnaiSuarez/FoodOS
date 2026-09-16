@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import type { AuthChangeEvent, User } from "@supabase/supabase-js";
-import type { AppSettings, DailyTargets, DayAdherenceStatus, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealType, Recipe, ResolvedDailyGoal, StorageName, UnitSizeUnit, WeightEntry } from "@foodos/types";
+import type { AppSettings, DailyTargets, DayAdherenceStatus, FoodLogEntry, FoodOSState, GoalMode, InventoryItem, InventorySnapshot, MacroTotals, MealPlanDay, MealType, Recipe, ResolvedDailyGoal, StorageName, UnitSizeUnit, WeightEntry } from "@foodos/types";
 import { Modal } from "@/components/dashboard/Modal";
 import { clearLocalState, flushLocalState, loadLocalState, remote, saveLocalState, saveLocalStateDebounced, waitForMutationConfirmed, type PendingPush, type SyncPushStatus } from "./data-layer";
 import * as outbox from "./outbox";
@@ -748,7 +748,15 @@ interface FoodOSContextValue {
   showToast: (message: string, action?: ToastAction) => void;
   setMascotMessage: (message: string) => void;
   triggerMascot: (anim: MascotState, message?: string) => void;
-  mutate: (fn: (draft: FoodOSState) => void) => void;
+  /** Aplica una mutación local y la encola para persistir (outbox/localStorage
+      + schedulePush si hay sesión) — ver el comentario grande junto a la
+      implementación para el contrato completo. Devuelve `false` si el gate
+      de hidratación bloqueó la operación (no se encoló ningún cambio);
+      `true` si fue aceptada por el gate y quedó encolada — NUNCA usar esto
+      como sustituto de comprobar canAcceptRemoteMutations()/hydrationScope
+      por separado antes de llamar: es al revés, este es el único resultado
+      fiable porque consulta el gate en el momento real de la llamada. */
+  mutate: (fn: (draft: FoodOSState) => void) => boolean;
   /** Incrementa/decrementa el agua del día de forma atómica (sin conflictos entre tabs). */
   addWater: (ml: number) => void;
   /** Fija el agua de una fecha concreta a un valor absoluto — usar para
@@ -1485,8 +1493,26 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   // el proceso muere antes de que dispare (pagehide sigue existiendo como
   // defensa adicional para LOCAL_KEY del modo sin sesión, no como
   // requisito para que la outbox exista).
-  const mutate = useCallback((fn: (draft: FoodOSState) => void) => {
-    if (mutationsBlocked()) return; // ni fn(draft), ni setState, ni outbox/localStorage, ni schedulePush
+  //
+  // Corrección de revisión (contrato booleano de mutate()): devuelve ahora
+  // un boolean en vez de void, para que un caller (p.ej. un borrado que no
+  // debe anunciar éxito si nada se aplicó) pueda saber si la operación
+  // realmente pasó el gate, SIN volver a comprobar
+  // canAcceptRemoteMutations()/hydrationScope por su cuenta — esa sería una
+  // comprobación separada que podría quedar obsoleta antes de que mutate()
+  // consulte su propio ref real, exactamente el bug de fondo que este
+  // contrato evita.
+  //   - false: la hidratación BLOQUEÓ la operación (mutationsBlocked()) y
+  //     no se encoló ningún cambio — ni fn(draft), ni setState, ni
+  //     outbox/localStorage, ni schedulePush.
+  //   - true: la operación fue ACEPTADA POR EL GATE y la actualización
+  //     local quedó ENCOLADA (setState, y outbox/localStorage +
+  //     schedulePush si hay sesión). `true` NO significa que React ya
+  //     haya renderizado el cambio (setState es asíncrono) ni que Supabase
+  //     ya lo haya confirmado — solo que la mutación superó el gate y
+  //     entró al pipeline normal de persistencia.
+  const mutate = useCallback((fn: (draft: FoodOSState) => void): boolean => {
+    if (mutationsBlocked()) return false; // ni fn(draft), ni setState, ni outbox/localStorage, ni schedulePush
     setState((current) => {
       const draft = structuredClone(current);
       fn(draft);
@@ -1541,6 +1567,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       remote.schedulePush({ userId, epoch, mutationId: pending.mutationId, revision: pending.revision, state: draft });
       return draft;
     });
+    return true;
   }, [showToast]);
 
   // Corrección de revisión (P1): setWaterAbsolute()/addWater() llamaban a
@@ -1905,6 +1932,47 @@ export function pruneOrphanedQuickMeals(draft: FoodOSState): void {
     Object.values(draft.mealPlan ?? {}).flatMap((day) => Object.values(day as Record<string, string>))
   );
   draft.plannerQuickMeals = draft.plannerQuickMeals.filter((qm) => referencedIds.has(qm.id));
+}
+
+/** Nº de referencias a `recipeId` en el planificador con fecha >= `todayKey`
+    — HOY INCLUIDO: un plato planificado para hoy también se borrará junto
+    con la receta, así que también debe figurar en el aviso ("hoy o en los
+    próximos días", nunca solo "próximos días"). Solo para el AVISO de
+    confirmación antes de borrar — un día ESTRICTAMENTE anterior a hoy no
+    cuenta aquí porque ya no es una disrupción real para quien va a borrar
+    (a diferencia de removeCustomRecipeFromDraft, que limpia también los
+    días pasados: son igual de basura de estado, solo que no le importan a
+    este aviso). */
+export function countUpcomingMealPlanUsages(state: FoodOSState, recipeId: string, todayKey: string): number {
+  let count = 0;
+  for (const [dateKey, day] of Object.entries(state.mealPlan ?? {})) {
+    if (dateKey < todayKey) continue; // dateKey === todayKey (HOY) sí cuenta
+    for (const slotValue of Object.values(day)) {
+      if (slotValue === recipeId) count++;
+    }
+  }
+  return count;
+}
+
+/** Borra una receta personalizada de `customRecipes` y retira cualquier
+    referencia activa que quedaría colgando: su ID en `savedRecipeIds`, y
+    CUALQUIER slot de `mealPlan` que apunte a ella — pasado, hoy o futuro, a
+    diferencia de countUpcomingMealPlanUsages (el aviso), aquí la fecha no
+    importa: una referencia huérfana es basura de estado igual si es de
+    ayer que si es de mañana. Nunca toca `foodLog` (histórico real de lo
+    comido, siempre un snapshot desnormalizado sin `recipeId`), `cart`
+    (ingredientes ya copiados de forma independiente) ni
+    `plannerQuickMeals` (entidad propia, no una receta). Si `recipeId` no
+    está en `customRecipes` (p.ej. es del catálogo `DEMO_RECIPES`), no hace
+    nada. */
+export function removeCustomRecipeFromDraft(draft: FoodOSState, recipeId: string): void {
+  draft.customRecipes = draft.customRecipes.filter((r) => r.id !== recipeId);
+  draft.savedRecipeIds = (draft.savedRecipeIds ?? []).filter((id) => id !== recipeId);
+  for (const day of Object.values(draft.mealPlan ?? {})) {
+    for (const slot of Object.keys(day) as (keyof MealPlanDay)[]) {
+      if (day[slot] === recipeId) delete day[slot];
+    }
+  }
 }
 
 /** Cantidad disponible en inventario para un ingrediente, EXPRESADA EN LA
