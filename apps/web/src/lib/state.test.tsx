@@ -1392,11 +1392,32 @@ describe("removeCustomRecipeFromDraft / countUpcomingMealPlanUsages — borrado 
     expect(draft.customRecipes.map((r) => r.id)).toEqual(["custom-b"]);
   });
 
-  it("no-op seguro si el id no está en customRecipes (p.ej. un id del catálogo)", () => {
+  it("no-op seguro si el id no está en customRecipes (p.ej. un id del catálogo) — no toca savedRecipeIds ni mealPlan tampoco", () => {
+    // Corrección de revisión: sin el guard de existencia al principio de
+    // removeCustomRecipeFromDraft, customRecipes quedaba intacto (filter()
+    // no encuentra nada que quitar) pero savedRecipeIds y mealPlan SÍ
+    // perdían ese mismo ID igualmente — contradiciendo el "no hace nada"
+    // documentado. Este test siembra ese ID también ahí, junto a contenido
+    // no relacionado, y comprueba las TRES colecciones completas, no solo
+    // customRecipes (que por sí sola no habría detectado el fallo).
     const a = { ...recipe([]), id: "custom-a" };
-    const draft: FoodOSState = { ...structuredClone(defaultState), customRecipes: [a] };
+    const draft: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [a],
+      savedRecipeIds: ["demo-catalogo-1", "custom-a"],
+      mealPlan: {
+        "2026-06-15": { lunch: "demo-catalogo-1", dinner: "otra-receta" },
+        "2026-06-16": { breakfast: "demo-catalogo-1" },
+      },
+    };
+    const savedRecipeIdsBefore = structuredClone(draft.savedRecipeIds);
+    const mealPlanBefore = structuredClone(draft.mealPlan);
+
     expect(() => removeCustomRecipeFromDraft(draft, "demo-catalogo-1")).not.toThrow();
+
     expect(draft.customRecipes).toEqual([a]);
+    expect(draft.savedRecipeIds).toEqual(savedRecipeIdsBefore);
+    expect(draft.mealPlan).toEqual(mealPlanBefore);
   });
 
   it("limpia todos los slots de mealPlan que apunten a la receta borrada, incluida una fecha pasada", () => {

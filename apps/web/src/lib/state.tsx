@@ -1966,6 +1966,12 @@ export function countUpcomingMealPlanUsages(state: FoodOSState, recipeId: string
     está en `customRecipes` (p.ej. es del catálogo `DEMO_RECIPES`), no hace
     nada. */
 export function removeCustomRecipeFromDraft(draft: FoodOSState, recipeId: string): void {
+  // Corrección de revisión: sin este guard, un recipeId ajeno a
+  // customRecipes (p.ej. del catálogo) no cambiaba esa lista (filter() no
+  // encuentra nada que quitar), pero SÍ seguía retirando ese mismo ID de
+  // savedRecipeIds y de cualquier slot de mealPlan — contradiciendo el "no
+  // hace nada" documentado arriba.
+  if (!draft.customRecipes.some((recipe) => recipe.id === recipeId)) return;
   draft.customRecipes = draft.customRecipes.filter((r) => r.id !== recipeId);
   draft.savedRecipeIds = (draft.savedRecipeIds ?? []).filter((id) => id !== recipeId);
   for (const day of Object.values(draft.mealPlan ?? {})) {

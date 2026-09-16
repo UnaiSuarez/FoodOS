@@ -97,9 +97,23 @@ test("crear, planificar hoy y eliminar una receta personalizada limpia el hueco 
   await expect(page.locator(".recipe-card", { hasText: RECIPE_TITLE })).toHaveCount(0);
 
   await page.goto("/dashboard/planner");
+  // evaluateAll() no auto-espera como el resto de acciones de Playwright —
+  // a diferencia de planRecipeForToday() (donde ya se esperó a rellenar el
+  // buscador antes de leer las cabeceras, garantizando que la grilla ya
+  // había montado), aquí no hay ninguna otra acción previa que lo
+  // garantice tras un page.goto() recién hecho — sin esto, evaluateAll()
+  // podía ejecutarse contra una grilla todavía sin renderizar y devolver
+  // una lista vacía (índice -1) que parecía "columna no encontrada" sin
+  // serlo de verdad.
+  await expect(page.locator(".planner-day-head").first()).toBeVisible();
   const todayIndexAfter = await page.locator(".planner-day-head").evaluateAll(
     (heads) => heads.findIndex((h) => h.classList.contains("today"))
   );
+  // Corrección de revisión: sin esto, un -1 (columna "today" no encontrada)
+  // pasaría desapercibido — Playwright interpreta .nth(-1) como "el último
+  // elemento", no como "ningún elemento", así que el test seguiría
+  // comprobando UNA celda cualquiera en vez de fallar con un mensaje claro.
+  expect(todayIndexAfter).toBeGreaterThanOrEqual(0);
   const lunchRowAfter = page.locator(".planner-meal-row", { hasText: "Comida" });
   const todayLunchCellAfter = lunchRowAfter.locator(".planner-cell").nth(todayIndexAfter);
   await expect(todayLunchCellAfter.locator(".planner-cell-plus")).toBeVisible(); // vacío otra vez, no huérfano
