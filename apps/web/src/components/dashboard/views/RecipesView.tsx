@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useState } from "react";
 import type { Recipe } from "@foodos/types";
-import { actions, allRecipes, buildAiRecipeDraft, getBudgetLeft, getRecipeMatch, useFoodOS } from "@/lib/state";
+import { actions, allRecipes, buildAiRecipeDraft, countUpcomingMealPlanUsages, getBudgetLeft, getRecipeMatch, getToday, removeCustomRecipeFromDraft, useFoodOS } from "@/lib/state";
 import { eur, uid } from "@/lib/utils";
 import { AiRecipeModal } from "../AiRecipeModal";
 import { CookModal } from "../CookModal";
@@ -75,6 +75,29 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
     setMinProtein(0);
     setMaxTime(0);
     setOnlyAvail(false);
+  }
+
+  // Solo para recetas personalizadas (isCustom, ver el botón más abajo) —
+  // borrar una del catálogo (DEMO_RECIPES) no es posible por esta vía, ni
+  // aunque se llamara a esta función directamente: removeCustomRecipeFromDraft
+  // solo filtra draft.customRecipes.
+  function handleDeleteRecipe(recipe: Recipe) {
+    const todayKey = getToday(state);
+    // Hoy cuenta como "próximo" — un plato de hoy también se borra junto
+    // con la receta, así que el aviso no puede decir solo "futuras".
+    const usages = countUpcomingMealPlanUsages(state, recipe.id, todayKey);
+    const warning = usages > 0
+      ? ` Está planificada ${usages} ${usages === 1 ? "vez" : "veces"} hoy o en los próximos días — esos huecos quedarán vacíos.`
+      : "";
+    if (!confirm(`¿Eliminar la receta "${recipe.title}"?${warning}`)) return;
+
+    // Única fuente de verdad sobre si se aplicó: el booleano que mutate()
+    // devuelve en este momento — nunca comprobar el gate por separado aquí
+    // (podría quedar obsoleta la comprobación antes de que mutate() consulte
+    // su propio ref real).
+    const accepted = mutate((draft) => removeCustomRecipeFromDraft(draft, recipe.id));
+    if (!accepted) return;
+    showToast(`"${recipe.title}" eliminada`);
   }
 
   return (
@@ -278,6 +301,15 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                     >
                       Cocinar
                     </button>
+                    {isCustom && (
+                      <button
+                        className="small-action bad"
+                        aria-label={`Eliminar receta ${recipe.title}`}
+                        onClick={() => handleDeleteRecipe(recipe)}
+                      >
+                        Eliminar
+                      </button>
+                    )}
                   </div>
                 </article>
               );
