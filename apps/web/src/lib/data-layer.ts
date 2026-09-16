@@ -15,7 +15,7 @@ import type {
   Sex,
   StorageName,
 } from "@foodos/types";
-import type { AuthChangeEvent, SupabaseClient, User } from "@supabase/supabase-js";
+import type { AuthChangeEvent, RealtimeChannel, SupabaseClient, User } from "@supabase/supabase-js";
 import { migrateLegacyTrainingActivity, sanitizeRemoteGoalRow } from "./nutrition";
 import * as outbox from "./outbox";
 import { getSupabase } from "./supabase";
@@ -190,6 +190,18 @@ class RemoteAdapter {
       captura este valor de forma inmutable al programarse y lo revalida
       antes de tocar cualquier estado compartido — outbox, badge, cachés. */
   sessionEpoch = 0;
+  /** Identidad de la suscripción Realtime vigente — diseño v5 §Realtime.
+      Se incrementa en CADA subscribeRealtime() y en CADA cleanup() que
+      todavía sea la generación vigente (ver subscribeRealtime() para el
+      porqué de ambos sitios). El topic del canal incluye este número
+      precisamente para que dos generaciones nunca puedan colisionar por
+      nombre, ni siquiera si el desmontaje de la anterior está en vuelo o
+      falla — ver el comentario grande de subscribeRealtime(). */
+  private realtimeGeneration = 0;
+  /** Promesa del desmontaje MÁS RECIENTE registrado — cada subscribeRealtime()
+      nuevo encadena su creación detrás de ella (serializado cuando es
+      posible, nunca bloqueante para quien llama). */
+  private realtimePendingTeardown: Promise<void> = Promise.resolve();
   private pushTimer: ReturnType<typeof setTimeout> | null = null;
   private pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
   /** Sustituye al antiguo booleano `pushing` (bloqueante de revisión: un
@@ -1251,37 +1263,139 @@ class RemoteAdapter {
    * - onPatch: cambio puntual en water_log o weight_log → aplica el dato del payload
    *   directamente en estado, sin re-fetch. Latencia ≈ solo el WebSocket (~50-200ms).
    * - onRefresh: resto de tablas → re-fetch completo con debounce breve.
+   *
+   * Corrección de revisión (diseño v5 §Realtime — error de producción "cannot
+   * add `postgres_changes` callbacks... after `subscribe()`"): el topic del
+   * canal ANTES era fijo por usuario (`foodos-${userId}`). @supabase/realtime-js
+   * dedupe por topic EXACTO en RealtimeClient.channel() — el mensaje solo
+   * puede lanzarse si `client.channel(topic).on(...)` se invoca sobre un
+   * canal que YA está "joined" o "joining" para ese mismo topic (ver la
+   * comprobación exacta en RealtimeChannel.on() antes de lanzar). Esto
+   * demuestra que, en algún momento, se intentó configurar dos veces el
+   * mismo topic mientras el canal anterior seguía unido/uniéndose.
+   *
+   * Lo que NO está confirmado (fase de diagnóstico, ronda 1 — no se
+   * reprodujo el incidente original): qué camino concreto de producción
+   * omitió el cleanup de la generación anterior, o lo invocó sin que
+   * llegara a ejecutarse antes de la segunda configuración.
+   * `unsubscribe()`/`Channel.leave()` transiciona el estado a "leaving" de
+   * forma SÍNCRONA en cuanto se llama (@supabase/phoenix, `channel.leave()`),
+   * no al recibir el ACK del servidor — así que un cleanup fire-and-forget
+   * que SÍ llega a invocarse antes de la reconstrucción ya deja de estar
+   * "joined"/"joining" al instante, y por sí solo no explicaría el fallo.
+   * El disparador real (qué reconstruyó el canal sin que el cleanup anterior
+   * se hubiera invocado en absoluto) queda sin confirmar.
+   *
+   * La corrección de abajo es defensiva y no depende de identificar ese
+   * origen exacto: cada llamada tiene su propia GENERACIÓN, con un topic que
+   * la incluye — dos generaciones nunca pueden colisionar por nombre, haya o
+   * no una reconstrucción sin cleanup previo, y sin importar cuánto tarde (o
+   * si falla) el desmontaje de la anterior. Cada callback
+   * (`onRefresh`/`onPatch`/`onStatus`) comprueba `isCurrent()` antes de tocar
+   * nada — una respuesta tardía de una generación ya invalidada (canal
+   * zombi que el SDK no garantiza retirar físicamente si su `unsubscribe()`
+   * no dio "ok" — ver el cleanup más abajo) queda inerte.
    */
   subscribeRealtime(
     onRefresh: () => void,
     onPatch: (table: string, newRow: Record<string, unknown>) => void,
     onStatus?: (connected: boolean) => void,
-  ): () => void {
-    if (!this.client || !this.user) return () => {};
+  ): () => Promise<void> {
+    if (!this.client || !this.user) return () => Promise.resolve();
+    const client = this.client;
     const userId = this.user.id;
+    const epoch = this.sessionEpoch;
+
+    const generation = ++this.realtimeGeneration;
+    const previousTeardown = this.realtimePendingTeardown;
+    const isCurrent = () => this.realtimeGeneration === generation;
+    const topic = `foodos-${userId}-${epoch}-${generation}`;
+
     const patch = (table: string) =>
       (payload: { new: Record<string, unknown> }) => {
+        if (!isCurrent()) return;
         if (payload.new && Object.keys(payload.new).length > 0) {
           onPatch(table, payload.new);
         } else {
           onRefresh();
         }
       };
-    const channel = this.client
-      .channel(`foodos-${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items",  filter: `owner_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "gastos",           filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "shopping_items",   filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "food_log",         filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles",    filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "nutrition_goals",  filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "ingresos_fuentes", filter: `user_id=eq.${userId}` }, onRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "water_log",        filter: `user_id=eq.${userId}` }, patch("water_log"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "weight_log",       filter: `user_id=eq.${userId}` }, patch("weight_log"))
-      .subscribe((status) => {
-        onStatus?.(status === "SUBSCRIBED");
+    const refresh = () => { if (isCurrent()) onRefresh(); };
+
+    let channel: RealtimeChannel | null = null;
+    let teardownPromise: Promise<void> | null = null;
+
+    // No se crea nada todavía — solo se PROGRAMA la creación, encadenada
+    // detrás del desmontaje anterior (serializado cuando es posible, nunca
+    // bloqueante). Si el cleanup de ESTA MISMA generación se invoca antes de
+    // que este .then() llegue a ejecutarse, isCurrent() ya será false y el
+    // canal nunca llega a crearse (ver el test "cleanup antes de que ready
+    // pueda crear").
+    const ready = previousTeardown
+      .catch(() => undefined) // un fallo del desmontaje anterior nunca debe impedir que esta generación se intente
+      .then(() => {
+        if (!isCurrent()) return;
+        channel = client
+          .channel(topic)
+          .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items",  filter: `owner_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "gastos",           filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "shopping_items",   filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "food_log",         filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles",    filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "nutrition_goals",  filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "ingresos_fuentes", filter: `user_id=eq.${userId}` }, refresh)
+          .on("postgres_changes", { event: "*", schema: "public", table: "water_log",        filter: `user_id=eq.${userId}` }, patch("water_log"))
+          .on("postgres_changes", { event: "*", schema: "public", table: "weight_log",       filter: `user_id=eq.${userId}` }, patch("weight_log"))
+          .subscribe((status) => {
+            // realtimeConnected ya se puso a false al empezar la transición
+            // de sesión en state.tsx, ANTES de llegar aquí — si esta
+            // generación nunca llega a SUBSCRIBED (incluida esta rama, que
+            // nunca se ejecuta si el catch de abajo se dispara antes),
+            // simplemente se queda en ese false, nunca hace falta repetirlo.
+            if (!isCurrent()) return;
+            onStatus?.(status === "SUBSCRIBED");
+          });
+      })
+      .catch((error) => {
+        // Si la creación misma fallara (client.channel()/.on() lanzando),
+        // esta promesa `ready` debe quedar SIEMPRE resuelta — si el cleanup
+        // nunca llegara a invocarse (p. ej. la pestaña se cierra con esta
+        // suscripción todavía "viva"), un `ready` rechazado sin ningún
+        // .catch() enganchado sería una unhandled rejection real.
+        console.warn(`FoodOS: fallo creando el canal Realtime (generación ${generation})`, error);
       });
-    return () => { void this.client?.removeChannel(channel); };
+
+    const cleanup = (): Promise<void> => {
+      if (teardownPromise) return teardownPromise; // idempotente: la primera llamada ya deja todo en marcha
+
+      // Invalida esta generación SOLO si nadie más lo ha hecho ya — una
+      // generación más nueva no debe poder ser invalidada por el cleanup
+      // tardío de una más vieja (comparación exacta antes de tocar el
+      // contador compartido).
+      if (this.realtimeGeneration === generation) {
+        this.realtimeGeneration++;
+      }
+
+      teardownPromise = ready
+        .then(async () => {
+          if (!channel) return; // nunca llegó a crearse (cleanup adelantado, o la creación falló)
+          const result = await client.removeChannel(channel);
+          if (result !== "ok") {
+            // El SDK no garantiza retirar el canal de su colección interna
+            // si esto no da "ok" — puede quedar zombi. isCurrent() en cada
+            // callback es lo que lo hace inofensivo, no esto.
+            console.warn(`FoodOS: removeChannel() de la generación ${generation} devolvió "${result}", no "ok"`, { topic });
+          }
+        })
+        .catch((error) => {
+          console.warn(`FoodOS: removeChannel() de la generación ${generation} rechazó`, error);
+        });
+
+      this.realtimePendingTeardown = teardownPromise; // registrado SÍNCRONAMENTE, antes de que setupRealtime() cree la siguiente generación
+      return teardownPromise;
+    };
+
+    return cleanup;
   }
 
   // Crea (si faltan) perfil, almacenes base y lista de compra, y cachea ids.
