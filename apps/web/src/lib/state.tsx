@@ -486,26 +486,49 @@ export function resolveInitialStateForSession(userId: string, defaults: FoodOSSt
 
 /**
  * ¿Este evento de Supabase Auth es un cambio REAL de sesión (debe
- * incrementar epoch, cancelar timers/retries, reiniciar hidratación) o solo
- * una renovación lógica del mismo usuario (debe conservarse tal cual — un
- * TOKEN_REFRESHED no puede cancelar un guardado en curso)? Pura y testeada
- * aparte (bloqueante §7 de la revisión):
- * - Mismo userId (ninguno de los dos es null) + TOKEN_REFRESHED/
- *   USER_UPDATED/SIGNED_IN → "same_session" (incluye el doble SIGNED_IN del
- *   mismo usuario — idempotente, p.ej. eco de nuestra propia acción).
- * - Cualquier otra combinación (userId distinto, SIGNED_OUT, o el primer
- *   login desde null) → "real_change".
+ * incrementar epoch, cancelar timers/retries, reiniciar hidratación y la
+ * suscripción Realtime) o solo una renovación lógica del mismo usuario (debe
+ * conservarse tal cual — un TOKEN_REFRESHED no puede cancelar un guardado en
+ * curso, ni reconstruir un canal Realtime que sigue siendo válido)? Pura y
+ * testeada aparte (bloqueante §7 de la revisión; corrección de revisión
+ * posterior — diseño v5 §Realtime):
+ *
+ * Regla basada ÚNICAMENTE en identidad, nunca en el tipo de evento: mismo
+ * userId no nulo en ambos lados → "same_session", para CUALQUIER evento
+ * (TOKEN_REFRESHED, USER_UPDATED, SIGNED_IN, INITIAL_SESSION,
+ * PASSWORD_RECOVERY, MFA_CHALLENGE_VERIFIED, o cualquiera que Supabase añada
+ * en el futuro). La versión anterior usaba una whitelist de eventos que no
+ * incluía INITIAL_SESSION — un segundo INITIAL_SESSION del mismo usuario (o
+ * cualquier evento no cubierto) se clasificaba como "real_change" y
+ * reconstruía Realtime sobre un canal que el SDK podía seguir considerando
+ * "joined"/"joining", lanzando "cannot add `postgres_changes` callbacks...
+ * after `subscribe()`".
+ *
+ * Ningún evento del mismo usuario necesita una acción PROPIA de FoodOS aquí:
+ * el JWT del socket de Realtime ya lo mantiene al día el propio
+ * SupabaseClient (su _handleTokenChanged() interno, independiente de este
+ * listener, llama a realtime.setAuth() en cada TOKEN_REFRESHED/SIGNED_IN) —
+ * ver @supabase/supabase-js/src/SupabaseClient.ts. Lo único que este
+ * listener debe seguir haciendo en "same_session" es refrescar
+ * authUserRef/authUser (p. ej. para reflejar metadata nueva de
+ * USER_UPDATED).
+ *
+ * Garantía de arranque en frío (verificado — ver el comentario junto a
+ * authUserRef): `prevUserId` viene de un ref que SOLO este mismo callback
+ * escribe, inicializado a null. La primera invocación del callback —sea cual
+ * sea el evento, incluido el primer INITIAL_SESSION con una sesión ya
+ * persistida— ve siempre prevUserId===null, así que nunca puede clasificarse
+ * como "same_session" por accidente: sameUser exige newUserId===prevUserId,
+ * y un usuario real nunca es null.
+ *
+ * - Mismo userId no nulo en ambos lados → "same_session".
+ * - UserId distinto, aparece desde null, o pasa a null → "real_change".
  */
 export function classifyAuthTransition(
   prevUserId: string | null,
   newUserId: string | null,
-  event: AuthChangeEvent,
 ): "same_session" | "real_change" {
-  const sameUser = newUserId !== null && newUserId === prevUserId;
-  if (sameUser && (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "SIGNED_IN")) {
-    return "same_session";
-  }
-  return "real_change";
+  return newUserId !== null && newUserId === prevUserId ? "same_session" : "real_change";
 }
 
 /** Espera hasta `timeoutMs` a que TODO lo pendiente de `userId` quede
@@ -864,7 +887,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   const [hadUnsyncedWaterWrite, setHadUnsyncedWaterWrite] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const realtimeUnsubRef = useRef<(() => void) | null>(null);
+  const realtimeUnsubRef = useRef<() => Promise<void>>(async () => {});
   const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // B2 (revisión externa, 2026-08-22): decide cuándo es seguro hidratar
   // desde un refresco en tiempo real frente a un push local sin confirmar
@@ -1207,8 +1230,13 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       }, 300);
     }
 
+    // El único llamador (más abajo, en la rama "real_change" del listener de
+    // auth) ya invocó y reemplazó realtimeUnsubRef.current justo antes de
+    // llamar aquí — subscribeRealtime() lee esa promesa de desmontaje ya
+    // registrada para encadenar detrás la generación nueva (ver su
+    // comentario grande en data-layer.ts). No hace falta repetir ese
+    // teardown aquí.
     function setupRealtime() {
-      realtimeUnsubRef.current?.();
       realtimeUnsubRef.current = remote.subscribeRealtime(
         () => {
           if (cancelled) return;
@@ -1262,19 +1290,27 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         const newId = user?.id ?? null;
         const prevId = authUserRef.current?.id ?? null;
 
-        // Bloqueante §7: un refresco de token del mismo usuario NO es un
-        // cambio de sesión — no incrementa epoch, no cancela nada, no
-        // reinicia hidratación. Idempotente frente a un doble SIGNED_IN del
-        // mismo usuario (p.ej. eco de nuestra propia acción). Lógica
-        // extraída a classifyAuthTransition() (pura, testeada aparte) para
-        // no depender de renderizar el efecto completo en los tests.
-        if (classifyAuthTransition(prevId, newId, event) === "same_session") {
+        // Bloqueante §7: un refresco de token (o cualquier otro evento) del
+        // mismo usuario NO es un cambio de sesión — no incrementa epoch, no
+        // cancela nada, no reinicia hidratación ni Realtime. Idempotente
+        // frente a un doble SIGNED_IN/INITIAL_SESSION del mismo usuario
+        // (p.ej. eco de nuestra propia acción). Lógica extraída a
+        // classifyAuthTransition() (pura, testeada aparte, basada solo en
+        // identidad — ver su comentario grande) para no depender de
+        // renderizar el efecto completo en los tests.
+        if (classifyAuthTransition(prevId, newId) === "same_session") {
           authUserRef.current = user;
           setAuthUser(user);
           return;
         }
 
         // Cambio REAL de sesión (login, logout, o cambio de cuenta).
+        // realtimeConnected pasa a false AQUÍ, en el primer paso de la
+        // transición — antes de que setupRealtime() (más abajo) siquiera
+        // empiece a crear la generación nueva. Así la UI nunca muestra
+        // "conectado" de la generación saliente mientras la entrante todavía
+        // no ha confirmado nada.
+        setRealtimeConnected(false);
         if (prevId && !remote.explicitSignOutInProgress) {
           // SIGNED_OUT sin que lo iniciara requestSignOut(): expulsión
           // involuntaria. Corrección de revisión (P1): antes, sin `pending`,
@@ -1291,8 +1327,15 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         const epoch = remote.sessionEpoch;
         authUserRef.current = user;
         setAuthUser(user);
-        realtimeUnsubRef.current?.();
-        realtimeUnsubRef.current = null;
+        // Corrección de revisión (diseño v5 §Realtime): el cleanup de la
+        // generación saliente se invoca AQUÍ, antes de que setupRealtime()
+        // cree la entrante — subscribeRealtime() registra su promesa de
+        // desmontaje de forma SÍNCRONA al ser invocado, así que la próxima
+        // generación (si la hay) siempre la ve ya disponible para
+        // encadenarse detrás. void es seguro: el cleanup nunca rechaza (todo
+        // queda capturado dentro de subscribeRealtime()).
+        void realtimeUnsubRef.current();
+        realtimeUnsubRef.current = async () => {};
         // Corrección de revisión (P1, quinta ronda): hadUnsyncedEnvelopeWrite/
         // hadUnsyncedWaterWrite eran booleanos GLOBALES del provider, no
         // aislados por sesión/usuario — si A sufría un fallo durable y la
@@ -1343,7 +1386,9 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           hasLocalBaselineRef.current = false;
           hydrationBackoffCountRef.current = 0;
           setState(structuredClone(defaultState));
-          setRealtimeConnected(false);
+          // setRealtimeConnected(false) ya se hizo al principio de esta
+          // rama, para CUALQUIER cambio real de sesión — no hace falta
+          // repetirlo aquí.
         }
       });
       // Deliberadamente SIN un `if (remote.user) requestHydration()` aparte
@@ -1370,8 +1415,8 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
-      realtimeUnsubRef.current?.();
-      realtimeUnsubRef.current = null;
+      void realtimeUnsubRef.current();
+      realtimeUnsubRef.current = async () => {};
       if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
       window.removeEventListener("online", onBrowserOnline);
       clearHydrationRetryTimer();
