@@ -11,6 +11,7 @@ import {
   classifyAuthTransition,
   computeSyncStatus,
   countLowProteinDays,
+  countUpcomingMealPlanUsages,
   defaultState,
   flushPendingOrTimeout,
   getFoodSpend,
@@ -20,6 +21,7 @@ import {
   type HydrationScope,
   normalizeState,
   recordTodayNutritionGoal,
+  removeCustomRecipeFromDraft,
   reportCleanupIssue,
   resolveHydrationUiMode,
   resolveInitialStateForSession,
@@ -1378,6 +1380,120 @@ describe("getMealPlanShoppingList — faltantes conscientes de unidades (auditor
     expect(list).toHaveLength(1);
     expect(list[0].qty).toBe(300);
     expect(list[0].unit).toBe("g");
+  });
+});
+
+describe("removeCustomRecipeFromDraft / countUpcomingMealPlanUsages — borrado de recetas personalizadas", () => {
+  it("removeCustomRecipeFromDraft borra solo la receta indicada de customRecipes", () => {
+    const a = { ...recipe([]), id: "custom-a", title: "A" };
+    const b = { ...recipe([]), id: "custom-b", title: "B" };
+    const draft: FoodOSState = { ...structuredClone(defaultState), customRecipes: [a, b] };
+    removeCustomRecipeFromDraft(draft, "custom-a");
+    expect(draft.customRecipes.map((r) => r.id)).toEqual(["custom-b"]);
+  });
+
+  it("no-op seguro si el id no está en customRecipes (p.ej. un id del catálogo)", () => {
+    const a = { ...recipe([]), id: "custom-a" };
+    const draft: FoodOSState = { ...structuredClone(defaultState), customRecipes: [a] };
+    expect(() => removeCustomRecipeFromDraft(draft, "demo-catalogo-1")).not.toThrow();
+    expect(draft.customRecipes).toEqual([a]);
+  });
+
+  it("limpia todos los slots de mealPlan que apunten a la receta borrada, incluida una fecha pasada", () => {
+    const target = { ...recipe([]), id: "custom-target" };
+    const draft: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [target],
+      mealPlan: {
+        "2020-01-01": { lunch: "custom-target", dinner: "custom-target" }, // fecha pasada
+        "2099-06-15": { breakfast: "custom-target" }, // fecha futura
+      },
+    };
+    removeCustomRecipeFromDraft(draft, "custom-target");
+    expect(draft.mealPlan["2020-01-01"]).toEqual({});
+    expect(draft.mealPlan["2099-06-15"]).toEqual({});
+  });
+
+  it("deja intactos los slots que apuntan a otra receta o a un plannerQuickMeals id", () => {
+    const target = { ...recipe([]), id: "custom-target" };
+    const draft: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [target],
+      mealPlan: { "2099-06-15": { breakfast: "custom-target", lunch: "otra-receta", dinner: "quickmeal-1" } },
+      plannerQuickMeals: [{ id: "quickmeal-1", name: "Rápido", kcal: 300, protein: 20, carbs: 30, fat: 10, cost: 1 }],
+    };
+    removeCustomRecipeFromDraft(draft, "custom-target");
+    expect(draft.mealPlan["2099-06-15"]).toEqual({ lunch: "otra-receta", dinner: "quickmeal-1" });
+    expect(draft.plannerQuickMeals).toEqual([{ id: "quickmeal-1", name: "Rápido", kcal: 300, protein: 20, carbs: 30, fat: 10, cost: 1 }]);
+  });
+
+  it("filtra el id de savedRecipeIds", () => {
+    const target = { ...recipe([]), id: "custom-target" };
+    const draft: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [target],
+      savedRecipeIds: ["custom-target", "otra-receta"],
+    };
+    removeCustomRecipeFromDraft(draft, "custom-target");
+    expect(draft.savedRecipeIds).toEqual(["otra-receta"]);
+  });
+
+  it("nunca toca foodLog, cart, inventory ni plannerQuickMeals no referenciados", () => {
+    const target = { ...recipe([]), id: "custom-target" };
+    const foodLogEntry = { id: "log-1", date: "2026-01-01", time: "12:00", name: "Bowl de pollo", qty: null, unit: null, kcal: 500, protein: 40, carbs: 50, fat: 15, source: "recipe" as const, mealType: "lunch" as const };
+    const cartItem: CartItem = { id: "cart-1", name: "Pollo", qty: 200, unit: "g", price: 1.2, store: "Mercadona", checked: false, source: "recipe", reason: "Para: Bowl de pollo" };
+    const invItem = inv({ id: "inv-1" });
+    const draft: FoodOSState = {
+      ...structuredClone(defaultState),
+      customRecipes: [target],
+      foodLog: [foodLogEntry],
+      cart: [cartItem],
+      inventory: [invItem],
+      plannerQuickMeals: [{ id: "quickmeal-1", name: "Rápido", kcal: 300, protein: 20, carbs: 30, fat: 10, cost: 1 }],
+    };
+    removeCustomRecipeFromDraft(draft, "custom-target");
+    expect(draft.foodLog).toEqual([foodLogEntry]);
+    expect(draft.cart).toEqual([cartItem]);
+    expect(draft.inventory).toEqual([invItem]);
+    expect(draft.plannerQuickMeals).toEqual([{ id: "quickmeal-1", name: "Rápido", kcal: 300, protein: 20, carbs: 30, fat: 10, cost: 1 }]);
+  });
+
+  it("countUpcomingMealPlanUsages: 0 sin uso, cuenta correcta con varias ocurrencias, excluye una fecha pasada", () => {
+    const state: FoodOSState = {
+      ...structuredClone(defaultState),
+      mealPlan: {
+        "2020-01-01": { lunch: "custom-target" }, // pasada — no cuenta
+        "2026-06-15": { breakfast: "custom-target", dinner: "custom-target" }, // === todayKey (hoy), 2 usos — SÍ cuenta
+        "2026-06-16": { lunch: "otra-receta" }, // no es la receta buscada
+      },
+    };
+    expect(countUpcomingMealPlanUsages(state, "no-usada", "2026-06-15")).toBe(0);
+    expect(countUpcomingMealPlanUsages(state, "custom-target", "2026-06-15")).toBe(2);
+  });
+
+  // Corrección de revisión: la semántica es fecha >= todayKey, HOY
+  // INCLUIDO — una planificación de hoy también se borra junto con la
+  // receta, así que también debe figurar en el aviso ("hoy o en los
+  // próximos días", nunca solo "futuras"). Casos límite explícitos con
+  // fechas consecutivas para que no quede ambigüedad.
+  it("countUpcomingMealPlanUsages — casos límite consecutivos: ayer no cuenta, hoy sí, mañana sí", () => {
+    const todayKey = "2026-06-15";
+    const yesterdayOnly: FoodOSState = {
+      ...structuredClone(defaultState),
+      mealPlan: { "2026-06-14": { lunch: "custom-target" } },
+    };
+    const todayOnly: FoodOSState = {
+      ...structuredClone(defaultState),
+      mealPlan: { "2026-06-15": { lunch: "custom-target" } },
+    };
+    const tomorrowOnly: FoodOSState = {
+      ...structuredClone(defaultState),
+      mealPlan: { "2026-06-16": { lunch: "custom-target" } },
+    };
+
+    expect(countUpcomingMealPlanUsages(yesterdayOnly, "custom-target", todayKey)).toBe(0);
+    expect(countUpcomingMealPlanUsages(todayOnly, "custom-target", todayKey)).toBe(1);
+    expect(countUpcomingMealPlanUsages(tomorrowOnly, "custom-target", todayKey)).toBe(1);
   });
 });
 
