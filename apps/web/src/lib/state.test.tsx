@@ -1043,59 +1043,64 @@ describe("Aislamiento de hadUnsyncedEnvelopeWrite/hadUnsyncedWaterWrite por sesi
     current: { hadUnsyncedEnvelopeWrite: boolean; hadUnsyncedWaterWrite: boolean },
     prevUserId: string | null,
     newUserId: string | null,
-    event: Parameters<typeof classifyAuthTransition>[2],
   ) {
-    if (classifyAuthTransition(prevUserId, newUserId, event) === "real_change") {
+    if (classifyAuthTransition(prevUserId, newUserId) === "real_change") {
       return { hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false };
     }
     return current;
   }
 
   it("fallo de agua de A no contamina a B: un cambio real de sesión reinicia hadUnsyncedWaterWrite antes de que B haga nada", () => {
-    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: true }, "user-a", "user-b", "SIGNED_OUT");
+    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: true }, "user-a", "user-b");
     expect(afterTransition.hadUnsyncedWaterWrite).toBe(false);
     expect(computeSyncStatus({ hasSupabaseConfig: true, isOnline: true, ...afterTransition, pushStatus: "saved", hydrationError: false })).toBe("saved"); // B no aparece "unsynced" sin haber fallado nada él
   });
 
   it("fallo de envelope de A no contamina a B", () => {
-    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: false }, "user-a", "user-b", "SIGNED_OUT");
+    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: false }, "user-a", "user-b");
     expect(afterTransition.hadUnsyncedEnvelopeWrite).toBe(false);
   });
 
-  it("un TOKEN_REFRESHED del mismo usuario conserva el estado — nunca reinicia flags de un fallo real todavía sin resolver", () => {
+  it("mismo usuario conserva el estado — nunca reinicia flags de un fallo real todavía sin resolver (el evento ya no importa, solo la identidad)", () => {
     const current = { hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: true };
-    expect(simulateAuthTransition(current, "user-a", "user-a", "TOKEN_REFRESHED")).toEqual(current);
-    expect(simulateAuthTransition(current, "user-a", "user-a", "USER_UPDATED")).toEqual(current);
-    expect(simulateAuthTransition(current, "user-a", "user-a", "SIGNED_IN")).toEqual(current);
+    expect(simulateAuthTransition(current, "user-a", "user-a")).toEqual(current);
   });
 
   it("un cambio real de sesión reinicia AMBAS fuentes juntas (nunca una sí y la otra no) — el reinicio es por sesión; el limpiado posterior por éxito de cada fuente SÍ es independiente (ver computeSyncStatus)", () => {
-    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: true }, "user-a", "user-b", "SIGNED_OUT");
+    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: true }, "user-a", "user-b");
     expect(afterTransition).toEqual({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false });
   });
 
-  it("logout→login del MISMO usuario (SIGNED_OUT es siempre real_change) también reinicia — el estado persistido (outbox/aparcado), no este flag efímero, es quien lleva la cuenta real entre sesiones", () => {
-    const afterTransition = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: true }, "user-a", "user-a", "SIGNED_OUT");
-    expect(afterTransition).toEqual({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false });
+  it("logout→login del MISMO usuario (pasa por null en medio) también reinicia — el estado persistido (outbox/aparcado), no este flag efímero, es quien lleva la cuenta real entre sesiones", () => {
+    const afterLogout = simulateAuthTransition({ hadUnsyncedEnvelopeWrite: true, hadUnsyncedWaterWrite: true }, "user-a", null);
+    expect(afterLogout).toEqual({ hadUnsyncedEnvelopeWrite: false, hadUnsyncedWaterWrite: false });
   });
 });
 
-describe("classifyAuthTransition — bloqueante §7 (TOKEN_REFRESHED del mismo usuario no cancela el push)", () => {
-  it("mismo usuario + TOKEN_REFRESHED/USER_UPDATED/SIGNED_IN: same_session", () => {
-    expect(classifyAuthTransition("u1", "u1", "TOKEN_REFRESHED")).toBe("same_session");
-    expect(classifyAuthTransition("u1", "u1", "USER_UPDATED")).toBe("same_session");
-    expect(classifyAuthTransition("u1", "u1", "SIGNED_IN")).toBe("same_session");
+// Corrección de revisión (diseño v5 §Realtime): classifyAuthTransition ya no
+// recibe el evento — la regla es puramente de identidad (ver su comentario
+// grande en state.tsx). Antes había que probar cada evento por separado
+// porque la whitelist dependía de ellos; ahora el evento es irrelevante por
+// diseño, así que parametrizar por evento aquí ya no prueba nada que la
+// firma no garantice — la prueba de que "varios TIPOS de evento con el
+// mismo usuario no reconstruyen nada" vive en foodos-provider.test.tsx,
+// contra el listener real, que es donde de verdad podría reintroducirse
+// una dependencia del evento.
+describe("classifyAuthTransition — regla de identidad pura (diseño v5 §Realtime)", () => {
+  it("mismo UUID no nulo en ambos lados: same_session", () => {
+    expect(classifyAuthTransition("u1", "u1")).toBe("same_session");
   });
 
-  it("usuario distinto (incluido el primer login desde null): real_change, incluso con TOKEN_REFRESHED", () => {
-    expect(classifyAuthTransition(null, "u1", "SIGNED_IN")).toBe("real_change");
-    expect(classifyAuthTransition("u1", "u2", "SIGNED_IN")).toBe("real_change");
-    expect(classifyAuthTransition("u1", "u2", "TOKEN_REFRESHED")).toBe("real_change");
+  it("aparece desde null (primer login): real_change", () => {
+    expect(classifyAuthTransition(null, "u1")).toBe("real_change");
   });
 
-  it("SIGNED_OUT siempre es real_change, incluso si por algún motivo llegara con el mismo id", () => {
-    expect(classifyAuthTransition("u1", "u1", "SIGNED_OUT")).toBe("real_change");
-    expect(classifyAuthTransition("u1", null, "SIGNED_OUT")).toBe("real_change");
+  it("UUID distinto: real_change", () => {
+    expect(classifyAuthTransition("u1", "u2")).toBe("real_change");
+  });
+
+  it("pasa a null (logout): real_change", () => {
+    expect(classifyAuthTransition("u1", null)).toBe("real_change");
   });
 });
 

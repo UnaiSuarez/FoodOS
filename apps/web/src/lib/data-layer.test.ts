@@ -251,6 +251,8 @@ function resetRemote() {
     activeWaterWorker: unknown;
     waterHasError: boolean;
     userMutationsAllowed: boolean;
+    realtimeGeneration: number;
+    realtimePendingTeardown: Promise<void>;
   };
   if (r.pushTimer) clearTimeout(r.pushTimer);
   if (r.pushRetryTimer) clearTimeout(r.pushRetryTimer);
@@ -277,6 +279,8 @@ function resetRemote() {
   // cualquier test que SÍ ejercite una de las 5 escrituras directas por su
   // camino normal debe abrirlo explícitamente primero.
   r.userMutationsAllowed = false;
+  r.realtimeGeneration = 0;
+  r.realtimePendingTeardown = Promise.resolve();
   remote.onPushError = null;
   remote.onStatusChange = null;
   remote.onUnsyncedWrite = null;
@@ -2285,5 +2289,352 @@ describe("A→B + rechazo: el catch de las cinco escrituras directas comprueba i
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.staleSession).toBeUndefined();
     expect(result.ok === false && result.error).toBe("fetch failed");
+  });
+});
+
+// ─── subscribeRealtime() — generación única, topic por generación, cleanup
+// idempotente y serializado (diseño v5 §Realtime, corrección del error
+// intermitente "cannot add `postgres_changes` callbacks ... after
+// `subscribe()`") ────────────────────────────────────────────────────────
+// Réplica mínima pero fiel de las dos propiedades del SDK real
+// (@supabase/realtime-js@2.108.1, verificadas contra su código fuente
+// instalado) que, JUNTAS, hacen posible el mensaje de error de producción
+// (qué camino concreto lo disparó en el incidente original sigue sin
+// confirmarse — ver el comentario grande de subscribeRealtime() en
+// data-layer.ts):
+//   1) RealtimeClient.channel(topic) DEDUPE por topic EXACTO — dos llamadas
+//      con el mismo topic devuelven el MISMO objeto de canal.
+//   2) RealtimeChannel.on("postgres_changes", ...) LANZA si el canal ya
+//      está "joined" o "joining".
+// Cualquier otro detalle del SDK real (backoff, heartbeats, multiplexado
+// sobre un único WebSocket...) es irrelevante para lo que se prueba aquí.
+interface FakeChannel {
+  topic: string;
+  isJoined(): boolean;
+  isJoining(): boolean;
+  on(type: string, filter: { table?: string }, cb: (payload: { new: Record<string, unknown> }) => void): FakeChannel;
+  subscribe(cb?: (status: string) => void): FakeChannel;
+  unsubscribe(): Promise<"ok" | "timed out" | "error">;
+  teardown(): void;
+  setUnsubscribeOutcome(outcome: "ok" | "timed out" | "error" | "reject"): void;
+  fireTable(table: string, payload: { new: Record<string, unknown> }): void;
+  fireStatus(status: string): void;
+}
+
+function makeFakeChannel(topic: string): FakeChannel {
+  let joined = false;
+  let joining = false;
+  let unsubscribeOutcome: "ok" | "timed out" | "error" | "reject" = "ok";
+  const callbacksByTable = new Map<string, (payload: { new: Record<string, unknown> }) => void>();
+  let statusCallback: ((status: string) => void) | undefined;
+  const channel: FakeChannel = {
+    topic,
+    isJoined: () => joined,
+    isJoining: () => joining,
+    on(type, filter, cb) {
+      if ((joined || joining) && type === "postgres_changes") {
+        // Mensaje real de RealtimeChannel.ts (@supabase/realtime-js@2.108.1).
+        throw new Error(`cannot add \`${type}\` callbacks for ${topic} after \`subscribe()\`.`);
+      }
+      if (filter.table) callbacksByTable.set(filter.table, cb);
+      return channel;
+    },
+    subscribe(cb) {
+      joining = true;
+      statusCallback = cb;
+      queueMicrotask(() => {
+        joining = false;
+        joined = true;
+        statusCallback?.("SUBSCRIBED");
+      });
+      return channel;
+    },
+    unsubscribe() {
+      joined = false;
+      joining = false;
+      if (unsubscribeOutcome === "reject") return Promise.reject(new Error("fake unsubscribe rechazó"));
+      return Promise.resolve(unsubscribeOutcome);
+    },
+    teardown() {},
+    setUnsubscribeOutcome(outcome) { unsubscribeOutcome = outcome; },
+    fireTable(table, payload) { callbacksByTable.get(table)?.(payload); },
+    fireStatus(status) { statusCallback?.(status); },
+  };
+  return channel;
+}
+
+function makeFakeRealtimeClient() {
+  const channelsByTopic = new Map<string, FakeChannel>();
+  const removeChannelCalls: FakeChannel[] = [];
+  return {
+    channel(topic: string): FakeChannel {
+      const existing = channelsByTopic.get(topic);
+      if (existing) return existing; // réplica del dedupe real por topic exacto
+      const created = makeFakeChannel(topic);
+      channelsByTopic.set(topic, created);
+      return created;
+    },
+    async removeChannel(ch: FakeChannel): Promise<"ok" | "timed out" | "error"> {
+      removeChannelCalls.push(ch);
+      const status = await ch.unsubscribe();
+      if (status === "ok") ch.teardown();
+      return status;
+    },
+    channelsByTopic,
+    removeChannelCalls,
+  };
+}
+
+function setupRealtimeRemote(userId = "user-1", epoch = 0) {
+  const fakeRealtime = makeFakeRealtimeClient();
+  const r = remote as unknown as { client: unknown; user: { id: string } | null; sessionEpoch: number };
+  r.client = fakeRealtime;
+  r.user = { id: userId };
+  r.sessionEpoch = epoch;
+  return fakeRealtime;
+}
+
+// Deja correr el .then() de `ready` encadenado tras `previousTeardown`, más
+// el propio queueMicrotask() de FakeChannel.subscribe() — tres vueltas de
+// microtask bastan para ambos pasos en todos los tests de este bloque (no
+// hay ningún .then() adicional intercalado).
+async function flushRealtimeMicrotasks() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+describe("subscribeRealtime — generación única y topic por generación (diseño v5 §Realtime)", () => {
+  it("una suscripción normal permanece 'joined' después de que ready resuelva", async () => {
+    const fake = setupRealtimeRemote();
+    remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+
+    expect(fake.channelsByTopic.size).toBe(1);
+    const [channel] = [...fake.channelsByTopic.values()];
+    expect(channel.isJoined()).toBe(true);
+  });
+
+  it("crear una suscripción nunca llama a removeChannel", async () => {
+    const fake = setupRealtimeRemote();
+    remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+
+    expect(fake.removeChannelCalls).toHaveLength(0);
+  });
+
+  it("invocar el cleanup una vez sí desmonta el canal", async () => {
+    const fake = setupRealtimeRemote();
+    const cleanup = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+    const [channel] = [...fake.channelsByTopic.values()];
+
+    await cleanup();
+
+    expect(fake.removeChannelCalls).toEqual([channel]);
+    expect(channel.isJoined()).toBe(false);
+  });
+
+  it("invocarlo dos veces desmonta una sola vez — misma promesa, idempotente", async () => {
+    const fake = setupRealtimeRemote();
+    const cleanup = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+
+    const p1 = cleanup();
+    const p2 = cleanup();
+    expect(p1).toBe(p2);
+    await p1;
+
+    expect(fake.removeChannelCalls).toHaveLength(1);
+  });
+
+  it("cleanup invocado ANTES de que ready pueda crear: el canal nunca llega a crearse", async () => {
+    const fake = setupRealtimeRemote();
+    const cleanup = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await cleanup(); // antes de dejar correr ningún microtask de `ready`
+    await flushRealtimeMicrotasks();
+
+    expect(fake.channelsByTopic.size).toBe(0);
+    expect(fake.removeChannelCalls).toHaveLength(0); // nada que desmontar: el canal nunca se asignó
+  });
+
+  it("el cleanup de una generación vieja, invocado DESPUÉS de que ya exista una nueva, no invalida la nueva", async () => {
+    const fake = setupRealtimeRemote();
+    const onRefreshA = vi.fn();
+    const cleanupA = remote.subscribeRealtime(onRefreshA, vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+    const [channelA] = [...fake.channelsByTopic.values()];
+
+    // B se crea SIN esperar antes a cleanupA — orden anómalo deliberado,
+    // para aislar el guard de generación de cleanup() del guard de
+    // encadenamiento de previousTeardown (probado aparte más abajo).
+    const onRefreshB = vi.fn();
+    remote.subscribeRealtime(onRefreshB, vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+    const channelB = [...fake.channelsByTopic.values()].find((c) => c !== channelA)!;
+
+    await cleanupA(); // tardío: la generación de A ya está obsoleta
+
+    channelB.fireTable("inventory_items", { new: { id: "x" } });
+    expect(onRefreshB).toHaveBeenCalledTimes(1); // B sigue viva y respondiendo con normalidad
+    expect(onRefreshA).not.toHaveBeenCalled();
+    expect(fake.removeChannelCalls).toEqual([channelA]); // el cleanup tardío solo tocó SU PROPIO canal
+  });
+
+  it("status tardío de una generación vieja no llama a onStatus de la generación nueva", async () => {
+    const fake = setupRealtimeRemote();
+    const onStatusA = vi.fn();
+    remote.subscribeRealtime(vi.fn(), vi.fn(), onStatusA);
+    await flushRealtimeMicrotasks();
+    const [channelA] = [...fake.channelsByTopic.values()];
+    onStatusA.mockClear(); // descarta la llamada de "SUBSCRIBED" automática al crearse
+
+    const onStatusB = vi.fn();
+    remote.subscribeRealtime(vi.fn(), vi.fn(), onStatusB);
+    await flushRealtimeMicrotasks();
+
+    channelA.fireStatus("SUBSCRIBED"); // tardío, generación ya obsoleta
+    expect(onStatusA).not.toHaveBeenCalled();
+  });
+
+  it("uso normal en producción: cleanup de A invocado ANTES de crear B — B espera el desmontaje de A pero no queda bloqueada si tarda", async () => {
+    const fake = setupRealtimeRemote();
+    const cleanupA = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+    const [channelA] = [...fake.channelsByTopic.values()];
+    // No se espera SÍNCRONAMENTE a que cleanupA() resuelva antes de crear B
+    // — replica el patrón real de state.tsx: `void realtimeUnsubRef.current();
+    // ... setupRealtime()`, nunca un await entre ambos pasos. La promesa SÍ
+    // se guarda aquí para esperarla después con determinismo (en vez de
+    // adivinar cuántas vueltas de microtask hacen falta para la cadena
+    // completa: ready → removeChannel → unsubscribe → previousTeardown de B).
+    const cleanupPromiseA = cleanupA();
+
+    const onRefreshB = vi.fn();
+    remote.subscribeRealtime(onRefreshB, vi.fn(), vi.fn());
+    await cleanupPromiseA;
+    await flushRealtimeMicrotasks();
+
+    expect(fake.channelsByTopic.size).toBe(2); // topics distintos: A no fue reutilizado ni colisionó
+    const channelB = [...fake.channelsByTopic.values()].find((c) => c !== channelA)!;
+    expect(channelB.isJoined()).toBe(true);
+    channelB.fireTable("gastos", { new: {} });
+    expect(onRefreshB).toHaveBeenCalledTimes(1);
+  });
+
+  it("removeChannel() devolviendo 'timed out' no lanza ni bloquea — la siguiente generación se crea igual, por tener topic distinto", async () => {
+    const fake = setupRealtimeRemote();
+    const cleanupA = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+    const [channelA] = [...fake.channelsByTopic.values()];
+    channelA.setUnsubscribeOutcome("timed out");
+
+    await expect(cleanupA()).resolves.toBeUndefined();
+
+    const onRefreshB = vi.fn();
+    remote.subscribeRealtime(onRefreshB, vi.fn(), vi.fn());
+    await flushRealtimeMicrotasks();
+
+    const channelB = [...fake.channelsByTopic.values()].find((c) => c !== channelA)!;
+    expect(channelB.isJoined()).toBe(true);
+  });
+
+  it("removeChannel() RECHAZANDO no lanza ni produce una unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      const fake = setupRealtimeRemote();
+      const cleanup = remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn());
+      await flushRealtimeMicrotasks();
+      const [channel] = [...fake.channelsByTopic.values()];
+      channel.setUnsubscribeOutcome("reject");
+
+      // Callsites reales son `void realtimeUnsubRef.current()` — se
+      // reproduce aquí tal cual, sin adjuntar ningún manejador propio.
+      void cleanup();
+      await cleanup(); // misma promesa cacheada — nunca rechaza (todo capturado dentro)
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("un fallo al CREAR el canal (client.channel() lanzando) no produce una unhandled rejection aunque el cleanup nunca se invoque", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      const fake = setupRealtimeRemote();
+      (fake as unknown as { channel: (topic: string) => FakeChannel }).channel = () => {
+        throw new Error("fallo simulado creando el canal");
+      };
+
+      remote.subscribeRealtime(vi.fn(), vi.fn(), vi.fn()); // cleanup nunca invocado, a propósito
+      await flushRealtimeMicrotasks();
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("defensa: la condición exacta que exige el SDK para lanzar 'cannot add postgres_changes callbacks after subscribe()' (dos configuraciones seguidas sobre el MISMO topic sin que el canal anterior saliera de joined/joining) deja de ser alcanzable con topic por generación", async () => {
+    // Alcance de este test (no confundir con el disparador original de
+    // producción, que la fase de diagnóstico dejó SIN CONFIRMAR — ver el
+    // comentario grande de subscribeRealtime() en data-layer.ts): lo único
+    // que el mensaje de error demuestra es que, en algún momento,
+    // `client.channel(topic).on(...)` se invocó sobre un canal que YA
+    // estaba "joined" o "joining" para ese mismo topic (la comprobación
+    // exacta de RealtimeChannel.on() antes de lanzar). Qué camino concreto
+    // de producción llegó a esa situación — si el cleanup de la generación
+    // anterior se omitió por completo, o se invocó pero no llegó a
+    // ejecutarse antes de la reconstrucción — no se reprodujo y sigue sin
+    // confirmarse.
+    //
+    // Este test se limita a reproducir esa condición MÍNIMA y exacta (dos
+    // configuraciones consecutivas sobre el mismo topic, sin que la primera
+    // haya salido de "joined"/"joining" entre medias) y comprobar que el
+    // diseño nuevo se defiende de ella — no que reproduzca el diseño
+    // antiguo de FoodOS completo ni su disparador real. Nota verificada
+    // contra el SDK real (@supabase/phoenix `Channel.leave()`,
+    // node_modules/@supabase/phoenix/assets/js/phoenix/channel.js:242):
+    // `unsubscribe()` pone el estado a "leaving" de forma SÍNCRONA en
+    // cuanto se llama, sin esperar ningún roundtrip — así que, si el
+    // cleanup de la generación anterior SÍ llega a invocarse (aunque no se
+    // espere su promesa) antes de la reconstrucción, el canal deja de estar
+    // "joined"/"joining" al instante y esta condición ya no se alcanza.
+    const fake = makeFakeRealtimeClient();
+    const fixedTopic = "foodos-user-1"; // topic fijo por usuario, sin generación — el escenario que la condición exige
+
+    // Primera configuración: crea y suscribe. subscribe() pone
+    // isJoining()=true de forma síncrona (igual que el Push.send() real).
+    const channelA = fake.channel(fixedTopic);
+    channelA.on("postgres_changes", { table: "gastos" }, () => {});
+    channelA.subscribe();
+    expect(channelA.isJoining()).toBe(true);
+
+    // Segunda configuración, MISMO topic fijo, SIN que nadie haya invocado
+    // el cleanup de la primera — el dedupe del cliente devuelve el MISMO
+    // objeto de canal, todavía "joining": la condición exacta que
+    // RealtimeChannel.on() comprueba antes de lanzar.
+    const channelB = fake.channel(fixedTopic);
+    expect(channelB).toBe(channelA); // ← el dedupe por topic exacto es lo que hace alcanzable esta condición
+    expect(() => channelB.on("postgres_changes", { table: "gastos" }, () => {})).toThrow(
+      /cannot add `postgres_changes` callbacks/,
+    );
+
+    // Con el diseño NUEVO (subscribeRealtime real, topic con generación), la
+    // MISMA condición mínima (dos configuraciones seguidas sin que la
+    // primera salga de joined/joining) deja de ser alcanzable — cada
+    // generación tiene su propio topic, así que el dedupe del cliente nunca
+    // puede devolver el canal de la otra. Ver los tests "old cleanup after
+    // new generation" y "uso normal en producción" más arriba, que
+    // ejercitan exactamente ese patrón contra subscribeRealtime() real sin
+    // que nada lance — esa es la defensa que este test contrasta, no una
+    // afirmación sobre qué disparó el incidente real.
   });
 });
