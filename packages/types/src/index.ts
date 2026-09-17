@@ -1094,3 +1094,9 @@ export interface FoodOSState {
 // autocontenido que packages/engine consume sin necesitar el resto de este
 // archivo, y que ningún tipo existente de arriba necesita importar.
 export * from "./nutrition-evidence";
+
+// Nutrition Engine v4, PR2A — núcleo matemático de asignación diaria de
+// macros (ver nutrition-macro-allocation.ts). Mismo motivo de archivo
+// separado que nutrition-evidence.ts: contrato autocontenido, cero
+// dependencias del resto de este archivo.
+export * from "./nutrition-macro-allocation";
