@@ -16,6 +16,14 @@ describe("seis casos reales — recalculados con las fórmulas exactas de v3.1",
   // ACTIVITY_FACTORS/resolveProteinBase/kcalFactor/GOAL_CONFIG.fatPct de
   // nutrition.ts para perfiles ilustrativos), no una salida ya redondeada
   // de v3.1 reutilizada como si fuera decimal.
+  // Todos los "expected*" están calculados y revisados a mano a partir de
+  // las entradas — nunca derivados de ningún campo que el kernel devuelva
+  // (corrección de revisión final: la versión anterior comparaba
+  // totalDeltaFromRequestedKcal contra result.energy.reconstructedKcal -
+  // c.requestedKcal, es decir, contra OTRO campo del mismo resultado
+  // recalculado con la misma resta que ya hace la implementación — no podía
+  // fallar pase lo que pasara dentro del kernel, ver la demostración de
+  // regresión más abajo).
   const cases: Array<{
     name: string;
     requestedKcal: number;
@@ -24,14 +32,18 @@ describe("seis casos reales — recalculados con las fórmulas exactas de v3.1",
     expectedProteinG: number;
     expectedFatG: number;
     expectedCarbsG: number;
+    expectedRoundedTargetKcal: number;
+    expectedInputRoundingDeltaKcal: number;
     expectedMacroDelta: number;
+    expectedReconstructedKcal: number;
+    expectedTotalDeltaFromRequestedKcal: number;
   }> = [
-    { name: "1 — fat_loss, sedentario, sin %grasa", requestedKcal: 1779.2, proteinTargetG: 176.8, fatTargetG: 49.4222, expectedProteinG: 177, expectedFatG: 49, expectedCarbsG: 158, expectedMacroDelta: 2 },
-    { name: "2 — fat_loss, activo, gym day", requestedKcal: 2000.8, proteinTargetG: 152.4, fatTargetG: 55.5778, expectedProteinG: 152, expectedFatG: 56, expectedCarbsG: 222, expectedMacroDelta: -1 },
-    { name: "3 — fat_loss + DXA 35%", requestedKcal: 2454.4, proteinTargetG: 209.56, fatTargetG: 68.1778, expectedProteinG: 210, expectedFatG: 68, expectedCarbsG: 251, expectedMacroDelta: 2 },
-    { name: "4 — recomp, IMC<30, gym day", requestedKcal: 2340.0, proteinTargetG: 165.4, fatTargetG: 65.0, expectedProteinG: 165, expectedFatG: 65, expectedCarbsG: 274, expectedMacroDelta: 1 },
-    { name: "5 — maintain", requestedKcal: 2627.0, proteinTargetG: 164.34, fatTargetG: 81.7289, expectedProteinG: 164, expectedFatG: 82, expectedCarbsG: 308, expectedMacroDelta: -1 },
-    { name: "6 — muscle_gain, IMC<27", requestedKcal: 2174.55, proteinTargetG: 124.02, fatTargetG: 60.4042, expectedProteinG: 124, expectedFatG: 60, expectedCarbsG: 285, expectedMacroDelta: 1 },
+    { name: "1 — fat_loss, sedentario, sin %grasa", requestedKcal: 1779.2, proteinTargetG: 176.8, fatTargetG: 49.4222, expectedProteinG: 177, expectedFatG: 49, expectedCarbsG: 158, expectedRoundedTargetKcal: 1779, expectedInputRoundingDeltaKcal: -0.2, expectedMacroDelta: 2, expectedReconstructedKcal: 1781, expectedTotalDeltaFromRequestedKcal: 1.8 },
+    { name: "2 — fat_loss, activo, gym day", requestedKcal: 2000.8, proteinTargetG: 152.4, fatTargetG: 55.5778, expectedProteinG: 152, expectedFatG: 56, expectedCarbsG: 222, expectedRoundedTargetKcal: 2001, expectedInputRoundingDeltaKcal: 0.2, expectedMacroDelta: -1, expectedReconstructedKcal: 2000, expectedTotalDeltaFromRequestedKcal: -0.8 },
+    { name: "3 — fat_loss + DXA 35%", requestedKcal: 2454.4, proteinTargetG: 209.56, fatTargetG: 68.1778, expectedProteinG: 210, expectedFatG: 68, expectedCarbsG: 251, expectedRoundedTargetKcal: 2454, expectedInputRoundingDeltaKcal: -0.4, expectedMacroDelta: 2, expectedReconstructedKcal: 2456, expectedTotalDeltaFromRequestedKcal: 1.6 },
+    { name: "4 — recomp, IMC<30, gym day", requestedKcal: 2340.0, proteinTargetG: 165.4, fatTargetG: 65.0, expectedProteinG: 165, expectedFatG: 65, expectedCarbsG: 274, expectedRoundedTargetKcal: 2340, expectedInputRoundingDeltaKcal: 0, expectedMacroDelta: 1, expectedReconstructedKcal: 2341, expectedTotalDeltaFromRequestedKcal: 1 },
+    { name: "5 — maintain", requestedKcal: 2627.0, proteinTargetG: 164.34, fatTargetG: 81.7289, expectedProteinG: 164, expectedFatG: 82, expectedCarbsG: 308, expectedRoundedTargetKcal: 2627, expectedInputRoundingDeltaKcal: 0, expectedMacroDelta: -1, expectedReconstructedKcal: 2626, expectedTotalDeltaFromRequestedKcal: -1 },
+    { name: "6 — muscle_gain, IMC<27", requestedKcal: 2174.55, proteinTargetG: 124.02, fatTargetG: 60.4042, expectedProteinG: 124, expectedFatG: 60, expectedCarbsG: 285, expectedRoundedTargetKcal: 2175, expectedInputRoundingDeltaKcal: 0.45, expectedMacroDelta: 1, expectedReconstructedKcal: 2176, expectedTotalDeltaFromRequestedKcal: 1.45 },
   ];
 
   for (const c of cases) {
@@ -41,11 +53,17 @@ describe("seis casos reales — recalculados con las fórmulas exactas de v3.1",
       expect(result.protein.assignedG).toBe(c.expectedProteinG);
       expect(result.fat.assignedG).toBe(c.expectedFatG);
       expect(result.carbs.assignedG).toBe(c.expectedCarbsG);
-      // Enteros exactos -> igualdad estricta.
+      // Enteros exactos -> igualdad estricta, cada uno contra una constante
+      // externa calculada a mano, nunca contra otro campo del resultado.
+      expect(result.energy.roundedTargetKcal).toBe(c.expectedRoundedTargetKcal);
       expect(result.energy.macroRoundingDeltaKcal).toBe(c.expectedMacroDelta);
       expect(Math.abs(result.energy.macroRoundingDeltaKcal)).toBeLessThanOrEqual(2);
-      // Decimales -> tolerancia explícita, nunca igualdad estricta (corrección de revisión #3).
-      expect(result.energy.totalDeltaFromRequestedKcal).toBeCloseTo(result.energy.reconstructedKcal - c.requestedKcal, 9);
+      expect(result.energy.reconstructedKcal).toBe(c.expectedReconstructedKcal);
+      // Decimales -> tolerancia explícita, contra constantes externas
+      // calculadas a mano (nunca contra result.energy.reconstructedKcal ni
+      // ningún otro campo devuelto por el kernel).
+      expect(result.energy.inputRoundingDeltaKcal).toBeCloseTo(c.expectedInputRoundingDeltaKcal, 9);
+      expect(result.energy.totalDeltaFromRequestedKcal).toBeCloseTo(c.expectedTotalDeltaFromRequestedKcal, 9);
       expect(Math.abs(result.energy.totalDeltaFromRequestedKcal)).toBeLessThanOrEqual(2.5);
     });
   }
