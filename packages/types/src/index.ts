@@ -1100,3 +1100,10 @@ export * from "./nutrition-evidence";
 // separado que nutrition-evidence.ts: contrato autocontenido, cero
 // dependencias del resto de este archivo.
 export * from "./nutrition-macro-allocation";
+
+// Nutrition Engine v4, PR2B — plan semanal que reparte un total energético
+// ya decidido entre 7 días y ejecuta PR2A una vez por día (ver
+// nutrition-weekly-plan.ts). A diferencia de los dos anteriores, SÍ importa
+// tipos de nutrition-macro-allocation.ts (relación deliberada: PR2B está
+// construido sobre PR2A dentro del mismo paquete).
+export * from "./nutrition-weekly-plan";
