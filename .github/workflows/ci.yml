@@ -22,6 +22,17 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      # Nutrition Engine v4, PR1 — packages/engine es un workspace nuevo que
+      # apps/web todavía no importa: su tsconfig/vitest.config no lo alcanza
+      # el "Type-check"/"Tests" de abajo (ambos escopados a apps/web), así
+      # que necesita sus propios pasos explícitos, antes de los de web.
+      - name: Type-check (@foodos/engine)
+        working-directory: packages/engine
+        run: npx tsc --noEmit
+
+      - name: Tests (@foodos/engine)
+        run: npm run test --workspace @foodos/engine
+
       - name: Type-check (tsc --noEmit)
         working-directory: apps/web
         run: npx tsc --noEmit
