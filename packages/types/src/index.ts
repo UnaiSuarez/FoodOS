@@ -1088,3 +1088,9 @@ export interface FoodOSState {
       rechazada) — cooldown para no volver a proponer inmediatamente después. */
   lastAdjustmentDecisionAt?: string | null;
 }
+
+// Nutrition Engine v4, PR1 — aplicabilidad de evidencia científica (ver
+// nutrition-evidence.ts). Archivo separado a propósito: es un contrato
+// autocontenido que packages/engine consume sin necesitar el resto de este
+// archivo, y que ningún tipo existente de arriba necesita importar.
+export * from "./nutrition-evidence";
