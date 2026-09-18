@@ -1107,3 +1107,10 @@ export * from "./nutrition-macro-allocation";
 // tipos de nutrition-macro-allocation.ts (relación deliberada: PR2B está
 // construido sobre PR2A dentro del mismo paquete).
 export * from "./nutrition-weekly-plan";
+
+// Nutrition Engine v4, PR3 — estrategia nutricional semanal que transforma
+// TDEE/objetivo/prioridad ya resueltos en una petición consumible por PR2B
+// (ver nutrition-weekly-strategy.ts). Importa de nutrition-evidence.ts y
+// nutrition-weekly-plan.ts (relación deliberada: PR3 consume el
+// clasificador de PR1 y produce una salida compatible con PR2B).
+export * from "./nutrition-weekly-strategy";
