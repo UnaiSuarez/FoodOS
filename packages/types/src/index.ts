@@ -1114,3 +1114,9 @@ export * from "./nutrition-weekly-plan";
 // nutrition-weekly-plan.ts (relación deliberada: PR3 consume el
 // clasificador de PR1 y produce una salida compatible con PR2B).
 export * from "./nutrition-weekly-strategy";
+
+// Exercise Engine v2, PR4 — señales de rendimiento de entrenamiento a
+// partir de un contrato de entrada normalizado propio (ver
+// exercise-performance.ts). Cero dependencias de los tipos de nutrición de
+// arriba: Nutrition Engine v4 y Exercise Engine v2 no se conocen entre sí.
+export * from "./exercise-performance";

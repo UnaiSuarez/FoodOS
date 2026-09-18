@@ -1,8 +1,8 @@
-// Motores puros de FoodOS — Nutrition Engine v4.
+// Motores puros de FoodOS — Nutrition Engine v4 + Exercise Engine v2.
 // PR1: clasificador de aplicabilidad de evidencia. PR2A: kernel de
 // asignación diaria de macros. PR2B: kernel de plan semanal. PR3: kernel
-// de estrategia semanal. exercise-v2.ts y adaptive-coordinator.ts llegan
-// en PRs posteriores.
+// de estrategia semanal. PR4: kernel de señales de rendimiento de
+// ejercicio. adaptive-coordinator.ts (PR5) llega en un PR posterior.
 export * from "./nutrition-evidence-classifier";
 // Solo allocateDailyMacros es API pública de PR2A — dedupeAndOrderInvalidReasons
 // y dedupeAndOrderPolicyRequirements son funciones privadas de
@@ -23,3 +23,10 @@ export { planWeek } from "./weekly-plan-kernel";
 // (sin `export`), probadas solo indirectamente a través del resultado
 // público de planWeeklyStrategy.
 export { planWeeklyStrategy } from "./weekly-strategy-kernel";
+// Igual que PR1–PR3: solo evaluateExercisePerformance es API pública de
+// PR4 — todos sus helpers (validación de fechas/forma, canonicalización,
+// cálculo de señales) son funciones privadas de
+// exercise-performance-kernel.ts (sin `export`), probadas solo
+// indirectamente a través del resultado público de
+// evaluateExercisePerformance.
+export { evaluateExercisePerformance } from "./exercise-performance-kernel";
