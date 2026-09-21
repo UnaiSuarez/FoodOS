@@ -1120,3 +1120,13 @@ export * from "./nutrition-weekly-strategy";
 // exercise-performance.ts). Cero dependencias de los tipos de nutrición de
 // arriba: Nutrition Engine v4 y Exercise Engine v2 no se conocen entre sí.
 export * from "./exercise-performance";
+
+// Nutrition Engine v4, PR5A — tendencia de peso estimada y cobertura del
+// registro de ingesta (ver weight-trend.ts e intake-logging-coverage.ts).
+// Contratos autocontenidos: ninguno de los dos importa nada de este archivo
+// ni de los tipos de nutrición o ejercicio. Sus nombres (`WeightTrendEstimate*`,
+// `IntakeLoggingCoverage*`) evitan a propósito `WeightTrendResult` e
+// `IntakeCoverageResult`, ya declarados arriba: una redeclaración local
+// taparía en silencio un `export *` homónimo.
+export * from "./weight-trend";
+export * from "./intake-logging-coverage";
