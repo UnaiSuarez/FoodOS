@@ -2,7 +2,8 @@
 // PR1: clasificador de aplicabilidad de evidencia. PR2A: kernel de
 // asignación diaria de macros. PR2B: kernel de plan semanal. PR3: kernel
 // de estrategia semanal. PR4: kernel de señales de rendimiento de
-// ejercicio. adaptive-coordinator.ts (PR5) llega en un PR posterior.
+// ejercicio. PR5A: kernels de tendencia de peso y de cobertura de registro
+// de ingesta. El Adaptive Coordinator (PR5B) llega en un PR posterior.
 export * from "./nutrition-evidence-classifier";
 // Solo allocateDailyMacros es API pública de PR2A — dedupeAndOrderInvalidReasons
 // y dedupeAndOrderPolicyRequirements son funciones privadas de
@@ -30,3 +31,9 @@ export { planWeeklyStrategy } from "./weekly-strategy-kernel";
 // indirectamente a través del resultado público de
 // evaluateExercisePerformance.
 export { evaluateExercisePerformance } from "./exercise-performance-kernel";
+// Igual que PR1–PR4: PR5A añade exactamente dos funciones públicas,
+// calculateWeightTrend y calculateIntakeLoggingCoverage. Todos sus helpers
+// (fechas, canonicalización, validación por fases, cálculo) son funciones
+// privadas de sus kernels, probadas solo a través del resultado público.
+export { calculateWeightTrend } from "./weight-trend-kernel";
+export { calculateIntakeLoggingCoverage } from "./intake-logging-coverage-kernel";
