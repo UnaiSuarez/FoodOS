@@ -1149,3 +1149,13 @@ export * from "./adaptive-coordinator";
 // inerte: no persiste nada, no aplica nada, no llama a
 // evaluateAdaptiveReview ni a ningún otro motor salvo planWeeklyStrategy.
 export * from "./adaptive-proposal-application";
+
+// Nutrition Engine v4 — taxonomía de valores nutricionales y cobertura de
+// integridad diaria (ver nutrient-value.ts para el contexto completo:
+// relación con `IntakeLoggingCoverageResult` de PR5A y el techo de
+// `confidence` de PR5B). Ningún nombre colisiona con lo ya exportado desde
+// este barrel (comprobado por grep antes de añadir este bloque). No se
+// modifica ningún archivo existente ni se cablea con PR5A/PR5B en esta
+// entrega — ver docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md.
+export * from "./nutrient-value";
+export * from "./nutrient-coverage";
