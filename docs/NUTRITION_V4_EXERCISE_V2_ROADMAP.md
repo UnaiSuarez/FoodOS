@@ -122,7 +122,7 @@ cambian esto: son tan inertes como PR1–PR3.
 | PR4 — Exercise Engine v2 | [#138](https://github.com/UnaiSuarez/FoodOS/pull/138) | `099978d` |
 | PR5A — kernels de tendencia de peso y cobertura de registro | ✅ [#139](https://github.com/UnaiSuarez/FoodOS/pull/139), fusionada por rebase | `9398f59259c0cb2699a869af4867b902d2a5f8a5` |
 | PR5B — Adaptive Coordinator | 🔲 implementación local, pura, inerte y todavía no fusionada | — |
-| Canal de ajuste energético en PR3 | 🔲 no iniciado; PR pequeño posterior a PR5B (ver "Alcance de PR5B") | — |
+| Canal de ajuste energético en PR3 | 🔲 implementación local, pura, inerte y todavía no fusionada (ver "Alcance del canal de ajuste energético en PR3") | — |
 | Verificación de aplicabilidad/replan | 🔲 no iniciado; requiere el canal de ajuste de PR3 | — |
 | Integración en producción | 🔲 iniciativa separada y posterior, no uno de los PRs numerados | — |
 
@@ -434,6 +434,78 @@ implementado.
 diseño): token opaco que el futuro adaptador genera y compara — PR5B no lo
 calcula, no lo verifica, no lo interpreta. El nombre se eligió a propósito
 para no sugerir una protección que PR5B no realiza.
+
+## Alcance del canal de ajuste energético en PR3
+
+Paso 2 de la secuencia cerrada en "Alcance de PR5B": un campo opcional
+nuevo en `WeeklyStrategyInput`,
+`currentAverageDailyEnergyAdjustmentKcal?: number` (kcal/día, entero,
+cualquier signo, sin exigir múltiplo de 100 ni de 7), y dos campos nuevos
+en `WeeklyStrategyEnergyAudit` (`baseWeeklyKcal`,
+`currentAverageDailyEnergyAdjustmentKcal`). Puro, inerte, mismo criterio
+de motor total sobre `unknown` que el resto de PR1–PR5B. Cero cambios en
+`apps/web`, persistencia o Supabase.
+
+**Semántica**: "ajuste medio diario equivalente" — desplaza el total
+semanal en `7 × ajuste`, pero PR2B puede repartir ese total de forma NO
+uniforme entre los 7 días según el ciclado vigente; nunca se suma
+literalmente la misma cantidad a cada día. Representa el ajuste YA
+VIGENTE (acumulado, resuelto por la futura capa de integración a partir
+de ajustes aceptados) — nunca una propuesta pendiente. Ausencia, `0` y
+`-0` son funcionalmente equivalentes y reproducen el comportamiento
+exacto de PR3 sin este campo (`-0` se normaliza a `0` antes de aparecer
+en `audit`, pero nunca dispara la razón de invalidez).
+
+**Punto único de inyección**: justo después de que la tabla energética
+produce `baseWeeklyKcal` (fase 3 del kernel) y antes de
+`computedIsDeficit` (fase 4), de la proteína (fase 6, que nunca lee esta
+cifra) y de la grasa (fase 7). `requestedWeeklyKcal = baseWeeklyKcal +
+7×currentAverageDailyEnergyAdjustmentKcal` sustituye, en todas las fases
+posteriores, al valor que antes producía directamente la tabla. Ningún
+otro punto del kernel cambió de forma.
+
+**Delegación segura a PR2B, demostrada por lectura completa del kernel de
+PR2B (`weekly-plan-kernel.ts`)**: `weeklyKcalTarget` se valida antes que
+cualquier reparto o llamada a PR2A
+(`weekly_kcal_target_invalid`/`_rounds_to_zero`/`_unsafe`), con retorno
+temprano garantizado antes de esa llamada. Como la grasa de PR3 comparte
+siempre el signo de `requestedWeeklyKcal` (proporción positiva fija por
+objetivo), PR2A jamás recibe una grasa negativa a través de este canal.
+PR3 no añade ningún guardarraíl propio sobre el total ajustado: un
+objetivo no positivo o inseguro llega a
+`invalid_input`/`propagated_from_weekly_plan` exactamente igual que
+cualquier otro `invalid_input` real de PR2B; uno por debajo de los
+mínimos de seguridad llega a
+`unsupported_plan`/`specialist_review_required` a través de las fases
+9–10 ya existentes, sin código nuevo.
+
+**Proteína invariante, grasa proporcional, carbohidratos residuales**:
+`targetGPerDay` (fase 6) no referencia `tdeeKcal` ni `requestedWeeklyKcal`
+en ningún punto — invariante ante cualquier ajuste, en cualquier cruce de
+estado energético (maintenance↔déficit incluido). La grasa
+(`fatTargetGPerDay`, fase 7) es un porcentaje fijo por objetivo de la
+energía YA AJUSTADA, así que sí escala con el ajuste; los carbohidratos
+son el residuo que PR2A deriva después de restar proteína y grasa de cada
+cuota diaria — no es correcto decir que "los carbohidratos absorben todo
+el ajuste": grasa y carbohidratos cambian, proteína no.
+
+**Compatibilidad funcional, no byte a byte**: con el campo ausente o en
+`0`, PR3 produce el mismo `status`, `weeklyPlan`, `protein` completo,
+`fatTargetGPerDay`, diagnósticos de seguridad y los valores preexistentes
+de `audit` — pero `audit` gana dos campos nuevos
+(`baseWeeklyKcal===requestedWeeklyKcal`,
+`currentAverageDailyEnergyAdjustmentKcal===0`), así que no se afirma
+identidad byte a byte con la forma exacta del resultado anterior a este
+PR.
+
+**Versionado futuro**: sin `policyVersion` nuevo en PR3 (nunca lo tuvo, y
+las cuatro cifras que un verificador necesita — base, ajuste vigente,
+ajustado-solicitado, y final autorizado por PR2B en
+`weeklyPlan.energy.roundedWeeklyKcalTarget` — ya están completas sin él).
+`AdaptiveProposalBasis.strategyVersionId` (PR5B) deberá, en la futura
+integración, depender también de `currentAverageDailyEnergyAdjustmentKcal`
+— dos estrategias con el mismo perfil pero distinto ajuste vigente no
+pueden compartir versión — pero PR3 sigue sin calcular ese identificador.
 
 ## Integración posterior
 
