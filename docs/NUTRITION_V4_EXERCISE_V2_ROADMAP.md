@@ -120,8 +120,10 @@ cambian esto: son tan inertes como PR1–PR3.
 | PR2B — kernel de plan semanal | [#136](https://github.com/UnaiSuarez/FoodOS/pull/136) | `3fd4e38` |
 | PR3 — estrategia nutricional semanal | [#137](https://github.com/UnaiSuarez/FoodOS/pull/137) | `db9a9b8` |
 | PR4 — Exercise Engine v2 | [#138](https://github.com/UnaiSuarez/FoodOS/pull/138) | `099978d` |
-| PR5A — kernels de tendencia de peso y cobertura de registro | 🔲 implementación local, inerte y todavía no fusionada | — |
-| PR5B — Adaptive Coordinator | 🔲 no iniciado; requiere PR5A fusionado | — |
+| PR5A — kernels de tendencia de peso y cobertura de registro | ✅ [#139](https://github.com/UnaiSuarez/FoodOS/pull/139), fusionada por rebase | `9398f59259c0cb2699a869af4867b902d2a5f8a5` |
+| PR5B — Adaptive Coordinator | 🔲 implementación local, pura, inerte y todavía no fusionada | — |
+| Canal de ajuste energético en PR3 | 🔲 no iniciado; PR pequeño posterior a PR5B (ver "Alcance de PR5B") | — |
+| Verificación de aplicabilidad/replan | 🔲 no iniciado; requiere el canal de ajuste de PR3 | — |
 | Integración en producción | 🔲 iniciativa separada y posterior, no uno de los PRs numerados | — |
 
 ## Modelo legacy diagnosticado (evidencia, `apps/web`)
@@ -342,7 +344,7 @@ Decisión cerrada, **solo documentada aquí**; PR5A no conoce la calibración:
   heredados o entradas externas todavía podrían contenerlos (`normalizeState`,
   `state.tsx:80-90`, no deduplica), y PR5A los rechaza defensivamente (D1/D2).
 
-### Notas para PR5B (no implementadas aquí)
+### Notas históricas para PR5B (escritas antes de diseñarlo; ver "Alcance de PR5B" más abajo para el contrato ya implementado)
 
 - PR3 no tiene canal de desplazamiento (solo `tdeeKcal`); el objetivo vigente
   es `weeklyPlan.energy.roundedWeeklyKcalTarget` y
@@ -354,6 +356,84 @@ Decisión cerrada, **solo documentada aquí**; PR5A no conoce la calibración:
 - La propuesta se expresa en términos de promedio diario y emite
   `requiresNutritionReplan: true`; sin estados aceptada/rechazada (la
   aceptación explícita es de la integración).
+
+## Alcance de PR5B
+
+Implementación local, pura e inerte de una única función pública:
+`evaluateAdaptiveReview` (`packages/engine/src/adaptive-coordinator-kernel.ts`,
+contratos en `packages/types/src/adaptive-coordinator.ts`). Sin adaptador,
+sin persistencia, sin UI, sin llamar a ningún otro motor — recibe ya
+resueltos el `WeeklyStrategyResult` de PR3, el `WeightTrendEstimateResult`
+y el `IntakeLoggingCoverageResult` de PR5A y, opcionalmente, el
+`ExercisePerformanceResult` de PR4, y produce como mucho una propuesta
+preliminar de ajuste de ±100 kcal/día. Como PR1–PR5A, no se importa desde
+ningún archivo de `apps/web` (verificado por el mismo test estructural).
+
+**Seis estados, con precedencia fija**: `stop_and_recommend_review` >
+`invalid_input` > `deferred` > `insufficient_evidence` > `keep_targets` |
+`adjustment_proposal`. `derived_numeric_result_invalid` es la única razón
+de `invalid_input` que se descubre tarde (solo al construir una propuesta,
+fase F) — las otras 13 se conocen antes de evaluar aplazamiento o
+evidencia.
+
+**Secuencia cerrada de aquí a producción** (ninguno de los pasos 2-4 existe
+todavía):
+1. PR5B — este evaluador puro (implementado, sin fusionar).
+2. Canal de ajuste energético explícito y tipado en PR3 (PR pequeño): hoy
+   `planWeeklyStrategy` no tiene ninguna vía para desplazar el objetivo
+   resultante — el "acumulado" de un ajuste aceptado vivirá ahí, nunca
+   dentro del coordinador.
+3. Verificación pura de aplicabilidad/replan: comprueba que una propuesta
+   de PR5B sigue siendo válida contra un replan REAL de PR3 con el canal
+   del paso 2 ya aplicado. PR5B expone en `basis` los hechos observados
+   que ese paso necesitará (versión de objetivo/estrategia, objetivo y
+   prioridad, fecha de calibración, última decisión, ausencia observada de
+   propuesta pendiente) — nunca simula ni presupone esa verificación.
+4. Integración con persistencia y UI en `apps/web`.
+
+**Por qué `baseline.weeklyKcalTargetInForce` podrá coincidir con
+`strategy.weeklyPlan.energy.roundedWeeklyKcalTarget` tras aceptar un
+ajuste, sin que PR5B administre ningún acumulado**: en la integración
+futura, antes de cada revisión el adaptador RE-INVOCA `planWeeklyStrategy`
+con el ajuste vigente ya aplicado a través del canal del paso 2 — el
+`strategy` que recibe el coordinador es siempre el resultado YA
+recalculado y materializado con ese ajuste, nunca el original sin ajustar.
+El objetivo que PR3 acaba de producir y el objetivo persistido como
+vigente son, por construcción, la misma cifra calculada dos veces con el
+mismo ajuste. Si no coinciden (persistido desactualizado, ajuste no
+materializado todavía, condición de carrera entre dispositivos),
+`baseline_target_mismatch` es exactamente la señal de "materializa de
+nuevo antes de revisar" — nunca un acumulado que el coordinador deba
+llevar por su cuenta.
+
+**Procedencia de la política por regla, no un único valor global**
+(`AdaptivePolicyProvenance` en el contrato): nivel de tendencia "high", 21
+mediciones, cobertura 0,85, paso de 100 kcal, intervalo de 14 días y
+resolución de clasificación 0,1 son `heuristic_inherited_from_v3_1`
+(cifras de v3.1 sin cambios); las ventanas 29/28 son
+`window_length_observed_parity_with_v3_1` (paridad OBSERVADA, v3.1 nunca
+tuvo esos campos como tales); la obligatoriedad de objetivo diario en cada
+registro de ingesta es `v4_conservative_safeguard` (guardarraíl nuevo y
+conservador, v3.1 nunca lo exigió); el carácter no decisional del
+rendimiento es `v4_architectural_decision` (v3.1 es anterior a Exercise
+Engine v2 por completo, no tiene ningún concepto de esto). Ninguna decisión
+nueva de v4 se atribuye a v3.1.
+
+**`confidence: "moderate"`, único valor posible en PR5B** (nunca "high",
+nota ya cerrada más abajo; se eliminó la variante "low" del diseño
+anterior por no tener ningún caso justificable): significa exactamente que
+se superaron todas las puertas heurísticas mínimas de esta política
+(tendencia "high", ≥21 mediciones, cobertura plausible ≥0,85). **No**
+valida exactitud de la ingesta registrada (`intakeAccuracy` sigue siendo
+"unknown"), **no** es una afirmación de seguridad clínica, y **no**
+certifica que el ajuste siga siendo aplicable tras un replan real de PR3
+— eso lo decide el paso 3 de la secuencia de arriba, todavía no
+implementado.
+
+**`strategyVersionId`** (antes "fingerprint" en versiones previas de este
+diseño): token opaco que el futuro adaptador genera y compara — PR5B no lo
+calcula, no lo verifica, no lo interpreta. El nombre se eligió a propósito
+para no sugerir una protección que PR5B no realiza.
 
 ## Integración posterior
 
@@ -378,25 +458,52 @@ real.
 | Tendencia de la ingesta autoinformada a subestimarse frente a DLW | Antecedente cualitativo citado: Frontiers in Endocrinology 2019 (la mayoría de los métodos y estudios revisados mostraron subestimación); PR5A no lo cuantifica ni lo corrige |
 | Desajuste frecuente y detectable entre ingesta autoinformada y gasto medido | Antecedente cualitativo citado: Nature Food 2024, sin atribuirle una dirección de subestimación que no se pudo verificar; PR5A no lo detecta ni lo corrige |
 | Aritmética de fechas `days_from_civil` (PR5A) | Derivación matemática publicada (Hinnant). Contrastada de forma exhaustiva contra `Date` en todo el dominio 0001–9999 durante el diseño con un script temporal no incluido en el repositorio (no reproducible desde este PR); en la suite hay comprobaciones parciales: longitud de cada año, transiciones mensuales y extremos |
+| Ventanas 29/28 verificadas por PR5B con aritmética propia, no solo con el contador declarado por PR5A | Guardarraíl de producto nuevo de v4 — v3.1 nunca verificó una ventana ajena, solo construía la suya propia |
+| Objetivo diario (`targetKcalForDay`) obligatorio en cada registro de ingesta para que PR5B considere la cobertura decisional (PR5B) | Guardarraíl de producto nuevo y conservador de v4 (`v4_conservative_safeguard`) — v3.1 solo lo exigía en el panel, nunca en la decisión adaptativa |
+| Rendimiento como contexto exclusivamente no decisional (PR5B) | Decisión de arquitectura de v4 (`v4_architectural_decision`) — v3.1 es anterior a Exercise Engine v2 por completo |
 
 ## Deudas y decisiones abiertas
 
 - Normalización de nombres de músculo (mayúsculas/acentos) — PR4 los trata
   como strings opacos, comparación exacta, sin recorte de espacios
   silencioso.
-- Si Adaptive Coordinator (PR5B) reutiliza tipos existentes de v3.1 en
-  `packages/types` (`AdjustmentDecision`, ya productivo) o define
-  equivalentes propios. Para peso e ingesta PR5A ya decidió definir los
-  suyos (`WeightTrendEstimate*`, `IntakeLoggingCoverage*`) en lugar de
-  reutilizar `WeightTrendResult` e `IntakeCoverageResult`.
-- Qué mínimo de sesiones o distancia temporal hace comparable una
-  observación de rendimiento entre sesiones — decisión de PR5B, no de PR4.
-- El validador de fechas de PR4 acepta el año 0000, mientras que PR5A
-  restringe el dominio a 0001–9999. Deuda registrada, sin cambiar PR4 aquí.
-- Los helpers de fechas están duplicados a propósito: la validación de
-  calendario en los dos kernels de PR5A y en PR4, y `days_from_civil` en los
-  dos de PR5A y en PR2B (`daysFromCivil`). PR5A no crea utilidades
-  compartidas; consolidarlas es una decisión de un PR posterior.
+- **Cerrado en PR5B**: Adaptive Coordinator define tipos propios
+  (`Adaptive*`) en vez de reutilizar `AdjustmentDecision`/`AdjustmentProposal*`
+  de v3.1 — mismo criterio que PR5A con `WeightTrendResult`/
+  `IntakeCoverageResult`.
+- **Cerrado en PR5B**: se evaluó exponer un resumen de comparabilidad de
+  observaciones de e1RM entre sesiones (agrupando por identidad exacta de
+  `exerciseId`+`method`) y se descartó — el rendimiento es
+  `influenceOnDecision: "none"` siempre, así que interpretar esas
+  observaciones dentro del coordinador solo inflaría su contrato y sus
+  tests sin aportar ninguna decisión; un futuro consumidor puede leer
+  `ExercisePerformanceResult` directamente. PR5B solo reutiliza
+  `windowSessionCount`, ya expuesto por PR4 a coste cero.
+- El validador de fechas de PR4 acepta el año 0000, mientras que PR5A y
+  PR5B restringen el dominio a 0001–9999. Deuda registrada, sin cambiar
+  PR4 aquí.
+- Los helpers de fechas están duplicados a propósito, en cinco archivos
+  distintos — pero no los mismos dos helpers en todos: la validación de
+  calendario (formato + rango + bisiestos) aparece en los dos kernels de
+  PR5A, en PR4, en PR2B y ahora en PR5B (cinco archivos); `days_from_civil`
+  (Hinnant) aparece en los dos kernels de PR5A, en PR2B
+  (`daysFromCivil`) y ahora en PR5B (`adaptive-coordinator-kernel.ts`) —
+  cuatro archivos, sin PR4, que nunca necesita contar días de calendario
+  (solo compara `dateKey` como cadena para decidir pertenencia a la
+  ventana). Ninguno crea utilidades compartidas; consolidarlas es una
+  decisión de un PR posterior.
+- **Deudas de integración, explícitamente fuera del alcance de PR5B**
+  (evaluador puro): caducidad de propuestas (`expires_at`/estado
+  `expired`, hoy sin usar en v3.1); migración o reset del offset
+  `adaptiveKcalOffsetKcal` de v3.1 al activar v4; huso horario de los
+  timestamps que la integración persista (PR5B solo trabaja con `DateKey`
+  ya normalizadas); esquema de base de datos para el nuevo canal de ajuste
+  de PR3 y para las propuestas de PR5B; índice único de propuesta
+  `pending` por usuario; calidad errática del score de una serie de peso
+  casi plana (R², heredado de v3.1, no evaluado de nuevo en PR5A/PR5B);
+  transición y coexistencia de propuestas v3.1 ya existentes con las
+  nuevas de PR5B. Ninguna de ellas condiciona el contrato de
+  `evaluateAdaptiveReview`.
 - Duplicación de la tabla de fiabilidad de medición de %grasa entre PR1 y
   PR3 (deuda registrada en el diseño de PR3, no relacionada con PR4).
 - Ciclo de tipos vía el barrel de `packages/types` (deuda registrada en el
