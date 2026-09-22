@@ -43,3 +43,11 @@ export { calculateIntakeLoggingCoverage } from "./intake-logging-coverage-kernel
 // de adaptive-coordinator-kernel.ts (sin `export`), probadas solo
 // indirectamente a través del resultado público de evaluateAdaptiveReview.
 export { evaluateAdaptiveReview } from "./adaptive-coordinator-kernel";
+// Verificación pura de aplicabilidad de propuestas adaptativas (paso 3 de
+// la secuencia, tras PR5B y el canal de ajuste energético de PR3): añade
+// exactamente una función pública, evaluateAdaptiveProposalApplication.
+// Todos sus helpers (validación de la propuesta, canonicalización de
+// razones) son funciones privadas de
+// adaptive-proposal-application-kernel.ts (sin `export`), probadas solo
+// indirectamente a través del resultado público.
+export { evaluateAdaptiveProposalApplication } from "./adaptive-proposal-application-kernel";

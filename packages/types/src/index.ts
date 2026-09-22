@@ -1142,3 +1142,10 @@ export * from "./intake-logging-coverage";
 // `AdaptiveDiagnostics`/`WeightTrajectoryAssessment`, ya exportados arriba
 // desde el motor v3.1.
 export * from "./adaptive-coordinator";
+
+// Nutrition Engine v4 — verificación pura de aplicabilidad de propuestas
+// adaptativas (paso 3 de la secuencia cerrada tras PR5B y el canal de
+// ajuste energético de PR3, ver adaptive-proposal-application.ts). Puro e
+// inerte: no persiste nada, no aplica nada, no llama a
+// evaluateAdaptiveReview ni a ningún otro motor salvo planWeeklyStrategy.
+export * from "./adaptive-proposal-application";
