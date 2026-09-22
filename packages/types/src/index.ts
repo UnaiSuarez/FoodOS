@@ -1130,3 +1130,15 @@ export * from "./exercise-performance";
 // taparía en silencio un `export *` homónimo.
 export * from "./weight-trend";
 export * from "./intake-logging-coverage";
+
+// Nutrition Engine v4, PR5B — Adaptive Coordinator: combina la estrategia
+// semanal de PR3, las señales de trayectoria de PR5A y el contexto (no
+// decisional) de rendimiento de PR4 en, como mucho, una propuesta
+// preliminar de ajuste (ver adaptive-coordinator.ts). Puro e inerte: no
+// llama a ningún otro motor, no persiste nada y no verifica que una
+// propuesta siga siendo aplicable tras un replan real de PR3 — eso es un
+// PR posterior. Nombres con prefijo `Adaptive*` para no colisionar con
+// `AdjustmentDecision`/`AdjustmentProposal*`/`AdaptiveTdee*`/
+// `AdaptiveDiagnostics`/`WeightTrajectoryAssessment`, ya exportados arriba
+// desde el motor v3.1.
+export * from "./adaptive-coordinator";
