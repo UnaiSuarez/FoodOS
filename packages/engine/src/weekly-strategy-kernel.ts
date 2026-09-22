@@ -136,6 +136,7 @@ const INVALID_REASON_ORDER: readonly WeeklyStrategyInvalidReason[] = [
   "weight_invalid",
   "height_invalid",
   "tdee_invalid",
+  "energy_adjustment_invalid",
   "goal_invalid",
   "days_invalid",
   "optional_context_signal_invalid",
@@ -518,6 +519,31 @@ export function planWeeklyStrategy(input: WeeklyStrategyInput): WeeklyStrategyRe
   if (tdeeOutcome === "unresolved") unresolvedReasons.push("tdee_not_resolved");
   else if (tdeeOutcome === "invalid") invalidReasons.push("tdee_invalid");
 
+  // Ausencia = "sin señal" (ajuste cero), nunca "todavía no lo sé": a
+  // diferencia de weight/height/tdee/goal/days, este campo NUNCA contribuye
+  // a unresolvedReasons — su ausencia tiene una semántica propia y
+  // completa (cero), igual criterio que age/bodyFatPct/etc. Solo un valor
+  // PRESENTE y malformado (no numérico, no finito, no entero seguro)
+  // invalida la entrada.
+  const rawEnergyAdjustment = record.currentAverageDailyEnergyAdjustmentKcal;
+  let currentAverageDailyEnergyAdjustmentKcal = 0;
+  if (rawEnergyAdjustment !== undefined) {
+    if (
+      typeof rawEnergyAdjustment !== "number" ||
+      !Number.isFinite(rawEnergyAdjustment) ||
+      !Number.isSafeInteger(rawEnergyAdjustment)
+    ) {
+      invalidReasons.push("energy_adjustment_invalid");
+    } else {
+      // -0 es cero válido semánticamente (nunca dispara energy_adjustment_invalid)
+      // pero se normaliza aquí para que ningún resultado público (audit)
+      // distinga -0 de 0 — puramente representacional: la aritmética de más
+      // abajo ya es indiferente al signo del cero (-0 + x === x en IEEE754
+      // para cualquier x != 0).
+      currentAverageDailyEnergyAdjustmentKcal = Object.is(rawEnergyAdjustment, -0) ? 0 : rawEnergyAdjustment;
+    }
+  }
+
   const goalOutcome = validateGoal(record.goal);
   if (goalOutcome.kind === "unresolved") unresolvedReasons.push("goal_not_resolved");
   else if (goalOutcome.kind === "invalid") invalidReasons.push("goal_invalid");
@@ -567,14 +593,26 @@ export function planWeeklyStrategy(input: WeeklyStrategyInput): WeeklyStrategyRe
     }
   }
   const perDayKcal = goal.goalIntent === "maintain" ? days.map(() => tdeeKcal) : weights.map((w) => w * tdeeKcal);
-  const requestedWeeklyKcal = perDayKcal.reduce((total, k) => total + k, 0);
-  const roundedWeeklyKcalTarget = Math.round(requestedWeeklyKcal);
-  if (!Number.isSafeInteger(roundedWeeklyKcalTarget) || roundedWeeklyKcalTarget <= 0) {
-    // Defensivo — inalcanzable con tdeeKcal ya validado finito/positivo y
-    // factores acotados en [0.80, 1.10], pero comprobado igualmente por la
-    // misma disciplina de función total del resto del motor.
+  const baseWeeklyKcal = perDayKcal.reduce((total, k) => total + k, 0);
+  const roundedBaseWeeklyKcal = Math.round(baseWeeklyKcal);
+  if (!Number.isSafeInteger(roundedBaseWeeklyKcal) || roundedBaseWeeklyKcal <= 0) {
+    // Defensivo sobre la TABLA energética SIN ajuste — inalcanzable con
+    // tdeeKcal ya validado finito/positivo y factores acotados en
+    // [0.80, 1.10]. Sin relación con currentAverageDailyEnergyAdjustmentKcal:
+    // ese se valida por separado arriba (energy_adjustment_invalid) y puede
+    // legítimamente volver el objetivo YA AJUSTADO no positivo o inseguro —
+    // ver más abajo, PR2B lo rechaza por su cuenta
+    // (weekly_kcal_target_invalid/_rounds_to_zero/_unsafe, propagado en la
+    // fase 9) sin que PR3 duplique ese guardarraíl.
     return invalidInput(["tdee_invalid"]);
   }
+  // Punto único de inyección del ajuste vigente: todo lo que sigue (fase 4
+  // en adelante) lee requestedWeeklyKcal, nunca baseWeeklyKcal — el ajuste
+  // ya está incorporado antes de computedIsDeficit, antes de la grasa y
+  // antes de construir la petición a PR2B. La proteína (fase 6) es la
+  // única magnitud que NUNCA lee requestedWeeklyKcal/baseWeeklyKcal.
+  const requestedWeeklyKcal = baseWeeklyKcal + 7 * currentAverageDailyEnergyAdjustmentKcal;
+  const roundedWeeklyKcalTarget = Math.round(requestedWeeklyKcal);
 
   // ─── Fase 4: coherencia del override de energyRestrictionStatus.
   const computedIsDeficit = requestedWeeklyKcal < tdeeKcal * 7;
@@ -730,6 +768,8 @@ export function planWeeklyStrategy(input: WeeklyStrategyInput): WeeklyStrategyRe
     },
     fatTargetGPerDay,
     audit: {
+      baseWeeklyKcal,
+      currentAverageDailyEnergyAdjustmentKcal,
       requestedWeeklyKcal,
       roundedWeeklyKcalTarget,
       deltaKcal: roundedWeeklyKcalTarget - requestedWeeklyKcal,

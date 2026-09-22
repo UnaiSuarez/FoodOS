@@ -107,6 +107,26 @@ export interface WeeklyStrategyInput {
   heightCm: number;
   /** TDEE ya estimado por la capa de TMB/TDEE — PR3 nunca lo calcula. */
   tdeeKcal: number;
+  /**
+   * Ajuste energético medio diario VIGENTE (ya acumulado, nunca una
+   * propuesta pendiente) — kcal/día, entero, cualquier signo, sin exigir
+   * múltiplo de 100 ni de 7. Semántica de "ajuste medio diario
+   * equivalente": modifica el total semanal en `7 × ajuste`, pero PR2B
+   * puede repartir ese total de forma NO uniforme entre los 7 días según
+   * la política de ciclado vigente (gym/descanso) — nunca se suma
+   * literalmente esta cantidad a cada día individual.
+   *
+   * Ausencia, `0` y `-0` son funcionalmente equivalentes: reproducen
+   * exactamente el comportamiento de PR3 sin este campo. El ajuste se
+   * suma al objetivo antes de construir la petición a PR2B; PR2B sigue
+   * siendo la única autoridad de reparto/redondeo. PR3 nunca aplica un
+   * clamp propio — un objetivo ajustado no positivo o inseguro termina en
+   * el invalid_input propagado de PR2B; uno por debajo de los mínimos de
+   * seguridad termina en unsupported_plan/specialist_review_required,
+   * igual que hoy sin ajuste. Ver `WeeklyStrategyEnergyAudit` para cómo
+   * se audita.
+   */
+  currentAverageDailyEnergyAdjustmentKcal?: number;
   goal: WeeklyStrategyGoalInput;
   /** Exactamente 7 — PR3 no decide fechas ni labels, las recibe. */
   days: readonly WeeklyStrategyDayInput[];
@@ -151,6 +171,7 @@ export type WeeklyStrategyInvalidReason =
   | "weight_invalid"
   | "height_invalid"
   | "tdee_invalid"
+  | "energy_adjustment_invalid"
   | "goal_invalid"
   | "days_invalid"
   | "optional_context_signal_invalid"
@@ -281,14 +302,31 @@ export type CyclingWeightDefaultReason =
   | "unclassified_day_weight_defaulted_to_rest_factor";
 
 export interface WeeklyStrategyEnergyAudit {
-  /** Suma decimal de factor×tdeeKcal sobre los 7 días reales — el valor
-      que PR3 envía a PR2B sin redondear. */
+  /** Total semanal decimal de la tabla energética (suma de factor×tdeeKcal
+      sobre los 7 días reales) ANTES de aplicar
+      `currentAverageDailyEnergyAdjustmentKcal` — con ajuste ausente, `0` o
+      `-0`, coincide exactamente con `requestedWeeklyKcal`. */
+  baseWeeklyKcal: number;
+  /** El ajuste medio diario VIGENTE tal como se recibió — `0` si el campo
+      estaba ausente, era `0` o `-0` (normalizado: nunca `-0` en este
+      campo). Representa el ajuste ACUMULADO ya vigente, nunca una
+      propuesta nueva — PR3 no lo verifica ni lo calcula, solo lo aplica y
+      lo refleja tal cual. */
+  currentAverageDailyEnergyAdjustmentKcal: number;
+  /** baseWeeklyKcal + 7×currentAverageDailyEnergyAdjustmentKcal — el
+      valor que PR3 envía a PR2B sin redondear (decimal). Con ajuste
+      ausente/0, es exactamente el mismo valor que PR3 producía antes de
+      que existiera este campo. */
   requestedWeeklyKcal: number;
   /** Math.round(requestedWeeklyKcal) — solo para auditoría/validación
       interna de PR3; PR2B redondea el mismo valor de forma autoritativa
       por su cuenta, con su propia comprobación de entero seguro. */
   roundedWeeklyKcalTarget: number;
-  /** roundedWeeklyKcalTarget - requestedWeeklyKcal. */
+  /** roundedWeeklyKcalTarget - requestedWeeklyKcal — EXCLUSIVAMENTE el
+      delta de redondeo entre esos dos campos. Nunca representa ni incluye
+      el ajuste adaptativo (`currentAverageDailyEnergyAdjustmentKcal`),
+      que ya está incorporado dentro de `requestedWeeklyKcal` antes de
+      esta resta. */
   deltaKcal: number;
   /** Banda para EVALUAR tendencia real más adelante (Adaptive
       Coordinator) — nunca una promesa de que este ajuste vaya a producir
