@@ -37,3 +37,9 @@ export { evaluateExercisePerformance } from "./exercise-performance-kernel";
 // privadas de sus kernels, probadas solo a través del resultado público.
 export { calculateWeightTrend } from "./weight-trend-kernel";
 export { calculateIntakeLoggingCoverage } from "./intake-logging-coverage-kernel";
+// Igual que PR1-PR5A: PR5B añade exactamente una función pública,
+// evaluateAdaptiveReview. Todos sus helpers (fechas, canonicalización,
+// clasificación semántica de cada señal upstream) son funciones privadas
+// de adaptive-coordinator-kernel.ts (sin `export`), probadas solo
+// indirectamente a través del resultado público de evaluateAdaptiveReview.
+export { evaluateAdaptiveReview } from "./adaptive-coordinator-kernel";
