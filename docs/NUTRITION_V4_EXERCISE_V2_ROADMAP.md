@@ -123,7 +123,7 @@ cambian esto: son tan inertes como PR1–PR3.
 | PR5A — kernels de tendencia de peso y cobertura de registro | ✅ [#139](https://github.com/UnaiSuarez/FoodOS/pull/139), fusionada por rebase | `9398f59259c0cb2699a869af4867b902d2a5f8a5` |
 | PR5B — Adaptive Coordinator | 🔲 implementación local, pura, inerte y todavía no fusionada | — |
 | Canal de ajuste energético en PR3 | 🔲 implementación local, pura, inerte y todavía no fusionada (ver "Alcance del canal de ajuste energético en PR3") | — |
-| Verificación de aplicabilidad/replan | 🔲 no iniciado; requiere el canal de ajuste de PR3 | — |
+| Verificación de aplicabilidad/replan | 🔲 implementación local, pura, inerte y todavía no fusionada (ver "Alcance de la verificación de aplicabilidad de propuestas") | — |
 | Integración en producción | 🔲 iniciativa separada y posterior, no uno de los PRs numerados | — |
 
 ## Modelo legacy diagnosticado (evidencia, `apps/web`)
@@ -506,6 +506,87 @@ ajustado-solicitado, y final autorizado por PR2B en
 integración, depender también de `currentAverageDailyEnergyAdjustmentKcal`
 — dos estrategias con el mismo perfil pero distinto ajuste vigente no
 pueden compartir versión — pero PR3 sigue sin calcular ese identificador.
+
+## Alcance de la verificación de aplicabilidad de propuestas
+
+Paso 3 de la secuencia cerrada: una única función pública,
+`evaluateAdaptiveProposalApplication`
+(`packages/engine/src/adaptive-proposal-application-kernel.ts`, contrato
+en `packages/types/src/adaptive-proposal-application.ts`). Dado una
+propuesta YA ACEPTADA de PR5B, comprueba que sigue siendo aplicable
+(no obsoleta) y, si lo es, RECALCULA (nunca aplica ni persiste) la
+estrategia candidata resultante llamando dos veces al `planWeeklyStrategy`
+real de PR3 — nunca a `planWeek`/`allocateDailyMacros` directamente, nunca
+a `evaluateAdaptiveReview`. Puro, inerte, sin persistencia, sin UI, sin
+Supabase, y sin ninguna vía de acceso a `ExercisePerformanceResult` (el
+contrato no tiene ningún campo relacionado con ejercicio, así que no
+puede otorgar crédito de calorías de entrenamiento ni estructuralmente).
+
+**Propuesta de entrada — subconjunto mínimo, nunca el contrato completo**:
+`AdaptiveProposalApplicationCandidate` (`status`, `deltaKcalPerDay`, y 5
+campos de `basis`) — gracias al tipado estructural, una
+`AdaptiveReviewAdjustmentProposal` real de PR5B sigue siendo aceptable,
+pero el contrato no promete que este kernel consuma o valide
+`evidence`/`context`/`policy`/`confidence`/etc. Cada resultado transporta
+una **copia canónica** reconstruida campo a campo tras validar en
+runtime, nunca la referencia original.
+
+**Identidad reforzada — tokens opacos + estructura como defensa
+adicional, nunca al revés**: la entrada incluye
+`currentTargetVersionId`/`currentStrategyVersionId`, comparados por
+igualdad estricta de cadenas contra `proposal.basis` (fase 3, primaria)
+ANTES que la comparación estructural de `objective`/`priority`/
+`weeklyKcalTargetInForce` ya recalculados (fase 4, defensa adicional
+frente a un adaptador que no haya bump-eado el token pese a que la
+realidad ya cambió). Las razones de ambas fases nunca se mezclan en un
+mismo resultado. Este kernel nunca genera ni interpreta los tokens — la
+generación (incluida la futura dependencia de
+`strategyVersionId` en `currentAverageDailyEnergyAdjustmentKcal`, ya
+anotada más arriba) sigue siendo responsabilidad exclusiva del adaptador.
+
+**Precedencia por fases** (nunca "invalid_input siempre gana" — solo la
+fase 1 produce esa categoría, y siempre antes de recalcular nada):
+validación estructural → estrategia actual (`planWeeklyStrategy` sin la
+propuesta) → divergencia de tokens → divergencia estructural → siguiente
+ajuste → candidata (`planWeeklyStrategy` con el ajuste) → aplicable.
+
+**Sin `derived_numeric_result_invalid` — demostrado, no asumido**: dado
+que la fase 2 ya exige que la estrategia actual sea `"ok"`, las propias
+guardas de entero seguro que PR3 (`weekly-strategy-kernel.ts`, sobre
+`baseWeeklyKcal` redondeado) y PR2B (`weekly-plan-kernel.ts`, sobre
+`requestedWeeklyKcal` redondeado) ya imponen acotan el ajuste vigente a
+menos de `Number.MAX_SAFE_INTEGER / 7 ≈ 1,29×10^15` en valor absoluto —
+catorce órdenes de magnitud por debajo de donde sumar ±100
+(`deltaKcalPerDay`) podría dejar de ser un entero seguro. Verificado con
+un barrido real contra el kernel cubriendo `tdeeKcal` extremo (hasta
+`Number.MAX_SAFE_INTEGER`/`MAX_VALUE`, ya rechazados como `tdee_invalid`
+antes de llegar a "ok"), las cinco tablas de factores cerradas (incluida
+`muscle_gain_max` banda A, factor 1.1, el mayor de todas) y una
+cancelación numérica deliberada entre `baseWeeklyKcal` y `7×ajuste`. No se
+encontró ningún caso por debajo de 7×10^15 de margen — la rama se elimina
+por demostración, no por comodidad.
+
+**Fixtures reales de `candidate_not_applicable`** (perfiles reales
+verificados con el kernel, δ real de PR5B ∈ {−100,+100}):
+transición `ok→specialist_review_required` (fat_loss_max, tdee=1560,
+70kg/165cm, 7×descanso, δ=−100) y `ok→invalid_input` por contradicción
+real de `energyRestrictionStatus` (maintain, tdee=2901, 78kg/178cm,
+override `"not_restricted"`, δ=−100). `unsupported_plan` y un total
+semanal no positivo/inseguro **no son alcanzables** mediante un único δ
+permitido desde una estrategia `ok` — verificado por barrido real (80
+combinaciones) y por la brecha de 400 kcal/día entre el piso de "ok" y el
+techo de `unsupported_plan`. Esto es una propiedad del conjunto CERRADO
+ACTUAL de tablas de factores y umbrales de seguridad de PR3, no una
+garantía eterna — si esos factores o el paso fijo de PR5B cambiaran,
+debería re-verificarse.
+
+**Frontera transaccional explícita, no resuelta por este kernel puro**:
+igualdad de tokens y coherencia estructural respecto a los datos
+recibidos, sí; que esos datos sean los últimos realmente persistidos
+entre dispositivos/sesiones, y aplicación única ante aceptación
+concurrente, no — ambas exigen lectura fresca y consumo atómico/
+idempotente en la integración (el índice único de propuesta `pending` ya
+registrado como deuda más abajo).
 
 ## Integración posterior
 
