@@ -676,6 +676,341 @@ describe("auditoría de energía — decimal vs redondeado, nunca confundidos", 
   });
 });
 
+// ─── Canal de ajuste energético — currentAverageDailyEnergyAdjustmentKcal ──
+//
+// Fixtures principales con valores LITERALES revisados a mano (verificados
+// ejecutando planWeeklyStrategy/planWeek reales durante el diseño, con un
+// script Node aparte que no forma parte del repositorio — mismo criterio
+// que los Casos A-I de arriba). planWeek/allocateDailyMacros solo se
+// invocan más abajo para comprobar la COMPOSICIÓN entre capas (que la
+// reconstrucción energética de un día coincide con su cuota), nunca como
+// fuente de la expectativa numérica principal, ya que serían las mismas
+// primitivas que usa el propio kernel bajo prueba.
+
+describe("canal de ajuste — compatibilidad: ausente, 0 y -0 son equivalentes", () => {
+  it("campo ausente -> baseWeeklyKcal===requestedWeeklyKcal, currentAverageDailyEnergyAdjustmentKcal===0", () => {
+    const result = expectOk(planWeeklyStrategy(baseInput()));
+    expect(result.audit.baseWeeklyKcal).toBe(result.audit.requestedWeeklyKcal);
+    expect(result.audit.currentAverageDailyEnergyAdjustmentKcal).toBe(0);
+    expect(Object.is(result.audit.currentAverageDailyEnergyAdjustmentKcal, -0)).toBe(false);
+    expect(result.audit.requestedWeeklyKcal).toBeCloseTo(16999.86, 6);
+    expect(result.audit.roundedWeeklyKcalTarget).toBe(17000);
+  });
+
+  it("currentAverageDailyEnergyAdjustmentKcal: 0 explícito -> idéntico a la ausencia (status/weeklyPlan/protein/fatTargetGPerDay/audit preexistente)", () => {
+    const withoutField = expectOk(planWeeklyStrategy(baseInput()));
+    const withZero = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: 0 })));
+    expect(withZero.status).toBe(withoutField.status);
+    expect(withZero.weeklyPlan).toEqual(withoutField.weeklyPlan);
+    expect(withZero.protein).toEqual(withoutField.protein);
+    expect(withZero.fatTargetGPerDay).toBe(withoutField.fatTargetGPerDay);
+    expect(withZero.audit.requestedWeeklyKcal).toBe(withoutField.audit.requestedWeeklyKcal);
+    expect(withZero.audit.roundedWeeklyKcalTarget).toBe(withoutField.audit.roundedWeeklyKcalTarget);
+    expect(withZero.audit.deltaKcal).toBe(withoutField.audit.deltaKcal);
+    expect(withZero.audit.desiredObservedRateBandPctPerWeek).toEqual(withoutField.audit.desiredObservedRateBandPctPerWeek);
+    expect(withZero.audit.cyclingWeightDefaults).toEqual(withoutField.audit.cyclingWeightDefaults);
+    expect(withZero.audit.baseWeeklyKcal).toBe(withoutField.audit.baseWeeklyKcal);
+    expect(withZero.audit.currentAverageDailyEnergyAdjustmentKcal).toBe(0);
+  });
+
+  it("currentAverageDailyEnergyAdjustmentKcal: -0 -> funcionalmente idéntico a 0/ausente, auditado como +0 (nunca -0)", () => {
+    const withoutField = expectOk(planWeeklyStrategy(baseInput()));
+    const withNegZero = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: -0 })));
+    expect(withNegZero.audit.currentAverageDailyEnergyAdjustmentKcal).toBe(0);
+    expect(Object.is(withNegZero.audit.currentAverageDailyEnergyAdjustmentKcal, -0)).toBe(false);
+    expect(withNegZero.audit.requestedWeeklyKcal).toBe(withoutField.audit.requestedWeeklyKcal);
+    expect(withNegZero.weeklyPlan).toEqual(withoutField.weeklyPlan);
+    expect(withNegZero.protein).toEqual(withoutField.protein);
+  });
+});
+
+describe("canal de ajuste — ±100 kcal/día (literales revisados a mano, perfil fat_loss_lean 78kg/178cm/tdee2901/4 strength+3 rest)", () => {
+  it("+100 kcal/día -> total semanal +700 exacto (solicitado y redondeado), promedio equivalente +100/día, reparto diario NO uniforme", () => {
+    const base = expectOk(planWeeklyStrategy(baseInput()));
+    const result = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: 100 })));
+    expect(base.audit.requestedWeeklyKcal).toBeCloseTo(16999.86, 6);
+    expect(base.audit.roundedWeeklyKcalTarget).toBe(17000);
+    expect(result.audit.baseWeeklyKcal).toBeCloseTo(16999.86, 6);
+    expect(result.audit.currentAverageDailyEnergyAdjustmentKcal).toBe(100);
+    expect(result.audit.requestedWeeklyKcal).toBeCloseTo(17699.86, 6);
+    expect(result.audit.roundedWeeklyKcalTarget).toBe(17700);
+    // Cambio exacto de +700 en el total semanal, solicitado y redondeado:
+    expect(result.audit.requestedWeeklyKcal - base.audit.requestedWeeklyKcal).toBeCloseTo(700, 6);
+    expect(result.audit.roundedWeeklyKcalTarget - base.audit.roundedWeeklyKcalTarget).toBe(700);
+    // Promedio semanal equivalente de +100 kcal/día:
+    expect((result.audit.requestedWeeklyKcal - base.audit.requestedWeeklyKcal) / 7).toBeCloseTo(100, 9);
+    // Reparto diario real (literal, verificado con planWeek durante el diseño)
+    // — PR2B conserva el patrón de ciclado (4 días de gimnasio con peso
+    // 0.85, 3 de descanso con peso 0.82): ningún día cambia exactamente
+    // +100, aunque la suma semanal sí sea exacta.
+    const baseShares = base.weeklyPlan.days.map((d) => d.distributedKcalTarget);
+    const shares = result.weeklyPlan.days.map((d) => d.distributedKcalTarget);
+    expect(baseShares).toEqual([2466, 2466, 2466, 2466, 2379, 2379, 2378]);
+    expect(shares).toEqual([2568, 2567, 2567, 2567, 2477, 2477, 2477]);
+    const perDayDiffs = shares.map((s, i) => s - baseShares[i]);
+    expect(perDayDiffs).toEqual([102, 101, 101, 101, 98, 98, 99]);
+    expect(perDayDiffs.some((d) => d !== 100)).toBe(true);
+    expect(perDayDiffs.reduce((a, b) => a + b, 0)).toBe(700);
+  });
+
+  it("-100 kcal/día -> total semanal -700 exacto, promedio equivalente -100/día, reparto diario tampoco uniforme", () => {
+    const base = expectOk(planWeeklyStrategy(baseInput()));
+    const result = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: -100 })));
+    expect(result.audit.requestedWeeklyKcal).toBeCloseTo(16299.86, 6);
+    expect(result.audit.roundedWeeklyKcalTarget).toBe(16300);
+    expect(base.audit.roundedWeeklyKcalTarget - result.audit.roundedWeeklyKcalTarget).toBe(700);
+    expect((result.audit.requestedWeeklyKcal - base.audit.requestedWeeklyKcal) / 7).toBeCloseTo(-100, 9);
+    const shares = result.weeklyPlan.days.map((d) => d.distributedKcalTarget);
+    expect(shares).toEqual([2365, 2364, 2364, 2364, 2281, 2281, 2281]);
+    const baseShares = base.weeklyPlan.days.map((d) => d.distributedKcalTarget);
+    const perDayDiffs = shares.map((s, i) => s - baseShares[i]);
+    expect(perDayDiffs.some((d) => d !== -100)).toBe(true);
+    expect(perDayDiffs.reduce((a, b) => a + b, 0)).toBe(-700);
+  });
+
+  it("acumulado -200 kcal/día (equivalente a dos aceptaciones de -100) -> un único entero", () => {
+    const result = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: -200 })));
+    expect(result.audit.requestedWeeklyKcal).toBeCloseTo(15599.86, 6);
+    expect(result.audit.roundedWeeklyKcalTarget).toBe(15600);
+    expect(result.weeklyPlan.days.map((d) => d.distributedKcalTarget)).toEqual([2263, 2263, 2263, 2262, 2183, 2183, 2183]);
+  });
+
+  it("entero NO múltiplo de 100 (-37) -> aceptado sin razón de invalidez; PR3 no impone el paso fijo de PR5B", () => {
+    const result = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: -37 })));
+    expect(result.audit.currentAverageDailyEnergyAdjustmentKcal).toBe(-37);
+    expect(result.audit.requestedWeeklyKcal).toBeCloseTo(16999.86 - 259, 6);
+    expect(result.audit.roundedWeeklyKcalTarget).toBe(16741);
+  });
+});
+
+describe("canal de ajuste — deltaKcal nunca representa el ajuste adaptativo", () => {
+  it("deltaKcal es EXCLUSIVAMENTE el delta de redondeo, sea cual sea el ajuste vigente", () => {
+    const zero = expectOk(planWeeklyStrategy(baseInput()));
+    const plus100 = expectOk(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: 100 })));
+    expect(zero.audit.deltaKcal).toBeCloseTo(zero.audit.roundedWeeklyKcalTarget - zero.audit.requestedWeeklyKcal, 9);
+    expect(plus100.audit.deltaKcal).toBeCloseTo(plus100.audit.roundedWeeklyKcalTarget - plus100.audit.requestedWeeklyKcal, 9);
+    // El ajuste (+700 kcal/semana) no aparece en deltaKcal — solo en requestedWeeklyKcal:
+    expect(Math.abs(plus100.audit.deltaKcal)).toBeLessThan(1);
+    expect(Math.abs(zero.audit.deltaKcal)).toBeLessThan(1);
+  });
+});
+
+describe("canal de ajuste — validación del campo (energy_adjustment_invalid, ordenado justo tras tdee_invalid)", () => {
+  it("no numérico -> invalid_input/energy_adjustment_invalid", () => {
+    const input = { ...baseInput(), currentAverageDailyEnergyAdjustmentKcal: "cien" } as unknown as WeeklyStrategyInput;
+    expect(planWeeklyStrategy(input)).toEqual({ status: "invalid_input", reasons: ["energy_adjustment_invalid"] });
+  });
+  it("NaN -> invalid_input/energy_adjustment_invalid", () => {
+    expect(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: Number.NaN }))).toEqual({
+      status: "invalid_input",
+      reasons: ["energy_adjustment_invalid"],
+    });
+  });
+  it("Infinity -> invalid_input/energy_adjustment_invalid", () => {
+    expect(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: Number.POSITIVE_INFINITY }))).toEqual({
+      status: "invalid_input",
+      reasons: ["energy_adjustment_invalid"],
+    });
+  });
+  it("decimal no entero (100.5) -> invalid_input/energy_adjustment_invalid", () => {
+    expect(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: 100.5 }))).toEqual({
+      status: "invalid_input",
+      reasons: ["energy_adjustment_invalid"],
+    });
+  });
+  it("Number.MAX_SAFE_INTEGER + 1 (ya no es entero seguro) -> invalid_input/energy_adjustment_invalid", () => {
+    expect(planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: Number.MAX_SAFE_INTEGER + 1 }))).toEqual({
+      status: "invalid_input",
+      reasons: ["energy_adjustment_invalid"],
+    });
+  });
+  it("Number.MAX_SAFE_INTEGER como valor crudo -> el CAMPO en sí pasa la validación (nunca energy_adjustment_invalid); el resultado final se decide más abajo, en la multiplicación ×7, por un mecanismo distinto (ver el describe siguiente)", () => {
+    const result = planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: Number.MAX_SAFE_INTEGER }));
+    if (result.status === "invalid_input") {
+      expect(result.reasons).not.toContain("energy_adjustment_invalid");
+    }
+  });
+  it("tdeeKcal Y el ajuste inválidos a la vez -> ambas razones, en el orden canónico exacto [tdee_invalid, energy_adjustment_invalid]", () => {
+    const input = { ...baseInput({ tdeeKcal: -100 }), currentAverageDailyEnergyAdjustmentKcal: "x" } as unknown as WeeklyStrategyInput;
+    expect(planWeeklyStrategy(input)).toEqual({ status: "invalid_input", reasons: ["tdee_invalid", "energy_adjustment_invalid"] });
+  });
+});
+
+describe("canal de ajuste — multiplicación por 7 que deja de ser segura (delegado a PR2B, sin guardarraíl propio en PR3)", () => {
+  it("Number.MAX_SAFE_INTEGER kcal/día: el campo es válido en sí mismo, pero ×7 produce un total semanal inseguro; PR2B lo rechaza y PR3 lo propaga íntegro", () => {
+    const result = planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: Number.MAX_SAFE_INTEGER }));
+    if (result.status !== "invalid_input") throw new Error(`esperado invalid_input, recibido ${JSON.stringify(result)}`);
+    expect(result.reasons).toEqual(["propagated_from_weekly_plan"]);
+    expect(result.weeklyPlanVerdict).toBeDefined();
+    const verdict = result.weeklyPlanVerdict as WeeklyPlanInvalidInput;
+    if (verdict.scope !== "request") throw new Error("esperado scope request");
+    expect(verdict.reasons).toContain("weekly_kcal_target_unsafe");
+  });
+});
+
+describe("canal de ajuste — total ajustado cero o negativo (delegado a PR2B, sin clamp)", () => {
+  it("ajuste que cancela exactamente el propio TDEE (maintain, 50kg/155cm/tdee1210, ajuste -1210/día) -> total ajustado 0 exacto -> invalid_input propagado, weekly_kcal_target_invalid", () => {
+    const input = baseInput({
+      weightKg: 50,
+      heightCm: 155,
+      tdeeKcal: 1210,
+      goal: MAINTAIN_GOAL,
+      days: week(["rest", "rest", "rest", "rest", "rest", "rest", "rest"]),
+      currentAverageDailyEnergyAdjustmentKcal: -1210,
+    });
+    const result = planWeeklyStrategy(input);
+    if (result.status !== "invalid_input") throw new Error(`esperado invalid_input, recibido ${JSON.stringify(result)}`);
+    expect(result.reasons).toEqual(["propagated_from_weekly_plan"]);
+    const verdict = result.weeklyPlanVerdict as WeeklyPlanInvalidInput;
+    if (verdict.scope !== "request") throw new Error("esperado scope request");
+    expect(verdict.reasons).toContain("weekly_kcal_target_invalid");
+  });
+
+  it("ajuste más agresivo que lleva el total a un valor NEGATIVO -> mismo mecanismo, invalid_input propagado", () => {
+    const input = baseInput({
+      weightKg: 50,
+      heightCm: 155,
+      tdeeKcal: 1210,
+      goal: MAINTAIN_GOAL,
+      days: week(["rest", "rest", "rest", "rest", "rest", "rest", "rest"]),
+      currentAverageDailyEnergyAdjustmentKcal: -1500,
+    });
+    const result = planWeeklyStrategy(input);
+    if (result.status !== "invalid_input") throw new Error(`esperado invalid_input, recibido ${JSON.stringify(result)}`);
+    const verdict = result.weeklyPlanVerdict as WeeklyPlanInvalidInput;
+    if (verdict.scope !== "request") throw new Error("esperado scope request");
+    expect(verdict.reasons).toContain("weekly_kcal_target_invalid");
+  });
+});
+
+describe("canal de ajuste — cruces de estado energético y coherencia del override (fixtures reales, verificadas con el kernel modificado)", () => {
+  it("maintain -> déficit (ajuste -300/día): sin override, deriva solo -> ok", () => {
+    const result = planWeeklyStrategy(baseInput({ goal: MAINTAIN_GOAL, currentAverageDailyEnergyAdjustmentKcal: -300 }));
+    expect(result.status).toBe("ok");
+  });
+
+  it("maintain -> déficit (ajuste -300/día): override 'not_restricted' YA NO coherente tras el ajuste -> invalid_input/energy_restriction_override_contradicts_computed_deficit", () => {
+    // Sin ajuste, el mismo override es coherente (maintain no es déficit):
+    const withoutAdjustment = planWeeklyStrategy(baseInput({ goal: MAINTAIN_GOAL, energyRestrictionStatus: "not_restricted" }));
+    expect(withoutAdjustment.status).toBe("ok");
+    // Con el ajuste que cruza a déficit real, el MISMO override (que describe
+    // el estado BASE, no el ya ajustado) queda desactualizado:
+    const result = planWeeklyStrategy(
+      baseInput({ goal: MAINTAIN_GOAL, energyRestrictionStatus: "not_restricted", currentAverageDailyEnergyAdjustmentKcal: -300 }),
+    );
+    expect(result).toEqual({ status: "invalid_input", reasons: ["energy_restriction_override_contradicts_computed_deficit"] });
+  });
+
+  it("déficit -> no-déficit (fat_loss_lean, ajuste +600/día): sin override, deriva solo -> ok", () => {
+    const result = planWeeklyStrategy(baseInput({ currentAverageDailyEnergyAdjustmentKcal: 600 }));
+    expect(result.status).toBe("ok");
+  });
+
+  it("déficit -> no-déficit (fat_loss_lean, ajuste +600/día): override 'confirmed_current' YA NO coherente tras el ajuste -> invalid_input/energy_restriction_override_contradicts_computed_surplus_or_maintenance", () => {
+    const result = planWeeklyStrategy(baseInput({ energyRestrictionStatus: "confirmed_current", currentAverageDailyEnergyAdjustmentKcal: 600 }));
+    expect(result).toEqual({ status: "invalid_input", reasons: ["energy_restriction_override_contradicts_computed_surplus_or_maintenance"] });
+  });
+});
+
+describe("canal de ajuste — proteína invariante ante cualquier ajuste, incluso cruzando de estado energético (misma base proteica)", () => {
+  it("mismo objetivo/perfil (maintain, 78kg/178cm/tdee2901, 15% DXA), ajuste 0 vs +150/día -> protein.targetGPerDay bit a bit idéntico", () => {
+    const overrides = { goal: MAINTAIN_GOAL, bodyFatPct: 15, bodyFatSource: "dxa" as const };
+    const zero = expectOk(planWeeklyStrategy(baseInput(overrides)));
+    const plus150 = expectOk(planWeeklyStrategy(baseInput({ ...overrides, currentAverageDailyEnergyAdjustmentKcal: 150 })));
+    expect(zero.protein.targetGPerDay).toBeCloseTo(132.6, 6);
+    expect(plus150.protein.targetGPerDay).toBe(zero.protein.targetGPerDay);
+    expect(plus150.protein.base).toBe(zero.protein.base);
+    expect(plus150.protein.baseKg).toBe(zero.protein.baseKg);
+    expect(plus150.protein.ffmBasis).toBe(zero.protein.ffmBasis);
+  });
+
+  it("mismo perfil, ajuste 0 vs -300/día que cruza de mantenimiento a déficit real -> protein.targetGPerDay sigue idéntico", () => {
+    const overrides = { goal: MAINTAIN_GOAL, bodyFatPct: 15, bodyFatSource: "dxa" as const };
+    const zero = expectOk(planWeeklyStrategy(baseInput(overrides)));
+    const minus300 = expectOk(planWeeklyStrategy(baseInput({ ...overrides, currentAverageDailyEnergyAdjustmentKcal: -300 })));
+    expect(minus300.protein.targetGPerDay).toBe(zero.protein.targetGPerDay);
+  });
+});
+
+describe("canal de ajuste — grasa proporcional al objetivo ajustado, carbohidratos residuales; identidad energética (positivo)", () => {
+  it("+150 kcal/día (maintain, 78kg/178cm/tdee2901, 15% DXA) -> grasa escala, protein invariante, identidad 4·prot+9·grasa+4·carbos=distributedKcalTarget", () => {
+    const overrides = { goal: MAINTAIN_GOAL, bodyFatPct: 15, bodyFatSource: "dxa" as const };
+    const base = expectOk(planWeeklyStrategy(baseInput(overrides)));
+    const result = expectOk(planWeeklyStrategy(baseInput({ ...overrides, currentAverageDailyEnergyAdjustmentKcal: 150 })));
+    expect(base.fatTargetGPerDay).toBeCloseTo(90.25333333333334, 6);
+    expect(result.fatTargetGPerDay).toBeCloseTo(94.92000000000002, 6);
+    expect(result.protein.targetGPerDay).toBe(base.protein.targetGPerDay);
+    const day0 = result.weeklyPlan.days[0];
+    if (day0.allocation.status !== "ok") throw new Error("esperado ok");
+    expect(day0.allocation.protein.assignedG).toBe(133);
+    expect(day0.allocation.fat.assignedG).toBe(95);
+    expect(day0.allocation.carbs.assignedG).toBe(416);
+    expect(day0.distributedKcalTarget).toBe(3051);
+    // Composición entre capas (PR2A/PR2B reales, no recalculado aparte):
+    const reconstructed = 4 * day0.allocation.protein.assignedG + 9 * day0.allocation.fat.assignedG + 4 * day0.allocation.carbs.assignedG;
+    expect(reconstructed).toBe(3051);
+    expect(reconstructed).toBe(day0.distributedKcalTarget);
+  });
+});
+
+describe("canal de ajuste — sin crédito de ejercicio ni interpretación del ciclado declarado", () => {
+  it("el ajuste no modifica cyclingWeightDefaults ni depende de las labels de día", () => {
+    const withCardio = baseInput({ days: week(["cardio", "cardio", "strength", "strength", "rest", "rest", "rest"]) });
+    const zero = expectOk(planWeeklyStrategy(withCardio));
+    const adjusted = expectOk(planWeeklyStrategy({ ...withCardio, currentAverageDailyEnergyAdjustmentKcal: 200 }));
+    expect(adjusted.audit.cyclingWeightDefaults).toEqual(zero.audit.cyclingWeightDefaults);
+  });
+});
+
+describe("canal de ajuste — caso marginal de seguridad: specialist_review_required -> unsupported_plan bajo ajuste agresivo (fixture real, no derivada)", () => {
+  const marginalInput = {
+    weightKg: 50,
+    heightCm: 155,
+    age: 60,
+    sex: "female" as const,
+    tdeeKcal: 1210,
+    goal: priorityGoal("fat_loss_max"),
+    days: week(["rest", "rest", "rest", "rest", "rest", "rest", "rest"]),
+  };
+
+  it("sin ajuste -> specialist_review_required, minKcalDetected=968 (banda A, factor plano 0.8)", () => {
+    const result = planWeeklyStrategy(marginalInput);
+    if (result.status !== "specialist_review_required") throw new Error(`esperado specialist_review_required, recibido ${JSON.stringify(result)}`);
+    expect(result.audit.minKcalDetected).toBe(968);
+    expect(result.audit.reasons).toEqual(["low_energy_diet_day_present"]);
+  });
+
+  it("ajuste -100/día -> SIGUE en specialist_review_required, pero minKcalDetected baja a 868 (la auditoría refleja el ajuste sin código nuevo)", () => {
+    const result = planWeeklyStrategy({ ...marginalInput, currentAverageDailyEnergyAdjustmentKcal: -100 });
+    if (result.status !== "specialist_review_required") throw new Error(`esperado specialist_review_required, recibido ${JSON.stringify(result)}`);
+    expect(result.audit.minKcalDetected).toBe(868);
+    expect(result.audit.reasons).toEqual(["low_energy_diet_day_present"]);
+  });
+
+  it("ajuste -300/día -> RECLASIFICADO a unsupported_plan, minKcalDetected=668 (cruza el umbral de 800, sin ningún guardarraíl nuevo en PR3)", () => {
+    const result = planWeeklyStrategy({ ...marginalInput, currentAverageDailyEnergyAdjustmentKcal: -300 });
+    if (result.status !== "unsupported_plan") throw new Error(`esperado unsupported_plan, recibido ${JSON.stringify(result)}`);
+    expect(result.audit.minKcalDetected).toBe(668);
+    expect(result.audit.reasons).toEqual(["very_low_energy_diet_day_present", "weekly_average_below_70pct_tdee"]);
+  });
+});
+
+describe("canal de ajuste — inmutabilidad y determinismo", () => {
+  it("el input y su currentAverageDailyEnergyAdjustmentKcal permanecen intactos tras la llamada", () => {
+    const input = baseInput({ currentAverageDailyEnergyAdjustmentKcal: -150 });
+    const snapshot = JSON.parse(JSON.stringify(input));
+    planWeeklyStrategy(input);
+    expect(input).toEqual(snapshot);
+  });
+
+  it("misma entrada con ajuste -> misma salida, profundamente idéntica", () => {
+    const input = baseInput({ currentAverageDailyEnergyAdjustmentKcal: 250 });
+    const a = planWeeklyStrategy(input);
+    const b = planWeeklyStrategy(JSON.parse(JSON.stringify(input)));
+    expect(a).toEqual(b);
+  });
+});
+
 // ─── API pública del barrel ─────────────────────────────────────────
 
 describe("API público del barrel — packages/engine/src/index.ts", () => {
