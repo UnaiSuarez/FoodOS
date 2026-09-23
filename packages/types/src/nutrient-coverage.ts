@@ -132,7 +132,11 @@ export interface DailyIntegrityEvaluated {
   /** Días con al menos una entrada, donde CADA valor nutricional de CADA
    *  entrada de ese día es `"legacy_unlabeled"`. */
   legacyUnlabeledDays: number;
-  /** Días no `unloggedDays` ni `legacyUnlabeledDays` donde la fracción
+  /** Días no `unloggedDays` ni `legacyUnlabeledDays` donde CUALQUIERA de
+   *  estas dos condiciones se cumple: (a) al menos una entrada tiene un
+   *  kcal no ponderable — ausente, `"unknown"` o `"legacy_unlabeled"`,
+   *  regla conservadora incondicional, nunca se evalúa la fracción
+   *  ponderada de las demás entradas para decidir esto; o (b) la fracción
    *  ponderada por kcal de entradas con `quantityConfidence: "low"` o
    *  `energyConsistency: "mismatch"` supera `provisionalKcalFractionThreshold`. */
   provisionalDays: number;

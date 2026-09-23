@@ -270,13 +270,38 @@ function validateRequest(input: unknown): DailyIntegrityInvalidInput | Validated
 
 // ─── Cálculo ──────────────────────────────────────────────────────────────
 
+/** Un kcal cuya MAGNITUD no está verificada — ausente, "unknown", o
+    "legacy_unlabeled" (existe un número, pero nada garantiza que
+    represente una medición real: puede venir de un "?? 0" de una fuente
+    externa o de datos anteriores al etiquetado de procedencia) — nunca se
+    usa como peso. Tener un número no hace fiable su magnitud. */
+function isWeighableKcal(value: NutrientValue | undefined): boolean {
+  return value != null && value.status !== "unknown" && value.status !== "legacy_unlabeled";
+}
+
 /** kcal de una entrada, usada como peso para ponderar cuánto representa esa
     entrada dentro del día — nunca para juzgar la fiabilidad del propio
-    kcal. Una entrada sin kcal conocida (ausente o "unknown") pesa 0: no
-    puede ayudar ni perjudicar ninguna fracción de ese día. */
+    kcal. Una entrada cuyo kcal no es ponderable (ver isWeighableKcal) pesa
+    0 en esta suma — pero eso NO significa que el día pueda tratarse como
+    si esa entrada no existiera: ver isUnweighableEntry, que la fuerza a
+    `provisionalDays` en vez de dejarla desaparecer sin más. */
 function entryWeight(entry: ValidatedEntry): number {
   const kcal = entry.nutrients.kcal;
-  return kcal?.value ?? 0;
+  return isWeighableKcal(kcal) ? (kcal!.value ?? 0) : 0;
+}
+
+/** Una entrada cuya contribución al día no puede pesarse (ver
+    isWeighableKcal). Corrección de un fallo real: si esta entrada
+    simplemente pesara 0 y se dejara fuera del denominador como si no
+    existiera, otra entrada del mismo día con macros conocidas podría
+    hacer que el día pareciera 100% fiable — pese a que la comida de
+    magnitud desconocida podría representar cualquier fracción real del
+    día. La regla conservadora es la contraria: la presencia de UNA sola
+    entrada así basta para que el día NUNCA cuente como fiable para NINGÚN
+    nutriente, y para que cuente como `provisionalDays` sin más
+    condiciones — nunca la reduce ni la sustituye, solo la fuerza. */
+function isUnweighableEntry(entry: ValidatedEntry): boolean {
+  return !isWeighableKcal(entry.nutrients.kcal);
 }
 
 function isReliableNutrientValue(value: NutrientValue | undefined): boolean {
@@ -325,6 +350,20 @@ function computeEvaluated(request: ValidatedRequest): DailyIntegrityEvaluated {
     if (hasAnyNutrientValue && allLegacy) {
       legacyUnlabeledDays += 1;
       continue; // legacy_unlabeled y provisional son mutuamente excluyentes para el día
+    }
+
+    // Regla conservadora explícita: si CUALQUIER entrada del día tiene un
+    // kcal no ponderable (ausente, "unknown" o "legacy_unlabeled"), el día
+    // se fuerza a provisional sin más condiciones y NO puede contar como
+    // fiable para ningún nutriente esta iteración — con independencia de
+    // lo que digan las entradas restantes, que sí son ponderables. La
+    // fracción ponderada de esas otras entradas nunca se calcula para
+    // decidir fiabilidad ese día: sería precisamente el error que esta
+    // regla corrige (una comida de tamaño desconocido no debe poder
+    // "desaparecer" del denominador).
+    if (dayEntries.some(isUnweighableEntry)) {
+      provisionalDays += 1;
+      continue;
     }
 
     const totalWeight = assertFinite(dayEntries.reduce((sum, entry) => sum + entryWeight(entry), 0));
@@ -391,8 +430,14 @@ function computeEvaluated(request: ValidatedRequest): DailyIntegrityEvaluated {
     valores `known_nonzero`/`known_zero` con `foodStateConfidence`
     aceptable. windowDays nunca se reduce: un día sin entradas fiables
     (o sin entradas en absoluto) sigue ocupando un lugar en el
-    denominador. No decide ningún umbral por su cuenta más allá de los que
-    recibe como parámetro — ver nutrient-coverage.ts. */
+    denominador. Un día con al menos una entrada cuyo kcal no es
+    ponderable (ausente, "unknown" o "legacy_unlabeled" — ver
+    isWeighableKcal) nunca cuenta como fiable para ningún nutriente y
+    siempre cuenta como `provisionalDays`, sin importar cuánto respalden
+    las demás entradas de ese día: una comida de magnitud desconocida no
+    debe poder "desaparecer" del denominador. No decide ningún umbral por
+    su cuenta más allá de los que recibe como parámetro — ver
+    nutrient-coverage.ts. */
 export function evaluateNutrientCoverage(input: DailyIntegrityWindowInput): DailyIntegrityResult {
   const validated = validateRequest(input);
   if ("status" in validated) return validated;

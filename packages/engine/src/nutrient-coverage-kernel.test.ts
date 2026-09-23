@@ -323,6 +323,82 @@ describe("regla 2 — la fiabilidad exige NutrientStatus known_* Y foodStateConf
 
 // ─── Regla 3 (pedida explícitamente) ────────────────────────────────────────
 
+describe("corrección — un kcal no ponderable (ausente/unknown/legacy_unlabeled) nunca deja que el día parezca más fiable ni menos provisional", () => {
+  it("bug reportado: una comida de kcal desconocida junto a otra de 500 kcal con grasa conocida NO puede dar un día 100% fiable para grasa", () => {
+    const unweighableMeal = entry("2026-01-03", { fat: nv("known_nonzero", 15) }, { foodStateConfidence: "confirmed" }); // sin kcal en absoluto
+    const knownMeal = entry("2026-01-03", { kcal: nv("known_nonzero", 500), fat: nv("known_nonzero", 20) }, { foodStateConfidence: "confirmed" });
+    const result = expectEvaluated(
+      evaluateNutrientCoverage(
+        windowInput([unweighableMeal, knownMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07", dailyReliabilityThreshold: 1 }),
+      ),
+    );
+    expect(coverageOf(result, "fat").daysWithReliableData).toBe(0); // NUNCA 1/1 = 100%
+  });
+
+  it("el mismo bug con kcal explícitamente 'unknown' (no solo ausente) en vez de otra entrada más grande", () => {
+    const unweighableMeal = entry("2026-01-03", { kcal: nv("unknown", null) });
+    const knownMeal = entry("2026-01-03", { kcal: nv("known_nonzero", 500), fat: nv("known_nonzero", 20) }, { foodStateConfidence: "confirmed" });
+    const result = expectEvaluated(
+      evaluateNutrientCoverage(
+        windowInput([unweighableMeal, knownMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07", dailyReliabilityThreshold: 1 }),
+      ),
+    );
+    expect(coverageOf(result, "fat").daysWithReliableData).toBe(0);
+  });
+
+  it("ese mismo día se cuenta SIEMPRE en provisionalDays, sin condiciones adicionales", () => {
+    const unweighableMeal = entry("2026-01-03", { fat: nv("known_nonzero", 15) });
+    const knownMeal = entry("2026-01-03", { kcal: nv("known_nonzero", 500), fat: nv("known_nonzero", 20) }, { foodStateConfidence: "confirmed" });
+    const result = expectEvaluated(
+      evaluateNutrientCoverage(windowInput([unweighableMeal, knownMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07" })),
+    );
+    expect(result.provisionalDays).toBe(1);
+  });
+
+  it("la entrada no ponderable NO debe hacer que el día parezca MENOS provisional: sin ella el día no era provisional; con ella, sí", () => {
+    const knownMeal = entry("2026-01-03", { kcal: nv("known_nonzero", 500), fat: nv("known_nonzero", 20) }, {
+      foodStateConfidence: "confirmed",
+      quantityConfidence: "high",
+      energyConsistency: "match",
+    });
+    const withoutUnweighable = expectEvaluated(
+      evaluateNutrientCoverage(windowInput([knownMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07" })),
+    );
+    expect(withoutUnweighable.provisionalDays).toBe(0); // día "limpio" por sí solo
+
+    const unweighableMeal = entry("2026-01-03", { fat: nv("known_nonzero", 15) });
+    const withUnweighable = expectEvaluated(
+      evaluateNutrientCoverage(windowInput([knownMeal, unweighableMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07" })),
+    );
+    expect(withUnweighable.provisionalDays).toBe(1); // añadirla SOLO puede subir la cautela, nunca bajarla
+  });
+
+  it("una kcal 'legacy_unlabeled' usada como peso: tener un número no hace fiable su magnitud — mismo tratamiento que ausente/unknown", () => {
+    // kcal legacy_unlabeled en una entrada, pero NO todo el día es legacy
+    // (la otra entrada es known_nonzero) — no debe caer en legacyUnlabeledDays,
+    // debe caer en la nueva regla de "no ponderable".
+    const legacyKcalMeal = entry("2026-01-03", { kcal: nv("legacy_unlabeled", 500) });
+    const knownMeal = entry("2026-01-03", { kcal: nv("known_nonzero", 300), fat: nv("known_nonzero", 20) }, { foodStateConfidence: "confirmed" });
+    const result = expectEvaluated(
+      evaluateNutrientCoverage(
+        windowInput([legacyKcalMeal, knownMeal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07", dailyReliabilityThreshold: 1 }),
+      ),
+    );
+    expect(result.legacyUnlabeledDays).toBe(0); // no es el caso "todo el día es legacy"
+    expect(result.provisionalDays).toBe(1); // pero SÍ cae en la regla nueva
+    expect(coverageOf(result, "fat").daysWithReliableData).toBe(0); // y no cuenta como fiable
+  });
+
+  it("un día donde TODAS las entradas tienen kcal ponderable (known_nonzero/known_zero/estimated/recipe_derived/imputed) no activa la regla nueva", () => {
+    const estimatedKcal = entry("2026-01-03", { kcal: nv("estimated", 450), fat: nv("known_nonzero", 20) }, { foodStateConfidence: "confirmed" });
+    const result = expectEvaluated(
+      evaluateNutrientCoverage(windowInput([estimatedKcal], { startDateKey: "2026-01-01", endDateKey: "2026-01-07", dailyReliabilityThreshold: 1 })),
+    );
+    expect(result.provisionalDays).toBe(0);
+    expect(coverageOf(result, "fat").daysWithReliableData).toBe(1);
+  });
+});
+
 describe("regla 3 — windowDays nunca se reduce; un día sin entradas fiables permanece en el denominador; filtrar no infla la cobertura", () => {
   it("windowDays se deriva SOLO del rango de fechas, nunca del número de entradas recibidas", () => {
     const manyEntriesOneDay = Array.from({ length: 50 }, (_, i) =>
@@ -474,13 +550,16 @@ describe("perNutrient siempre informa las 7 claves, incluso si ninguna entrada l
 
 // ─── Día sin ningún nutriente reportado — no es legacy_unlabeled ───────────
 
-describe("un día con entradas pero sin ningún NutrientValue en absoluto no es legacy_unlabeled ni cuenta como fiable", () => {
+describe("un día con entradas pero sin ningún NutrientValue en absoluto no es legacy_unlabeled — y, tras la corrección, sí es provisional (kcal ausente es no ponderable)", () => {
   it("nutrients: {} en la única entrada del día", () => {
     const result = expectEvaluated(
       evaluateNutrientCoverage(windowInput([entry("2026-01-03", {})], { startDateKey: "2026-01-01", endDateKey: "2026-01-07" })),
     );
     expect(result.legacyUnlabeledDays).toBe(0);
-    expect(result.provisionalDays).toBe(0);
+    // Corrección: sin kcal en absoluto, la entrada es "no ponderable" —
+    // ver isUnweighableEntry — así que el día se fuerza a provisionalDays
+    // en vez de quedar en un cuarto estado sin nombre.
+    expect(result.provisionalDays).toBe(1);
     for (const row of result.perNutrient) expect(row.daysWithReliableData).toBe(0);
   });
 });
@@ -566,7 +645,9 @@ describe("barrel — solo evaluateNutrientCoverage es pública desde este kernel
     "NonFiniteDerivedValueError",
     "assertFinite",
     "validateRequest",
+    "isWeighableKcal",
     "entryWeight",
+    "isUnweighableEntry",
     "isReliableNutrientValue",
     "isReliableFoodState",
     "computeEvaluated",
