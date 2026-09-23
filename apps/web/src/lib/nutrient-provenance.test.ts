@@ -4,6 +4,7 @@ import {
   estimatedStatusFromValue,
   extractDeclaredState,
   knownStatusFromValue,
+  legacyOrUnknown,
   localCatalogStatusFromValue,
   manualStatusFromValue,
   offHasSeparatePreparedBasis,
@@ -167,6 +168,25 @@ describe("resolveUsdaStatus", () => {
 
   it("explícitamente 0 → known_zero, no ausencia", () => {
     expect(resolveUsdaStatus(0)).toBe("known_zero");
+  });
+});
+
+describe("legacyOrUnknown — reconstrucción al cargar datos previos a esta entrega", () => {
+  it("un status guardado explícito se respeta tal cual, sea el que sea", () => {
+    expect(legacyOrUnknown("known_nonzero", 50)).toBe("known_nonzero");
+    expect(legacyOrUnknown("estimated", 50)).toBe("estimated");
+  });
+
+  it("sin status guardado pero con número presente → legacy_unlabeled, nunca known_*", () => {
+    expect(legacyOrUnknown(undefined, 50)).toBe("legacy_unlabeled");
+  });
+
+  it("sin status guardado y un cero presente → también legacy_unlabeled, no known_zero", () => {
+    expect(legacyOrUnknown(undefined, 0)).toBe("legacy_unlabeled");
+  });
+
+  it("ni status ni número presentes → unknown", () => {
+    expect(legacyOrUnknown(undefined, undefined)).toBe("unknown");
   });
 });
 

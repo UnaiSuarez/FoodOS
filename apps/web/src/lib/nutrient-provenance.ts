@@ -86,6 +86,22 @@ export function localCatalogStatusFromValue(value: number | null | undefined): N
 }
 
 /**
+ * Reconstruye el status de un campo cargado desde almacenamiento que
+ * puede venir de datos anteriores a esta entrega (sin `nutrientStatus`
+ * guardado): si el registro ya trae un status explícito, se respeta tal
+ * cual. Si no, pero el NÚMERO sí está presente, se trata como dato
+ * heredado sin procedencia verificable — mismo criterio que el catálogo
+ * local, nunca `known_*`. Si ni el status ni el número están presentes,
+ * es `"unknown"`. Pensado para el segundo punto de colapso de una receta
+ * (recarga al editar) y para un ingrediente tomado del inventario cuando
+ * ese `InventoryItem` no trae su propio `nutrientStatus`.
+ */
+export function legacyOrUnknown(savedStatus: NutrientStatus | undefined, rawValue: number | null | undefined): NutrientStatus {
+  if (savedStatus) return savedStatus;
+  return localCatalogStatusFromValue(rawValue);
+}
+
+/**
  * Entrada manual: `wasExplicitlyEntered` es una señal que decide el
  * LLAMADOR (nunca este módulo) — normalmente "¿ha disparado el usuario un
  * evento de cambio sobre este campo concreto?", nunca "¿el número es
