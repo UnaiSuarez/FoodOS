@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import type { FoodStateConfidence, NutrientKey, NutrientStatus } from "@foodos/types";
 import { parseQuantityString } from "@/lib/food-lookup";
 import {
-  offHasSeparatePreparedBasis,
   resolveFoodStateConfidenceForProduct,
   resolveOffConfirmedOnlyStatus,
   resolveOffKcalStatus,
@@ -85,7 +84,7 @@ export function parseBarcodeProduct(p: any, fallbackName: string): ProductData {
     ...(imageUrl && { imageUrl }),
     ...(Array.isArray(p.allergens_tags) && p.allergens_tags.length > 0 && { allergenTags: p.allergens_tags }),
     nutrientStatus,
-    foodStateConfidence: resolveFoodStateConfidenceForProduct(name, offHasSeparatePreparedBasis(n)),
+    foodStateConfidence: resolveFoodStateConfidenceForProduct(),
   };
 }
 

@@ -47,16 +47,25 @@ describe("parseBarcodeProduct — procedencia por campo", () => {
   });
 });
 
-describe("parseBarcodeProduct — estado del alimento (código de barras / producto)", () => {
-  it("sin base preparada separada ni preparación en el nombre → not_applicable", () => {
+describe("parseBarcodeProduct — estado del alimento (código de barras / producto, corrección tras revisión)", () => {
+  it("un producto escaneado llamado «Pechuga de pollo», sin campos preparados ni estado declarado, NO puede quedar not_applicable", () => {
+    const result = parseBarcodeProduct(
+      { product_name_es: "Pechuga de pollo", nutriments: { "energy-kcal_100g": 165 } },
+      "code",
+    );
+    expect(result.foodStateConfidence).toBe("unknown");
+    expect(result.foodStateConfidence).not.toBe("not_applicable");
+  });
+
+  it("una lata de refresco sin ningún indicio de preparación tampoco es not_applicable — ausencia de indicios no es prueba", () => {
     const result = parseBarcodeProduct(
       { product_name_es: "Coca-Cola lata 330ml", nutriments: { "energy-kcal_100g": 42 } },
       "code",
     );
-    expect(result.foodStateConfidence).toBe("not_applicable");
+    expect(result.foodStateConfidence).toBe("unknown");
   });
 
-  it("el producto declara una base preparada separada (*_prepared_100g) → unknown, nunca not_applicable por ser código de barras", () => {
+  it("el producto declara una base preparada separada (*_prepared_100g) → unknown, igual que sin ella", () => {
     const result = parseBarcodeProduct(
       {
         product_name_es: "Pasta seca",
@@ -67,7 +76,7 @@ describe("parseBarcodeProduct — estado del alimento (código de barras / produ
     expect(result.foodStateConfidence).toBe("unknown");
   });
 
-  it("el nombre del producto ya declara una preparación → unknown, no not_applicable", () => {
+  it("el nombre del producto ya declara una preparación → sigue siendo unknown, no confirmed (no hay un segundo lado con el que contrastar)", () => {
     const result = parseBarcodeProduct(
       { product_name_es: "Pasta cocida en salsa", nutriments: { "energy-kcal_100g": 120 } },
       "code",
