@@ -5,6 +5,20 @@
 //   1. food-db.ts (local, ~120 alimentos españoles) ← se comprueba primero
 //   2. ← ESTA capa (OFF + USDA + caché)
 //   3. IA (último recurso, consume cuota)
+//
+// PR3a — cada resultado lleva además `nutrientStatus`/`foodStateConfidence`:
+// procedencia por nutriente y confianza en el estado (crudo/cocido/...)
+// declarado, calculados sin alterar ninguno de los números que ya se
+// mostraban. Ver nutrient-provenance.ts.
+
+import type { FoodStateConfidence, NutrientKey, NutrientStatus } from "@foodos/types";
+import {
+  resolveFoodStateConfidenceForGenericMatch,
+  resolveOffConfirmedOnlyStatus,
+  resolveOffKcalStatus,
+  resolveOffTieredStatus,
+  resolveUsdaStatus,
+} from "./nutrient-provenance";
 
 const CACHE_KEY = "foodos-food-lookup-cache";
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 días
@@ -16,6 +30,9 @@ export interface FoodLookupResult {
   fat: number;
   source: "off-search" | "usda";
   cachedAt: number;
+  /** PR3a — ausente equivale a "unknown" para esa clave (ver InventoryItem). */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
 }
 
 // ─── Caché localStorage ───────────────────────────────────────────────────────
@@ -59,8 +76,23 @@ async function fetchOFFProxy(query: string): Promise<any[]> {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseOFFProduct(p: any): { kcal: number; protein: number; carbs: number; fat: number; salt?: number; fiber?: number; sugars?: number } {
+function parseOFFProduct(p: any): {
+  kcal: number; protein: number; carbs: number; fat: number; salt?: number; fiber?: number; sugars?: number;
+  nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>>;
+} {
   const n = p.nutriments ?? {};
+  // Los NÚMEROS de abajo son la misma cadena `??` de siempre, byte a byte.
+  // `nutrientStatus` no participa en su cálculo — solo observa, con la
+  // misma prioridad de campos, cuál de ellos "ganó".
+  const nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>> = {
+    kcal: resolveOffKcalStatus(n["energy-kcal_100g"], n["energy-kcal"], n.energy_100g),
+    protein: resolveOffTieredStatus(n.proteins_100g, n.proteins),
+    carbs: resolveOffTieredStatus(n.carbohydrates_100g, n.carbohydrates),
+    fat: resolveOffTieredStatus(n.fat_100g, n.fat),
+  };
+  if (n.salt_100g != null) nutrientStatus.salt = resolveOffConfirmedOnlyStatus(n.salt_100g);
+  if (n.fiber_100g != null) nutrientStatus.fiber = resolveOffConfirmedOnlyStatus(n.fiber_100g);
+  if (n.sugars_100g != null) nutrientStatus.sugars = resolveOffConfirmedOnlyStatus(n.sugars_100g);
   return {
     kcal: Math.round((n["energy-kcal_100g"] ?? n["energy-kcal"] ?? (n.energy_100g != null ? n.energy_100g / 4.184 : 0)) || 0),
     protein: Math.round((n.proteins_100g ?? n.proteins ?? 0) * 10) / 10,
@@ -69,6 +101,7 @@ function parseOFFProduct(p: any): { kcal: number; protein: number; carbs: number
     ...(n.salt_100g    != null && { salt:   Math.round(n.salt_100g   * 100) / 100 }),
     ...(n.fiber_100g   != null && { fiber:  Math.round(n.fiber_100g  * 10)  / 10  }),
     ...(n.sugars_100g  != null && { sugars: Math.round(n.sugars_100g * 10)  / 10  }),
+    nutrientStatus,
   };
 }
 
@@ -120,7 +153,14 @@ async function searchOFF(query: string): Promise<FoodLookupResult | null> {
     if (!nameLooksRelevant(p, queryWords)) continue;
     const macros = parseOFFProduct(p);
     if (macros.kcal <= 0) continue;
-    return { ...macros, source: "off-search", cachedAt: Date.now() };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const referenceText = String((p as any).product_name_es ?? (p as any).product_name ?? "");
+    return {
+      ...macros,
+      source: "off-search",
+      cachedAt: Date.now(),
+      foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(query, referenceText),
+    };
   }
   return null;
 }
@@ -226,6 +266,7 @@ async function searchUSDA(name: string): Promise<FoodLookupResult | null> {
 
     const data = (await res.json()) as {
       foods?: Array<{
+        description?: string;
         foodNutrients?: Array<{ nutrientId?: number; value?: number }>;
       }>;
     };
@@ -233,19 +274,31 @@ async function searchUSDA(name: string): Promise<FoodLookupResult | null> {
     const foods = data.foods ?? [];
     if (!foods.length) return null;
 
-    const nutrients = foods[0].foodNutrients ?? [];
-    const get = (id: number) => nutrients.find((n) => n.nutrientId === id)?.value ?? 0;
+    const food = foods[0];
+    const nutrients = food.foodNutrients ?? [];
+    // Valor crudo (sin `?? 0`), para que `resolveUsdaStatus` distinga
+    // ausencia de cero explícito. Lo que se muestra sigue calculándose con
+    // `?? 0`, exactamente igual que antes.
+    const getRaw = (id: number) => nutrients.find((n) => n.nutrientId === id)?.value;
 
-    const kcal = Math.round(get(1008)); // Energy kcal
+    const rawKcal = getRaw(1008); // Energy kcal
+    const kcal = Math.round(rawKcal ?? 0);
     if (kcal <= 0) return null;
 
     return {
       kcal,
-      protein: Math.round(get(1003) * 10) / 10, // Protein
-      carbs: Math.round(get(1005) * 10) / 10,   // Carbs
-      fat: Math.round(get(1004) * 10) / 10,     // Total lipid
+      protein: Math.round((getRaw(1003) ?? 0) * 10) / 10, // Protein
+      carbs: Math.round((getRaw(1005) ?? 0) * 10) / 10,   // Carbs
+      fat: Math.round((getRaw(1004) ?? 0) * 10) / 10,     // Total lipid
       source: "usda",
       cachedAt: Date.now(),
+      nutrientStatus: {
+        kcal: resolveUsdaStatus(rawKcal),
+        protein: resolveUsdaStatus(getRaw(1003)),
+        carbs: resolveUsdaStatus(getRaw(1005)),
+        fat: resolveUsdaStatus(getRaw(1004)),
+      },
+      foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(name, food.description ?? ""),
     };
   } catch {
     return null;
@@ -313,6 +366,9 @@ export interface ExternalFoodSuggestion {
   imageUrl?: string;
   /** Tags de alérgenos sin traducir (ej. "en:gluten"), de OFF. */
   allergenTags?: string[];
+  /** PR3a — ausente equivale a "unknown" para esa clave (ver InventoryItem). */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
 }
 
 /** Extrae el primer número+unidad de un string de cantidad de OFF (ej. "500ml",
@@ -379,6 +435,7 @@ export async function searchOFFSuggestions(
     results.push({
       name: rawName.slice(0, 70),
       ...macros,
+      foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(query, rawName),
       ...(packageSize != null && { packageSize }),
       ...(brand && { brand }),
       ...(imageUrl && { imageUrl }),
