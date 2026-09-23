@@ -1,0 +1,276 @@
+import { describe, expect, it } from "vitest";
+import {
+  aiStatusFromValue,
+  estimatedStatusFromValue,
+  extractDeclaredState,
+  knownStatusFromValue,
+  localCatalogStatusFromValue,
+  manualStatusFromValue,
+  offHasSeparatePreparedBasis,
+  resolveFoodStateConfidenceForDirectEntry,
+  resolveFoodStateConfidenceForGenericMatch,
+  resolveFoodStateConfidenceForProduct,
+  resolveOffConfirmedOnlyStatus,
+  resolveOffKcalStatus,
+  resolveOffTieredStatus,
+  resolveUsdaStatus,
+} from "./nutrient-provenance";
+
+describe("knownStatusFromValue", () => {
+  it("clasifica un valor positivo como known_nonzero", () => {
+    expect(knownStatusFromValue(12.5)).toBe("known_nonzero");
+  });
+
+  it("clasifica un cero explícito como known_zero, no como ausencia", () => {
+    expect(knownStatusFromValue(0)).toBe("known_zero");
+  });
+
+  it("clasifica undefined como unknown", () => {
+    expect(knownStatusFromValue(undefined)).toBe("unknown");
+  });
+
+  it("clasifica null como unknown", () => {
+    expect(knownStatusFromValue(null)).toBe("unknown");
+  });
+
+  it("clasifica NaN/Infinity como unknown, nunca como known_*", () => {
+    expect(knownStatusFromValue(NaN)).toBe("unknown");
+    expect(knownStatusFromValue(Infinity)).toBe("unknown");
+  });
+});
+
+describe("estimatedStatusFromValue — base de medida no confirmada", () => {
+  it("un valor presente pero de base no confirmada nunca sube a known_*", () => {
+    expect(estimatedStatusFromValue(50)).toBe("estimated");
+  });
+
+  it("un cero de base no confirmada también es estimated, no known_zero", () => {
+    expect(estimatedStatusFromValue(0)).toBe("estimated");
+  });
+
+  it("ausente sigue siendo unknown", () => {
+    expect(estimatedStatusFromValue(undefined)).toBe("unknown");
+  });
+});
+
+describe("aiStatusFromValue — IA nunca es known_*", () => {
+  it("un número inferido por IA es estimated aunque sea un valor 'limpio'", () => {
+    expect(aiStatusFromValue(200)).toBe("estimated");
+    expect(aiStatusFromValue(0)).toBe("estimated");
+  });
+
+  it("un campo omitido por la IA es unknown", () => {
+    expect(aiStatusFromValue(undefined)).toBe("unknown");
+  });
+});
+
+describe("localCatalogStatusFromValue — catálogo local sin procedencia por ficha", () => {
+  it("un valor del catálogo local nunca es known_*, siempre legacy_unlabeled", () => {
+    expect(localCatalogStatusFromValue(25)).toBe("legacy_unlabeled");
+  });
+
+  it("un cero del catálogo local también es legacy_unlabeled, no known_zero", () => {
+    expect(localCatalogStatusFromValue(0)).toBe("legacy_unlabeled");
+  });
+
+  it("ausente sigue siendo unknown incluso en el catálogo local", () => {
+    expect(localCatalogStatusFromValue(undefined)).toBe("unknown");
+  });
+});
+
+describe("manualStatusFromValue — entrada manual vs. fallback numérico para la interfaz", () => {
+  it("un campo sin rellenar (no tocado por el usuario) es unknown aunque su valor de interfaz sea 0", () => {
+    expect(manualStatusFromValue(0, false)).toBe("unknown");
+  });
+
+  it("un fallback numérico para mostrar un número NO convierte unknown en known_zero", () => {
+    const uiDisplayValue = 0;
+    const wasExplicitlyEnteredByUser = false;
+    expect(manualStatusFromValue(uiDisplayValue, wasExplicitlyEnteredByUser)).toBe("unknown");
+  });
+
+  it("un cero tecleado explícitamente por el usuario SÍ es known_zero", () => {
+    expect(manualStatusFromValue(0, true)).toBe("known_zero");
+  });
+
+  it("un valor no-cero tecleado explícitamente es known_nonzero", () => {
+    expect(manualStatusFromValue(30, true)).toBe("known_nonzero");
+  });
+});
+
+describe("resolveOffKcalStatus — 3 niveles, mismo orden que la cadena existente", () => {
+  it("energy-kcal_100g presente → known_* aunque los otros niveles también estén presentes", () => {
+    expect(resolveOffKcalStatus(213, 250, 890)).toBe("known_nonzero");
+  });
+
+  it("energy-kcal_100g ausente, energy-kcal (bare) presente → estimated, nunca known_*", () => {
+    expect(resolveOffKcalStatus(undefined, 250, 890)).toBe("estimated");
+  });
+
+  it("solo energy_100g (kJ) presente → known_* vía la conversión, que también es base 100g", () => {
+    expect(resolveOffKcalStatus(undefined, undefined, 890)).toBe("known_nonzero");
+  });
+
+  it("ningún nivel presente → unknown", () => {
+    expect(resolveOffKcalStatus(undefined, undefined, undefined)).toBe("unknown");
+  });
+
+  it("energy-kcal_100g explícitamente 0 → known_zero, no unknown", () => {
+    expect(resolveOffKcalStatus(0, undefined, undefined)).toBe("known_zero");
+  });
+
+  it("un campo presente pero no numérico no sube a known_*/estimated, y no cae al siguiente nivel", () => {
+    expect(resolveOffKcalStatus("no aplica", 250, 890)).toBe("unknown");
+  });
+});
+
+describe("resolveOffTieredStatus — 2 niveles (proteína/carbohidratos/grasa)", () => {
+  it("campo sufijado _100g presente → known_*", () => {
+    expect(resolveOffTieredStatus(12.5, 20)).toBe("known_nonzero");
+  });
+
+  it("solo el campo sin sufijo presente → estimated", () => {
+    expect(resolveOffTieredStatus(undefined, 20)).toBe("estimated");
+  });
+
+  it("ninguno presente → unknown", () => {
+    expect(resolveOffTieredStatus(undefined, undefined)).toBe("unknown");
+  });
+
+  it("_100g explícitamente 0 → known_zero", () => {
+    expect(resolveOffTieredStatus(0, 20)).toBe("known_zero");
+  });
+});
+
+describe("resolveOffConfirmedOnlyStatus — 1 nivel (sal/fibra/azúcares)", () => {
+  it("presente → known_*", () => {
+    expect(resolveOffConfirmedOnlyStatus(1.2)).toBe("known_nonzero");
+  });
+
+  it("ausente → unknown", () => {
+    expect(resolveOffConfirmedOnlyStatus(undefined)).toBe("unknown");
+  });
+
+  it("explícitamente 0 → known_zero", () => {
+    expect(resolveOffConfirmedOnlyStatus(0)).toBe("known_zero");
+  });
+});
+
+describe("resolveUsdaStatus", () => {
+  it("valor presente → known_* (asunción de base 100g para Foundation/SR Legacy)", () => {
+    expect(resolveUsdaStatus(31.02)).toBe("known_nonzero");
+  });
+
+  it("ausente → unknown", () => {
+    expect(resolveUsdaStatus(undefined)).toBe("unknown");
+  });
+
+  it("explícitamente 0 → known_zero, no ausencia", () => {
+    expect(resolveUsdaStatus(0)).toBe("known_zero");
+  });
+});
+
+describe("extractDeclaredState — léxico fijo, sin clasificador semántico", () => {
+  it("detecta crudo/raw", () => {
+    expect(extractDeclaredState("Pechuga de pollo cruda")).toBe("raw");
+    expect(extractDeclaredState("Raw chicken breast")).toBe("raw");
+  });
+
+  it("detecta cocido/cooked en sus variantes", () => {
+    expect(extractDeclaredState("Arroz cocido")).toBe("cooked");
+    expect(extractDeclaredState("Pollo asado")).toBe("cooked");
+    expect(extractDeclaredState("Grilled salmon")).toBe("cooked");
+  });
+
+  it("detecta seco/instantáneo antes que cualquier coincidencia casual con cocido", () => {
+    expect(extractDeclaredState("Puré de patata instantáneo")).toBe("dry");
+    expect(extractDeclaredState("Leche en polvo")).toBe("dry");
+  });
+
+  it("detecta reconstituido/hidratado", () => {
+    expect(extractDeclaredState("Leche reconstituida")).toBe("reconstituted");
+  });
+
+  it("detecta escurrido/drained", () => {
+    expect(extractDeclaredState("Atún escurrido")).toBe("drained");
+  });
+
+  it("sin ninguna palabra del léxico devuelve unspecified", () => {
+    expect(extractDeclaredState("Manzana")).toBe("unspecified");
+    expect(extractDeclaredState("Coca-Cola lata 330ml")).toBe("unspecified");
+  });
+
+  it("es insensible a mayúsculas", () => {
+    expect(extractDeclaredState("POLLO CRUDO")).toBe("raw");
+  });
+});
+
+describe("resolveFoodStateConfidenceForGenericMatch — búsqueda por texto", () => {
+  it("ambos lados declaran el mismo estado → confirmed", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("pollo crudo", "Pechuga de pollo cruda")).toBe("confirmed");
+  });
+
+  it("estados declarados distintos → incompatible, aunque el nutriente sea known_*", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("pollo crudo", "Pollo cocido")).toBe("incompatible");
+  });
+
+  it("la búsqueda no declara estado → unknown (caso mayoritario)", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("pollo", "Pechuga de pollo cruda")).toBe("unknown");
+  });
+
+  it("la referencia no declara estado → unknown", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("pollo crudo", "Pollo")).toBe("unknown");
+  });
+
+  it("ninguno de los dos declara estado → unknown", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("manzana", "Manzana Golden")).toBe("unknown");
+  });
+});
+
+describe("offHasSeparatePreparedBasis", () => {
+  it("detecta una base preparada separada cuando existe cualquier campo *_prepared_100g", () => {
+    expect(offHasSeparatePreparedBasis({ "energy-kcal_100g": 100, "energy-kcal_prepared_100g": 350 })).toBe(true);
+  });
+
+  it("sin ningún campo *_prepared_100g → false", () => {
+    expect(offHasSeparatePreparedBasis({ "energy-kcal_100g": 100, proteins_100g: 5 })).toBe(false);
+  });
+
+  it("nutriments ausente → false", () => {
+    expect(offHasSeparatePreparedBasis(undefined)).toBe(false);
+    expect(offHasSeparatePreparedBasis(null)).toBe(false);
+  });
+});
+
+describe("resolveFoodStateConfidenceForProduct — código de barras / producto", () => {
+  it("sin base preparada separada ni preparación en el nombre → not_applicable", () => {
+    expect(resolveFoodStateConfidenceForProduct("Coca-Cola lata 330ml", false)).toBe("not_applicable");
+  });
+
+  it("not_applicable NO se asigna por ser código de barras si hay base preparada separada", () => {
+    expect(resolveFoodStateConfidenceForProduct("Pasta seca", true)).toBe("unknown");
+  });
+
+  it("el nombre del producto declara una preparación → unknown, no not_applicable", () => {
+    expect(resolveFoodStateConfidenceForProduct("Pasta cocida en salsa", false)).toBe("unknown");
+  });
+});
+
+describe("resolveFoodStateConfidenceForDirectEntry — entrada manual/IA directa", () => {
+  it("total de ingesta ya consumida → siempre not_applicable, nunca por ser código de barras o manual", () => {
+    expect(resolveFoodStateConfidenceForDirectEntry("whole_intake_total")).toBe("not_applicable");
+    expect(resolveFoodStateConfidenceForDirectEntry("whole_intake_total", "Cualquier nombre")).toBe("not_applicable");
+  });
+
+  it("referencia por 100g con nombre que declara estado → confirmed (débil, un solo lado)", () => {
+    expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference", "Arroz cocido")).toBe("confirmed");
+  });
+
+  it("referencia por 100g sin estado declarado en el nombre → unknown", () => {
+    expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference", "Arroz")).toBe("unknown");
+  });
+
+  it("referencia por 100g sin nombre → unknown", () => {
+    expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference")).toBe("unknown");
+  });
+});
