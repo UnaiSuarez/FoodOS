@@ -14,7 +14,17 @@ export type FoodEntry = {
 };
 
 // ~200 alimentos españoles comunes. Macros por 100 g (o 100 ml para líquidos).
-// Fuente: BEDCA / USDA / valores estándar.
+// Fuente: BEDCA / USDA / valores estándar — atribuida al conjunto, NO por
+// ficha: ninguna fila de abajo identifica de cuál de esas tres viene su
+// carbs/fat concretos, así que no hay forma de verificar la procedencia de
+// un valor individual. Por eso (PR3a, Nutrition Engine v4) todo valor
+// tomado de este catálogo se etiqueta como "legacy_unlabeled" en los
+// sitios de captura que lo consultan (food-lookup.ts, ai-inventory.ts,
+// InventoryView.tsx, CreateRecipeModal.tsx, EditRecipeModal.tsx) — nunca
+// como "known_*": tener un número no demuestra su origen. Elevarlo a
+// known_* exigiría una auditoría manual, ficha a ficha, que añada un campo
+// de origen real (p. ej. `source: "bedca:12345"`) a cada entrada de abajo;
+// no se ha hecho todavía.
 export const FOOD_DB: FoodEntry[] = [
   // ── Carnes ────────────────────────────────────────────────────────
   { name: "Pechuga de pollo", kcal: 165, protein: 31, carbs: 0, fat: 3.6, unit: "g", defaultQty: 300, storage: "Nevera", expiryDays: 4, category: "Carne" },

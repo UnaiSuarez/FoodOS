@@ -62,7 +62,7 @@ En vez de siete parches locales (uno por línea de la tabla de arriba), la corre
 - `nutrientValueFromOff(raw: number | null | undefined): NutrientValue` — presente y numérico → `known_nonzero`/`known_zero` según el valor; ausente (`undefined`/`null`) → `unknown`.
 - `nutrientValueFromUsda(raw: number | null | undefined): NutrientValue` — misma regla.
 - `nutrientValueFromAi(raw: number | null | undefined): NutrientValue` — **regla distinta, nueva en esta ronda**: presente → `estimated` (nunca `known_*`, porque una IA no mide, infiere); ausente → `unknown`.
-- `nutrientValueFromLocalCatalog(raw: number): NutrientValue` — siempre `known_nonzero`/`known_zero` (decisión documentada, ver §11 — el catálogo local es un dataset curado a mano, no una respuesta de API que pueda omitir un campo en tiempo de ejecución; el límite real de esta decisión es que no se distingue, fila por fila, un valor de BEDCA de un "valor estándar" aproximado, ver el propio comentario de `food-db.ts`).
+- `nutrientValueFromLocalCatalog(raw: number): NutrientValue` — **CORREGIDO en la auditoría de PR3a (ver §15): siempre `legacy_unlabeled`**, nunca `known_*`. La decisión original de esta fila ("siempre `known_nonzero`/`known_zero`, dataset curado a mano") confundía quién escribió el número con si se puede verificar de qué ficha de qué fuente salió — el catálogo atribuye sus ~200 filas EN CONJUNTO a "BEDCA / USDA / valores estándar" sin identificar la procedencia por fila, así que ningún valor individual es verificable. Ver §15 para el razonamiento completo.
 - `nutrientValueFromManual(raw: number | undefined): NutrientValue` — presente → `known_*`; ausente → `unknown`.
 
 Esta función vive en un archivo nuevo y pequeño (`apps/web/src/lib/nutrient-provenance.ts`, PR3a, §9) y **cada uno de los siete sitios de la tabla de 1.2 se reescribe para llamarla**, sin cambiar el número que ya calculan hoy (el `?? 0` puede seguir existiendo para el valor NUMÉRICO mostrado en pantalla — esto no es una migración de UI) — lo único que cambia es que, en el mismo sitio, **antes** de aplicar el `?? 0`, se captura también el `NutrientValue` real y se adjunta a un campo nuevo y aditivo (`nutrientStatus`) en `InventoryItem`/`RecipeIngredient`. El número que el usuario ve no cambia; lo que cambia es que ahora existe, junto a él, la verdad sobre si ese número es real.
@@ -281,7 +281,7 @@ NutrientStatus =
 
 **Regla dura nueva**: ninguna fuente `provider:"ai"` puede producir jamás `known_nonzero`/`known_zero`, sin excepción — ni siquiera cuando la IA declara explícitamente el campo. Esto se aplica en el punto de captura (`nutrientValueFromAi`, PR3a), no en el de consumo, precisamente para que no dependa de que cada escritor de `foodLog` se acuerde de comprobarlo.
 
-**Límite honesto que se mantiene**: el catálogo local (`food-db.ts`) se trata como `known_*` por decisión explícita (dataset curado a mano, no una API que pueda omitir un campo) — pero no distingue, fila por fila, un valor real de BEDCA de un "valor estándar" aproximado. Esto queda como decisión documentada (§11), no como un bug a corregir en esta fase.
+**CORREGIDO en la auditoría de PR3a (ver §15)**: el catálogo local (`food-db.ts`) se trata como `legacy_unlabeled`, no como `known_*` — no distingue, fila por fila, un valor real de BEDCA de un "valor estándar" aproximado, y esa es precisamente la información que `known_*` estaría afirmando sin base. Decisión revertida y justificada en §15.
 
 *(B, C, D, E, F, G sin cambios respecto a v2 — ver contratos completos en §4.)*
 
@@ -324,7 +324,8 @@ export type QuantityResolution =
 // export function nutrientValueFromAi(raw: number | null | undefined): NutrientValue;
 //   // presente → "estimated" SIEMPRE (nunca known_*); ausente → "unknown"
 // export function nutrientValueFromLocalCatalog(raw: number): NutrientValue;
-//   // siempre known_nonzero/known_zero — decisión documentada, ver §11
+//   // CORREGIDO en la auditoría de PR3a: siempre "legacy_unlabeled", nunca
+//   // known_*. Ver §15.
 // export function nutrientValueFromManual(raw: number | undefined): NutrientValue;
 
 // apps/web/src/lib/nutrient-provenance.ts — AMPLIACIÓN, PR3a (bloqueante — activación,
@@ -583,7 +584,7 @@ PR6, PR7, resto de PR8, resto de PR9.
 - **Nueva** — hay 8 escritores reales de `foodLog`, no 2; los 8 quedan enumerados y cubiertos en PR3.
 - **Nueva** — un dato sintético de demo (`seedHistorico`) se filtra a nivel de entrada (nunca de día completo) y nunca reduce `windowDays` — un día sintético no debe facilitar superar el umbral de cobertura.
 - **Nueva (v4)** — `seedHistorico()` es confirmadamente alcanzable por cualquier usuario real en producción, sin restricción — ya no es una pregunta abierta. Se añade PR11 (recomendado, no bloqueante) para restringir su acceso en el producto.
-- **Nueva** — el catálogo local (`food-db.ts`) se trata como `known_*` por ser un dataset curado a mano, con el límite documentado de que no distingue fila a fila un valor real de uno aproximado.
+- **Corregida (PR3a, ver §15)** — el catálogo local (`food-db.ts`) se trata como `legacy_unlabeled`, no como `known_*`. La v6 lo cerraba como `known_*` razonando que es "un dataset curado a mano, no una API que pueda omitir un campo" — ese razonamiento confundía quién escribió el número con si se puede verificar de qué ficha de qué fuente salió; como el catálogo atribuye sus filas a "BEDCA / USDA / valores estándar" EN CONJUNTO, sin procedencia por fila, ningún valor individual es verificable. Revertido con la auditoría de PR3a.
 
 **Provisionales:** sin cambios respecto a v2 (umbrales de 80%, 1/7, 10%).
 
@@ -713,6 +714,22 @@ En cualquier caso, **24 (o el número que resulte de fijar el umbral por nutrien
 - Si el vínculo financiero/de sobras/suplementos (PR6, evolución) se prioriza en paralelo a la activación de v4 o después — no depende técnicamente de v4, es una decisión de secuenciación de producto.
 
 No se ha ampliado el alcance de esta ronda para responder a estos puntos ni se ha implementado ningún cambio de código.
+
+---
+
+## 15. Corrección durante la implementación de PR3a — catálogo local: `known_*` → `legacy_unlabeled`
+
+Este documento cerraba (§1.3, §4, §11) que el catálogo local (`food-db.ts`) debía tratarse siempre como `known_nonzero`/`known_zero`, justificado como "un dataset curado a mano, no una respuesta de API que pueda omitir un campo en tiempo de ejecución". Al auditar `food-db.ts` línea a línea, antes de escribir el resolutor real, esa justificación resultó ser el criterio equivocado.
+
+**Por qué era el criterio equivocado**: `known_*` no afirma "alguien escribió este número a mano" — afirma "se puede confiar en la magnitud y en de dónde vino". El comentario del propio archivo (`food-db.ts:16-17`, sin cambiar en esta corrección salvo para documentar esta decisión) atribuye las ~200 filas **en conjunto** a "BEDCA / USDA / valores estándar", sin ningún campo que identifique, fila por fila, cuál de esas tres fuentes originó un `carbs`/`fat` concreto. Que el campo sea siempre numérico (`FoodEntry.carbs`/`FoodEntry.fat` no son opcionales) demuestra que el archivo siempre tiene *algún* número — no demuestra que ese número sea una medición verificable. Confundir "el campo nunca está vacío" con "el valor es fiable" es exactamente el tipo de colapso de información que todo el diseño de Nutrition v4 existe para evitar en las fuentes externas; aplicar un criterio distinto (y más permisivo) al catálogo local solo porque es interno no tenía una base real.
+
+**La corrección**: todo valor procedente del catálogo local se clasifica como `"legacy_unlabeled"` — la definición ya existente de ese estado ("número presente, procedencia no verificable... puede venir de datos anteriores al etiquetado de procedencia", `packages/types/src/nutrient-value.ts`) cubre este caso con precisión, sin necesitar un octavo valor de `NutrientStatus` ni reabrir el kernel ya cerrado de PR1. `legacy_unlabeled` nunca equivale a `known_*` en ningún cálculo posterior (PR3, cobertura) — es, deliberadamente, una categoría de menor confianza.
+
+**Qué NO cambia**: ningún número de `food-db.ts` se modifica; el `FoodEntry` sigue teniendo exactamente los mismos campos; los sitios de captura (`food-lookup.ts`, `ai-inventory.ts`, `InventoryView.tsx`, `CreateRecipeModal.tsx`, `EditRecipeModal.tsx`) siguen mostrando el mismo número que antes de PR3a. Lo único que cambia es el metadato que ahora lo acompaña.
+
+**Qué haría falta para elevarlo en el futuro**: una auditoría manual, ficha a ficha, de las ~200 entradas de `FOOD_DB`, añadiendo un campo de origen real por fila (p. ej. `source: "bedca:12345"` o `source: "usda:fdc-167762"`) que permita distinguir un valor verificado de BEDCA/USDA de un "valor estándar" aproximado. Es trabajo de catalogación, no de ingeniería, y queda fuera del alcance de PR3a — anotado aquí como el trabajo pendiente concreto, no como una vaguedad.
+
+**Alcance de esta corrección**: solo afecta `NutrientStatus` (procedencia por nutriente). No afecta `foodStateConfidence` (§1.6) — la resolución de `resolveFoodStateConfidenceForGenericMatch` para coincidencias del catálogo local (comparar el texto buscado contra `FoodEntry.name`) ya era, y sigue siendo, independiente de esta decisión: ambos ejes son ortogonales por diseño (ver la definición de `FoodStateConfidence`), y un valor `legacy_unlabeled` puede perfectamente tener `foodStateConfidence:"confirmed"` si el texto de búsqueda y el nombre de la ficha declaran el mismo estado (ver AC23, §10, sin cambios).
 
 ---
 
