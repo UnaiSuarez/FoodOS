@@ -106,63 +106,77 @@ Regla dura: `FoodLogEntry` gana un campo aditivo `synthetic?: true`, escrito ún
 **El criterio correcto no es "de dónde vino el dato" sino "qué tipo de número es"**: `not_applicable` se reserva, exclusivamente, para cuando el valor capturado **ya representa la cantidad total tal como se consumió, y no un valor por 100 g/ración que se vaya a escalar por una cantidad después** — en ese caso no existe ninguna referencia externa con estado propio contra la que pueda haber una incompatibilidad, sea cual sea el origen del número. En todos los demás casos (cualquier referencia por 100 g/ración, venga de OFF, USDA, catálogo local, un producto escaneado o una entrada manual), el estado sí puede importar y se resuelve con las mismas reglas, nunca por defecto.
 
 ```
-DeclaredFoodState = "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified"
+DeclaredFoodState = "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified" | "ambiguous"
+  // "ambiguous" — CORREGIDO en la auditoría de PR3a (ver §16): el texto declara
+  // DOS O MÁS de estos estados a la vez (ej. "sopa deshidratada para preparar"
+  // declara "dry" Y "reconstituted") — sin una regla de reducción calibrada,
+  // no es seguro elegir una sobre la otra. Se trata como "unspecified" en los
+  // tres resolutores de abajo (nunca "confirmed").
 
 extractDeclaredState(text: string): DeclaredFoodState
   // léxico fijo, español + inglés (crudo/raw, cocido·cocinado·asado·frito·hervido/cooked,
   // seco·deshidratado·instantáneo·en polvo/dry, reconstituido·hidratado·para preparar/reconstituted,
-  // escurrido/drained). Sin coincidencia → "unspecified". No infiere sinónimos no listados.
+  // escurrido/drained), por PALABRA/FRASE COMPLETA — CORREGIDO en la auditoría
+  // de PR3a: la versión original usaba subcadena (`.includes`), así que "raw"
+  // se leía dentro de "strawberry". Ahora usa límites Unicode (`\p{L}`/`\p{N}`,
+  // no `\b` ASCII, para no romper tildes/ñ). Sin coincidencia → "unspecified".
+  // Dos o más categorías a la vez → "ambiguous". No infiere sinónimos no listados.
 
 FoodStateConfidence = "confirmed" | "unknown" | "incompatible" | "not_applicable"
 
-// 1) Búsqueda genérica por texto (OFF, USDA, catálogo local) — sin cambios:
+// 1) Búsqueda genérica por texto (OFF, USDA, catálogo local):
 resolveFoodStateConfidenceForGenericMatch(queryText: string, referenceText: string): FoodStateConfidence
-  // cualquiera de los dos "unspecified" → "unknown"; iguales → "confirmed"; distintos → "incompatible"
+  // cualquiera de los dos "unspecified" o "ambiguous" → "unknown"; iguales (y
+  // no ambiguos) → "confirmed"; distintos → "incompatible"
 
-// 2) Producto identificado (código de barras) — CORREGIDA:
-resolveFoodStateConfidenceForProduct(
-  productText: string,               // nombre/categoría del producto tal como lo declara la fuente
-  hasSeparatePreparedBasis: boolean, // ¿la fuente declara TAMBIÉN una base "_prepared" distinta de la base "tal cual"?
-): FoodStateConfidence
-  if (hasSeparatePreparedBasis) return "unknown"
-    // ambigüedad estructural real (dos bases posibles) y hoy no hay forma de saber cuál se usó
-  if (extractDeclaredState(productText) !== "unspecified") return "unknown"
-    // el propio nombre sugiere una preparación (p. ej. "sopa en polvo") pero no hay
-    // confirmación de qué base se registró — no se asume que el usuario lo tomó tal cual
-  return "not_applicable"
-    // sin base "prepared" declarada y sin ninguna palabra de preparación en el propio nombre:
-    // no hay indicio de que exista una preparación distinta al consumo directo (p. ej. una lata de refresco)
+// 2) Producto identificado (código de barras) — CORREGIDA por segunda vez (PR3a, ver §16):
+resolveFoodStateConfidenceForProduct(): FoodStateConfidence
+  return "unknown"
+    // El valor que llega aquí es SIEMPRE una referencia por 100g (los sitios
+    // de captura solo extraen campos "_100g") — nunca representa ya el total
+    // consumido, así que "not_applicable" no es alcanzable con las señales
+    // disponibles hoy. La versión anterior (primera corrección de esta
+    // sección) devolvía "not_applicable" cuando NO encontraba evidencia de
+    // preparación (ni *_prepared_100g ni palabras en el nombre) — error:
+    // ausencia de evidencia no es evidencia de ausencia; un producto puede
+    // requerir cocción sin que OFF tenga cargado ese campo. "not_applicable"
+    // exigiría una señal estructural VERIFICABLE de que el número es un total
+    // cerrado (p. ej. `nutrition_data_per: "serving"` con una ración = el
+    // envase entero), que ningún sitio de captura actual extrae todavía.
 
-// 3) Entrada directa (manual, o IA de comida completa) — CORREGIDA:
+// 3) Entrada directa (manual, o IA de comida completa):
 resolveFoodStateConfidenceForDirectEntry(
   kind: "whole_intake_total" | "per_unit_reference", // ¿el número YA es el total consumido, o es un valor por 100g/ración?
   nameText?: string, // solo aplica si kind === "per_unit_reference"
 ): FoodStateConfidence
   if (kind === "whole_intake_total") return "not_applicable"
-    // no hay una referencia externa por 100g detrás — el número YA describe lo consumido
-  return extractDeclaredState(nameText ?? "") === "unspecified" ? "unknown" : "confirmed"
+    // señal VERIFICABLE por construcción: el prompt de estimateMealMacros/
+    // estimateMealFromPhoto pide expresamente un total de la comida completa,
+    // no una composición por 100g — no hay una referencia externa por 100g
+    // detrás, el número YA describe lo consumido
+  return extractDeclaredState(nameText ?? "") ∈ {"unspecified","ambiguous"} ? "unknown" : "confirmed"
     // "confirmed" aquí es más débil que en (1): solo un lado (el propio usuario) declara el estado,
     // no hay una segunda fuente independiente con la que contrastarlo — se documenta como
     // una aproximación deliberada, no como una confirmación tan fuerte como la de (1)
 ```
 
-**Dónde se aplica cada función**: (1) en `food-lookup.ts` (OFF/USDA) y en el catálogo local dentro de `CreateRecipeModal.tsx`/`EditRecipeModal.tsx`; (2) en `BarcodeScannerModal.tsx` y en `food-lookup.ts` cuando el resultado es un producto con código, comprobando la presencia de campos `*_prepared_100g` en `nutriments` — comprobación de presencia de una clave, no una clasificación; (3) en `ai-inventory.ts` (`fillFoodData`/`scanTicketImage`/`identifyFoodFromPhoto` son `per_unit_reference` sobre el nombre identificado; `estimateMealMacros`/`estimateMealFromPhoto` son `whole_intake_total`) y en cualquier edición manual de un campo por-100g de `InventoryItem`/`RecipeIngredient` (`per_unit_reference` sobre el nombre tecleado).
+**Dónde se aplica cada función**: (1) en `food-lookup.ts` (OFF/USDA) y en el catálogo local dentro de `CreateRecipeModal.tsx`/`EditRecipeModal.tsx`; (2) en `BarcodeScannerModal.tsx` — siempre `"unknown"`, ver la corrección de §16; (3) en `ai-inventory.ts` (`fillFoodData`/`scanTicketImage`/`identifyFoodFromPhoto` son `per_unit_reference` sobre el nombre identificado; `estimateMealMacros`/`estimateMealFromPhoto` son `whole_intake_total`) y en cualquier edición manual de un campo por-100g de `InventoryItem`/`RecipeIngredient` (`per_unit_reference` sobre el nombre tecleado).
 
 **Regla dura, sin cambios**: `foodStateConfidence ∈ {"unknown","incompatible"}` nunca cuenta como fiable, sin importar que el `NutrientStatus` sea `known_nonzero`. Es un eje independiente, no un sustituto.
 
-**Consecuencia honesta, con números — respuesta directa a "¿permitiría el gate activar v4 en la práctica?"**: la corrección de esta ronda hace la regla ligeramente MÁS estricta para código de barras (antes todo `not_applicable`, ahora solo lo genuinamente no ambiguo) y para manual/IA-por-100g (antes todo `not_applicable`, ahora depende de si el nombre declara estado). Ventana de 7 días, dieta mixta realista:
+**Consecuencia honesta, con números — respuesta directa a "¿permitiría el gate activar v4 en la práctica?"**: la corrección de esta ronda, y la segunda corrección de §16, hacen la regla más estricta para código de barras (ya no hay ningún caso `not_applicable`, ver §16) y para manual/IA-por-100g (depende de si el nombre declara un único estado sin ambigüedad). Ventana de 7 días, dieta mixta realista:
 
-| Día | Origen | Texto disponible | ¿Base preparada separada? | `foodStateConfidence` | ¿Fiable? |
-|---|---|---|---|---|---|
-| Lun | Búsqueda genérica | "pollo" vs "Chicken, raw" | — | `unknown` | No |
-| Mar | Búsqueda genérica | "lentejas cocidas" vs "Lentejas cocidas" | — | `confirmed` | Sí |
-| Mié | Código de barras | "Refresco de cola" (lata) | No | `not_applicable` | Sí |
-| Jue | Código de barras | "Sopa de sobre, sabor pollo" | **Sí** (`*_prepared_100g` existe) | `unknown` | **No** — antes de esta corrección habría sido `not_applicable`, ocultando el caso exacto que motivó la corrección |
-| Vie | Manual, ingrediente genérico | usuario teclea "Pollo" (sin estado) a 165 kcal/100g | n/a | `unknown` | **No** — antes de esta corrección habría sido `not_applicable` |
-| Sáb | Manual, ingrediente genérico | usuario teclea "Pollo cocido" a 239 kcal/100g | n/a | `confirmed` (débil, un solo lado) | Sí |
-| Dom | IA, comida completa | `estimateMealFromPhoto` da un total de 600 kcal para el plato entero | n/a | `not_applicable` (correcto: no hay referencia por 100g detrás) | No — sigue excluido por `NutrientStatus:"estimated"`, con independencia del estado |
+| Día | Origen | Texto disponible | `foodStateConfidence` | ¿Fiable? |
+|---|---|---|---|---|
+| Lun | Búsqueda genérica | "pollo" vs "Chicken, raw" | `unknown` | No |
+| Mar | Búsqueda genérica | "lentejas cocidas" vs "Lentejas cocidas" | `confirmed` | Sí |
+| Mié | Código de barras | "Refresco de cola" (lata) | `unknown` | **No** — corregido en §16: ausencia de indicios de preparación no es prueba de `not_applicable` |
+| Jue | Código de barras | "Sopa de sobre, sabor pollo" (`*_prepared_100g` existe) | `unknown` | No |
+| Vie | Manual, ingrediente genérico | usuario teclea "Pollo" (sin estado) a 165 kcal/100g | `unknown` | No |
+| Sáb | Manual, ingrediente genérico | usuario teclea "Pollo cocido" a 239 kcal/100g | `confirmed` (débil, un solo lado) | Sí |
+| Dom | IA, comida completa | `estimateMealFromPhoto` da un total de 600 kcal para el plato entero | `not_applicable` (señal verificable: el prompt pide expresamente un total, no una composición por 100g) | No — sigue excluido por `NutrientStatus:"estimated"`, con independencia del estado |
 
-De 7 días con número `known_nonzero` (Dom queda fuera por `estimated`, no por estado), cuentan como fiables: Mar, Mié, Sáb — 3 de 6, prácticamente igual de restrictivo que antes de esta corrección, pero ahora **correctamente restrictivo**: el jueves y el viernes, que antes se habrían dado por buenos sin comprobar nada, ahora quedan honestamente en `unknown`. La conclusión práctica no cambia (una dieta de cocina casera con ingredientes genéricos sigue pudiendo quedar permanentemente por debajo del umbral), pero ya no hay una categoría (`not_applicable` por origen) que estuviera dejando pasar sin comprobación justamente los casos — sopas/purés reconstituidos, ingredientes genéricos tecleados a mano — que el usuario señaló como el riesgo real.
+De 7 días con número `known_nonzero` (Dom queda fuera por `estimated`, no por estado), cuentan como fiables: Mar, Sáb — 2 de 6. Tras la corrección de §16, código de barras deja de aportar NINGÚN día fiable por sí solo salvo que, en el futuro, exista una señal estructural verificable de "total cerrado" (hoy no existe). La conclusión práctica no cambia (una dieta de cocina casera con ingredientes genéricos sigue pudiendo quedar permanentemente por debajo del umbral) pero es ahora, de verdad, **honestamente restrictiva**: ninguna categoría deja pasar sin comprobación un caso que no puede verificar.
 
 **Dónde queda esto en la ruta**: sigue sin proponerse relajar la regla estricta (`unknown`/`incompatible` nunca fiables) sin datos reales de calibración — se mantiene como decisión provisional en §11.
 
@@ -334,11 +348,16 @@ export type QuantityResolution =
 // 100g/ración escalable, o ya es el total consumido?", nunca "de qué fuente vino")
 //
 // export type DeclaredFoodState =
-//   | "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified";
+//   | "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified" | "ambiguous";
+//   // "ambiguous" — CORREGIDO en la auditoría de PR3a (§16): dos o más estados
+//   // declarados a la vez, sin regla segura de reducción a uno solo.
 //
 // export function extractDeclaredState(text: string): DeclaredFoodState;
 //   // léxico fijo español+inglés, incluye señales de preparación de producto
-//   // (instantáneo/en polvo/para preparar). Sin coincidencia → "unspecified".
+//   // (instantáneo/en polvo/para preparar), por PALABRA/FRASE COMPLETA — CORREGIDO
+//   // en la auditoría de PR3a (§16): la versión original usaba subcadena, "raw"
+//   // se leía dentro de "strawberry". Sin coincidencia → "unspecified". Dos o
+//   // más categorías → "ambiguous".
 //
 // export type FoodStateConfidence =
 //   | "confirmed" | "unknown" | "incompatible" | "not_applicable";
@@ -346,29 +365,39 @@ export type QuantityResolution =
 // export function resolveFoodStateConfidenceForGenericMatch(
 //   queryText: string, referenceText: string,
 // ): FoodStateConfidence;
-//   // cualquiera "unspecified" → "unknown"; iguales → "confirmed"; distintos → "incompatible"
+//   // cualquiera "unspecified"/"ambiguous" → "unknown"; iguales (únicos) → "confirmed"; distintos → "incompatible"
 //
-// export function resolveFoodStateConfidenceForProduct(
-//   productText: string, hasSeparatePreparedBasis: boolean,
-// ): FoodStateConfidence;
-//   // hasSeparatePreparedBasis (existe *_prepared_100g en la fuente) → "unknown"
-//   // si no, y el propio nombre sugiere preparación → "unknown"
-//   // si no, → "not_applicable" (sin indicio de preparación distinta al consumo directo)
+// export function resolveFoodStateConfidenceForProduct(): FoodStateConfidence;
+//   // CORREGIDA por segunda vez (PR3a, §16): siempre "unknown". El valor de un
+//   // producto escaneado es siempre una referencia por 100g — "not_applicable"
+//   // exigiría una señal estructural verificable de "total cerrado" que ningún
+//   // sitio de captura actual extrae. Ya no toma parámetros: la ausencia de
+//   // evidencia de preparación NO es evidencia de "not_applicable".
 //
 // export function resolveFoodStateConfidenceForDirectEntry(
 //   kind: "whole_intake_total" | "per_unit_reference", nameText?: string,
 // ): FoodStateConfidence;
 //   // "whole_intake_total" (IA de comida completa, total tecleado a mano) → "not_applicable"
-//   // "per_unit_reference" (manual/IA de un alimento por 100g) → según extractDeclaredState(nameText)
+//   //   (señal verificable por construcción: el prompt pide expresamente un total)
+//   // "per_unit_reference" (manual/IA de un alimento por 100g) → según extractDeclaredState(nameText),
+//   //   "unspecified"/"ambiguous" → "unknown"
 
 // packages/types/src/index.ts — AMPLIACIÓN aditiva a InventoryItem/RecipeIngredient, PR3a
 
 // InventoryItem gana:
 //   nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>
+//   foodStateConfidence?: FoodStateConfidence
 // RecipeIngredient gana:
 //   nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>
-// Recipe gana (agregado, calculado al guardar, no al vuelo):
-//   nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>  // el peor status entre sus ingredientes
+//   foodStateConfidence?: FoodStateConfidence
+// Recipe.kcal/protein/carbs/fat — SIN nutrientStatus propio en PR3a. La
+// propuesta original de esta fila ("agregado = el peor status entre sus
+// ingredientes") queda RETIRADA tras la revisión: Recipe.kcal/etc pueden
+// venir de un macroOverride manual que ningún RecipeIngredient refleja, o
+// de una suma con ingredientes en estado idle/omitidos — combinar los
+// nutrientStatus de los ingredientes ignorando esos dos casos produciría
+// una confianza injustificada. Ver §16 para la clasificación conservadora
+// que PR3 debe usar en su lugar.
 
 // packages/types/src/index.ts — FoodLogEntry, ampliación PR3
 
@@ -517,7 +546,7 @@ Sin cambios en los puntos 1-5 de la v2 (todo lo pre-existente en `food_log`/`inv
 - Archivos:
   - `apps/web/src/lib/nutrient-provenance.ts` (nuevo — las 5 funciones compartidas de §4, **más `extractDeclaredState` y las tres funciones `resolveFoodStateConfidenceFor{GenericMatch,Product,DirectEntry}`**, corregidas en §1.6/§4 — no una sola función genérica por "origen").
   - `apps/web/src/lib/food-lookup.ts` (editar `parseOFFProduct` líneas 65-68 y `searchUSDA` líneas 237-239 para llamar a las funciones compartidas de `NutrientValue`; **búsqueda genérica de texto → `resolveFoodStateConfidenceForGenericMatch`**; **resultado identificado por código → `resolveFoodStateConfidenceForProduct`, comprobando además si `nutriments` contiene alguna clave `*_prepared_100g`**).
-  - `apps/web/src/components/dashboard/BarcodeScannerModal.tsx` (editar `fetchProduct`, líneas 161-164 — sustituir su mapeo propio por `nutrientValueFromOff` + `resolveFoodStateConfidenceForProduct`, matando de paso la duplicación P3 para este archivo; **ya no fija `"not_applicable"` a ciegas** — depende de si el producto declara base preparada o su nombre sugiere preparación).
+  - `apps/web/src/components/dashboard/BarcodeScannerModal.tsx` (editar `fetchProduct`, líneas 161-164 — sustituir su mapeo propio por `nutrientValueFromOff` + `resolveFoodStateConfidenceForProduct`, matando de paso la duplicación P3 para este archivo; **ya no fija `"not_applicable"` a ciegas** — y tras la corrección de §16, tampoco lo infiere de la ausencia de indicios: siempre `"unknown"`).
   - `apps/web/src/components/dashboard/CreateRecipeModal.tsx` (editar `lookupIngredient`, líneas 112-155, Y `ingToRecord`, líneas 45-51 — **los dos puntos de colapso**, no solo uno; la rama de búsqueda genérica usa `resolveFoodStateConfidenceForGenericMatch`; la rama de edición manual de un ingrediente usa `resolveFoodStateConfidenceForDirectEntry("per_unit_reference", nombre)`).
   - `apps/web/src/components/dashboard/EditRecipeModal.tsx` (mismo par de ediciones, líneas 104-135 y 28-36).
   - `apps/web/src/components/dashboard/views/InventoryView.tsx` (`handleFill`, para persistir `nutrientStatus`/`foodStateConfidence`; edición manual de un `InventoryItem` existente usa `resolveFoodStateConfidenceForDirectEntry("per_unit_reference", ...)`, no `"not_applicable"` fijo).
@@ -567,10 +596,11 @@ PR6, PR7, resto de PR8, resto de PR9.
 - **AC22 — nuevo** — Buscar "pollo" (sin declarar estado) y encontrar "Chicken, raw" (USDA, declara "raw") produce `foodStateConfidence:"unknown"` — ni `"confirmed"` ni `"incompatible"`, porque solo un lado declara estado. (PR3a)
 - **AC23 — nuevo** — Buscar "lentejas cocidas" (declara "cooked") y encontrar "Lentejas cocidas" en el catálogo local (declara "cooked") produce `foodStateConfidence:"confirmed"`. (PR3a)
 - **AC24 — nuevo** — Buscar "pollo asado" (declara "cooked") y encontrar "Chicken, raw" (declara "raw") produce `foodStateConfidence:"incompatible"` — y ese resultado, aunque su `NutrientStatus` sea `known_nonzero`, nunca cuenta como fiable en el kernel de cobertura (PR1). Este es el caso de prueba central de la corrección de §13.2/§1.6.
-- **AC25 — corregido** — Un producto escaneado por código de barras SIN base `*_prepared_100g` en la fuente y cuyo nombre no contiene ninguna palabra de preparación (p. ej. una lata de refresco) produce `foodStateConfidence:"not_applicable"`. (PR3a, `resolveFoodStateConfidenceForProduct`)
-- **AC25b — nuevo, caso central de esta corrección** — Un producto escaneado CON base `*_prepared_100g` declarada en la fuente (p. ej. una sopa de sobre) produce `foodStateConfidence:"unknown"`, **nunca** `"not_applicable"` — el test debe fallar si la implementación vuelve a asignar `"not_applicable"` por el mero hecho de venir de un código de barras. (PR3a)
-- **AC25c — nuevo** — Un producto escaneado sin base `*_prepared_100g` pero cuyo propio nombre contiene una palabra de preparación (p. ej. "puré instantáneo") produce `foodStateConfidence:"unknown"`, no `"not_applicable"`. (PR3a)
-- **AC25d — nuevo** — Una entrada manual de un ingrediente genérico (`per_unit_reference`) sin estado en el nombre tecleado (p. ej. "Pollo") produce `"unknown"`; con estado tecleado (p. ej. "Pollo cocido") produce `"confirmed"`. (PR3a, `resolveFoodStateConfidenceForDirectEntry`)
+- **AC25 — corregido por segunda vez (§16)** — Un producto escaneado por código de barras llamado «Pechuga de pollo», SIN base `*_prepared_100g` en la fuente y sin ninguna palabra de preparación en el nombre, produce `foodStateConfidence:"unknown"`, **nunca** `"not_applicable"` — la ausencia de indicios de preparación no es una prueba de que no haga falta preparación. (PR3a, `resolveFoodStateConfidenceForProduct`; este AC sustituye a la versión anterior, que exigía exactamente lo contrario)
+- **AC25b — corregido (§16)** — Un producto escaneado CON base `*_prepared_100g` declarada en la fuente (p. ej. una sopa de sobre) produce `foodStateConfidence:"unknown"` — igual que sin ella (AC25): ambos casos son `"unknown"` hoy, no hay una tercera categoría que los distinga con las señales disponibles.
+- **AC25c — corregido (§16)** — Un producto escaneado sin base `*_prepared_100g` pero cuyo propio nombre contiene una palabra de preparación (p. ej. "puré instantáneo") produce `foodStateConfidence:"unknown"`, nunca `"confirmed"` — no hay un segundo lado independiente con el que contrastar el nombre del propio producto.
+- **AC25d — nuevo** — Una entrada manual de un ingrediente genérico (`per_unit_reference`) sin estado en el nombre tecleado (p. ej. "Pollo") produce `"unknown"`; con un ÚNICO estado tecleado sin ambigüedad (p. ej. "Pollo cocido") produce `"confirmed"`; con dos estados en conflicto (p. ej. "Pollo crudo o cocido") produce `"unknown"`, no elige uno. (PR3a, `resolveFoodStateConfidenceForDirectEntry`)
+- **AC25f — nuevo (§16)** — `extractDeclaredState("strawberry")` produce `"unspecified"`, no `"raw"` — coincidencia de palabra completa, no de subcadena. `extractDeclaredState("sopa deshidratada para preparar")` produce `"ambiguous"` (declara "dry" y "reconstituted" a la vez) y ese resultado se trata como `"unspecified"` en los tres resolutores de `foodStateConfidence` — nunca `"confirmed"`. (PR3a)
 - **AC25e — nuevo** — Una estimación de IA para una comida completa (`estimateMealMacros`/`estimateMealFromPhoto`, `whole_intake_total`) produce `foodStateConfidence:"not_applicable"` — correcto porque no hay una referencia por 100g detrás, no por defecto de origen; sigue excluida de "fiable" por su `NutrientStatus:"estimated"`, con independencia de este resultado. (PR3a)
 - **AC26 — nuevo, prueba de la consecuencia documentada en §1.6** — Una ventana de 7 días compuesta enteramente por coincidencias genéricas donde ninguna de las dos partes (búsqueda del usuario, referencia encontrada) declara estado produce `coverageFraction = 0` para todos los nutrientes pese a que las 7 entradas son `known_nonzero` — demuestra en forma de test, no solo en prosa, que el gate puede dejar a un usuario de cocina casera permanentemente en "no evaluable" bajo la regla estricta pedida. (PR1, fixture de calibración — no es un fallo del kernel, es el comportamiento especificado)
 
@@ -730,6 +760,42 @@ Este documento cerraba (§1.3, §4, §11) que el catálogo local (`food-db.ts`) 
 **Qué haría falta para elevarlo en el futuro**: una auditoría manual, ficha a ficha, de las ~200 entradas de `FOOD_DB`, añadiendo un campo de origen real por fila (p. ej. `source: "bedca:12345"` o `source: "usda:fdc-167762"`) que permita distinguir un valor verificado de BEDCA/USDA de un "valor estándar" aproximado. Es trabajo de catalogación, no de ingeniería, y queda fuera del alcance de PR3a — anotado aquí como el trabajo pendiente concreto, no como una vaguedad.
 
 **Alcance de esta corrección**: solo afecta `NutrientStatus` (procedencia por nutriente). No afecta `foodStateConfidence` (§1.6) — la resolución de `resolveFoodStateConfidenceForGenericMatch` para coincidencias del catálogo local (comparar el texto buscado contra `FoodEntry.name`) ya era, y sigue siendo, independiente de esta decisión: ambos ejes son ortogonales por diseño (ver la definición de `FoodStateConfidence`), y un valor `legacy_unlabeled` puede perfectamente tener `foodStateConfidence:"confirmed"` si el texto de búsqueda y el nombre de la ficha declaran el mismo estado (ver AC23, §10, sin cambios).
+
+---
+
+## 16. Segunda ronda de correcciones sobre PR3a — revisión tras la primera entrega
+
+La revisión de la primera entrega de PR3a encontró tres casos donde el código todavía podía presentar una confianza injustificada, y pidió dejar resuelta en el diseño la clasificación de los totales de `Recipe` para PR3. Las tres correcciones de código ya están implementadas en el mismo worktree de PR3a (no una entrega nueva); esta sección documenta el razonamiento para que quede trazable, igual que §15.
+
+### 16.1 Edición de inventario (`EditInventoryModal.tsx`) — no auditado en la primera entrega de PR3a
+
+La primera entrega de PR3a enumeró los sitios de CAPTURA (búsqueda OFF/USDA, escáner, recetas, catálogo local, IA) pero no incluyó la EDICIÓN de un `InventoryItem` ya guardado. `EditInventoryModal.tsx` permite cambiar `kcal`/`protein` y, antes de esta corrección, conservaba sin más el `nutrientStatus` que el item ya tenía — así que un valor `known_nonzero` procedente de OFF que el usuario reemplazaba a mano por un número inventado seguía atribuyéndose a la lectura original de OFF.
+
+**Corrección**: `save()` ya distinguía, para otro propósito (limpiar el aviso de IA sin revisar), si `kcal`/`protein` habían cambiado de verdad comparando el valor final del formulario contra `item.kcal`/`item.protein` originales. Se reutiliza exactamente esa misma comparación, por campo: si `kcal` cambió, `nutrientStatus.kcal` pasa a `known_*` (vía `manualStatusFromValue`, la misma función que ya usan los demás sitios de entrada manual); si no cambió, se conserva tal cual. `protein` se trata de forma independiente. Ningún otro campo de `nutrientStatus` (carbs/fat/salt/fiber/sugars) se toca nunca aquí — este modal no tiene inputs para ellos. Abrir y guardar sin tocar `kcal` ni `protein` no añade ni modifica ninguna clave: un item sin `nutrientStatus` previo sigue sin tenerlo después.
+
+### 16.2 `resolveFoodStateConfidenceForProduct` — ausencia de evidencia tratada como prueba
+
+La función original devolvía `"not_applicable"` cuando NO encontraba ni un campo `*_prepared_100g` en la fuente ni una palabra de preparación en el nombre del producto. Es el mismo error de razonamiento, en otro sitio, que motivó la primera corrección de §1.6 (v6): **ausencia de evidencia no es evidencia de ausencia**. Un producto escaneado puede requerir cocción perfectamente sin que Open Food Facts tenga cargado el campo `*_prepared_100g` para esa ficha concreta — el dato es crowdsourced e incompleto; no encontrar la señal no confirma que no exista.
+
+Más allá de ese error puntual, la auditoría encontró algo más estructural: el valor que llega a esta función es **siempre** una referencia por 100 g — los sitios de captura que la llaman (`food-lookup.ts`, `BarcodeScannerModal.tsx`) solo extraen campos con sufijo `_100g`. Por definición, un valor por 100 g necesita escalarse por la cantidad realmente consumida antes de poder ser "el total tal como se consume" — el único criterio que el propio §1.6 fija para `not_applicable`. Con las señales que el código maneja hoy, `not_applicable` no es simplemente infrecuente para un producto escaneado: es **inalcanzable de forma verificable**.
+
+**Corrección**: `resolveFoodStateConfidenceForProduct()` ya no toma parámetros y siempre devuelve `"unknown"`. `hasSeparatePreparedBasis` (existencia de un campo `*_prepared_100g`) se mantiene como una función propia y probada (`offHasSeparatePreparedBasis`) porque sigue siendo un hecho real y verificable sobre la fuente — pero hoy ningún resolutor puede tomar una decisión segura únicamente a partir de él, así que no se usa para producir `not_applicable` ni ninguna otra distinción. Reservar `not_applicable` para un caso genuinamente verificable exigiría una señal estructural que hoy no se extrae de ningún sitio de captura — por ejemplo, un campo de OFF que declare `nutrition_data_per: "serving"` con una ración que sea, además, el envase entero (así el valor reportado ya sería el total del envase, no una base por 100 g escalable). Ninguna función de este documento extrae ese campo todavía; queda anotado aquí como la señal concreta que haría falta, no como una vaguedad.
+
+### 16.3 `extractDeclaredState` — coincidencia de subcadena, no de palabra
+
+`includesAny` comprobaba `haystack.includes(palabra)`, así que `"raw"` se leía dentro de `"strawberry"`. **Corrección**: coincidencia de palabra/frase completa mediante límites Unicode (`(?<![\p{L}\p{N}])palabra(?![\p{L}\p{N}])`, no `\b` de ASCII, para que una tilde o una "ñ" siga contando como parte de la palabra y no cree un límite falso a mitad de un término en español).
+
+Además, la función elegía la PRIMERA categoría que encontraba por orden de comprobación cuando un texto mencionaba más de una — un truco que dependía de que las listas de palabras no tuvieran colisiones reales, no de una regla explícita. **Corrección**: `DeclaredFoodState` gana el valor `"ambiguous"` (§4). `extractDeclaredState` ahora comprueba las 5 categorías de forma independiente y, si más de una tiene coincidencia, devuelve `"ambiguous"` en vez de elegir una por prioridad de lista — sin ninguna regla de reducción especial (ej. "reconstituido" no se prefiere sobre "seco" aunque conceptualmente el primero suceda al segundo): inventar esa regla sin datos de calibración sería exactamente el tipo de clasificador semántico que este documento excluye explícitamente de su alcance. Los tres resolutores de `foodStateConfidence` tratan `"ambiguous"` igual que `"unspecified"` — nunca `"confirmed"`.
+
+### 16.4 Dependencia para PR3: clasificación de `Recipe.kcal/protein/carbs/fat`
+
+La propuesta original de §4 para el agregado de `Recipe` ("nutrientStatus = el peor status entre sus ingredientes") queda **retirada**. `CreateRecipeModal.tsx`/`EditRecipeModal.tsx` permiten sobrescribir `Recipe.kcal/protein/carbs/fat` manualmente (`macroOverride`) sin que `Recipe` conserve, en ningún campo, si el total finalmente guardado procede de esa intervención o de la suma en vivo de `derivedMacros`. Combinar los `nutrientStatus` de los `RecipeIngredient` para derivar la fiabilidad del total, como proponía la línea retirada, produciría una confianza injustificada en dos casos reales: (a) el usuario sobrescribió el total a mano — los ingredientes pueden tener una procedencia excelente y no importar en absoluto, porque el número guardado no viene de ellos; (b) la suma es de ingredientes con alguno en estado `idle` (nunca buscado) — la suma es una suma PARCIAL, no del total real de la receta, aunque los ingredientes SÍ buscados sean todos `known_*`.
+
+**Decisión — clasificación conservadora verificable para PR3, sin añadir campos a `Recipe` en esta entrega**: `Recipe` no gana un `nutrientStatus` propio en PR3a. Cuando PR3 etiquete una entrada de diario que registre el consumo de una receta (`cookRecipe`, `state.tsx:2988`), debe tratar los 4 macros de `Recipe` como `"legacy_unlabeled"` — mismo criterio que el catálogo local (§15): hay un número, pero con la información que `Recipe` conserva hoy no hay forma de verificar si procede íntegramente de ingredientes con procedencia conocida, de un `macroOverride` manual, o de una suma parcial con ingredientes omitidos. Es deliberadamente MÁS conservador que "el peor status entre los ingredientes buscados" (que ignoraría el override/la omisión), y no requiere ningún cambio de esquema.
+
+**Elevarlo con precisión en el futuro** exigiría un campo nuevo en `Recipe`, poblado por la propia lógica de guardado de `CreateRecipeModal.tsx`/`EditRecipeModal.tsx` en el momento de `save()` — por ejemplo `macroProvenance: "derived_complete" | "derived_partial" | "overridden"`, fijado según si `macroOverride !== null` en ese momento y si todos los ingredientes con nombre no vacío llegaron a `status === "found" | "manual"`. Es exactamente el tipo de cambio de esquema que esta ronda de corrección, deliberadamente, no hace — sin conectar la web al kernel ni tocar los escritores del diario — así que queda nombrado aquí como el trabajo concreto para una entrega futura, no como una vaguedad.
+
+**Caso de aceptación correspondiente (AC28, nuevo)**: una entrada de diario que registra `cookRecipe` para una receta cuyo `Recipe.kcal` fue fijado por `macroOverride` (no por la suma de ingredientes) produce, en PR3, `nutrientStatus:"legacy_unlabeled"` para sus 4 macros — nunca `"known_*"` derivado combinando los `nutrientStatus` de `RecipeIngredient`, aunque todos ellos sean `known_nonzero`. Prueba, en forma de test, exactamente el caso (a) de arriba: procedencia excelente en los ingredientes que NO se refleja en el total real guardado.
 
 ---
 
