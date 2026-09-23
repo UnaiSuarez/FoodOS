@@ -2,6 +2,8 @@
 // Los usan apps/web hoy, y apps/mobile y apps/desktop en el futuro.
 // Reflejan el modelo de datos de supabase/schema.sql (ver docs/data-model.md).
 
+import type { FoodStateConfidence, NutrientKey, NutrientStatus } from "./nutrient-value";
+
 export type StorageName = "Nevera" | "Congelador" | "Despensa";
 
 /** Dimensión física que declara un `unitSize`: "g" para un conteo de sólido
@@ -56,6 +58,24 @@ export interface InventoryItem {
    * verificada — mostrar como aproximado y animar a revisarlo.
    */
   dataSource?: "local" | "off" | "usda" | "ai" | "manual";
+  /**
+   * PR3a — procedencia por nutriente, independiente de `dataSource` (que
+   * describe el LOTE, no cada campo). Ausente = equivalente a "unknown"
+   * para esa clave: no fijar aquí un valor por defecto sustituye a la
+   * ausencia real. El número de kcal/protein/carbs/fat/salt/fiber/sugars
+   * NUNCA cambia por esto — este campo describe cuánto confiar en el
+   * número que ya existe, no lo sustituye. Ver
+   * docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md §1.3/§1.6.
+   */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  /**
+   * PR3a — confianza en que la referencia usada describe el alimento en el
+   * estado (crudo/cocido/...) en que realmente se consume. Eje
+   * independiente de `nutrientStatus`: un valor `known_nonzero` con
+   * `foodStateConfidence: "unknown"` sigue sin ser fiable para Nutrition
+   * v4 (ver el documento de diseño, §1.6).
+   */
+  foodStateConfidence?: FoodStateConfidence;
 }
 
 export interface CartItem {
@@ -137,6 +157,14 @@ export interface RecipeIngredient {
   unitSize?: number;
   /** Dimensión de unitSize ("g" o "ml") — ver UnitSizeUnit en InventoryItem. */
   unitSizeUnit?: UnitSizeUnit;
+  /** PR3a — mismo significado que en InventoryItem: procedencia por
+      nutriente, independiente del número. Ausente = "unknown" para esa
+      clave. Debe sobrevivir tanto a la búsqueda/selección del ingrediente
+      como a la serialización final de la receta (ver ingToRecord en
+      CreateRecipeModal.tsx/EditRecipeModal.tsx). */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  /** PR3a — mismo significado que en InventoryItem. */
+  foodStateConfidence?: FoodStateConfidence;
 }
 
 export interface Recipe {
