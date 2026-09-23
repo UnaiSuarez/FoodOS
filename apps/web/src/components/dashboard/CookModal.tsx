@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { MealType, Recipe } from "@foodos/types";
 import { actions, availableForIngredient, getPendingMacros, useFoodOS } from "@/lib/state";
 import { eur, toGrams, uid } from "@/lib/utils";
+import { intentGuard, runGuardedIntent } from "@/lib/intent-guard";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -15,6 +16,11 @@ interface Props {
 
 export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
   const { state, mutate, showToast, setMascotMessage } = useFoodOS();
+  // Una intención por montaje del modal — NUNCA se regenera dentro de
+  // cook(), o cada clic reclamaría un id distinto y el guard no protegería
+  // nada. useState(() => uid()) (no useRef) para no gastar un UUID en cada
+  // renderizado descartado: el inicializador solo se ejecuta una vez.
+  const [intentId] = useState(() => uid());
   const [servings, setServings] = useState(recipe.servings || 1);
   const [deduct, setDeduct] = useState(true);
   // Per-ingredient qty overrides (null = use scaled default)
@@ -111,7 +117,23 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
 
   function cook() {
     const overrides = Object.keys(qtyOverrides).length > 0 ? qtyOverrides : undefined;
-    mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType }));
+    // Guard síncrono contra doble-ingesta por la misma intención (dos
+    // clics/toques antes del primer repintado): claim() y la llamada a
+    // mutate() ocurren en la misma tarea de JS, sin ningún await de por
+    // medio. Si mutate() devuelve false (mutationsBlocked() cortó la
+    // operación, p. ej. durante hidratación), la reclamación se libera —
+    // un reintento explícito posterior podrá volver a intentarlo con el
+    // mismo intentId. Si devuelve true, la reclamación se conserva para
+    // siempre: esta intención ya obtuvo una llamada aceptada y no puede
+    // volver a dispararla. actions.cookRecipe SIEMPRE empuja una entrada
+    // al diario (sin ningún `return` anticipado, ver state.tsx), así que
+    // aquí "aceptada" y "creó la ingesta" coinciden — a diferencia de
+    // ConsumeModal.tsx, ver su comentario (intent-guard.ts tiene el
+    // detalle completo de esta asimetría).
+    const applied = runGuardedIntent(intentGuard, intentId, () =>
+      mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType })),
+    );
+    if (!applied) return; // ya reclamado (doble clic) o mutate() no aceptó la operación — ningún toast, ningún cierre
     const lines: string[] = [];
     if (exceedKcal) lines.push("Atención: superas el objetivo de calorías de hoy.");
     if (coversProtein) lines.push("Proteína del día cubierta ✓");
