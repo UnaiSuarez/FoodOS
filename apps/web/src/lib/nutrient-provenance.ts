@@ -201,58 +201,93 @@ const DRY_WORDS = ["seco", "seca", "deshidratado", "deshidratada", "instantáneo
 const RECONSTITUTED_WORDS = ["reconstituido", "reconstituida", "hidratado", "hidratada", "para preparar", "reconstituted", "rehydrated"];
 const DRAINED_WORDS = ["escurrido", "escurrida", "drained"];
 
-function includesAny(haystack: string, words: readonly string[]): boolean {
-  return words.some((w) => haystack.includes(w));
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
- * Léxico fijo, español + inglés. Sin coincidencia → `"unspecified"`. No
- * interpreta sinónimos fuera de esta lista ni hace ningún análisis
- * semántico — es exactamente lo que el documento de diseño pide: "no
- * construir un clasificador semántico completo".
+ * Coincidencia de PALABRA/FRASE COMPLETA, no subcadena — `"strawberry"` no
+ * debe leer `"raw"` dentro de sí misma. `\p{L}`/`\p{N}` (Unicode) en vez de
+ * `\b` (ASCII) para que una tilde/ñ siga contando como parte de la palabra
+ * y no cree un límite falso a mitad de un término en español.
+ */
+function containsWholeWord(haystack: string, phrase: string): boolean {
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, "u");
+  return pattern.test(haystack);
+}
+
+function includesAny(haystack: string, words: readonly string[]): boolean {
+  return words.some((w) => containsWholeWord(haystack, w));
+}
+
+/**
+ * Léxico fijo, español + inglés, por palabra/frase COMPLETA (nunca
+ * subcadena — ver `containsWholeWord`). Sin ninguna coincidencia →
+ * `"unspecified"`. Dos o más categorías distintas a la vez (ej. "sopa
+ * deshidratada para preparar" declara "dry" Y "reconstituted") →
+ * `"ambiguous"`: sin una regla de reducción verificable y calibrada, no es
+ * seguro elegir una sobre la otra solo por el orden en que se comprueban
+ * las listas — así que no se elige ninguna. No interpreta sinónimos fuera
+ * de esta lista ni hace ningún análisis semántico — es exactamente lo que
+ * el documento de diseño pide: "no construir un clasificador semántico
+ * completo".
  */
 export function extractDeclaredState(text: string): DeclaredFoodState {
   const normalized = text.toLowerCase();
-  // Orden de comprobación: los estados más específicos (seco/reconstituido/
-  // escurrido) antes que crudo/cocido, para que "puré instantáneo" no se
-  // lea nunca como "cocido" por casualidad de alguna palabra compartida.
-  if (includesAny(normalized, DRAINED_WORDS)) return "drained";
-  if (includesAny(normalized, RECONSTITUTED_WORDS)) return "reconstituted";
-  if (includesAny(normalized, DRY_WORDS)) return "dry";
-  if (includesAny(normalized, COOKED_WORDS)) return "cooked";
-  if (includesAny(normalized, RAW_WORDS)) return "raw";
-  return "unspecified";
+  const matched = new Set<Exclude<DeclaredFoodState, "unspecified" | "ambiguous">>();
+  if (includesAny(normalized, RAW_WORDS)) matched.add("raw");
+  if (includesAny(normalized, COOKED_WORDS)) matched.add("cooked");
+  if (includesAny(normalized, DRY_WORDS)) matched.add("dry");
+  if (includesAny(normalized, RECONSTITUTED_WORDS)) matched.add("reconstituted");
+  if (includesAny(normalized, DRAINED_WORDS)) matched.add("drained");
+  if (matched.size === 0) return "unspecified";
+  if (matched.size > 1) return "ambiguous";
+  const [only] = matched;
+  return only;
+}
+
+/** true si el estado no es una base fiable para comparar (ausente o en conflicto). */
+function isUnreliableState(state: DeclaredFoodState): boolean {
+  return state === "unspecified" || state === "ambiguous";
 }
 
 /**
  * Búsqueda genérica por texto (OFF, USDA, catálogo local): compara lo que
  * el usuario buscó con el nombre/descripción de la referencia encontrada.
- * Cualquiera de los dos sin estado declarado → `"unknown"` (el caso
- * mayoritario hoy). Ambos declaran el mismo estado → `"confirmed"`.
- * Declaran estados distintos → `"incompatible"` — nunca se cuenta como
- * fiable, ni siquiera con un nutriente `known_*`.
+ * Cualquiera de los dos sin estado declarado, o con un estado ambiguo
+ * (varias bases en conflicto) → `"unknown"` (el caso mayoritario hoy).
+ * Ambos declaran el mismo estado único → `"confirmed"`. Declaran estados
+ * distintos → `"incompatible"` — nunca se cuenta como fiable, ni siquiera
+ * con un nutriente `known_*`.
  */
 export function resolveFoodStateConfidenceForGenericMatch(queryText: string, referenceText: string): FoodStateConfidence {
   const queryState = extractDeclaredState(queryText);
   const referenceState = extractDeclaredState(referenceText);
-  if (queryState === "unspecified" || referenceState === "unspecified") return "unknown";
+  if (isUnreliableState(queryState) || isUnreliableState(referenceState)) return "unknown";
   return queryState === referenceState ? "confirmed" : "incompatible";
 }
 
 /**
  * Producto identificado (código de barras u otra referencia de producto
- * concreto). `hasSeparatePreparedBasis` es true cuando la fuente declara
- * TAMBIÉN una base "preparado" distinta de la base "tal cual" (p. ej.
- * existe algún campo `*_prepared_100g` en `nutriments` de OFF) — en ese
- * caso hay una ambigüedad estructural real y no hay forma hoy de saber
- * qué base se usó al registrar el consumo, así que nunca es
- * `not_applicable`.
+ * concreto). El valor que llega aquí es siempre una referencia por 100 g
+ * — los sitios de captura que llaman a esta función (`food-lookup.ts`,
+ * `BarcodeScannerModal.tsx`) solo extraen campos `_100g` — así que NUNCA
+ * representa ya el total tal como se consume, y `not_applicable` no es
+ * alcanzable con las señales disponibles hoy: exigiría una prueba
+ * estructural VERIFICABLE de que el número es un total cerrado (p. ej. un
+ * campo de OFF que declare `nutrition_data_per: "serving"` con una ración
+ * = el envase entero), que ningún sitio de captura actual extrae todavía.
  *
- * `not_applicable` se reserva para cuando NI la fuente declara una base
- * preparada separada NI el propio nombre del producto sugiere ninguna
- * preparación (p. ej. una lata de refresco) — no hay ningún indicio de
- * que el consumo directo difiera de la base declarada. Nunca se asigna
- * `not_applicable` por el mero hecho de venir de un código de barras.
+ * `hasSeparatePreparedBasis` en `true` es una ambigüedad real (la propia
+ * fuente declara una base "preparado" distinta, ej. `*_prepared_100g` de
+ * OFF) → `"unknown"`. Su AUSENCIA no es evidencia de lo contrario — un
+ * producto puede requerir cocción perfectamente sin que OFF tenga cargado
+ * ese campo, o incluso sin tener ficha nutricional preparada en absoluto
+ * — así que la ausencia de esa señal deja igual de `"unknown"`, nunca
+ * `"not_applicable"` por descarte. Un nombre que además declara un
+ * estado (ej. "Pasta cocida") tampoco sube a `"confirmed"`: no hay un
+ * segundo lado independiente (lo que el usuario realmente consumió) con
+ * el que contrastarlo — sigue siendo `"unknown"`.
  */
 const OFF_PREPARED_BASIS_KEYS = [
   "energy-kcal_prepared_100g",
@@ -266,19 +301,21 @@ const OFF_PREPARED_BASIS_KEYS = [
 
 /**
  * true cuando el `nutriments` de OFF declara TAMBIÉN alguna base
- * "preparado" (`*_prepared_100g`) distinta de la base "tal cual" — señal
- * de que existe una ambigüedad real sobre qué base se usó al registrar el
- * consumo. Pensado como entrada de `hasSeparatePreparedBasis` para
- * `resolveFoodStateConfidenceForProduct`.
+ * "preparado" (`*_prepared_100g`) distinta de la base "tal cual" — hecho
+ * real y verificable sobre la fuente, útil por sí mismo (ej. para avisar
+ * de la ambigüedad en la interfaz) aunque hoy ningún resolutor de
+ * `foodStateConfidence` lo consuma: su ausencia NO demuestra que el
+ * producto no requiera preparación (ver `resolveFoodStateConfidenceForProduct`),
+ * así que no hay ninguna decisión segura que tomar únicamente a partir de
+ * este booleano todavía.
  */
 export function offHasSeparatePreparedBasis(nutriments: Record<string, unknown> | null | undefined): boolean {
   if (!nutriments) return false;
   return OFF_PREPARED_BASIS_KEYS.some((k) => nutriments[k] != null);
 }
 
-export function resolveFoodStateConfidenceForProduct(productText: string, hasSeparatePreparedBasis: boolean): FoodStateConfidence {
-  if (hasSeparatePreparedBasis) return "unknown";
-  return extractDeclaredState(productText) === "unspecified" ? "not_applicable" : "unknown";
+export function resolveFoodStateConfidenceForProduct(): FoodStateConfidence {
+  return "unknown";
 }
 
 /**
@@ -291,12 +328,13 @@ export function resolveFoodStateConfidenceForProduct(productText: string, hasSep
  * genérico, o una estimación de IA de un alimento por 100 g): se compara
  * el propio nombre tecleado/identificado contra el léxico — `"confirmed"`
  * (débil: un solo lado declara, no hay una segunda fuente independiente
- * con la que contrastar) si declara un estado, `"unknown"` si no.
+ * con la que contrastar) si declara un ÚNICO estado sin ambigüedad,
+ * `"unknown"` si no declara ninguno o si declara varios en conflicto.
  */
 export function resolveFoodStateConfidenceForDirectEntry(
   kind: "whole_intake_total" | "per_unit_reference",
   nameText?: string,
 ): FoodStateConfidence {
   if (kind === "whole_intake_total") return "not_applicable";
-  return extractDeclaredState(nameText ?? "") === "unspecified" ? "unknown" : "confirmed";
+  return isUnreliableState(extractDeclaredState(nameText ?? "")) ? "unknown" : "confirmed";
 }

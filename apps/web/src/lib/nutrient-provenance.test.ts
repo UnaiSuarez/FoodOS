@@ -223,6 +223,28 @@ describe("extractDeclaredState — léxico fijo, sin clasificador semántico", (
   it("es insensible a mayúsculas", () => {
     expect(extractDeclaredState("POLLO CRUDO")).toBe("raw");
   });
+
+  it("no lee 'raw' dentro de 'strawberry' — coincidencia de palabra completa, no subcadena", () => {
+    expect(extractDeclaredState("strawberry")).toBe("unspecified");
+    expect(extractDeclaredState("Mermelada de strawberry")).toBe("unspecified");
+  });
+
+  it("declaración inequívoca de 'raw'", () => {
+    expect(extractDeclaredState("Pollo crudo")).toBe("raw");
+  });
+
+  it("declaración inequívoca de 'cocido'", () => {
+    expect(extractDeclaredState("Arroz cocido")).toBe("cooked");
+  });
+
+  it("un texto que declara a la vez estado seco Y preparado es ambiguous, no elige uno por orden de comprobación", () => {
+    expect(extractDeclaredState("Sopa deshidratada, lista para preparar")).toBe("ambiguous");
+    expect(extractDeclaredState("Leche en polvo reconstituida")).toBe("ambiguous");
+  });
+
+  it("declarar crudo y cocido a la vez también es ambiguous", () => {
+    expect(extractDeclaredState("pollo crudo o cocido, a elegir")).toBe("ambiguous");
+  });
 });
 
 describe("resolveFoodStateConfidenceForGenericMatch — búsqueda por texto", () => {
@@ -245,6 +267,10 @@ describe("resolveFoodStateConfidenceForGenericMatch — búsqueda por texto", ()
   it("ninguno de los dos declara estado → unknown", () => {
     expect(resolveFoodStateConfidenceForGenericMatch("manzana", "Manzana Golden")).toBe("unknown");
   });
+
+  it("un lado ambiguo (varios estados en conflicto) → unknown, nunca confirmed ni incompatible", () => {
+    expect(resolveFoodStateConfidenceForGenericMatch("pollo crudo", "Sopa deshidratada para preparar")).toBe("unknown");
+  });
 });
 
 describe("offHasSeparatePreparedBasis", () => {
@@ -262,17 +288,16 @@ describe("offHasSeparatePreparedBasis", () => {
   });
 });
 
-describe("resolveFoodStateConfidenceForProduct — código de barras / producto", () => {
-  it("sin base preparada separada ni preparación en el nombre → not_applicable", () => {
-    expect(resolveFoodStateConfidenceForProduct("Coca-Cola lata 330ml", false)).toBe("not_applicable");
+describe("resolveFoodStateConfidenceForProduct — código de barras / producto (corrección tras revisión)", () => {
+  it("un producto escaneado sin campos preparados ni estado declarado NO puede quedar not_applicable — la ausencia de indicios no es prueba de nada", () => {
+    expect(resolveFoodStateConfidenceForProduct()).toBe("unknown");
   });
 
-  it("not_applicable NO se asigna por ser código de barras si hay base preparada separada", () => {
-    expect(resolveFoodStateConfidenceForProduct("Pasta seca", true)).toBe("unknown");
-  });
-
-  it("el nombre del producto declara una preparación → unknown, no not_applicable", () => {
-    expect(resolveFoodStateConfidenceForProduct("Pasta cocida en salsa", false)).toBe("unknown");
+  it("nunca produce not_applicable con las señales disponibles hoy, para ningún caso", () => {
+    // El valor de un producto escaneado siempre es una referencia por 100g
+    // (ver el comentario de la función) — not_applicable exigiría una señal
+    // estructural verificable que ningún sitio de captura actual extrae.
+    expect(resolveFoodStateConfidenceForProduct()).not.toBe("not_applicable");
   });
 });
 
@@ -292,5 +317,9 @@ describe("resolveFoodStateConfidenceForDirectEntry — entrada manual/IA directa
 
   it("referencia por 100g sin nombre → unknown", () => {
     expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference")).toBe("unknown");
+  });
+
+  it("referencia por 100g con nombre ambiguo (varios estados en conflicto) → unknown, nunca confirmed", () => {
+    expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference", "Sopa deshidratada para preparar")).toBe("unknown");
   });
 });
