@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
-import type { InventoryItem, StorageName, UnitSizeUnit } from "@foodos/types";
+import type { FoodStateConfidence, InventoryItem, NutrientKey, NutrientStatus, StorageName, UnitSizeUnit } from "@foodos/types";
 import { DEFAULT_SETTINGS, expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, findRememberedUnitSizeUnit, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
@@ -9,6 +9,7 @@ import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
 import { fillFoodData, scanTicketImage, identifyFoodFromPhoto } from "@/lib/ai-inventory";
 import { loadAIConfig } from "@/lib/ai-config";
 import { searchOFFSuggestions, type ExternalFoodSuggestion } from "@/lib/food-lookup";
+import { localCatalogStatusFromValue, manualStatusFromValue, resolveFoodStateConfidenceForGenericMatch } from "@/lib/nutrient-provenance";
 import { consumeQuickAddSignal } from "@/lib/quick-add-signal";
 import { useComboboxKeyboard } from "@/lib/use-combobox-keyboard";
 import { ConsumeModal } from "../ConsumeModal";
@@ -93,6 +94,11 @@ export function InventoryView() {
   const [itemExtras, setItemExtras] = useState<
     Pick<InventoryItem, "carbs" | "fat" | "salt" | "fiber" | "sugars" | "brand" | "imageUrl" | "allergenTags">
   >({});
+  // PR3a — procedencia por nutriente del alimento en construcción. Ausente
+  // para una clave = "unknown" para esa clave (ver InventoryItem); solo se
+  // guarda con el item si tiene al menos una clave (ver addItem).
+  const [nutrientStatus, setNutrientStatus] = useState<Partial<Record<NutrientKey, NutrientStatus>>>({});
+  const [foodStateConfidence, setFoodStateConfidence] = useState<FoodStateConfidence | undefined>(undefined);
   const allergenWarnings = useMemo(
     () => matchAllergens(state, itemExtras.allergenTags),
     [state, itemExtras.allergenTags]
@@ -120,12 +126,20 @@ export function InventoryView() {
       // pasa a ser su propia cifra, así que quitamos cualquier aviso de fuente.
       ...((key === "kcal" || key === "protein") ? { dataSource: undefined } : {}),
     }));
+    // PR3a — editar kcal/proteína a mano es una declaración explícita del
+    // usuario: ESE nutriente concreto pasa a known_*, sin tocar los demás.
+    if (key === "kcal" || key === "protein") {
+      const nutrientKey: NutrientKey = key;
+      setNutrientStatus((prev) => ({ ...prev, [nutrientKey]: manualStatusFromValue(value as number, true) }));
+    }
   }
 
   function handleNameChange(value: string) {
     nameCombobox.reset();
     setField("name", value);
     setItemExtras({});
+    setNutrientStatus({});
+    setFoodStateConfidence(undefined);
     const hits = searchFoodDB(value, 5);
     setSuggestions(hits);
     setOffSuggestions([]);
@@ -190,6 +204,15 @@ export function InventoryView() {
       dataSource: "local",
     }));
     setItemExtras({ carbs: entry.carbs, fat: entry.fat });
+    // PR3a — catálogo local sin procedencia por ficha (ver food-db.ts):
+    // legacy_unlabeled, nunca known_*.
+    setNutrientStatus({
+      kcal: localCatalogStatusFromValue(entry.kcal),
+      protein: localCatalogStatusFromValue(entry.protein),
+      carbs: localCatalogStatusFromValue(entry.carbs),
+      fat: localCatalogStatusFromValue(entry.fat),
+    });
+    setFoodStateConfidence(resolveFoodStateConfidenceForGenericMatch(form.name, entry.name));
     setSuggestions([]);
     setOffSuggestions([]);
     setShowSuggestions(false);
@@ -226,6 +249,9 @@ export function InventoryView() {
       carbs: s.carbs, fat: s.fat, salt: s.salt, fiber: s.fiber, sugars: s.sugars,
       brand: s.brand, imageUrl: s.imageUrl, allergenTags: s.allergenTags,
     });
+    // PR3a — s ya trae su propia procedencia real, calculada en food-lookup.ts.
+    setNutrientStatus(s.nutrientStatus ?? {});
+    setFoodStateConfidence(s.foodStateConfidence);
     setSuggestions([]);
     setOffSuggestions([]);
     setShowSuggestions(false);
@@ -261,6 +287,9 @@ export function InventoryView() {
           expires: todayPlus(data.expiryDays),
           dataSource: data.source,
         }));
+        // PR3a — data ya trae su propia procedencia real, calculada en ai-inventory.ts.
+        setNutrientStatus(data.nutrientStatus ?? {});
+        setFoodStateConfidence(data.foodStateConfidence);
         showToast(data.source === "ai" ? "Datos estimados por IA — revísalos" : "Datos completados");
       } else {
         showToast("No se encontraron datos. Configura la IA para más resultados.");
@@ -321,6 +350,9 @@ export function InventoryView() {
       imageUrl: data.imageUrl,
       allergenTags: data.allergenTags,
     });
+    // PR3a — data ya trae su propia procedencia real, calculada en BarcodeScannerModal.tsx.
+    setNutrientStatus(data.nutrientStatus ?? {});
+    setFoodStateConfidence(data.foodStateConfidence);
     setScannerOpen(false);
     showToast(`Producto encontrado: ${data.name}`);
     setMascotMessage(`${data.name} listo para añadir al inventario.`);
@@ -340,6 +372,9 @@ export function InventoryView() {
       dataSource: "ai",
     }));
     setItemExtras({});
+    // PR3a — result ya trae su propia procedencia real, calculada en ai-inventory.ts.
+    setNutrientStatus(result.nutrientStatus ?? {});
+    setFoodStateConfidence(result.foodStateConfidence);
     setPhotoCandidates([]);
     showToast(`Identificado: ${result.name} — datos estimados por IA, revísalos`);
     setMascotMessage(`${result.name} detectado. Revisa los datos y guarda.`);
@@ -407,6 +442,11 @@ export function InventoryView() {
         unitSizeUnit: form.unit === "ud" ? form.unitSizeUnit : undefined,
         dataSource: form.dataSource,
         ...itemExtras,
+        // PR3a — solo se guarda si hay al menos una clave real: un formulario
+        // nunca tocado en kcal/proteína y sin ninguna búsqueda/escaneo no debe
+        // producir un nutrientStatus vacío que sustituya a la ausencia real.
+        ...(Object.keys(nutrientStatus).length > 0 && { nutrientStatus }),
+        ...(foodStateConfidence && { foodStateConfidence }),
       });
     });
     // Aviso no bloqueante si se guarda sin macros: contaría como 0 kcal en el
@@ -415,6 +455,8 @@ export function InventoryView() {
     const noMacros = !(form.kcal > 0) && !(form.protein > 0);
     setForm(DEFAULT_FORM);
     setItemExtras({});
+    setNutrientStatus({});
+    setFoodStateConfidence(undefined);
     setMascotMessage("Alimento guardado. Estoy vigilando caducidades.");
     showToast(noMacros
       ? "Guardado sin macros — contará como 0 kcal. Usa \"Completar datos\" para rellenarlos."
