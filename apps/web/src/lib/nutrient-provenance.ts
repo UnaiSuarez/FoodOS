@@ -318,6 +318,35 @@ export function resolveFoodStateConfidenceForProduct(): FoodStateConfidence {
   return "unknown";
 }
 
+function normalizeNameForComparison(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Un `foodStateConfidence` guardado se calculó comparando el texto de la
+ * referencia original contra el nombre del alimento en ese momento — y
+ * ese texto de referencia no se conserva, así que no se puede recalcular.
+ * Si el usuario cambia de verdad el NOMBRE (ej. «arroz crudo» → «arroz
+ * cocido»), la composición ya no describe con seguridad el alimento
+ * nombrado: un `"confirmed"` previo se rebaja a `"unknown"`.
+ *
+ * Solo se rebaja `"confirmed"` — el único valor que afirma algo que el
+ * cambio de nombre puede invalidar. `"unknown"` e `"incompatible"` no se
+ * elevan (renombrar no demuestra que el conflicto desapareciera);
+ * `"not_applicable"` describe el TIPO de número (un total ya consumido),
+ * que un cambio de nombre no altera; y una ausencia (`undefined`) sigue
+ * siendo ausencia — nunca se inventa un valor. Diferencias solo de
+ * mayúsculas o de espacios no cuentan como cambio real.
+ */
+export function foodStateConfidenceAfterRename(
+  current: FoodStateConfidence | undefined,
+  previousName: string,
+  nextName: string,
+): FoodStateConfidence | undefined {
+  if (current !== "confirmed") return current;
+  return normalizeNameForComparison(previousName) === normalizeNameForComparison(nextName) ? current : "unknown";
+}
+
 /**
  * Entrada directa: `"whole_intake_total"` cuando el número YA representa
  * la cantidad total tal como se consume (sin una referencia por 100 g

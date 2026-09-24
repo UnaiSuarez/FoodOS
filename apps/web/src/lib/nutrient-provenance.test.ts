@@ -3,6 +3,7 @@ import {
   aiStatusFromValue,
   estimatedStatusFromValue,
   extractDeclaredState,
+  foodStateConfidenceAfterRename,
   knownStatusFromValue,
   legacyOrUnknown,
   localCatalogStatusFromValue,
@@ -321,5 +322,26 @@ describe("resolveFoodStateConfidenceForDirectEntry — entrada manual/IA directa
 
   it("referencia por 100g con nombre ambiguo (varios estados en conflicto) → unknown, nunca confirmed", () => {
     expect(resolveFoodStateConfidenceForDirectEntry("per_unit_reference", "Sopa deshidratada para preparar")).toBe("unknown");
+  });
+});
+
+describe("foodStateConfidenceAfterRename", () => {
+  it("un cambio real de nombre rebaja confirmed a unknown (crudo → cocido)", () => {
+    expect(foodStateConfidenceAfterRename("confirmed", "arroz crudo", "arroz cocido")).toBe("unknown");
+  });
+
+  it("sin cambio de nombre conserva confirmed", () => {
+    expect(foodStateConfidenceAfterRename("confirmed", "arroz crudo", "arroz crudo")).toBe("confirmed");
+  });
+
+  it("diferencias solo de mayúsculas o espacios no son un cambio real", () => {
+    expect(foodStateConfidenceAfterRename("confirmed", "arroz crudo", "  Arroz   CRUDO ")).toBe("confirmed");
+  });
+
+  it("nunca eleva ni altera unknown, incompatible, not_applicable ni la ausencia", () => {
+    expect(foodStateConfidenceAfterRename("unknown", "a", "b")).toBe("unknown");
+    expect(foodStateConfidenceAfterRename("incompatible", "a", "b")).toBe("incompatible");
+    expect(foodStateConfidenceAfterRename("not_applicable", "a", "b")).toBe("not_applicable");
+    expect(foodStateConfidenceAfterRename(undefined, "a", "b")).toBeUndefined();
   });
 });

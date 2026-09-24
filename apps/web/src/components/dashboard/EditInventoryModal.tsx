@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { InventoryItem, NutrientKey, NutrientStatus, StorageName, UnitSizeUnit } from "@foodos/types";
 import { isImageUrlReferencedElsewhere, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
-import { manualStatusFromValue } from "@/lib/nutrient-provenance";
+import { foodStateConfidenceAfterRename, manualStatusFromValue } from "@/lib/nutrient-provenance";
 import { Modal } from "./Modal";
 import { ImagePickerField } from "./ImagePickerField";
 
@@ -80,6 +80,13 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       };
       if (Object.keys(nextNutrientStatus).length > 0) {
         it.nutrientStatus = nextNutrientStatus;
+      }
+      // PR3a — renombrar de verdad invalida un "confirmed" previo: la
+      // referencia original no se conserva para recalcular la comparación.
+      // Un guardado sin cambio de nombre conserva el valor anterior tal cual.
+      const nextFoodState = foodStateConfidenceAfterRename(item.foodStateConfidence, item.name, form.name);
+      if (nextFoodState !== item.foodStateConfidence) {
+        it.foodStateConfidence = nextFoodState;
       }
     });
     showToast("Alimento actualizado");

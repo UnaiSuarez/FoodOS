@@ -75,7 +75,7 @@ const SEED_ITEM: InventoryItem = {
   foodStateConfidence: "unknown",
 };
 
-async function renderEditModal() {
+async function renderEditModal(seedItem: InventoryItem = SEED_ITEM) {
   const holder2 = makeCapture();
   root = createRoot(container);
   await act(async () => {
@@ -87,9 +87,9 @@ async function renderEditModal() {
     await Promise.resolve(); await Promise.resolve();
   });
   act(() => {
-    holder2.holder.current!.mutate((draft) => { draft.inventory.push({ ...SEED_ITEM }); });
+    holder2.holder.current!.mutate((draft) => { draft.inventory.push({ ...seedItem }); });
   });
-  const seeded = holder2.holder.current!.state.inventory.find((i) => i.id === SEED_ITEM.id)!;
+  const seeded = holder2.holder.current!.state.inventory.find((i) => i.id === seedItem.id)!;
 
   await act(async () => {
     root!.render(
@@ -207,5 +207,100 @@ describe("EditInventoryModal — procedencia real al editar (FoodOSProvider sin 
     const saved = holder2.holder.current!.state.inventory.find((i) => i.id === "legacy-item-1")!;
     expect(saved.kcal).toBe(130);
     expect(saved.nutrientStatus).toBeUndefined();
+  });
+});
+
+// Ronda de corrección posterior: el modal también permite editar `name`.
+// foodStateConfidence se calculó comparando el texto de la referencia
+// original contra el nombre de entonces, y ese texto no se conserva — un
+// cambio real de nombre no se puede recalcular, así que un "confirmed"
+// previo se rebaja a "unknown" y un guardado sin cambio de nombre lo conserva.
+const RICE_RAW_CONFIRMED: InventoryItem = {
+  id: "rice-item-1",
+  name: "arroz crudo",
+  qty: 500,
+  unit: "g",
+  storage: "Despensa",
+  expires: "2099-01-01",
+  price: 1.5,
+  kcal: 360,
+  protein: 7,
+  nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero" },
+  foodStateConfidence: "confirmed",
+};
+
+describe("EditInventoryModal — renombrar y foodStateConfidence", () => {
+  it("cambiar «arroz crudo» → «arroz cocido» rebaja confirmed a unknown", async () => {
+    const holder = await renderEditModal(RICE_RAW_CONFIRMED);
+    const nameInput = findFieldInput(container, "Nombre");
+    act(() => { setNativeValue(nameInput, "arroz cocido"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === RICE_RAW_CONFIRMED.id)!;
+    expect(saved.name).toBe("arroz cocido");
+    expect(saved.foodStateConfidence).toBe("unknown");
+    // El renombrado no toca la procedencia numérica: kcal/protein no cambiaron.
+    expect(saved.nutrientStatus).toEqual(RICE_RAW_CONFIRMED.nutrientStatus);
+    expect(saved.kcal).toBe(360);
+  });
+
+  it("guardar SIN cambiar el nombre conserva confirmed", async () => {
+    const holder = await renderEditModal(RICE_RAW_CONFIRMED);
+    const priceInput = findFieldInput(container, "Precio €");
+    act(() => { setNativeValue(priceInput, "1.80"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === RICE_RAW_CONFIRMED.id)!;
+    expect(saved.price).toBe(1.8);
+    expect(saved.name).toBe("arroz crudo");
+    expect(saved.foodStateConfidence).toBe("confirmed");
+  });
+
+  it("un cambio solo de mayúsculas/espacios no cuenta como cambio real de nombre", async () => {
+    const holder = await renderEditModal(RICE_RAW_CONFIRMED);
+    const nameInput = findFieldInput(container, "Nombre");
+    act(() => { setNativeValue(nameInput, "  Arroz  crudo "); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === RICE_RAW_CONFIRMED.id)!;
+    expect(saved.foodStateConfidence).toBe("confirmed");
+  });
+
+  it("renombrar un item cuya confianza ya era unknown no la cambia ni la eleva", async () => {
+    const holder = await renderEditModal({ ...RICE_RAW_CONFIRMED, id: "rice-item-2", foodStateConfidence: "unknown" });
+    const nameInput = findFieldInput(container, "Nombre");
+    act(() => { setNativeValue(nameInput, "arroz cocido"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "rice-item-2")!;
+    expect(saved.foodStateConfidence).toBe("unknown");
+  });
+
+  it("renombrar un item incompatible sigue siendo incompatible — renombrar no demuestra que el conflicto desapareciera", async () => {
+    const holder = await renderEditModal({ ...RICE_RAW_CONFIRMED, id: "rice-item-3", foodStateConfidence: "incompatible" });
+    const nameInput = findFieldInput(container, "Nombre");
+    act(() => { setNativeValue(nameInput, "arroz cocido"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "rice-item-3")!;
+    expect(saved.foodStateConfidence).toBe("incompatible");
+  });
+
+  it("renombrar un item sin foodStateConfidence previo (legacy) no le inventa uno", async () => {
+    const { foodStateConfidence: _omit, ...legacy } = RICE_RAW_CONFIRMED;
+    void _omit;
+    const holder = await renderEditModal({ ...legacy, id: "rice-item-4" });
+    const nameInput = findFieldInput(container, "Nombre");
+    act(() => { setNativeValue(nameInput, "arroz cocido"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "rice-item-4")!;
+    expect(saved.foodStateConfidence).toBeUndefined();
   });
 });
