@@ -21,6 +21,7 @@ import {
   useFoodOS,
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
+import { buildPlanLogEntry } from "@/lib/food-log-entries";
 import { adherenceFreshnessNote, describeEvaluableFraction, useAdherenceWindow } from "@/lib/nutrition-history";
 import { clampPct, dateFromKey, daysUntil, eur, namesMatch } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
@@ -105,20 +106,16 @@ export function HomeView({
     const entry = findPlanEntry(state, entryId);
     if (!entry) return;
     mutate((draft) => {
-      draft.foodLog.push({
+      // PR3: ni la receta ni el plato rapido conservan de donde salen sus totales
+      // -> legacy_unlabeled (food-log-entries.ts).
+      draft.foodLog.push(buildPlanLogEntry({
         id: crypto.randomUUID(),
         date: todayKey,
         time: new Date().toTimeString().slice(0, 5),
-        name: entry.title,
-        qty: null,
-        unit: null,
-        kcal: entry.kcal,
-        protein: entry.protein,
-        carbs: entry.carbs,
-        fat: entry.fat,
-        source: "recipe",
+        title: entry.title,
+        macros: { kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat },
         mealType,
-      });
+      }));
     });
     showToast(`"${entry.title}" registrado`);
   }

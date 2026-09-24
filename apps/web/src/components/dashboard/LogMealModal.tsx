@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MacroTotals, MealType, Recipe, UnitSizeUnit } from "@foodos/types";
+import type { MacroTotals, MealType, NutrientKey, NutrientStatus, Recipe, UnitSizeUnit } from "@foodos/types";
 import { actions, allRecipes, getToday, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { loadAIConfig } from "@/lib/ai-config";
 import { estimateMealFromPhoto, estimateMealMacros } from "@/lib/ai-inventory";
+import { buildDishLogEntry, buildExternalLogEntry } from "@/lib/food-log-entries";
 import { searchFoodDB } from "@/lib/food-db";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { mealTypeFromTime, toGrams, todayPlus, uid } from "@/lib/utils";
@@ -351,21 +352,16 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         draft.inventory = draft.inventory.filter(i => i.qty > 0);
       }
 
-      draft.foodLog.push({
+      // PR3: total de un plato compuesto -> legacy_unlabeled (food-log-entries.ts).
+      draft.foodLog.push(buildDishLogEntry({
         id: uid(),
         date: getToday(draft),
         time: t,
         name,
-        qty: null,
-        unit: null,
-        kcal: Math.round(macros.kcal),
-        protein: Math.round(macros.protein * 10) / 10,
-        carbs: Math.round(macros.carbs * 10) / 10,
-        fat: Math.round(macros.fat * 10) / 10,
-        source: "manual",
+        macros,
         mealType,
-        ...(consumedIngredients.length > 0 && { consumedIngredients }),
-      });
+        consumedIngredients,
+      }));
 
       if (saveDishAsRecipe) {
         draft.customRecipes.push({
@@ -449,6 +445,10 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
   const [extName, setExtName] = useState(""); // nombre editable de la entrada del diario, se rellena tras estimar
   const [extPhoto, setExtPhoto] = useState<{ base64: string; mimeType: string; fileName: string } | null>(null);
   const [extMacros, setExtMacros] = useState<MacroTotals | null>(null);
+  // PR3: procedencia por macro que declaro el estimador, y macros que la persona
+  // ajusto a mano despues (siguen siendo estimated, nunca known_*).
+  const [extStatus, setExtStatus] = useState<Partial<Record<NutrientKey, NutrientStatus>> | undefined>(undefined);
+  const [extEdited, setExtEdited] = useState<NutrientKey[]>([]);
   const [extEstimating, setExtEstimating] = useState(false);
   const [extPrice, setExtPrice] = useState(0);
   const aiConfig = useMemo(() => loadAIConfig(), []);
@@ -472,6 +472,8 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     if (!extPhoto && !extDesc.trim()) return;
     setExtEstimating(true);
     setExtMacros(null);
+    setExtStatus(undefined);
+    setExtEdited([]);
     try {
       if (extPhoto) {
         // Foto del plato (puede tener varios alimentos) — la nota de texto,
@@ -480,6 +482,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
         const result = await estimateMealFromPhoto(aiConfig, extPhoto.base64, extPhoto.mimeType, extDesc.trim() || undefined);
         if (result) {
           setExtMacros({ kcal: result.kcal, protein: result.protein, carbs: result.carbs, fat: result.fat });
+          setExtStatus(result.nutrientStatus);
           setExtName(result.name);
         } else {
           showToast("La IA no pudo identificar la comida en la foto, inténtalo de nuevo");
@@ -487,7 +490,8 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
       } else {
         const result = await estimateMealMacros(aiConfig, extDesc.trim());
         if (result) {
-          setExtMacros(result);
+          setExtMacros({ kcal: result.kcal, protein: result.protein, carbs: result.carbs, fat: result.fat });
+          setExtStatus(result.nutrientStatus);
           setExtName(extDesc.trim());
         } else {
           showToast("La IA no pudo estimar los macros, inténtalo de nuevo");
@@ -502,20 +506,16 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     if (!extMacros || !extName.trim()) return;
     const t = nowTime();
     mutate(draft => {
-      draft.foodLog.push({
+      // PR3: estimacion de IA de comida completa -> estimated/unknown, nunca known_*.
+      draft.foodLog.push(buildExternalLogEntry({
         id: uid(),
         date: getToday(draft),
         time: t,
         name: extName.trim(),
-        qty: null,
-        unit: null,
-        kcal: extMacros.kcal,
-        protein: extMacros.protein,
-        carbs: extMacros.carbs,
-        fat: extMacros.fat,
-        source: "manual",
+        macros: extMacros,
         mealType,
-      });
+        estimate: { nutrientStatus: extStatus, editedFields: extEdited },
+      }));
       if (extPrice > 0) {
         draft.expenses.push({
           id: uid(),
@@ -934,7 +934,10 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
                       type="number" min="0"
                       step={k === "kcal" ? "1" : "0.1"}
                       value={extMacros[k]}
-                      onChange={e => setExtMacros(prev => prev ? { ...prev, [k]: Number(e.target.value) } : null)}
+                      onChange={e => {
+                        setExtMacros(prev => prev ? { ...prev, [k]: Number(e.target.value) } : null);
+                        setExtEdited(prev => (prev.includes(k) ? prev : [...prev, k]));
+                      }}
                     />
                   </label>
                 ))}

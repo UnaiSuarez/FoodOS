@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { FoodLogEntry } from "@foodos/types";
 import { actions, availableForIngredient, deductFromInventoryFIFO, useFoodOS } from "@/lib/state";
+import { reconcileStatusesWithValues } from "@/lib/food-log-provenance";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -57,6 +58,11 @@ export function EditLogModal({ entry, onClose }: Props) {
       e.protein = preview.protein;
       e.carbs = preview.carbs;
       e.fat = preview.fat;
+      // PR3: reescalar cambia el NÚMERO, no la referencia de la que salió — la
+      // procedencia se conserva. Solo se ajusta un estado que dejaría de ser
+      // coherente con el número reescalado (known_nonzero → 0 tras redondear).
+      // Una entrada anterior a PR3 (sin nutrientStatus) no adquiere ninguno.
+      if (e.nutrientStatus) e.nutrientStatus = reconcileStatusesWithValues(e.nutrientStatus, preview);
 
       // Sync inventory if this entry came from inventory
       if (entry.source === "inventory" && delta !== 0) {
