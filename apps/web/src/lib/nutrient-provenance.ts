@@ -15,7 +15,7 @@
 // PR3a NO etiqueta entradas del diario (FoodLogEntry) — eso es PR3. Este
 // módulo alimenta InventoryItem/RecipeIngredient únicamente.
 
-import type { DeclaredFoodState, FoodStateConfidence, NutrientStatus } from "@foodos/types";
+import type { DeclaredFoodState, FoodStateConfidence, InventoryItem, NutrientKey, NutrientStatus } from "@foodos/types";
 
 // ─── Estado de un nutriente a partir de un valor numérico ──────────────────
 
@@ -195,11 +195,24 @@ export function resolveUsdaStatus(value: unknown): NutrientStatus {
 // razonamiento completo de por qué not_applicable no se asigna nunca por
 // el origen (código de barras / manual) sino por el TIPO de número.
 
-const RAW_WORDS = ["crudo", "cruda", "raw"];
-const COOKED_WORDS = ["cocido", "cocida", "cocinado", "cocinada", "asado", "asada", "frito", "frita", "hervido", "hervida", "cooked", "roasted", "grilled", "boiled"];
-const DRY_WORDS = ["seco", "seca", "deshidratado", "deshidratada", "instantáneo", "instantanea", "instantánea", "en polvo", "dry", "dehydrated", "instant", "powder", "powdered"];
-const RECONSTITUTED_WORDS = ["reconstituido", "reconstituida", "hidratado", "hidratada", "para preparar", "reconstituted", "rehydrated"];
-const DRAINED_WORDS = ["escurrido", "escurrida", "drained"];
+// Coincidencia por palabra COMPLETA (ver containsWholeWord): "cocidas" ya no se
+// lee por subcadena de "cocida", así que se listan también los plurales.
+const RAW_WORDS = ["crudo", "cruda", "crudos", "crudas", "raw"];
+const COOKED_WORDS = [
+  "cocido", "cocida", "cocidos", "cocidas", "cocinado", "cocinada", "cocinados", "cocinadas",
+  "asado", "asada", "asados", "asadas", "frito", "frita", "fritos", "fritas",
+  "hervido", "hervida", "hervidos", "hervidas", "cooked", "roasted", "grilled", "boiled",
+];
+const DRY_WORDS = [
+  "seco", "seca", "secos", "secas", "deshidratado", "deshidratada", "deshidratados", "deshidratadas",
+  "instantáneo", "instantanea", "instantánea", "instantáneos", "instantáneas", "en polvo",
+  "dry", "dehydrated", "instant", "powder", "powdered",
+];
+const RECONSTITUTED_WORDS = [
+  "reconstituido", "reconstituida", "reconstituidos", "reconstituidas",
+  "hidratado", "hidratada", "hidratados", "hidratadas", "para preparar", "reconstituted", "rehydrated",
+];
+const DRAINED_WORDS = ["escurrido", "escurrida", "escurridos", "escurridas", "drained"];
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -345,6 +358,176 @@ export function foodStateConfidenceAfterRename(
 ): FoodStateConfidence | undefined {
   if (current !== "confirmed") return current;
   return normalizeNameForComparison(previousName) === normalizeNameForComparison(nextName) ? current : "unknown";
+}
+
+/**
+ * Campos de una referencia (búsqueda, producto, IA, catálogo) que aportaron
+ * un número de verdad: los que traen algún estado distinto de `"unknown"`.
+ * Un `"unknown"` es un hueco que la interfaz rellenó con 0, no un número de
+ * la referencia — sustituirlo no rompe la coherencia de la referencia.
+ */
+export function referenceFieldsFromStatus(status: Partial<Record<NutrientKey, NutrientStatus>> | undefined): NutrientKey[] {
+  if (!status) return [];
+  return (Object.keys(status) as NutrientKey[]).filter((k) => status[k] !== undefined && status[k] !== "unknown");
+}
+
+/**
+ * `foodStateConfidence` tras una edición manual de macros, para el caso en
+ * que el usuario ha escrito al menos un número.
+ *
+ * Cada base de evidencia cubre SOLO sus propios números: la comparación de
+ * una referencia (`"confirmed"` contra el nombre) certifica los números de
+ * esa referencia, y el nombre declarado por el propio usuario (regla de
+ * entrada directa, más débil: un solo lado declara) certifica los números
+ * que él escribió. Un único valor por item/ingrediente no puede certificar
+ * dos bases a la vez, y una sustitución manual además es indicio de
+ * desacuerdo con la referencia. Por eso:
+ * - `otherBasisRemains === false` — todos los números presentes los escribió
+ *   el usuario bajo el nombre actual: se aplica la regla de entrada directa
+ *   (`"confirmed"` solo si el nombre declara UN estado sin ambigüedad; si no,
+ *   `"unknown"`). Se recalcula, no se hereda la confianza de una referencia
+ *   que ya no respalda ningún número.
+ * - `otherBasisRemains === true` — quedan números de otra base (de la
+ *   referencia, o escritos bajo un nombre anterior): un `"confirmed"` previo
+ *   se rebaja a `"unknown"`. Nunca se eleva nada (`"incompatible"`,
+ *   `"unknown"` y la ausencia se conservan).
+ */
+export function foodStateConfidenceAfterManualEdit(input: {
+  current: FoodStateConfidence | undefined;
+  name: string;
+  otherBasisRemains: boolean;
+}): FoodStateConfidence | undefined {
+  if (input.otherBasisRemains) return input.current === "confirmed" ? "unknown" : input.current;
+  return resolveFoodStateConfidenceForDirectEntry("per_unit_reference", input.name);
+}
+
+/**
+ * Un evento de edición manual de UN macro en un formulario de captura
+ * (InventoryView, ingrediente de receta): devuelve, juntos, el estado del
+ * campo editado, la confianza de estado resultante y la lista de campos ya
+ * escritos a mano, para que número, `nutrientStatus` y `foodStateConfidence`
+ * no se desincronicen. `referenceFields` son los campos cuyo número vino de
+ * una referencia (ver `referenceFieldsFromStatus`); vacío = entrada 100 %
+ * manual.
+ */
+export function applyManualNutrientEdit(input: {
+  key: NutrientKey;
+  value: number;
+  name: string;
+  nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>> | undefined;
+  foodStateConfidence: FoodStateConfidence | undefined;
+  referenceFields: readonly NutrientKey[] | undefined;
+  manualFields: readonly NutrientKey[] | undefined;
+}): {
+  nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence: FoodStateConfidence | undefined;
+  manualFields: NutrientKey[];
+} {
+  const previousManual = input.manualFields ?? [];
+  const manualFields = previousManual.includes(input.key) ? [...previousManual] : [...previousManual, input.key];
+  const otherBasisRemains = (input.referenceFields ?? []).some((k) => !manualFields.includes(k));
+  return {
+    nutrientStatus: { ...input.nutrientStatus, [input.key]: manualStatusFromValue(input.value, true) },
+    foodStateConfidence: foodStateConfidenceAfterManualEdit({
+      current: input.foodStateConfidence,
+      name: input.name,
+      otherBasisRemains,
+    }),
+    manualFields,
+  };
+}
+
+/**
+ * Base de evidencia de un ingrediente de receta cada vez que se le asigna un
+ * estado de búsqueda: `"found"` — sus números vienen de la referencia
+ * encontrada (los campos con estado real), sin nada reescrito todavía;
+ * `"manual"` — la búsqueda no encontró nada, ningún número es de una
+ * referencia. Cualquier otro parche no cambia la base.
+ */
+export function ingredientBasisPatch(patch: {
+  status?: string;
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+}): { referenceFields?: NutrientKey[]; manualFields?: NutrientKey[] } {
+  if (patch.status === "found") return { referenceFields: referenceFieldsFromStatus(patch.nutrientStatus), manualFields: [] };
+  if (patch.status === "manual") return { referenceFields: [], manualFields: [] };
+  return {};
+}
+
+/**
+ * Procedencia de un ingrediente al RECARGAR una receta guardada (segundo
+ * punto de colapso): respeta el `nutrientStatus`/`foodStateConfidence`
+ * guardados, trata un número presente sin estado guardado como
+ * `legacy_unlabeled` (nunca `known_*`), y reconstruye la base de edición.
+ * El origen por campo (referencia o tecleado) no se conserva al guardar, así
+ * que todo campo con estado real se toma como "de referencia": una edición
+ * posterior baja un `"confirmed"` a `"unknown"` salvo que se reescriban todos.
+ */
+export function restoredIngredientProvenance(ri: {
+  kcalPer100?: number;
+  proteinPer100?: number;
+  carbsPer100?: number;
+  fatPer100?: number;
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
+}): {
+  nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence: FoodStateConfidence | undefined;
+  referenceFields: NutrientKey[];
+  manualFields: NutrientKey[];
+} {
+  const nutrientStatus = {
+    kcal: legacyOrUnknown(ri.nutrientStatus?.kcal, ri.kcalPer100),
+    protein: legacyOrUnknown(ri.nutrientStatus?.protein, ri.proteinPer100),
+    carbs: legacyOrUnknown(ri.nutrientStatus?.carbs, ri.carbsPer100),
+    fat: legacyOrUnknown(ri.nutrientStatus?.fat, ri.fatPer100),
+  };
+  return {
+    nutrientStatus,
+    foodStateConfidence: ri.foodStateConfidence,
+    referenceFields: referenceFieldsFromStatus(nutrientStatus),
+    manualFields: [],
+  };
+}
+
+const INVENTORY_REFERENCE_ONLY_KEYS = ["carbs", "fat", "salt", "fiber", "sugars"] as const;
+
+/**
+ * `foodStateConfidence` de un `InventoryItem` existente al guardar desde
+ * `EditInventoryModal`. Ese modal solo puede reescribir kcal/proteína (y el
+ * nombre); no conserva qué números vinieron de una referencia, así que se
+ * infiere lo mínimo verificable:
+ * - carbs/fat/salt/fiber/sugars presentes solo pueden venir de una
+ *   referencia (ningún formulario los teclea): siempre son "otra base".
+ * - kcal/proteína vienen de una referencia si el item conserva `dataSource`
+ *   (editar a mano lo limpia).
+ * - Si el nombre cambió, los kcal/proteína SIN reescribir se escribieron
+ *   bajo el nombre anterior: también son "otra base".
+ * Sin edición de macros solo aplica la regla de renombrado; sin ninguna
+ * edición, el valor anterior se conserva tal cual.
+ */
+export function foodStateConfidenceAfterInventoryEdit(input: {
+  item: Pick<InventoryItem, "name" | "dataSource" | "carbs" | "fat" | "salt" | "fiber" | "sugars" | "foodStateConfidence">;
+  nextName: string;
+  kcalChanged: boolean;
+  proteinChanged: boolean;
+}): FoodStateConfidence | undefined {
+  const { item, nextName, kcalChanged, proteinChanged } = input;
+  const afterRename = foodStateConfidenceAfterRename(item.foodStateConfidence, item.name, nextName);
+  if (!kcalChanged && !proteinChanged) return afterRename;
+
+  const nameChanged = normalizeNameForComparison(item.name) !== normalizeNameForComparison(nextName);
+  const edited: NutrientKey[] = [];
+  if (kcalChanged) edited.push("kcal");
+  if (proteinChanged) edited.push("protein");
+  const referenceBacked: NutrientKey[] = INVENTORY_REFERENCE_ONLY_KEYS.filter((k) => item[k] !== undefined);
+  if (item.dataSource !== undefined) referenceBacked.push("kcal", "protein");
+  const referenceRemains = referenceBacked.some((k) => !edited.includes(k));
+  const staleRemains = nameChanged && !(kcalChanged && proteinChanged);
+  return foodStateConfidenceAfterManualEdit({
+    current: afterRename,
+    name: nextName,
+    otherBasisRemains: referenceRemains || staleRemains,
+  });
 }
 
 /**
