@@ -807,6 +807,46 @@ La propuesta original de §4 para el agregado de `Recipe` ("nutrientStatus = el 
 
 **Caso de aceptación (AC29, nuevo)**: un `InventoryItem` con `foodStateConfidence:"confirmed"` renombrado de «arroz crudo» a «arroz cocido» queda con `"unknown"`; guardado sin tocar el nombre conserva `"confirmed"`. (PR3a)
 
+### 16.6 Edición manual de macros — número, `nutrientStatus` y `foodStateConfidence` en sincronía
+
+La revisión detectó que `resolveFoodStateConfidenceForDirectEntry("per_unit_reference", …)` — prevista en §1.6 para la entrada manual — solo se usaba en las funciones de IA, y que un override manual de una referencia dejaba su `foodStateConfidence` intacta. Se revisaron los cuatro sitios con eventos de edición manual de macros: `InventoryView` (formulario de alta), `CreateRecipeModal` y `EditRecipeModal` (macros por ingrediente) y `EditInventoryModal` (kcal/proteína de un item guardado).
+
+**Principio**: cada base de evidencia cubre solo sus propios números. La comparación de una referencia (`"confirmed"` contra el nombre) certifica los números de esa referencia; el nombre declarado por el propio usuario (regla de entrada directa, más débil) certifica los que él escribió. Un único valor por item o ingrediente no puede certificar dos bases a la vez, y sustituir a mano un valor de una referencia es además indicio de desacuerdo con ella. Reglas (`nutrient-provenance.ts`, todas puras y probadas):
+
+1. **Entrada manual nueva** (ningún número viene de una referencia): `foodStateConfidence = resolveFoodStateConfidenceForDirectEntry("per_unit_reference", nombre)` — `"confirmed"` (débil, un solo lado declara) solo si el nombre declara UN estado sin ambigüedad; si no lo declara o es ambiguo, `"unknown"`. El campo tecleado pasa a `known_*` (`known_zero` si el valor es 0); los demás no cambian.
+2. **Sustitución manual de números que venían de una referencia** (búsqueda, producto, IA, catálogo): si queda algún número de la referencia sin reescribir, un `"confirmed"` previo se rebaja a `"unknown"`; nunca se eleva nada (`"incompatible"`, `"unknown"` y la ausencia se conservan). Solo si se reescriben **todos** los números que la referencia aportó (los campos con estado distinto de `"unknown"`; un hueco rellenado con 0 no cuenta como número de la referencia) se recalcula por el nombre, con el resultado independiente del orden de las ediciones. En `InventoryView` carbs/fat/sal/fibra/azúcares no se pueden teclear, así que un resultado OFF/escáner/catálogo con esos campos queda `"unknown"` tras cualquier override; con referencia de solo kcal/proteína (Completar datos) y ambos reescritos, se recalcula.
+3. **`EditInventoryModal`** no conserva qué números vinieron de una referencia, así que infiere lo mínimo verificable: carbs/fat/sal/fibra/azúcares presentes solo pueden venir de una referencia; kcal/proteína vienen de una referencia si el item conserva `dataSource`; si el nombre cambió, los kcal/proteína sin reescribir se escribieron bajo el nombre anterior. Renombrar sigue rebajando `"confirmed"` a `"unknown"` (§16.5).
+4. **Recarga de una receta guardada**: el origen por campo no se conserva, así que todo campo con estado real se toma como de referencia (lado conservador): editar un solo macro de un ingrediente recargado con `"confirmed"` lo rebaja a `"unknown"` aunque el ingrediente hubiera sido 100 % manual.
+5. **Abrir y guardar sin editar macros ni nombre conserva los metadatos existentes.** Un item de inventario antiguo sin metadatos no adquiere ninguno. Un ingrediente de receta antiguo, al recargarse, recibe el piso `legacy_unlabeled` en sus números presentes (comportamiento de §16.2, nunca `known_*`) y ningún estado de alimento.
+
+**Renombrar en el formulario de alta de `InventoryView`** sigue descartando toda la procedencia ya capturada (comportamiento previo): los números permanecen y quedan sin etiqueta, es decir, `unknown`. Es conservador y se documenta como límite conocido: un kcal tecleado antes que el nombre pierde su `known_*`.
+
+**Otros dos ajustes de esta ronda**: `fillFoodData` ya no devuelve el estado de carbs/fat de OFF/USDA (`FoodNutriData` solo transporta kcal/proteína: era metadato huérfano), y el léxico de `extractDeclaredState` incluye plurales y femeninos («cocidas», «cocidos», «crudas»…) porque la coincidencia de palabra completa de §16.3 dejó de leerlos por subcadena — sin ello el propio ejemplo de AC23 («lentejas cocidas») habría dejado de dar `"confirmed"`.
+
+**Casos de aceptación (nuevos, PR3a)**
+- **AC30** — Entrada manual nueva con kcal tecleado: nombre «arroz cocido» → `foodStateConfidence:"confirmed"`; «arroz» o «sopa deshidratada para preparar» → `"unknown"`. La proteína sin teclear no tiene estado.
+- **AC31** — Un resultado OFF con `"confirmed"` cuyo kcal se reescribe a mano queda `"unknown"`, con `nutrientStatus.kcal` `known_*` y el resto de la referencia intacto; si se reescriben todos los macros de la referencia (ingrediente de receta) o toda la referencia (kcal/proteína en Completar datos), se recalcula por el nombre.
+- **AC32** — Un ingrediente de receta editado a mano, y una edición de kcal/proteína en `EditInventoryModal`, siguen las mismas reglas; abrir y guardar sin editar conserva los metadatos.
+
+---
+
+## 17. Viabilidad del gate actual — decisión pendiente antes de la integración adaptativa
+
+Análisis con el diseño y el código tal como quedan tras PR3a (no propone construir un catálogo ni una interfaz nueva, ni relaja ningún umbral). Un día cuenta como fiable para un nutriente solo si al menos el 80 % de las kcal del día vienen de entradas con `known_*` para ese nutriente **y** `foodStateConfidence ∈ {confirmed, not_applicable}`; una sola entrada con kcal desconocidas o `legacy_unlabeled` deja el día provisional para todos los nutrientes.
+
+| Camino de ingesta | Procedencia numérica | `foodStateConfidence` | ¿Contribuye a un día fiable? |
+|---|---|---|---|
+| **Catálogo local** | `legacy_unlabeled` siempre | `confirmed` solo si búsqueda y ficha declaran el mismo estado (ya con plurales); si no, `unknown`/`incompatible` | **No.** Hasta auditar ficha a ficha (§15) |
+| **Producto escaneado** | `known_*` (`estimated` si la kcal viene del campo sin sufijo) | Siempre `unknown` (§16.2) | **No.** |
+| **Receta cocinada** | Total como `legacy_unlabeled` (§16.4, AC28) | No aplicable a un total con posible override | **No.** |
+| **IA** | `estimated` (`unknown` si el modelo omite el campo) | Comida completa `not_applicable`; por 100 g `confirmed` débil o `unknown` | **No.** `estimated` nunca es fiable |
+| **Referencia OFF/USDA por texto** | `known_*` (OFF `_100g`, USDA Foundation/SR Legacy) | `confirmed` solo si ambos lados declaran el mismo estado único; si solo uno, `unknown`; si difieren, `incompatible`. Un override manual parcial lo rebaja a `unknown` (§16.6) | **Sí, en un caso minoritario:** estado declarado y coincidente en ambos lados y sin sustituir números a mano |
+| **Entrada manual** (kcal/proteína de un item de inventario) | `known_*` solo del campo tecleado; el resto `unknown` | `confirmed` (débil) si el nombre declara UN estado sin ambigüedad; `unknown` en otro caso (§16.6) | **Sí, pero limitado:** solo kcal y proteína, y solo con un nombre que declare estado; carbs/fat/sal/fibra/azúcares de un item no son tecleables, así que nunca serían fiables por esta vía. Los macros tecleados en un ingrediente de receta no llegan al diario por su cuenta: el total de la receta es `legacy_unlabeled` (§16.4) |
+
+**Lectura.** El gate es seguro — ningún camino deja pasar como fiable un número cuyo origen o estado no se pueda sostener — pero probablemente poco utilizable para muchos usuarios: la cocina casera con ingredientes genéricos (nombres sin «crudo/cocido»), los productos escaneados, las recetas y la IA no aportan ningún día fiable; solo lo hacen las coincidencias OFF/USDA con estado declarado en ambos lados y la entrada manual con estado en el nombre, ambas minoritarias. Es la consecuencia ya anticipada en §1.6 y AC26, no un fallo de implementación.
+
+**Decisión pendiente, sin resolver en esta entrega.** Antes de la integración adaptativa hay que decidir explícitamente si se mantiene esta regla estricta, si se sustituye por una tolerancia calibrada con datos reales de uso (la decisión provisional de §11/§1.6), o si se invierte en las palancas que hoy quedan fuera: auditar el catálogo local ficha a ficha (§15), extraer de OFF una señal verificable de «total cerrado» para productos escaneados (§16.2), o el clasificador completo de identidad genérico/producto/plato (§12). **Ningún umbral se ha relajado ni se ha inventado confianza para aliviar este resultado.**
+
 ---
 
 ## Confirmación de cierre — ronda original de diseño (histórica)
@@ -827,5 +867,6 @@ Separado de la confirmación histórica de arriba, que sigue siendo cierta para 
 - **Hay commits** (varios por entrega; `git log` de la rama es la referencia autoritativa).
 - **No conectado**: `apps/web` no importa el motor puro (lo impiden los seis tests de frontera de `packages/engine`); el adaptador de PR2 no llama todavía al kernel; los escritores del diario (PR3) no se han tocado.
 - **Sin SQL ni operaciones contra Supabase** en ninguna de las tres entregas.
-- **Decisiones que esta implementación corrigió respecto al diseño original**: catálogo local `known_*` → `legacy_unlabeled` (§15); resolutor de estado de producto y léxico de estado, edición de inventario y totales de receta (§16.1–§16.4); renombrado de `InventoryItem` (§16.5).
+- **Decisiones que esta implementación corrigió respecto al diseño original**: catálogo local `known_*` → `legacy_unlabeled` (§15); resolutor de estado de producto y léxico de estado, edición de inventario y totales de receta (§16.1–§16.4); renombrado de `InventoryItem` (§16.5); edición manual de macros y sincronía número/`nutrientStatus`/`foodStateConfidence` (§16.6).
 - **Pendiente para PR3**: etiquetar los 8 escritores reales de `foodLog`, con `Recipe.kcal/protein/carbs/fat` como `legacy_unlabeled` (§16.4, AC28).
+- **Decisión de producto pendiente antes de la integración adaptativa**: el gate actual es seguro pero probablemente poco utilizable para muchos usuarios (§17); no se ha relajado ningún umbral.
