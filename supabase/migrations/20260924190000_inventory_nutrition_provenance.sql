@@ -16,10 +16,13 @@
 --   { "dataSource": "off",
 --     "nutrientStatus": { "kcal": "known_nonzero", "fat": "unknown", ... },
 --     "foodStateConfidence": "confirmed",
---     "basis": { "kcal": 165, "protein": 31, "carbs": 0, "fat": 3.6 } }
+--     "basis": { "name": "Pechuga de pollo", "unit": "g",
+--                "kcal": 165.01, "protein": 31, "carbs": 0, "fat": 3.6 } }
 --
--- `basis` son los valores por 100 g/ml a los que describe la procedencia. Lo
--- lee el cliente para descartarla si los números de la fila cambiaron desde
+-- `basis` es la REFERENCIA a la que describe la procedencia: el nombre, la unidad
+-- (con `unitSize`/`unitSizeUnit` si es «ud») y los valores por 100, estos últimos
+-- en su forma canónica de numeric(…,2) (la que persiste Postgres). Lo lee el
+-- cliente para descartar la procedencia si algo de eso cambió en la fila desde
 -- fuera (ver «Clientes antiguos»). La validación fina del contenido (claves y
 -- estados válidos, frescura) la hace el cliente al leer y al escribir
 -- (apps/web/src/lib/inventory-provenance-persistence.ts); la base solo exige que,
@@ -36,14 +39,19 @@
 --  * Leen con una lista explícita de columnas en su .select(): no la piden, no
 --    les afecta.
 --  * Escriben con upsert (on_conflict=id, Prefer: resolution=merge-duplicates).
---    supabase-js declara `columns` = las claves de su payload (comprobado en
---    postgrest-js, PostgrestQueryBuilder.upsert) y PostgREST solo actualiza esas
---    en el ON CONFLICT DO UPDATE: la columna nueva se conserva. (El lado del
---    servidor es el comportamiento documentado de PostgREST; no se ha ejercitado
---    contra esta base.) Lo que un cliente antiguo SÍ puede hacer es cambiar los
+--    supabase-js declara `columns` = las claves de su payload (postgrest-js,
+--    PostgrestQueryBuilder.upsert) y PostgREST genera `INSERT (esas columnas) …
+--    ON CONFLICT DO UPDATE SET col = EXCLUDED.col` SOLO para ellas (código fuente
+--    de PostgREST, QueryBuilder.hs, mutatePlanToQuery). Ese SQL exacto se ha
+--    ejecutado en un PostgreSQL real y aislado: la columna nueva se conserva
+--    aunque el cliente antiguo cambie el nombre y los números (ver
+--    supabase/verification/inventory-nutrition-provenance). No se ha ejecutado
+--    PostgREST en sí ni contra la base de FoodOS. Lo que un cliente antiguo SÍ
+--    puede hacer es cambiar el nombre, la unidad, el tamaño de unidad o los
 --    números por 100 de la fila sin tocar la procedencia; por eso `basis` — un
---    cliente nuevo descarta una procedencia cuyos números ya no coinciden en
---    vez de seguir afirmándola.
+--    cliente nuevo descarta una procedencia cuya referencia ya no coincide en
+--    vez de seguir afirmándola («arroz crudo» → «arroz cocido» no hereda un
+--    foodStateConfidence «confirmed»).
 --
 -- Seguridad de acceso: ninguna política ni permiso nuevo. La tabla ya tiene RLS
 -- por fila (inventory_select_member / insert_member / update_owner /
@@ -67,6 +75,11 @@
 -- constraint va en una sentencia aparte, con nombre explícito y estable y
 -- guardada tras comprobar pg_constraint, así resiste una re-ejecución PARCIAL.
 --
+-- Esta migración se ha ejecutado, dos veces, sobre una copia vacía de la
+-- estructura real de inventory_items en un PostgreSQL aislado (PGlite): añade la
+-- columna y el CHECK una sola vez, acepta NULL/objetos y rechaza arrays, texto y
+-- números; y un `null` JSON de un cliente nuevo llega como NULL de SQL.
+--
 -- Verificación tras aplicar (debe devolver 1 fila: jsonb / YES):
 --   select data_type, is_nullable from information_schema.columns
 --   where table_schema = 'public' and table_name = 'inventory_items'
@@ -89,4 +102,4 @@ begin
 end $$;
 
 comment on column public.inventory_items.nutrition_provenance is
-  'Procedencia nutricional del item (Nutrition v4): {dataSource, nutrientStatus, foodStateConfidence, basis}. basis = valores por 100 a los que describe; si ya no coinciden con las columnas de la fila, el cliente la descarta. NULL = sin procedencia (dato anterior a PR3a): se lee como legacy_unlabeled. Ver apps/web/src/lib/inventory-provenance-persistence.ts.';
+  'Procedencia nutricional del item (Nutrition v4): {dataSource, nutrientStatus, foodStateConfidence, basis}. basis = referencia a la que describe (nombre, unidad, tamaño de unidad y valores por 100 canónicos); si ya no coincide con las columnas de la fila, el cliente la descarta. NULL = sin procedencia (dato anterior a PR3a): se lee como legacy_unlabeled. Ver apps/web/src/lib/inventory-provenance-persistence.ts.';

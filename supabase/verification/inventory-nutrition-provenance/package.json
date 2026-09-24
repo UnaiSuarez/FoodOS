@@ -1,0 +1,9 @@
+{
+  "name": "inventory-nutrition-provenance-verification",
+  "private": true,
+  "type": "module",
+  "description": "Verificacion en un Postgres aislado (PGlite) de la migracion 20260924190000 y del valor canonico numeric(p,2). No forma parte de la app ni del workspace.",
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}
