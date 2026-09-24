@@ -22,6 +22,7 @@ import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
+import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   expiryWarnDays: 3,
@@ -77,6 +78,20 @@ const LEGACY_MODES: Record<string, GoalMode> = {
   Mantenimiento: "maintain",
 };
 
+/** Historial DEMO del diario (ayer y anteayer) que carga "Cargar datos demo".
+    Son comidas FICTICIAS escritas por el propio código: todas llevan
+    `synthetic: true` y ninguna un `nutrientStatus` (design §1.5) — nunca deben
+    contar como ingesta real. Puro: `dateOf(n)` da la fecha de hace n días. */
+export function buildDemoFoodLog(dateOf: (daysAgo: number) => string): FoodLogEntry[] {
+  return [
+    { id: uid(), date: dateOf(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe", mealType: "breakfast" },
+    { id: uid(), date: dateOf(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe", mealType: "lunch" },
+    { id: uid(), date: dateOf(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory", mealType: "dinner" },
+    { id: uid(), date: dateOf(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe", mealType: "lunch" },
+    { id: uid(), date: dateOf(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe", mealType: "dinner" },
+  ].map((entry) => ({ ...entry, ...SYNTHETIC_FOOD_LOG_FIELDS }) as FoodLogEntry);
+}
+
 export function normalizeState(state: FoodOSState): FoodOSState {
   const next = structuredClone(state);
   const legacyMode = LEGACY_MODES[next.nutrition.mode as unknown as string];
@@ -120,6 +135,9 @@ export function normalizeState(state: FoodOSState): FoodOSState {
         fat: meal.fat,
         source: "recipe",
         mealType: "lunch",
+        // Migración de datos AÚN más antiguos (design §1.4/§7.6): número presente,
+        // procedencia no verificable — legacy_unlabeled sin excepción.
+        ...legacyTotalProvenance(),
       });
     });
   }
@@ -1817,13 +1835,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       { id: uid(), type: "expense", amount: 32.0, category: "Ocio", description: "Fin de semana demo", date: todayMinus(28) },
     ];
     // Historial demo del diario: ayer y anteayer con comidas y agua.
-    demo.foodLog = [
-      { id: uid(), date: todayMinus(1), time: "09:10", name: "Tostada de huevo y yogur", qty: null, unit: null, kcal: 480, protein: 32, carbs: 48, fat: 18, source: "recipe", mealType: "breakfast" },
-      { id: uid(), date: todayMinus(1), time: "14:25", name: "Bowl proteico de pollo", qty: null, unit: null, kcal: 610, protein: 54, carbs: 72, fat: 12, source: "recipe", mealType: "lunch" },
-      { id: uid(), date: todayMinus(1), time: "21:05", name: "Yogur griego", qty: 125, unit: "g", kcal: 119, protein: 12.5, carbs: 5, fat: 6, source: "inventory", mealType: "dinner" },
-      { id: uid(), date: todayMinus(2), time: "13:40", name: "Pasta rápida con atún", qty: null, unit: null, kcal: 690, protein: 42, carbs: 96, fat: 14, source: "recipe", mealType: "lunch" },
-      { id: uid(), date: todayMinus(2), time: "20:50", name: "Lentejas de despensa", qty: null, unit: null, kcal: 540, protein: 28, carbs: 92, fat: 7, source: "recipe", mealType: "dinner" },
-    ];
+    demo.foodLog = buildDemoFoodLog(todayMinus);
     demo.waterLog = { [todayMinus(1)]: 2250, [todayMinus(2)]: 1750 };
     // Historial de peso demo: últimas 2 semanas con tendencia descendente ligera.
     // E21-20: ruido determinista (seed fija), no Math.random() — los tests
@@ -2999,6 +3011,11 @@ export const actions = {
       source: "recipe",
       mealType: opts?.mealType ?? mealTypeFromTime(t),
       ...(consumedIngredients.length > 0 && { consumedIngredients }),
+      // PR3: `Recipe.kcal/protein/carbs/fat` puede venir de `macroOverride` o de
+      // una suma parcial (AC28, §16.4) → legacy_unlabeled, nunca derivado de los
+      // ingredientes. `qtyOverrides` descuenta inventario pero NO entra en los
+      // macros de arriba (P11): overrides_ignored.
+      ...recipeTotalProvenance({ qtyOverridesIgnored: qtyOverridesIgnored(recipe, opts?.qtyOverrides) }),
     });
   },
 
@@ -3010,6 +3027,9 @@ export const actions = {
     const consumed = Math.min(qty, item.qty);
     const macros = macrosForQuantity(item, consumed);
     const t = nowTime();
+    // PR3: procedencia leída del item (capturada en PR3a), no inferida del número.
+    // Un known_* cuyo valor escalado y redondeado queda en 0 deja de afirmarse.
+    const provenance = inventoryConsumptionProvenance(item);
     draft.foodLog.push({
       id: uid(),
       date: getToday(draft),
@@ -3020,6 +3040,8 @@ export const actions = {
       ...macros,
       source: "inventory",
       mealType: overrideMealType ?? mealTypeFromTime(t),
+      ...provenance,
+      nutrientStatus: reconcileStatusesWithValues(provenance.nutrientStatus, macros),
       inventoryItemId: item.id,
       inventorySnapshot: {
         storage: item.storage,
