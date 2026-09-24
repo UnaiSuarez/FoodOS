@@ -743,7 +743,7 @@ En cualquier caso, **24 (o el número que resulte de fijar el umbral por nutrien
 - Si se restringe `seedHistorico()` (PR11) antes de activar v4 o se deja para después, dado que su efecto sobre v4 ya queda neutralizado por el filtrado de PR2/PR3 independientemente de cuándo se restrinja el acceso.
 - Si el vínculo financiero/de sobras/suplementos (PR6, evolución) se prioriza en paralelo a la activación de v4 o después — no depende técnicamente de v4, es una decisión de secuenciación de producto.
 
-No se ha ampliado el alcance de esta ronda para responder a estos puntos ni se ha implementado ningún cambio de código.
+*(Histórico — describe la ronda original de diseño, cerrada antes de PR1/PR2/PR3a. Desde entonces el documento se ha ampliado durante la implementación, ver §15–§16 y «Estado actual» al final.)* No se ha ampliado el alcance de esa ronda para responder a estos puntos ni se ha implementado ningún cambio de código.
 
 ---
 
@@ -799,8 +799,33 @@ La propuesta original de §4 para el agregado de `Recipe` ("nutrientStatus = el 
 
 ---
 
-## Confirmación de cierre
+### 16.5 Renombrar un `InventoryItem` — `foodStateConfidence` no sobrevive a un cambio real de nombre
+
+`EditInventoryModal.tsx` también permite editar `name`. Un `foodStateConfidence:"confirmed"` se calculó comparando el texto de la referencia original contra el nombre del alimento en ese momento, y ese texto de referencia no se conserva en `InventoryItem` — no hay forma de recalcular la comparación. Si el usuario renombra de «arroz crudo» a «arroz cocido», la composición sigue siendo la de la referencia original, pero el alimento nombrado ya no coincide con el estado al que se aplicó.
+
+**Regla (conservadora)**: un cambio real del nombre rebaja `"confirmed"` a `"unknown"` (`foodStateConfidenceAfterRename`, `nutrient-provenance.ts`). Solo se rebaja `"confirmed"`, el único valor que afirma algo que el renombrado puede invalidar: `"unknown"` e `"incompatible"` no se elevan (renombrar no demuestra que el conflicto desapareciera), `"not_applicable"` describe el tipo de número y no depende del nombre, y una ausencia sigue siendo ausencia. Diferencias solo de mayúsculas o espacios no cuentan como cambio real. Un guardado sin cambio de nombre conserva el valor anterior tal cual.
+
+**Caso de aceptación (AC29, nuevo)**: un `InventoryItem` con `foodStateConfidence:"confirmed"` renombrado de «arroz crudo» a «arroz cocido» queda con `"unknown"`; guardado sin tocar el nombre conserva `"confirmed"`. (PR3a)
+
+---
+
+## Confirmación de cierre — ronda original de diseño (histórica)
+
+*Esta sección describe únicamente la ronda original de diseño, previa a cualquier implementación. No describe PR1, PR2 ni PR3a — ver «Estado actual» más abajo.*
 
 - **Commit base**: `82a581c02bac2802dd4aec863c22a21f76fd755f` (`origin/main`) — confirmado sin movimiento (re-verificado con `git fetch` al cierre de esta ronda).
 - **Worktree**: `wt-nutrition-v4-data-integrity`, rama `design/nutrition-v4-data-integrity`.
 - **Modificaciones de implementación durante esta ronda**: cero. No se creó, editó ni borró ningún archivo de código; no se ejecutó SQL; no se realizó ninguna operación contra Supabase; no se abrió PR; no se hizo ningún commit.
+
+---
+
+## Estado actual — implementación en curso (PR1, PR2, PR3a)
+
+Separado de la confirmación histórica de arriba, que sigue siendo cierta para aquella ronda de diseño y no debe leerse como descripción de lo que ocurre ahora.
+
+- **Código modificado: sí.** La implementación vive en la rama `feature/nutrition-v4-pr3a-provenance`, que acumula, en este orden, PR1 (tipos y kernel puro de cobertura, `packages/types` y `packages/engine`), PR2 (adaptador del diario y `IntentGuard`, `apps/web`) y PR3a (procedencia y estado del alimento en el punto de captura, `packages/types` y `apps/web`), cada una desarrollada en su propio worktree y revisada antes de la siguiente. La numeración PR1–PR3a es la de este documento, no la de la secuencia de PRs ya existente en el repositorio.
+- **Hay commits** (varios por entrega; `git log` de la rama es la referencia autoritativa).
+- **No conectado**: `apps/web` no importa el motor puro (lo impiden los seis tests de frontera de `packages/engine`); el adaptador de PR2 no llama todavía al kernel; los escritores del diario (PR3) no se han tocado.
+- **Sin SQL ni operaciones contra Supabase** en ninguna de las tres entregas.
+- **Decisiones que esta implementación corrigió respecto al diseño original**: catálogo local `known_*` → `legacy_unlabeled` (§15); resolutor de estado de producto y léxico de estado, edición de inventario y totales de receta (§16.1–§16.4); renombrado de `InventoryItem` (§16.5).
+- **Pendiente para PR3**: etiquetar los 8 escritores reales de `foodLog`, con `Recipe.kcal/protein/carbs/fat` como `legacy_unlabeled` (§16.4, AC28).
