@@ -207,6 +207,24 @@ const QUANTITY_REASONS: readonly QuantityLowConfidenceReason[] = [
 
 type PersistedProvenance = Pick<FoodLogEntry, "nutrientStatus" | "quantityConfidence" | "foodStateConfidence" | "synthetic">;
 
+/** Mapa `nutrientStatus` saneado: solo claves de nutriente y estados válidos.
+    `undefined` si no queda ninguna (nunca un objeto vacío). Compartido por la
+    persistencia del diario (client_meta) y la del inventario. */
+export function sanitizeNutrientStatusMap(raw: unknown): Partial<Record<NutrientKey, NutrientStatus>> | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const clean: Partial<Record<NutrientKey, NutrientStatus>> = {};
+  for (const key of NUTRIENT_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === "string" && (NUTRIENT_STATUSES as readonly string[]).includes(value)) clean[key] = value as NutrientStatus;
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
+/** `foodStateConfidence` saneado: solo uno de los cuatro valores válidos. */
+export function sanitizeFoodStateConfidence(raw: unknown): FoodStateConfidence | undefined {
+  return typeof raw === "string" && (FOOD_STATE_CONFIDENCES as readonly string[]).includes(raw) ? (raw as FoodStateConfidence) : undefined;
+}
+
 /** Extrae los campos de procedencia válidos de cualquier objeto (una entrada o
     un `client_meta` leído del servidor). Devuelve solo las claves presentes. */
 export function sanitizeFoodLogProvenance(source: unknown): PersistedProvenance {
@@ -214,19 +232,11 @@ export function sanitizeFoodLogProvenance(source: unknown): PersistedProvenance 
   if (source === null || typeof source !== "object") return out;
   const raw = source as Record<string, unknown>;
 
-  const rawStatus = raw.nutrientStatus;
-  if (rawStatus !== null && typeof rawStatus === "object" && !Array.isArray(rawStatus)) {
-    const clean: Partial<Record<NutrientKey, NutrientStatus>> = {};
-    for (const key of NUTRIENT_KEYS) {
-      const value = (rawStatus as Record<string, unknown>)[key];
-      if (typeof value === "string" && (NUTRIENT_STATUSES as readonly string[]).includes(value)) clean[key] = value as NutrientStatus;
-    }
-    if (Object.keys(clean).length > 0) out.nutrientStatus = clean;
-  }
+  const nutrientStatus = sanitizeNutrientStatusMap(raw.nutrientStatus);
+  if (nutrientStatus) out.nutrientStatus = nutrientStatus;
 
-  if (typeof raw.foodStateConfidence === "string" && (FOOD_STATE_CONFIDENCES as readonly string[]).includes(raw.foodStateConfidence)) {
-    out.foodStateConfidence = raw.foodStateConfidence as FoodStateConfidence;
-  }
+  const foodStateConfidence = sanitizeFoodStateConfidence(raw.foodStateConfidence);
+  if (foodStateConfidence) out.foodStateConfidence = foodStateConfidence;
 
   const rawQuantity = raw.quantityConfidence;
   if (rawQuantity !== null && typeof rawQuantity === "object") {
