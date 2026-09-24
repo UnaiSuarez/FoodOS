@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIConfig } from "./ai-config";
-import { fillFoodData, identifyFoodFromPhoto, scanTicketImage } from "./ai-inventory";
+import { estimateMealFromPhoto, estimateMealMacros, fillFoodData, identifyFoodFromPhoto, scanTicketImage } from "./ai-inventory";
 
 // PR3a — procedencia en los 3 niveles de fillFoodData (BD local → OFF/USDA →
 // IA) y en los dos caminos de análisis de imagen (ticket, foto de
@@ -142,5 +142,42 @@ describe("identifyFoodFromPhoto — siempre IA", () => {
     expect(candidate.nutrientStatus?.kcal).toBe("estimated");
     expect(candidate.nutrientStatus?.protein).toBe("unknown");
     expect(candidate.protein).toBe(0);
+  });
+});
+
+// PR3 (hueco de PR3a) — los dos estimadores de COMIDA COMPLETA no llevaban
+// procedencia: colapsaban protein/carbs/fat con `?? 0` y no declaraban que su
+// número ya es el total consumido (AC25e). El número devuelto no cambia.
+describe("estimateMealMacros — total de comida completa por IA", () => {
+  it("los cuatro macros declarados son estimated (nunca known_*) y foodStateConfidence es not_applicable", async () => {
+    mockFetchRouter({ geminiText: JSON.stringify({ kcal: 600, protein: 40, carbs: 55, fat: 20 }) });
+    const result = await estimateMealMacros(GEMINI_CONFIG, "menú del día");
+    expect(result).toMatchObject({ kcal: 600, protein: 40, carbs: 55, fat: 20 });
+    expect(result?.nutrientStatus).toEqual({ kcal: "estimated", protein: "estimated", carbs: "estimated", fat: "estimated" });
+    expect(result?.foodStateConfidence).toBe("not_applicable");
+  });
+
+  it("un macro que la IA omite queda unknown pese al ?? 0 del número devuelto; un 0 explícito es estimated", async () => {
+    mockFetchRouter({ geminiText: JSON.stringify({ kcal: 300, protein: 0, carbs: 30 }) }); // protein 0 explícito, fat omitido
+    const result = await estimateMealMacros(GEMINI_CONFIG, "tostada");
+    expect(result?.fat).toBe(0); // el número mostrado conserva su fallback
+    expect(result?.nutrientStatus?.fat).toBe("unknown");
+    expect(result?.nutrientStatus?.protein).toBe("estimated");
+    expect(result?.nutrientStatus?.protein).not.toBe("known_zero");
+  });
+
+  it("sin kcal numérico no hay resultado (comportamiento previo intacto)", async () => {
+    mockFetchRouter({ geminiText: JSON.stringify({ protein: 10 }) });
+    expect(await estimateMealMacros(GEMINI_CONFIG, "algo")).toBeNull();
+  });
+});
+
+describe("estimateMealFromPhoto — total de comida completa por IA", () => {
+  it("propaga estimated por macro y not_applicable, y un macro omitido queda unknown", async () => {
+    mockFetchRouter({ geminiText: JSON.stringify({ name: "Paella", kcal: 700, protein: 35, carbs: 90 }) }); // fat omitido
+    const result = await estimateMealFromPhoto(GEMINI_CONFIG, "base64data", "image/jpeg");
+    expect(result).toMatchObject({ name: "Paella", kcal: 700, protein: 35, carbs: 90, fat: 0 });
+    expect(result?.nutrientStatus).toEqual({ kcal: "estimated", protein: "estimated", carbs: "estimated", fat: "unknown" });
+    expect(result?.foodStateConfidence).toBe("not_applicable");
   });
 });

@@ -512,13 +512,40 @@ Si no se identifica nada devuelve [].`;
 }
 
 /**
+ * PR3 — procedencia de un TOTAL de comida completa estimado por IA. Se calcula
+ * sobre el valor CRUDO de la respuesta (antes del `?? 0` que rellena el número
+ * mostrado): un macro que la IA declaró (incluido un 0 explícito) es
+ * `"estimated"` — nunca `known_*`, una IA infiere, no mide — y uno que omitió es
+ * `"unknown"`, nunca un cero inventado. El número devuelto no cambia.
+ * `foodStateConfidence` es `"not_applicable"` porque el número YA es el total
+ * de lo consumido (el prompt pide expresamente un total, no una referencia por
+ * 100 g): no hay una referencia con estado propio detrás (design §1.6, AC25e).
+ */
+export type WholeMealProvenance = {
+  nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence: FoodStateConfidence;
+};
+
+function wholeMealProvenance(raw: { kcal?: number; protein?: number; carbs?: number; fat?: number }): WholeMealProvenance {
+  return {
+    nutrientStatus: {
+      kcal: aiStatusFromValue(raw.kcal),
+      protein: aiStatusFromValue(raw.protein),
+      carbs: aiStatusFromValue(raw.carbs),
+      fat: aiStatusFromValue(raw.fat),
+    },
+    foodStateConfidence: resolveFoodStateConfidenceForDirectEntry("whole_intake_total"),
+  };
+}
+
+/**
  * Estima los macros TOTALES de una comida descrita en texto libre.
  * Devuelve los macros para la comida completa (no por 100g).
  */
 export async function estimateMealMacros(
   config: AIConfig,
   description: string
-): Promise<{ kcal: number; protein: number; carbs: number; fat: number } | null> {
+): Promise<({ kcal: number; protein: number; carbs: number; fat: number } & WholeMealProvenance) | null> {
   const prompt = `Eres nutricionista. Estima los macronutrientes TOTALES para esta comida:
 "${description}"
 Responde SOLO con JSON: {"kcal":number,"protein":number,"carbs":number,"fat":number}
@@ -533,6 +560,7 @@ Valores totales de la comida descrita, no por 100g. Sin explicaciones.`;
       protein: Math.round((parsed.protein ?? 0) * 10) / 10,
       carbs: Math.round((parsed.carbs ?? 0) * 10) / 10,
       fat: Math.round((parsed.fat ?? 0) * 10) / 10,
+      ...wholeMealProvenance(parsed),
     };
   } catch {
     return null;
@@ -554,7 +582,7 @@ export async function estimateMealFromPhoto(
   imageBase64: string,
   mimeType: string,
   extraNote?: string
-): Promise<{ name: string; kcal: number; protein: number; carbs: number; fat: number } | null> {
+): Promise<({ name: string; kcal: number; protein: number; carbs: number; fat: number } & WholeMealProvenance) | null> {
   checkRateLimit();
   const prompt =
     `Eres nutricionista. Identifica la comida de esta foto — puede tener varios alimentos en el mismo plato — y estima sus macronutrientes TOTALES (de todo lo visible, no por 100g).` +
@@ -658,6 +686,7 @@ export async function estimateMealFromPhoto(
       protein: Math.round((parsed.protein ?? 0) * 10) / 10,
       carbs: Math.round((parsed.carbs ?? 0) * 10) / 10,
       fat: Math.round((parsed.fat ?? 0) * 10) / 10,
+      ...wholeMealProvenance(parsed),
     };
   } catch {
     return null;
