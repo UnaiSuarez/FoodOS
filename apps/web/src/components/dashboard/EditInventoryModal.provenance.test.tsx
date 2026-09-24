@@ -304,3 +304,112 @@ describe("EditInventoryModal — renombrar y foodStateConfidence", () => {
     expect(saved.foodStateConfidence).toBeUndefined();
   });
 });
+
+// Ronda de corrección: editar kcal/proteina a mano no debe conservar de forma
+// automatica la confianza de estado calculada para la referencia anterior.
+const OFF_CONFIRMED: InventoryItem = {
+  id: "off-confirmed-1",
+  name: "arroz cocido",
+  qty: 500, unit: "g", storage: "Despensa", expires: "2099-01-01", price: 1.5,
+  kcal: 130, protein: 2.7, carbs: 28, fat: 0.3,
+  dataSource: "off",
+  nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "known_nonzero" },
+  foodStateConfidence: "confirmed",
+};
+
+const MANUAL_CONFIRMED: InventoryItem = {
+  id: "manual-confirmed-1",
+  name: "arroz cocido",
+  qty: 500, unit: "g", storage: "Despensa", expires: "2099-01-01", price: 1.5,
+  kcal: 130, protein: 2.7,
+  nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero" },
+  foodStateConfidence: "confirmed",
+};
+
+describe("EditInventoryModal — edicion manual de kcal/proteina y foodStateConfidence", () => {
+  it("override de un resultado OFF confirmed (solo kcal): kcal known_*, el resto de la referencia intacto, confirmed pasa a unknown", async () => {
+    const holder = await renderEditModal(OFF_CONFIRMED);
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "200"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === OFF_CONFIRMED.id)!;
+    expect(saved.kcal).toBe(200);
+    expect(saved.nutrientStatus).toEqual(OFF_CONFIRMED.nutrientStatus);
+    expect(saved.foodStateConfidence).toBe("unknown");
+  });
+
+  it("editar kcal Y proteina sobre un item con carbs/fat de la referencia sigue siendo unknown", async () => {
+    const holder = await renderEditModal({ ...OFF_CONFIRMED, id: "off-confirmed-2" });
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "200"); });
+    act(() => { setNativeValue(findFieldInput(container, "Proteína/100g"), "9"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "off-confirmed-2")!;
+    expect(saved.protein).toBe(9);
+    expect(saved.foodStateConfidence).toBe("unknown");
+  });
+
+  it("abrir y guardar sin editar macros ni nombre conserva confirmed y los estados existentes", async () => {
+    const holder = await renderEditModal({ ...OFF_CONFIRMED, id: "off-confirmed-3" });
+    act(() => { setNativeValue(findFieldInput(container, "Precio €"), "2.10"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "off-confirmed-3")!;
+    expect(saved.price).toBe(2.1);
+    expect(saved.foodStateConfidence).toBe("confirmed");
+    expect(saved.nutrientStatus).toEqual(OFF_CONFIRMED.nutrientStatus);
+  });
+
+  it("item 100 % manual con nombre que declara un estado: reescribir kcal recalcula por el nombre y mantiene confirmed", async () => {
+    const holder = await renderEditModal(MANUAL_CONFIRMED);
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "140"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === MANUAL_CONFIRMED.id)!;
+    expect(saved.nutrientStatus?.kcal).toBe("known_nonzero");
+    expect(saved.foodStateConfidence).toBe("confirmed");
+  });
+
+  it("renombrar y reescribir SOLO kcal: la proteina sin reescribir se tecleo bajo el nombre anterior, asi que unknown", async () => {
+    const holder = await renderEditModal({ ...MANUAL_CONFIRMED, id: "manual-confirmed-2" });
+    act(() => { setNativeValue(findFieldInput(container, "Nombre"), "arroz crudo"); });
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "350"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "manual-confirmed-2")!;
+    expect(saved.name).toBe("arroz crudo");
+    expect(saved.foodStateConfidence).toBe("unknown");
+  });
+
+  it("renombrar y reescribir kcal Y proteina en un item 100 % manual: todos los numeros son del nombre nuevo, confirmed", async () => {
+    const holder = await renderEditModal({ ...MANUAL_CONFIRMED, id: "manual-confirmed-3" });
+    act(() => { setNativeValue(findFieldInput(container, "Nombre"), "arroz crudo"); });
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "350"); });
+    act(() => { setNativeValue(findFieldInput(container, "Proteína/100g"), "7"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "manual-confirmed-3")!;
+    expect(saved.nutrientStatus).toEqual({ kcal: "known_nonzero", protein: "known_nonzero" });
+    expect(saved.foodStateConfidence).toBe("confirmed");
+  });
+
+  it("item antiguo sin metadatos: editar kcal etiqueta solo kcal; la proteina sigue sin estado y un nombre sin estado da unknown", async () => {
+    const holder = await renderEditModal({
+      id: "legacy-edit-1", name: "arroz", qty: 500, unit: "g", storage: "Despensa",
+      expires: "2099-01-01", price: 1.2, kcal: 130, protein: 2.7,
+    });
+    act(() => { setNativeValue(findFieldInput(container, "kcal/100g"), "135"); });
+
+    clickSave(container);
+
+    const saved = holder.current!.state.inventory.find((i) => i.id === "legacy-edit-1")!;
+    expect(saved.nutrientStatus).toEqual({ kcal: "known_nonzero" });
+    expect(saved.foodStateConfidence).toBe("unknown");
+  });
+});

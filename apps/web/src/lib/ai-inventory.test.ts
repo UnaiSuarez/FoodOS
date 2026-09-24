@@ -73,6 +73,9 @@ describe("fillFoodData — nivel 2: OFF/USDA (propaga la procedencia real ya cal
     const result = await fillFoodData(null, UNKNOWN_NAME);
     expect(result?.source).toBe("off");
     expect(result?.nutrientStatus?.protein).toBe("known_zero");
+    // FoodNutriData solo transporta kcal/protein: un estado de carbs/fat sin
+    // número detrás sería metadato huérfano.
+    expect(Object.keys(result?.nutrientStatus ?? {}).sort()).toEqual(["kcal", "protein"]);
   });
 
   it("un macro ausente en la fuente USDA llega como unknown, no known_zero, aunque el número visible sea 0", async () => {

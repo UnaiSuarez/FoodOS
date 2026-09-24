@@ -5,9 +5,12 @@ import type { FoodStateConfidence, NutrientKey, NutrientStatus, Recipe, RecipeIn
 import { useFoodOS } from "@/lib/state";
 import { findExactFood } from "@/lib/food-db";
 import {
+  applyManualNutrientEdit,
+  ingredientBasisPatch,
   legacyOrUnknown,
   localCatalogStatusFromValue,
-  manualStatusFromValue,
+  referenceFieldsFromStatus,
+  restoredIngredientProvenance,
   resolveFoodStateConfidenceForGenericMatch,
   resolveOffConfirmedOnlyStatus,
   resolveOffKcalStatus,
@@ -37,6 +40,13 @@ export type IngDraft = {
       lookupIngredient). */
   nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
   foodStateConfidence?: FoodStateConfidence;
+  /** PR3a — campos cuyo número viene de la referencia encontrada, y campos que
+      el usuario ha reescrito a mano desde entonces: deciden si foodStateConfidence
+      sigue justificada tras una edición (ver applyManualNutrientEdit). Al
+      recargar una receta guardada el origen por campo no se conserva: todo
+      número con estado se trata como de referencia (lado conservador). */
+  referenceFields?: NutrientKey[];
+  manualFields?: NutrientKey[];
 };
 
 export function blankIng(): IngDraft {
@@ -83,13 +93,7 @@ export function riToIngDraft(ri: RecipeIngredient): IngDraft {
     // guardado (PR3a en adelante), se respeta tal cual; si no (receta
     // anterior a esta entrega), un número presente sin status guardado se
     // trata como dato heredado sin procedencia verificable, nunca known_*.
-    nutrientStatus: {
-      kcal: legacyOrUnknown(ri.nutrientStatus?.kcal, ri.kcalPer100),
-      protein: legacyOrUnknown(ri.nutrientStatus?.protein, ri.proteinPer100),
-      carbs: legacyOrUnknown(ri.nutrientStatus?.carbs, ri.carbsPer100),
-      fat: legacyOrUnknown(ri.nutrientStatus?.fat, ri.fatPer100),
-    },
-    foodStateConfidence: ri.foodStateConfidence,
+    ...restoredIngredientProvenance(ri),
   };
 }
 
@@ -142,7 +146,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
   function setIng(i: number, patch: Partial<IngDraft>) {
     setIngredients((prev) => {
       const next = [...prev];
-      next[i] = { ...next[i], ...patch };
+      next[i] = { ...next[i], ...patch, ...ingredientBasisPatch(patch) };
       return next;
     });
   }
@@ -325,7 +329,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
                   placeholder="Nombre del ingrediente"
                   aria-label={`Nombre del ingrediente ${i + 1}`}
                   value={ing.name}
-                  onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, nutrientStatus: undefined, foodStateConfidence: undefined })}
+                  onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, nutrientStatus: undefined, foodStateConfidence: undefined, referenceFields: undefined, manualFields: undefined })}
                   onBlur={(e) => { if (ing.status === "idle" && e.target.value.trim()) lookupIngredient(i, e.target.value); }}
                 />
                 <input
@@ -383,11 +387,16 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
                         value={ing[key]}
                         onChange={(e) => {
                           const value = Number(e.target.value);
-                          const nutrientKey = MACRO_FIELD_TO_NUTRIENT_KEY[key];
-                          setIng(i, {
-                            [key]: value,
-                            nutrientStatus: { ...ing.nutrientStatus, [nutrientKey]: manualStatusFromValue(value, true) },
+                          const edit = applyManualNutrientEdit({
+                            key: MACRO_FIELD_TO_NUTRIENT_KEY[key],
+                            value,
+                            name: ing.name,
+                            nutrientStatus: ing.nutrientStatus,
+                            foodStateConfidence: ing.foodStateConfidence,
+                            referenceFields: ing.referenceFields,
+                            manualFields: ing.manualFields,
                           });
+                          setIng(i, { [key]: value, ...edit });
                         }}
                       />
                     </label>

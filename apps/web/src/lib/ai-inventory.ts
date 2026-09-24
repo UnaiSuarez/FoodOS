@@ -184,7 +184,13 @@ export async function fillFoodData(
       storage: "Nevera",
       expiryDays: 7,
       source: external.source === "usda" ? "usda" : "off",
-      nutrientStatus: external.nutrientStatus,
+      // Solo las claves de los números que esta forma transporta (kcal/
+      // protein): `external` también trae carbs/fat/etc., pero FoodNutriData
+      // no los guarda — un estado sin número detrás sería metadato huérfano.
+      nutrientStatus: {
+        ...(external.nutrientStatus?.kcal && { kcal: external.nutrientStatus.kcal }),
+        ...(external.nutrientStatus?.protein && { protein: external.nutrientStatus.protein }),
+      },
       foodStateConfidence: external.foodStateConfidence,
     };
   }

@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { InventoryItem, NutrientKey, NutrientStatus, StorageName, UnitSizeUnit } from "@foodos/types";
 import { isImageUrlReferencedElsewhere, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
-import { foodStateConfidenceAfterRename, manualStatusFromValue } from "@/lib/nutrient-provenance";
+import { foodStateConfidenceAfterInventoryEdit, manualStatusFromValue } from "@/lib/nutrient-provenance";
 import { Modal } from "./Modal";
 import { ImagePickerField } from "./ImagePickerField";
 
@@ -81,10 +81,14 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       if (Object.keys(nextNutrientStatus).length > 0) {
         it.nutrientStatus = nextNutrientStatus;
       }
-      // PR3a — renombrar de verdad invalida un "confirmed" previo: la
-      // referencia original no se conserva para recalcular la comparación.
-      // Un guardado sin cambio de nombre conserva el valor anterior tal cual.
-      const nextFoodState = foodStateConfidenceAfterRename(item.foodStateConfidence, item.name, form.name);
+      // PR3a — foodStateConfidence acompaña a los números: renombrar de verdad
+      // invalida un "confirmed" previo (la referencia original no se conserva
+      // para recalcular la comparación), y reescribir kcal/proteína a mano
+      // sobre un item respaldado por una referencia también. Un guardado sin
+      // cambio de nombre ni de macros conserva el valor anterior tal cual.
+      const nextFoodState = foodStateConfidenceAfterInventoryEdit({
+        item, nextName: form.name, kcalChanged, proteinChanged,
+      });
       if (nextFoodState !== item.foodStateConfidence) {
         it.foodStateConfidence = nextFoodState;
       }
