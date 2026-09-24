@@ -1123,6 +1123,14 @@ describe("PR3 — round-trip real de la procedencia del diario (pushState → pu
 // llegaba a aportar cobertura. La procedencia viaja ahora en la columna JSONB
 // nullable inventory_items.nutrition_provenance (migración aditiva aparte).
 
+/** numeric(…,2) de Postgres para un valor ≥ 0: mitad hacia arriba sobre el TEXTO decimal
+    (`Number("1.005e2")` es exactamente 100.5, a diferencia de 1.005 * 100). Implementación
+    independiente de canonicalNumeric2, para no probar la función con ella misma. */
+function postgresNumeric2(value: number): number {
+  const text = String(value);
+  return text.includes("e") ? Number(value.toFixed(2)) : Number(`${Math.round(Number(`${text}e2`))}e-2`);
+}
+
 /** Como makeFakePullClient, pero devuelve de cada fila SOLO las columnas que el
     .select() pidió — igual que PostgREST — y redondea a 2 decimales las columnas
     numeric(…,2), como la base. Así una columna que el select olvidara pedir no
@@ -1141,7 +1149,7 @@ function makeColumnAwarePullClient(tableData: Record<string, FakeSelectResult>) 
               .filter((column) => column in row)
               .map((column) => {
                 const value = row[column];
-                const rounded = /_per_100$/.test(column) && typeof value === "number" ? Math.round(value * 100) / 100 : value;
+                const rounded = /_per_100$|^unit_size$/.test(column) && typeof value === "number" ? postgresNumeric2(value) : value;
                 return [column, rounded];
               }),
           ),
@@ -1321,6 +1329,148 @@ describe("PR3a→PR3 — round-trip real de la procedencia del inventario (pushS
     });
   });
 
+  // Un cliente anterior a este cambio no conoce nutrition_provenance: al editar un item
+  // solo actualiza SUS columnas (nombre, unidad, tamaño de unidad, kcal, proteína,
+  // cantidad, …) y la procedencia guardada se queda como estaba. Todo cambio que
+  // altere cómo se interpreta la referencia debe invalidarla.
+  describe("clientes antiguos — la procedencia obsoleta se descarta (nombre, unidad y borde del redondeo)", () => {
+    const RICE: InventoryItem = {
+      id: "99999999-9999-4999-8999-999999999999", name: "Arroz crudo", qty: 1000, unit: "g", storage: "Despensa", expires: "2099-01-01", price: 1.5,
+      kcal: 350, protein: 7, carbs: 78, fat: 0.6, dataSource: "off",
+      nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "known_nonzero" },
+      foodStateConfidence: "confirmed",
+    };
+    const CAN: InventoryItem = {
+      id: "88888888-8888-4888-8888-888888888888", name: "Refresco de cola", qty: 6, unit: "ud", unitSize: 330, unitSizeUnit: "ml", storage: "Despensa",
+      expires: "2099-01-01", price: 0.8, kcal: 42, protein: 0, carbs: 10.6, fat: 0, dataSource: "off",
+      nutrientStatus: { kcal: "known_nonzero", protein: "known_zero", carbs: "known_nonzero", fat: "known_zero" },
+      foodStateConfidence: "unknown",
+    };
+
+    /** Lo que deja un cliente antiguo: la fila tal como estaba, con SOLO las columnas que él conoce cambiadas. */
+    async function afterOldClient(item: InventoryItem, changes: Record<string, unknown>): Promise<InventoryItem> {
+      const rows = await pushRows([item]);
+      return byName(await pullItems([{ ...rows[0], ...changes }]), String(changes.name ?? item.name));
+    }
+    const kept = (i: InventoryItem, item: InventoryItem) => {
+      expect(i.nutrientStatus).toEqual(item.nutrientStatus);
+      expect(i.foodStateConfidence).toBe(item.foodStateConfidence);
+      expect(i.dataSource).toBe(item.dataSource);
+    };
+    const dropped = (i: InventoryItem) => {
+      expect(i.nutrientStatus).toBeUndefined();
+      expect(i.foodStateConfidence).toBeUndefined();
+      expect(i.dataSource).toBeUndefined();
+    };
+
+    describe("nombre", () => {
+      it("«arroz crudo» → «arroz cocido» sin tocar números ni procedencia: NO recupera foodStateConfidence 'confirmed'", async () => {
+        const back = await afterOldClient(RICE, { name: "arroz cocido" });
+        expect(back.name).toBe("arroz cocido");
+        expect(back.kcal).toBe(350); // los números no cambiaron
+        dropped(back);
+        expect(inventoryConsumptionProvenance(back).foodStateConfidence).toBe("unknown");
+        expect(inventoryConsumptionProvenance(back).nutrientStatus?.kcal).toBe("legacy_unlabeled");
+      });
+
+      it("un cambio de nombre a otro alimento cualquiera también la invalida", async () => {
+        dropped(await afterOldClient(RICE, { name: "Pasta" }));
+      });
+
+      it("solo mayúsculas o espacios NO cuentan como cambio de nombre (misma regla que §16.5)", async () => {
+        for (const name of ["ARROZ CRUDO", "  arroz   crudo  ", "arroz crudo"]) {
+          kept(await afterOldClient(RICE, { name }), RICE);
+        }
+      });
+    });
+
+    describe("unidad y tamaño de unidad", () => {
+      it("cambiar la unidad (g → ml, o g → kg) invalida la procedencia", async () => {
+        dropped(await afterOldClient(RICE, { unit: "ml" }));
+        dropped(await afterOldClient(RICE, { unit: "kg" }));
+      });
+
+      it("cambiar de g a «ud» con un tamaño de unidad declarado la invalida", async () => {
+        dropped(await afterOldClient(RICE, { unit: "ud", unit_size: 250, unit_size_unit: "g" }));
+      });
+
+      it("cambiar unitSize de un item «ud» (330 → 500) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size: 500 }));
+      });
+
+      it("cambiar la dimensión de unitSize (ml → g) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size_unit: "g" }));
+      });
+
+      it("borrar la dimensión de unitSize (queda NULL, como un item legado) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size_unit: null }));
+      });
+    });
+
+    describe("items anteriores a PR3a", () => {
+      it("siguen sin adquirir etiquetas tras una edición antigua, y la columna sigue NULL", async () => {
+        const rows = await pushRows([LEGACY]);
+        expect(rows[0].nutrition_provenance).toBeNull();
+        for (const changes of [{ name: "Arroz cocido" }, { kcal_per_100: 400 }, { unit: "kg" }, { quantity: 5 }]) {
+          const back = await pullItems([{ ...rows[0], ...changes }]);
+          expect(back[0].nutrientStatus).toBeUndefined();
+          expect(back[0].foodStateConfidence).toBeUndefined();
+          expect(back[0].dataSource).toBeUndefined();
+          expect(inventoryConsumptionProvenance(back[0]).nutrientStatus?.kcal).toBe("legacy_unlabeled");
+        }
+      });
+    });
+
+    describe("lo que NO cambia cómo se interpreta la referencia no la invalida", () => {
+      it("cantidad, almacén, caducidad y precio", async () => {
+        const rows = await pushRows([RICE]);
+        const back = byName(await pullItems([{ ...rows[0], quantity: 250, expiry_date: "2099-06-01", price_estimate: 9.99 }]), "Arroz crudo");
+        expect(back).toMatchObject({ qty: 250, price: 9.99 });
+        kept(back, RICE);
+      });
+    });
+
+    describe("borde del redondeo — se compara con el valor CANÓNICO que persiste Postgres, no con una banda", () => {
+      const BASE: InventoryItem = { ...RICE, id: "77777777-7777-4777-8777-777777777777", name: "Borde", kcal: 165.0051 };
+
+      it("una base 165,0051 se guarda como 165,01: el simple redondeo inicial NO descarta la procedencia válida", async () => {
+        const { rows, pulled } = await roundTrip([BASE]);
+        expect(rows[0].kcal_per_100).toBe(165.0051); // lo que envía el cliente
+        const back = byName(pulled, "Borde");
+        expect(back.kcal).toBe(165.01); // lo que persiste numeric(7,2)
+        kept(back, BASE);
+      });
+
+      it("una edición ANTIGUA posterior a 165,00 (una modificación real de 0,01) SÍ la descarta", async () => {
+        dropped(await afterOldClient(BASE, { name: "Borde", kcal_per_100: 165 }));
+      });
+
+      it("y una edición antigua idéntica al valor persistido (165,01) no cambia nada: sigue válida", async () => {
+        kept(await afterOldClient(BASE, { name: "Borde", kcal_per_100: 165.01 }), BASE);
+      });
+
+      it("1,005 (que Math.round(x * 100) / 100 redondearía mal a 1) se guarda como 1,01: sigue válida; una edición antigua a 1 la descarta", async () => {
+        const c: InventoryItem = { ...BASE, name: "Borde C", id: "55555555-5555-4555-8555-555555555555", kcal: 165, carbs: 1.005 };
+        const { pulled } = await roundTrip([c]);
+        expect(byName(pulled, "Borde C").carbs).toBe(1.01);
+        kept(byName(pulled, "Borde C"), c);
+        dropped(await afterOldClient(c, { name: "Borde C", carbs_per_100: 1 }));
+      });
+
+      it("el tamaño de unidad usa el mismo valor canónico: 125,129 se guarda como 125,13; una edición antigua a 125,12 la descarta", async () => {
+        const u: InventoryItem = { ...CAN, id: "44444444-4444-4444-8444-444444444444", name: "Borde U", unitSize: 125.129, unitSizeUnit: "g" };
+        kept(await afterOldClient(u, { name: "Borde U" }), u);
+        dropped(await afterOldClient(u, { name: "Borde U", unit_size: 125.12 }));
+      });
+
+      it("lo mismo en proteína y otros macros: 31,004 se guarda como 31; una edición a 31,01 la descarta", async () => {
+        const p: InventoryItem = { ...BASE, name: "Borde P", id: "66666666-6666-4666-8666-666666666666", kcal: 165, protein: 31.004 };
+        kept(await afterOldClient(p, { name: "Borde P" }), p);
+        dropped(await afterOldClient(p, { name: "Borde P", protein_per_100: 31.01 }));
+      });
+    });
+  });
+
   describe("saneado de la columna", () => {
     async function pullWithColumn(value: unknown): Promise<InventoryItem> {
       const rows = await pushRows([OFF_KNOWN]);
@@ -1343,11 +1493,20 @@ describe("PR3a→PR3 — round-trip real de la procedencia del inventario (pushS
       expect(back.foodStateConfidence).toBeUndefined();
     });
 
+    it("un basis con solo números (sin nombre ni unidad) no verifica la referencia: se descarta", async () => {
+      const back = await pullWithColumn({
+        dataSource: "off", nutrientStatus: { kcal: "known_nonzero" }, foodStateConfidence: "confirmed",
+        basis: { kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1 },
+      });
+      expect(back.nutrientStatus).toBeUndefined();
+      expect(back.foodStateConfidence).toBeUndefined();
+    });
+
     it("estados, claves y valores inválidos dentro de un objeto con basis correcto se descartan uno a uno", async () => {
       const back = await pullWithColumn({
         dataSource: "supermercado", foodStateConfidence: "seguro",
         nutrientStatus: { kcal: "known_maybe", protein: "known_nonzero", potassium: "known_nonzero", carbs: 3 },
-        basis: { kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1 },
+        basis: { name: "Pechuga OFF", unit: "g", kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1 },
       });
       expect(back.nutrientStatus).toEqual({ protein: "known_nonzero" });
       expect(back.dataSource).toBeUndefined();
