@@ -2,7 +2,7 @@
 // Los usan apps/web hoy, y apps/mobile y apps/desktop en el futuro.
 // Reflejan el modelo de datos de supabase/schema.sql (ver docs/data-model.md).
 
-import type { FoodStateConfidence, NutrientKey, NutrientStatus } from "./nutrient-value";
+import type { FoodStateConfidence, NutrientKey, NutrientStatus, QuantityLowConfidenceReason } from "./nutrient-value";
 
 export type StorageName = "Nevera" | "Congelador" | "Despensa";
 
@@ -249,6 +249,34 @@ export interface FoodLogEntry extends MacroTotals {
     unit: string;
     snapshot?: InventorySnapshot;
   }>;
+  /**
+   * PR3 — procedencia por macro, decidida en el MOMENTO de escribir la
+   * entrada (nunca inferida después del número): solo `kcal`/`protein`/
+   * `carbs`/`fat` existen aquí. El número visible NO cambia por esto; el
+   * campo describe cuánto confiar en él. **Ausente = entrada anterior a PR3
+   * (o de una migración): equivale a `legacy_unlabeled` para sus cuatro
+   * macros, nunca a `known_*`.** Un estado presente debe ser coherente con el
+   * número guardado (`known_zero` ⇔ 0, `known_nonzero` ⇒ > 0), o el kernel de
+   * cobertura rechazaría la ventana entera. Ver
+   * docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md §18.
+   */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  /**
+   * PR3 — confianza en la cantidad registrada. Solo se escribe cuando hay un
+   * motivo concreto para NO fiarse (`level: "low"`): PR3 nunca afirma `"high"`
+   * sin una comprobación positiva, y su ausencia se lee como baja.
+   */
+  quantityConfidence?: { level: "high" | "low"; reason?: QuantityLowConfidenceReason };
+  /** PR3 — mismo significado que en InventoryItem (eje independiente de
+      `nutrientStatus`). Ausente = "unknown". */
+  foodStateConfidence?: FoodStateConfidence;
+  /**
+   * PR3 — solo `true`, solo en filas de DEMOSTRACIÓN escritas por el propio
+   * código (`seedHistorico`, "Cargar datos demo"): no representan ninguna
+   * ingesta real. Nunca aportan nutrientes ni cobertura; se filtran por
+   * entrada (nunca por día) antes de agregar, y la ventana no se reduce.
+   */
+  synthetic?: true;
 }
 
 // ---------- Perfil fisico y objetivos (PDF §9) ----------
