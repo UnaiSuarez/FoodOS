@@ -331,7 +331,8 @@ export function resolveFoodStateConfidenceForProduct(): FoodStateConfidence {
   return "unknown";
 }
 
-function normalizeNameForComparison(name: string): string {
+/** Nombre comparable: sin espacios de más y sin distinguir mayúsculas (§16.5). */
+export function normalizeNameForComparison(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLowerCase();
 }
 

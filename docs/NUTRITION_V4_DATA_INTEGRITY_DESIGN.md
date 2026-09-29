@@ -910,6 +910,75 @@ Integración del adaptador (leer estas etiquetas reconciliadas con el número), 
 
 ---
 
+## 19. La procedencia del inventario no sobrevivía a la sincronización
+
+Hueco encontrado en la revisión de PR3, en `apps/web/src/lib/data-layer.ts`: `pushState` escribía `inventory_items` con una lista fija de columnas y `pullState` reconstruía cada `InventoryItem` desde otra lista fija; ninguna conservaba `nutrientStatus`, `foodStateConfidence` ni `dataSource` (este último tampoco se persistía antes de PR3a: solo vivía en memoria y en `localStorage`). Tras sincronizar y recargar, un item OFF/USDA/IA perdía su procedencia y consumirlo acababa `legacy_unlabeled`. Seguro, pero impedía que la captura de PR3a aportara cobertura.
+
+### 19.1 Reproducción
+
+Prueba de ida y vuelta `pushState` → `pullState` con un cliente falso que devuelve solo las columnas que pide el `.select()` (como PostgREST) y redondea las columnas `numeric(…,2)` como Postgres: un item OFF con valores conocidos, uno con un nutriente ausente, uno de IA, uno con `known_zero` y uno anterior a PR3a. Contra el código anterior fallaban 11 de las 15 primeras pruebas (`expected undefined to deeply equal { kcal: 'known_nonzero', … }`); las 4 que pasaban eran las que ya esperaban el comportamiento legado.
+
+### 19.2 Esquema real, inspeccionado antes de decidir
+
+Consultas de catálogo de solo lectura sobre el proyecto Supabase de FoodOS (sin leer datos de usuarios) y las migraciones del repositorio:
+
+- `inventory_items` tiene 27 columnas y **ninguna JSONB** ni de procedencia. La columna `source` (`manual|barcode|photo_ai|cart|bank_ticket`, con `CHECK`) tiene otro significado y otros valores que `dataSource` (`local|off|usda|ai|manual`): reutilizarla mezclaría dos cosas y perdería información.
+- RLS activado con cuatro políticas por fila; `authenticated` tiene privilegios de tabla completos (SELECT/INSERT/UPDATE/DELETE), que una columna nueva hereda. Sin cambios de política ni permisos.
+- El historial de migraciones remoto coincide con las versiones del repositorio hasta `20260908120000_unit_size_dimension` (19 versiones). `supabase/schema.sql` es una línea base que ya no incluye las columnas posteriores (`salt_per_100`, `unit_size`, …); no se ha tocado.
+
+### 19.3 Solución aditiva
+
+Una columna **`inventory_items.nutrition_provenance jsonb`**, nullable, sin valor por defecto y sin backfill, con `CHECK` de que, si hay valor, es un objeto JSON (migración `20260924190000_inventory_nutrition_provenance.sql`, en su propio commit, **preparada y sin aplicar**). Guarda la procedencia con la propia fila:
+
+```
+{ dataSource, nutrientStatus, foodStateConfidence,
+  basis: { name, unit, unitSize?, unitSizeUnit?, kcal, protein, carbs?, fat?, salt?, fiber?, sugars? } }
+```
+
+- **NULL = sin procedencia**: un item anterior a PR3a no gana ninguna (sigue `legacy_unlabeled`), y un item que la perdió escribe NULL y limpia la que hubiera.
+- **Saneado en ambas direcciones** (`inventory-provenance-persistence.ts`, compartiendo los validadores con la persistencia del diario): solo salen y entran claves y estados válidos; lo demás se descarta y nunca lanza. Un `known_*` en un item de IA sigue rebajándose a `estimated` al consumir (AC19), aunque la base dijera otra cosa.
+- **Frescura (`basis`)**: es la **referencia** a la que describe la procedencia, no solo los números. Al leer, si algo de ella ya no coincide con la fila —o no hay un `basis` verificable— la procedencia se descarta **entera** y el item queda `legacy_unlabeled`:
+  - **Nombre.** «arroz crudo» → «arroz cocido» cambia el alimento al que se refiere un `foodStateConfidence: "confirmed"` sin tocar un número. Se compara sin distinguir mayúsculas ni espacios de más (misma regla que §16.5).
+  - **Unidad, `unitSize` y `unitSizeUnit`.** Cambian cómo se interpreta la referencia por 100 (g frente a ml, gramos por unidad); cualquier cambio la invalida, incluido que el item gane o pierda un tamaño de unidad.
+  - **Números, en su forma canónica de Postgres, sin banda de tolerancia.** Una banda alrededor del valor original no vale: con base `165,0051` (guardada por `numeric(7,2)` como `165,01`) y una edición antigua a `165,00`, la diferencia real es de 0,01 pero la del valor crudo es 0,0051, y una banda de 0,006 la aceptaría. El `basis` guarda el valor canónico (`165,01`) y al leer se compara la forma canónica de ambos lados con igualdad exacta: el redondeo inicial no descarta nada válido y una modificación de 0,01 sí.
+
+`RecipeIngredient` no tiene este hueco: `customRecipes` viaja entero en `user_profiles.extra_state` (JSONB) y su procedencia sobrevive (prueba de ida y vuelta añadida).
+
+### 19.4 Clientes antiguos
+
+Un cliente anterior a este cambio no conoce la columna.
+
+- **Leer:** pide una lista explícita de columnas en su `.select()`: no ve la columna nueva y no le afecta. *Verificado en el código; no ejercitado contra la base de FoodOS.*
+- **Escribir:** supabase-js declara `columns` con las claves de su payload en el `upsert` (`postgrest-js`) y PostgREST genera `INSERT (esas columnas) … ON CONFLICT DO UPDATE SET col = EXCLUDED.col` **solo para ellas** (`QueryBuilder.hs`, `mutatePlanToQuery`, leído en el código fuente de PostgREST). Ese SQL exacto se ejecutó en un PostgreSQL real y aislado: la columna nueva se conserva aunque el cliente antiguo cambie el nombre y los números (§19.7). *No se ejecutó PostgREST en sí, ni la versión concreta de Supabase, ni contra la base de FoodOS.*
+- **Cambiar la referencia sin tocar la procedencia** (lo que un cliente antiguo sí hace: `EditInventoryModal` cambia nombre, unidad, `unitSize`, `unitSizeUnit`, kcal y proteína): la procedencia guardada quedaría obsoleta y un cliente nuevo la seguiría afirmando. Con `basis` (§19.3) se descarta, y el siguiente `push` del cliente nuevo la limpia. Cubierto por pruebas de ida y vuelta para nombre, unidad, `unitSize`, `unitSizeUnit` y el borde del redondeo.
+- **Items anteriores a PR3a:** siguen sin adquirir etiquetas, también tras una edición antigua (columna NULL).
+- **Efecto secundario deseado:** `dataSource` ahora persiste, así que un item de IA sigue marcado como aproximado tras recargar o en otro dispositivo.
+
+### 19.5 Secuencia de despliegue
+
+1. **Aplicar la migración** `20260924190000_inventory_nutrition_provenance.sql` en Supabase y **verificar** que existe `inventory_items.nutrition_provenance` (`jsonb`, nullable) — consulta al final del propio fichero.
+2. **Solo después, desplegar el código.** Referencia la columna en el `.select()` y en el `upsert` de inventario: sin ella, PostgREST rechaza la petición entera y el inventario deja de sincronizar (mismo riesgo y mismo orden que `unit_size_unit`).
+3. Con la migración aplicada, el código **antiguo** sigue funcionando (compatible hacia delante); el orden inverso no es seguro. Para deshacer basta volver al código anterior; la columna puede quedarse.
+4. No hay backfill: las filas existentes quedan NULL. Los items ya guardados solo ganan procedencia cuando un cliente nuevo los vuelva a escribir con ella.
+
+### 19.6 Límites
+
+- Un item recreado desde un snapshot del diario (`restoreInventoryQty`, al borrar una entrada que consumió el lote entero) no conserva la procedencia: `InventorySnapshot` no la lleva. Es conservador (queda `legacy_unlabeled`).
+- Un item que nace de un ítem de carrito o de un plato guardado en la despensa tampoco la tiene: no pasó por captura.
+- Un cambio de nombre que haga un cliente **nuevo** (no antiguo) ya lo gestiona `foodStateConfidenceAfterRename` (§16.5) y `basis` se reescribe en cada `push`.
+- No se ha aplicado nada a Supabase ni desplegado nada; ninguna prueba toca una base real.
+
+### 19.7 Verificación en un Postgres aislado
+
+`supabase/verification/inventory-nutrition-provenance/` (PGlite: PostgreSQL 18.3 en WebAssembly, en memoria, sin datos de nadie; el proyecto de FoodOS usa 17.6). No forma parte de la app ni del workspace y trae su propio `package.json` con la dependencia fijada.
+
+- **Valor canónico de `numeric(p,2)`.** `canonicalNumeric2` (`pg-numeric.ts`, importado tal cual) coincide con Postgres en 36 040 valores (41 fijos y ~36 000 aleatorios, con bordes `x,xx5`): **0 diferencias**. El redondeo ingenuo `Math.round(v * 100) / 100` se equivoca en 446 (p. ej. `1,005` → 1 en JS, `1,01` en Postgres, porque Postgres redondea el **texto** decimal que recibe, no el `double`). Los valores esperados de las pruebas salen de Postgres, no de la función.
+- **La migración**, ejecutada dos veces sobre una copia vacía de la estructura real de `inventory_items`: añade la columna y el `CHECK` una sola vez; acepta `NULL`, `{}` y objetos; rechaza arrays, texto, números y `jsonb 'null'`; y un `null` JSON de un cliente nuevo llega como `NULL` de SQL, sin violar el `CHECK`.
+- **El `upsert` de un cliente antiguo**, con la forma exacta del SQL de PostgREST, conserva `nutrition_provenance` aunque cambie el nombre y los números; el de un cliente nuevo la sustituye o la limpia a `NULL`.
+- **Qué no cubre:** PostgREST no se ejecuta (su generación de SQL se contrastó en su código fuente, `main` a 24/09/2026, no en la versión de Supabase), y RLS/permisos no se modelan.
+
+---
+
 ## Confirmación de cierre — ronda original de diseño (histórica)
 
 *Esta sección describe únicamente la ronda original de diseño, previa a cualquier implementación. No describe PR1, PR2 ni PR3a — ver «Estado actual» más abajo.*
@@ -927,8 +996,9 @@ Separado de la confirmación histórica de arriba, que sigue siendo cierta para 
 - **Código modificado: sí.** La implementación vive en la rama `feature/nutrition-v4-pr3-diary-labeling`, que añade PR3 encima de `feature/nutrition-v4-pr3a-provenance`; esta última acumula, en este orden, PR1 (tipos y kernel puro de cobertura, `packages/types` y `packages/engine`), PR2 (adaptador del diario y `IntentGuard`, `apps/web`) y PR3a (procedencia y estado del alimento en el punto de captura, `packages/types` y `apps/web`), cada una desarrollada en su propio worktree y revisada antes de la siguiente. La numeración PR1–PR3a es la de este documento, no la de la secuencia de PRs ya existente en el repositorio.
 - **Hay commits** (varios por entrega; `git log` de la rama es la referencia autoritativa).
 - **No conectado**: `apps/web` no importa el motor puro (lo impiden los seis tests de frontera de `packages/engine`); el adaptador de PR2 no llama todavía al kernel y no lee todavía las etiquetas del diario (§18.3).
-- **PR3 implementado en la rama `feature/nutrition-v4-pr3-diary-labeling`** (sobre PR3a `385f339`, pendiente de revisión): etiquetado de los 9 caminos que escriben `foodLog` y persistencia de la procedencia en `client_meta` (§18).
-- **Sin SQL ni operaciones contra Supabase** en ninguna de las tres entregas.
+- **El arreglo de los estimadores de IA (`bef122e`) vive en la rama acumulativa de PR3, NO en el worktree independiente de PR3a** (`385f339`): PR3a por sí sola no lo incluye, así que no puede describirse como completa en ese punto (§18.4).
+- **PR3 implementado en la rama `feature/nutrition-v4-pr3-diary-labeling`** (sobre PR3a `385f339`, pendiente de revisión): etiquetado de los 9 caminos que escriben `foodLog` persistencia de la procedencia del diario en `client_meta` (§18) y del inventario en `inventory_items.nutrition_provenance` (§19, requiere migración antes del código).
+- **SQL:** PR1, PR2 y PR3a no tocan Supabase. PR3 **prepara, sin aplicar**, una migración aditiva (`20260924190000_inventory_nutrition_provenance.sql`, §19); solo se han hecho consultas de catálogo de solo lectura sobre Supabase para inspeccionar el esquema real, y la migración se ha verificado en un PostgreSQL aislado y en memoria (§19.7). Nada se ha aplicado ni desplegado.
 - **Decisiones que esta implementación corrigió respecto al diseño original**: catálogo local `known_*` → `legacy_unlabeled` (§15); resolutor de estado de producto y léxico de estado, edición de inventario y totales de receta (§16.1–§16.4); renombrado de `InventoryItem` (§16.5); edición manual de macros y sincronía número/`nutrientStatus`/`foodStateConfidence` (§16.6).
 - **Pendiente tras PR3**: integrar el adaptador (leer las etiquetas reconciliadas con el número), llevar la procedencia por ingrediente hasta los platos compuestos y los platos rápidos, y la decisión de §17 (§18.7).
 - **Decisión de producto pendiente antes de la integración adaptativa**: el gate actual es seguro pero probablemente poco utilizable para muchos usuarios (§17); no se ha relajado ningún umbral.

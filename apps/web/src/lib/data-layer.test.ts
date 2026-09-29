@@ -8,10 +8,11 @@
 // resto de tablas se sigue intentando (mejor esfuerzo — son independientes
 // entre sí) y que reintentar el mismo snapshot es idempotente.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings, FoodLogEntry, FoodOSState, NutritionCalculationSnapshot, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
+import type { AppSettings, FoodLogEntry, FoodOSState, InventoryItem, NutritionCalculationSnapshot, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
 import { remote, waitForMutationConfirmed } from "./data-layer";
 import * as outbox from "./outbox";
 import { NUTRITION_ENGINE_VERSION } from "./nutrition";
+import { inventoryConsumptionProvenance } from "./food-log-provenance";
 import { todayPlus } from "./utils";
 
 // ─── Cliente Supabase falso ─────────────────────────────────────────────────
@@ -1110,6 +1111,456 @@ describe("PR3 — round-trip real de la procedencia del diario (pushState → pu
     expect(pulled.quantityConfidence).toBeUndefined();
     expect(pulled.synthetic).toBeUndefined();
     expect(pulled).toMatchObject({ name: "Manipulada", kcal: 100 });
+  });
+});
+
+// ─── PR3a→PR3 — round-trip real de la procedencia del INVENTARIO (pushState → pullState) ──
+// PR3a captura nutrientStatus/foodStateConfidence/dataSource en cada InventoryItem,
+// pero pushState escribía inventory_items con una lista fija de columnas y
+// pullState reconstruía cada item desde otra lista fija: ninguna la conservaba,
+// así que tras sincronizar y recargar un item OFF/USDA/IA perdía su procedencia y
+// consumirlo acababa como legacy_unlabeled. Seguro, pero la captura de PR3a no
+// llegaba a aportar cobertura. La procedencia viaja ahora en la columna JSONB
+// nullable inventory_items.nutrition_provenance (migración aditiva aparte).
+
+/** numeric(…,2) de Postgres para un valor ≥ 0: mitad hacia arriba sobre el TEXTO decimal
+    (`Number("1.005e2")` es exactamente 100.5, a diferencia de 1.005 * 100). Implementación
+    independiente de canonicalNumeric2, para no probar la función con ella misma. */
+function postgresNumeric2(value: number): number {
+  const text = String(value);
+  return text.includes("e") ? Number(value.toFixed(2)) : Number(`${Math.round(Number(`${text}e2`))}e-2`);
+}
+
+/** Como makeFakePullClient, pero devuelve de cada fila SOLO las columnas que el
+    .select() pidió — igual que PostgREST — y redondea a 2 decimales las columnas
+    numeric(…,2), como la base. Así una columna que el select olvidara pedir no
+    aparece, y un valor de 165.456 vuelve como 165.46. */
+function makeColumnAwarePullClient(tableData: Record<string, FakeSelectResult>) {
+  return {
+    from(table: string) {
+      let columns: string[] | null = null;
+      const resolved = () => {
+        const base = tableData[table] ?? { data: [], error: null };
+        if (!columns || !Array.isArray(base.data)) return Promise.resolve(base);
+        const wanted = columns;
+        const rows = (base.data as Array<Record<string, unknown>>).map((row) =>
+          Object.fromEntries(
+            wanted
+              .filter((column) => column in row)
+              .map((column) => {
+                const value = row[column];
+                const rounded = /_per_100$|^unit_size$/.test(column) && typeof value === "number" ? postgresNumeric2(value) : value;
+                return [column, rounded];
+              }),
+          ),
+        );
+        return Promise.resolve({ ...base, data: rows });
+      };
+      const builder: Record<string, unknown> = {
+        select: (cols: string) => {
+          columns = cols.split(",").map((c) => c.trim());
+          return builder;
+        },
+        eq: () => builder,
+        order: () => builder,
+        limit: () => builder,
+        maybeSingle: () => resolved(),
+        then: (resolve: (v: FakeSelectResult) => unknown, reject?: (e: unknown) => unknown) => resolved().then(resolve, reject),
+      };
+      return builder;
+    },
+  };
+}
+
+describe("PR3a→PR3 — round-trip real de la procedencia del inventario (pushState → pullState)", () => {
+  const OFF_KNOWN: InventoryItem = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Pechuga OFF", qty: 500, unit: "g", storage: "Nevera", expires: "2099-01-01", price: 4,
+    kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1, dataSource: "off",
+    nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_zero", fat: "known_nonzero", salt: "known_nonzero" },
+    foodStateConfidence: "confirmed",
+  };
+  const ABSENT: InventoryItem = {
+    id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Yogur OFF sin grasa declarada", qty: 4, unit: "ud", unitSize: 125, unitSizeUnit: "g",
+    storage: "Nevera", expires: "2099-01-01", price: 2, kcal: 60, protein: 4, carbs: 5, fat: 0, dataSource: "off",
+    nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "unknown" }, // grasa AUSENTE en la fuente: el 0 es relleno
+    foodStateConfidence: "unknown",
+  };
+  const AI: InventoryItem = {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", name: "Plato de IA", qty: 300, unit: "g", storage: "Nevera", expires: "2099-01-01", price: 0,
+    kcal: 120, protein: 0, dataSource: "ai", // proteína omitida por la IA: el 0 es relleno
+    nutrientStatus: { kcal: "estimated", protein: "unknown" },
+    foodStateConfidence: "unknown",
+  };
+  const ZERO: InventoryItem = {
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", name: "Agua con gas", qty: 1500, unit: "ml", storage: "Despensa", expires: "2099-01-01", price: 0.5,
+    kcal: 0, protein: 0, carbs: 0, fat: 0, dataSource: "off",
+    nutrientStatus: { kcal: "known_zero", protein: "known_zero", carbs: "known_zero", fat: "known_zero" },
+    foodStateConfidence: "unknown",
+  };
+  const LEGACY: InventoryItem = {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", name: "Arroz de antes de PR3a", qty: 1000, unit: "g", storage: "Despensa", expires: "2099-01-01", price: 1.2,
+    kcal: 350, protein: 7, carbs: 78, fat: 0.6,
+  };
+
+  type DbRow = Record<string, unknown>;
+
+  /** Escribe con pushState, y devuelve las filas tal como quedarían en la base
+      (lo que el upsert envió, + NULL en las columnas que el upsert no traía). */
+  async function pushRows(items: InventoryItem[]): Promise<DbRow[]> {
+    const calls = setup(successConfig());
+    await remote.pushState(testCtx(), makeState({ inventory: structuredClone(items) }));
+    const upsert = calls.find((c) => c.table === "inventory_items" && c.op === "upsert");
+    expect(upsert).toBeDefined();
+    return structuredClone(upsert!.args as DbRow[]);
+  }
+
+  async function pullItems(rows: DbRow[]): Promise<InventoryItem[]> {
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeColumnAwarePullClient({ inventory_items: { data: rows, error: null } });
+    r.shoppingListId = "shopping-list-1";
+    return (await remote.pullState(makeState())).inventory;
+  }
+
+  async function roundTrip(items: InventoryItem[]): Promise<{ rows: DbRow[]; pulled: InventoryItem[] }> {
+    const rows = await pushRows(items);
+    return { rows, pulled: await pullItems(rows) };
+  }
+
+  const byName = (list: InventoryItem[], name: string) => list.find((i) => i.name === name)!;
+
+  it("un item OFF con valores conocidos conserva nutrientStatus, foodStateConfidence y dataSource, y sus números no cambian", async () => {
+    const { pulled } = await roundTrip([OFF_KNOWN]);
+    const back = byName(pulled, "Pechuga OFF");
+    expect(back).toMatchObject({ kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1, qty: 500, unit: "g" });
+    expect(back.nutrientStatus).toEqual(OFF_KNOWN.nutrientStatus);
+    expect(back.foodStateConfidence).toBe("confirmed");
+    expect(back.dataSource).toBe("off");
+  });
+
+  it("un nutriente AUSENTE sigue unknown tras el viaje — el 0 de relleno no se convierte en known_zero", async () => {
+    const { pulled } = await roundTrip([ABSENT]);
+    const back = byName(pulled, "Yogur OFF sin grasa declarada");
+    expect(back.fat).toBe(0);
+    expect(back.nutrientStatus?.fat).toBe("unknown");
+    expect(back.nutrientStatus?.kcal).toBe("known_nonzero");
+    expect(back.foodStateConfidence).toBe("unknown");
+    expect(back).toMatchObject({ unit: "ud", unitSize: 125, unitSizeUnit: "g" }); // lo que ya viajaba no cambia
+  });
+
+  it("un item de IA conserva dataSource 'ai' y sus estados, y consumirlo no produce nunca known_* (AC19 tras sincronizar)", async () => {
+    const { pulled } = await roundTrip([AI]);
+    const back = byName(pulled, "Plato de IA");
+    expect(back.dataSource).toBe("ai");
+    expect(back.nutrientStatus).toEqual({ kcal: "estimated", protein: "unknown" });
+    const status = inventoryConsumptionProvenance(back).nutrientStatus ?? {};
+    for (const key of ["kcal", "protein", "carbs", "fat"] as const) expect(["known_nonzero", "known_zero"]).not.toContain(status[key]);
+    expect(status.protein).toBe("unknown");
+  });
+
+  it("known_zero sobrevive aunque kcal/proteína 0 se escriban como NULL en la base (el push usa `|| null`)", async () => {
+    const { rows, pulled } = await roundTrip([ZERO]);
+    expect(rows[0].kcal_per_100).toBeNull(); // comportamiento previo, sin cambios
+    const back = byName(pulled, "Agua con gas");
+    expect(back.kcal).toBe(0);
+    expect(back.nutrientStatus).toEqual(ZERO.nutrientStatus);
+  });
+
+  it("un item ANTERIOR a PR3a no gana ninguna procedencia: la columna queda NULL y consumirlo es legacy_unlabeled", async () => {
+    const { rows, pulled } = await roundTrip([LEGACY]);
+    expect(rows[0].nutrition_provenance).toBeNull();
+    const back = byName(pulled, "Arroz de antes de PR3a");
+    expect(back.nutrientStatus).toBeUndefined();
+    expect(back.foodStateConfidence).toBeUndefined();
+    expect(back.dataSource).toBeUndefined();
+    expect(inventoryConsumptionProvenance(back).nutrientStatus).toEqual({ kcal: "legacy_unlabeled", protein: "legacy_unlabeled", carbs: "legacy_unlabeled", fat: "legacy_unlabeled" });
+  });
+
+  it("una fila sin la columna (base anterior a la migración, o fila escrita por un cliente antiguo) se lee como legacy, sin fallar", async () => {
+    const rows = await pushRows([OFF_KNOWN]);
+    delete rows[0].nutrition_provenance;
+    const back = byName(await pullItems(rows), "Pechuga OFF");
+    expect(back.nutrientStatus).toBeUndefined();
+    expect(back.dataSource).toBeUndefined();
+    expect(back.kcal).toBe(165);
+  });
+
+  it("cada fila del push lleva la clave nutrition_provenance (objeto o NULL), y el objeto no duplica números que no describe", async () => {
+    const rows = await pushRows([OFF_KNOWN, LEGACY]);
+    for (const row of rows) expect("nutrition_provenance" in row).toBe(true);
+    const meta = rows.find((r) => r.name === "Pechuga OFF")!.nutrition_provenance as Record<string, unknown>;
+    expect(Object.keys(meta).sort()).toEqual(["basis", "dataSource", "foodStateConfidence", "nutrientStatus"]);
+  });
+
+  it("los valores por 100 con más de 2 decimales (la base redondea) siguen reconociendo su procedencia", async () => {
+    const precise: InventoryItem = { ...OFF_KNOWN, id: "ffffffff-ffff-4fff-8fff-ffffffffffff", name: "Preciso", kcal: 165.456, protein: 31.004 };
+    const { pulled } = await roundTrip([precise]);
+    const back = byName(pulled, "Preciso");
+    expect(back.kcal).toBe(165.46); // redondeo de numeric(7,2), comportamiento previo
+    expect(back.nutrientStatus).toEqual(OFF_KNOWN.nutrientStatus);
+  });
+
+  describe("clientes antiguos — el número puede cambiar sin que la procedencia se entere", () => {
+    it("un cliente antiguo que edita kcal (y no conoce la columna) deja la procedencia OBSOLETA: se descarta, no se sigue afirmando", async () => {
+      const rows = await pushRows([OFF_KNOWN]);
+      // El cliente antiguo hace upsert solo de las columnas que conoce: la nueva queda como estaba
+      // (PostgREST merge-duplicates solo actualiza las columnas del payload).
+      const oldClientEdit = { ...rows[0] };
+      delete oldClientEdit.nutrition_provenance;
+      const dbRow = { ...rows[0], ...oldClientEdit, kcal_per_100: 210 }; // el usuario tecleó 210 en el cliente antiguo
+      const back = byName(await pullItems([dbRow]), "Pechuga OFF");
+      expect(back.kcal).toBe(210);
+      expect(back.nutrientStatus).toBeUndefined(); // ya no describe ese número
+      expect(back.foodStateConfidence).toBeUndefined();
+      expect(back.dataSource).toBeUndefined();
+      expect(inventoryConsumptionProvenance(back).nutrientStatus?.kcal).toBe("legacy_unlabeled");
+    });
+
+    it("un cliente antiguo que solo cambia la cantidad NO invalida la procedencia (los números por 100 no cambiaron)", async () => {
+      const rows = await pushRows([OFF_KNOWN]);
+      const dbRow = { ...rows[0], quantity: 120 };
+      const back = byName(await pullItems([dbRow]), "Pechuga OFF");
+      expect(back.qty).toBe(120);
+      expect(back.nutrientStatus).toEqual(OFF_KNOWN.nutrientStatus);
+    });
+
+    it("el push de un cliente nuevo limpia la procedencia obsoleta: un item que la perdió escribe NULL", async () => {
+      const rows = await pushRows([{ ...OFF_KNOWN, nutrientStatus: undefined, foodStateConfidence: undefined, dataSource: undefined }]);
+      expect(rows[0].nutrition_provenance).toBeNull();
+    });
+  });
+
+  // Un cliente anterior a este cambio no conoce nutrition_provenance: al editar un item
+  // solo actualiza SUS columnas (nombre, unidad, tamaño de unidad, kcal, proteína,
+  // cantidad, …) y la procedencia guardada se queda como estaba. Todo cambio que
+  // altere cómo se interpreta la referencia debe invalidarla.
+  describe("clientes antiguos — la procedencia obsoleta se descarta (nombre, unidad y borde del redondeo)", () => {
+    const RICE: InventoryItem = {
+      id: "99999999-9999-4999-8999-999999999999", name: "Arroz crudo", qty: 1000, unit: "g", storage: "Despensa", expires: "2099-01-01", price: 1.5,
+      kcal: 350, protein: 7, carbs: 78, fat: 0.6, dataSource: "off",
+      nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "known_nonzero" },
+      foodStateConfidence: "confirmed",
+    };
+    const CAN: InventoryItem = {
+      id: "88888888-8888-4888-8888-888888888888", name: "Refresco de cola", qty: 6, unit: "ud", unitSize: 330, unitSizeUnit: "ml", storage: "Despensa",
+      expires: "2099-01-01", price: 0.8, kcal: 42, protein: 0, carbs: 10.6, fat: 0, dataSource: "off",
+      nutrientStatus: { kcal: "known_nonzero", protein: "known_zero", carbs: "known_nonzero", fat: "known_zero" },
+      foodStateConfidence: "unknown",
+    };
+
+    /** Lo que deja un cliente antiguo: la fila tal como estaba, con SOLO las columnas que él conoce cambiadas. */
+    async function afterOldClient(item: InventoryItem, changes: Record<string, unknown>): Promise<InventoryItem> {
+      const rows = await pushRows([item]);
+      return byName(await pullItems([{ ...rows[0], ...changes }]), String(changes.name ?? item.name));
+    }
+    const kept = (i: InventoryItem, item: InventoryItem) => {
+      expect(i.nutrientStatus).toEqual(item.nutrientStatus);
+      expect(i.foodStateConfidence).toBe(item.foodStateConfidence);
+      expect(i.dataSource).toBe(item.dataSource);
+    };
+    const dropped = (i: InventoryItem) => {
+      expect(i.nutrientStatus).toBeUndefined();
+      expect(i.foodStateConfidence).toBeUndefined();
+      expect(i.dataSource).toBeUndefined();
+    };
+
+    describe("nombre", () => {
+      it("«arroz crudo» → «arroz cocido» sin tocar números ni procedencia: NO recupera foodStateConfidence 'confirmed'", async () => {
+        const back = await afterOldClient(RICE, { name: "arroz cocido" });
+        expect(back.name).toBe("arroz cocido");
+        expect(back.kcal).toBe(350); // los números no cambiaron
+        dropped(back);
+        expect(inventoryConsumptionProvenance(back).foodStateConfidence).toBe("unknown");
+        expect(inventoryConsumptionProvenance(back).nutrientStatus?.kcal).toBe("legacy_unlabeled");
+      });
+
+      it("un cambio de nombre a otro alimento cualquiera también la invalida", async () => {
+        dropped(await afterOldClient(RICE, { name: "Pasta" }));
+      });
+
+      it("solo mayúsculas o espacios NO cuentan como cambio de nombre (misma regla que §16.5)", async () => {
+        for (const name of ["ARROZ CRUDO", "  arroz   crudo  ", "arroz crudo"]) {
+          kept(await afterOldClient(RICE, { name }), RICE);
+        }
+      });
+    });
+
+    describe("unidad y tamaño de unidad", () => {
+      it("cambiar la unidad (g → ml, o g → kg) invalida la procedencia", async () => {
+        dropped(await afterOldClient(RICE, { unit: "ml" }));
+        dropped(await afterOldClient(RICE, { unit: "kg" }));
+      });
+
+      it("cambiar de g a «ud» con un tamaño de unidad declarado la invalida", async () => {
+        dropped(await afterOldClient(RICE, { unit: "ud", unit_size: 250, unit_size_unit: "g" }));
+      });
+
+      it("cambiar unitSize de un item «ud» (330 → 500) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size: 500 }));
+      });
+
+      it("cambiar la dimensión de unitSize (ml → g) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size_unit: "g" }));
+      });
+
+      it("borrar la dimensión de unitSize (queda NULL, como un item legado) la invalida", async () => {
+        dropped(await afterOldClient(CAN, { unit_size_unit: null }));
+      });
+    });
+
+    describe("items anteriores a PR3a", () => {
+      it("siguen sin adquirir etiquetas tras una edición antigua, y la columna sigue NULL", async () => {
+        const rows = await pushRows([LEGACY]);
+        expect(rows[0].nutrition_provenance).toBeNull();
+        for (const changes of [{ name: "Arroz cocido" }, { kcal_per_100: 400 }, { unit: "kg" }, { quantity: 5 }]) {
+          const back = await pullItems([{ ...rows[0], ...changes }]);
+          expect(back[0].nutrientStatus).toBeUndefined();
+          expect(back[0].foodStateConfidence).toBeUndefined();
+          expect(back[0].dataSource).toBeUndefined();
+          expect(inventoryConsumptionProvenance(back[0]).nutrientStatus?.kcal).toBe("legacy_unlabeled");
+        }
+      });
+    });
+
+    describe("lo que NO cambia cómo se interpreta la referencia no la invalida", () => {
+      it("cantidad, almacén, caducidad y precio", async () => {
+        const rows = await pushRows([RICE]);
+        const back = byName(await pullItems([{ ...rows[0], quantity: 250, expiry_date: "2099-06-01", price_estimate: 9.99 }]), "Arroz crudo");
+        expect(back).toMatchObject({ qty: 250, price: 9.99 });
+        kept(back, RICE);
+      });
+    });
+
+    describe("borde del redondeo — se compara con el valor CANÓNICO que persiste Postgres, no con una banda", () => {
+      const BASE: InventoryItem = { ...RICE, id: "77777777-7777-4777-8777-777777777777", name: "Borde", kcal: 165.0051 };
+
+      it("una base 165,0051 se guarda como 165,01: el simple redondeo inicial NO descarta la procedencia válida", async () => {
+        const { rows, pulled } = await roundTrip([BASE]);
+        expect(rows[0].kcal_per_100).toBe(165.0051); // lo que envía el cliente
+        const back = byName(pulled, "Borde");
+        expect(back.kcal).toBe(165.01); // lo que persiste numeric(7,2)
+        kept(back, BASE);
+      });
+
+      it("una edición ANTIGUA posterior a 165,00 (una modificación real de 0,01) SÍ la descarta", async () => {
+        dropped(await afterOldClient(BASE, { name: "Borde", kcal_per_100: 165 }));
+      });
+
+      it("y una edición antigua idéntica al valor persistido (165,01) no cambia nada: sigue válida", async () => {
+        kept(await afterOldClient(BASE, { name: "Borde", kcal_per_100: 165.01 }), BASE);
+      });
+
+      it("1,005 (que Math.round(x * 100) / 100 redondearía mal a 1) se guarda como 1,01: sigue válida; una edición antigua a 1 la descarta", async () => {
+        const c: InventoryItem = { ...BASE, name: "Borde C", id: "55555555-5555-4555-8555-555555555555", kcal: 165, carbs: 1.005 };
+        const { pulled } = await roundTrip([c]);
+        expect(byName(pulled, "Borde C").carbs).toBe(1.01);
+        kept(byName(pulled, "Borde C"), c);
+        dropped(await afterOldClient(c, { name: "Borde C", carbs_per_100: 1 }));
+      });
+
+      it("el tamaño de unidad usa el mismo valor canónico: 125,129 se guarda como 125,13; una edición antigua a 125,12 la descarta", async () => {
+        const u: InventoryItem = { ...CAN, id: "44444444-4444-4444-8444-444444444444", name: "Borde U", unitSize: 125.129, unitSizeUnit: "g" };
+        kept(await afterOldClient(u, { name: "Borde U" }), u);
+        dropped(await afterOldClient(u, { name: "Borde U", unit_size: 125.12 }));
+      });
+
+      it("lo mismo en proteína y otros macros: 31,004 se guarda como 31; una edición a 31,01 la descarta", async () => {
+        const p: InventoryItem = { ...BASE, name: "Borde P", id: "66666666-6666-4666-8666-666666666666", kcal: 165, protein: 31.004 };
+        kept(await afterOldClient(p, { name: "Borde P" }), p);
+        dropped(await afterOldClient(p, { name: "Borde P", protein_per_100: 31.01 }));
+      });
+    });
+  });
+
+  describe("saneado de la columna", () => {
+    async function pullWithColumn(value: unknown): Promise<InventoryItem> {
+      const rows = await pushRows([OFF_KNOWN]);
+      rows[0].nutrition_provenance = value;
+      return byName(await pullItems(rows), "Pechuga OFF");
+    }
+
+    it("valores que no son un objeto válido se ignoran sin lanzar: el item queda legacy", async () => {
+      for (const bad of ["texto", 5, true, [], [1, 2], { nutrientStatus: "x" }, {}]) {
+        const back = await pullWithColumn(bad);
+        expect(back.nutrientStatus, `valor: ${JSON.stringify(bad)}`).toBeUndefined();
+        expect(back.dataSource).toBeUndefined();
+        expect(back.kcal).toBe(165);
+      }
+    });
+
+    it("sin `basis` no se puede verificar que la procedencia describe estos números: se descarta entera", async () => {
+      const back = await pullWithColumn({ dataSource: "off", nutrientStatus: { kcal: "known_nonzero" }, foodStateConfidence: "confirmed" });
+      expect(back.nutrientStatus).toBeUndefined();
+      expect(back.foodStateConfidence).toBeUndefined();
+    });
+
+    it("un basis con solo números (sin nombre ni unidad) no verifica la referencia: se descarta", async () => {
+      const back = await pullWithColumn({
+        dataSource: "off", nutrientStatus: { kcal: "known_nonzero" }, foodStateConfidence: "confirmed",
+        basis: { kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1 },
+      });
+      expect(back.nutrientStatus).toBeUndefined();
+      expect(back.foodStateConfidence).toBeUndefined();
+    });
+
+    it("estados, claves y valores inválidos dentro de un objeto con basis correcto se descartan uno a uno", async () => {
+      const back = await pullWithColumn({
+        dataSource: "supermercado", foodStateConfidence: "seguro",
+        nutrientStatus: { kcal: "known_maybe", protein: "known_nonzero", potassium: "known_nonzero", carbs: 3 },
+        basis: { name: "Pechuga OFF", unit: "g", kcal: 165, protein: 31, carbs: 0, fat: 3.6, salt: 0.1 },
+      });
+      expect(back.nutrientStatus).toEqual({ protein: "known_nonzero" });
+      expect(back.dataSource).toBeUndefined();
+      expect(back.foodStateConfidence).toBeUndefined();
+    });
+
+    it("una procedencia de IA con known_* manipulado se rebaja a estimated al consumir (AC19 no depende de la base)", async () => {
+      const rows = await pushRows([AI]);
+      const meta = rows[0].nutrition_provenance as { nutrientStatus: Record<string, string> };
+      meta.nutrientStatus.kcal = "known_nonzero"; // alguien escribió known_* para un item de IA
+      const back = byName(await pullItems(rows), "Plato de IA");
+      expect(inventoryConsumptionProvenance(back).nutrientStatus?.kcal).toBe("estimated");
+    });
+  });
+});
+
+// La misma clase de hueco NO afecta a las recetas: `customRecipes` viaja ENTERO en
+// user_profiles.extra_state (JSONB), así que la procedencia de cada
+// RecipeIngredient sobrevive a la sincronización sin columnas nuevas.
+describe("PR3a — la procedencia de RecipeIngredient sobrevive a pushState → pullState (extra_state)", () => {
+  it("nutrientStatus y foodStateConfidence de un ingrediente de receta vuelven intactos", async () => {
+    const customRecipes = [{
+      id: "recipe-1", title: "Receta", kcal: 500, protein: 40, carbs: 50, fat: 15, cost: 3, image: "", time: 20, servings: 1,
+      difficulty: "fácil", tags: [], steps: [],
+      ingredients: [{
+        name: "Lentejas", quantity: 100, unit: "g", kcalPer100: 116, proteinPer100: 9, carbsPer100: 20, fatPer100: 0,
+        nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "unknown" },
+        foodStateConfidence: "confirmed",
+      }],
+    }] as unknown as FoodOSState["customRecipes"];
+    const profile = fullProfile(fullTrainingActivity());
+    const calls = setup(successConfig());
+    await remote.pushState(testCtx(), makeState({ profile, customRecipes }));
+    const payload = calls.find((c) => c.table === "user_profiles" && c.op === "upsert")!.args as Record<string, unknown>;
+    const extraState = payload.extra_state as Record<string, unknown>;
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeFakePullClient({
+      user_profiles: {
+        data: {
+          mascot_id: "zana", weekly_food_budget: 70, age: payload.age, sex: payload.sex, height_cm: payload.height_cm, weight_kg: payload.weight_kg,
+          body_fat_pct: payload.body_fat_pct, body_fat_source: payload.body_fat_source, activity_level: payload.activity_level, goal: payload.goal,
+          gym_days: payload.gym_days, allergies: payload.allergies, excluded_foods: payload.excluded_foods, target_weight_kg: payload.target_weight_kg,
+          experience_level: payload.experience_level, equipment_access: payload.equipment_access, activity_model_version: payload.activity_model_version,
+          extra_state: JSON.parse(JSON.stringify(extraState)),
+        },
+        error: null,
+      },
+    });
+    r.shoppingListId = "shopping-list-1";
+    const pulled = await remote.pullState(makeState({ profile: null }));
+    expect(pulled.customRecipes[0].ingredients[0]).toMatchObject({
+      nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "unknown" },
+      foodStateConfidence: "confirmed",
+    });
   });
 });
 

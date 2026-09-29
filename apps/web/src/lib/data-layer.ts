@@ -8,6 +8,7 @@ import type {
   FoodOSState,
   GoalMode,
   IncomeFrequency,
+  InventoryItem,
   MealType,
   NutritionCalculationSnapshot,
   PhysicalProfile,
@@ -21,6 +22,7 @@ import * as outbox from "./outbox";
 import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 import { sanitizeFoodLogProvenance } from "./food-log-provenance";
+import { inventoryProvenanceFromColumn, inventoryProvenanceToColumn } from "./inventory-provenance-persistence";
 
 /** Snapshot de sincronización programado por mutate() — captura de forma
     INMUTABLE userId/epoch/mutationId/estado en el momento de la mutación,
@@ -1493,7 +1495,7 @@ class RemoteAdapter {
         .maybeSingle(),
       client
         .from("inventory_items")
-        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, carbs_per_100, fat_per_100, salt_per_100, fiber_per_100, sugars_per_100, unit_size, unit_size_unit, brand, image_url, allergen_tags, almacen_id")
+        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, carbs_per_100, fat_per_100, salt_per_100, fiber_per_100, sugars_per_100, unit_size, unit_size_unit, brand, image_url, allergen_tags, almacen_id, nutrition_provenance")
         .eq("owner_id", userId),
       client
         .from("shopping_items")
@@ -1683,34 +1685,40 @@ class RemoteAdapter {
       state.lastAdjustmentDecisionAt = proposalRow?.resolved_at ? String(proposalRow.resolved_at).slice(0, 10) : null;
     }
 
-    state.inventory = (inventoryRes.data ?? []).map((row) => ({
-      id: row.id,
-      name: row.name,
-      qty: Number(row.quantity),
-      unit: row.unit,
-      storage: (almacenNameById[row.almacen_id] ?? "Despensa") as StorageName,
-      expires: row.expiry_date ?? today(),
-      price: Number(row.price_estimate) || 0,
-      kcal: Number(row.kcal_per_100) || 0,
-      protein: Number(row.protein_per_100) || 0,
-      carbs: row.carbs_per_100 != null ? Number(row.carbs_per_100) : undefined,
-      fat: row.fat_per_100 != null ? Number(row.fat_per_100) : undefined,
-      salt: row.salt_per_100 != null ? Number(row.salt_per_100) : undefined,
-      fiber: row.fiber_per_100 != null ? Number(row.fiber_per_100) : undefined,
-      sugars: row.sugars_per_100 != null ? Number(row.sugars_per_100) : undefined,
-      unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
-      // unit_size_unit: columna añadida por la migración del PR
-      // db/unit-size-dimension (rama/PR aparte, no vive en esta) — DEBE
-      // estar aplicada en remoto antes de desplegar este código, o el
-      // propio .select() de arriba (que ya la referencia) fallaría contra
-      // Postgrest para inventario Y carrito enteros, no solo este campo.
-      // Fila legacy con NULL → unitSizeUnit queda undefined, unitSize se
-      // comporta como antes (solo escala para estimaciones, ver toGrams).
-      unitSizeUnit: row.unit_size_unit ?? undefined,
-      brand: row.brand ?? undefined,
-      imageUrl: row.image_url ?? undefined,
-      allergenTags: row.allergen_tags ?? undefined,
-    }));
+    state.inventory = (inventoryRes.data ?? []).map((row) => {
+      const item: InventoryItem = {
+        id: row.id,
+        name: row.name,
+        qty: Number(row.quantity),
+        unit: row.unit,
+        storage: (almacenNameById[row.almacen_id] ?? "Despensa") as StorageName,
+        expires: row.expiry_date ?? today(),
+        price: Number(row.price_estimate) || 0,
+        kcal: Number(row.kcal_per_100) || 0,
+        protein: Number(row.protein_per_100) || 0,
+        carbs: row.carbs_per_100 != null ? Number(row.carbs_per_100) : undefined,
+        fat: row.fat_per_100 != null ? Number(row.fat_per_100) : undefined,
+        salt: row.salt_per_100 != null ? Number(row.salt_per_100) : undefined,
+        fiber: row.fiber_per_100 != null ? Number(row.fiber_per_100) : undefined,
+        sugars: row.sugars_per_100 != null ? Number(row.sugars_per_100) : undefined,
+        unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
+        // unit_size_unit: columna añadida por la migración del PR
+        // db/unit-size-dimension (rama/PR aparte, no vive en esta) — DEBE
+        // estar aplicada en remoto antes de desplegar este código, o el
+        // propio .select() de arriba (que ya la referencia) fallaría contra
+        // Postgrest para inventario Y carrito enteros, no solo este campo.
+        // Fila legacy con NULL → unitSizeUnit queda undefined, unitSize se
+        // comporta como antes (solo escala para estimaciones, ver toGrams).
+        unitSizeUnit: row.unit_size_unit ?? undefined,
+        brand: row.brand ?? undefined,
+        imageUrl: row.image_url ?? undefined,
+        allergenTags: row.allergen_tags ?? undefined,
+      };
+      // PR3a→PR3: procedencia guardada con la fila (columna JSONB nullable). Un
+      // valor ausente, inválido o que ya no describe estos números (lo cambió un
+      // cliente antiguo) deja el item sin procedencia = legacy_unlabeled.
+      return { ...item, ...inventoryProvenanceFromColumn(row.nutrition_provenance, item) };
+    });
 
     state.cart = (cartRes.data ?? []).map((row) => ({
       id: row.id,
@@ -2136,6 +2144,11 @@ class RemoteAdapter {
           brand: item.brand ?? null,
           image_url: item.imageUrl ?? null,
           allergen_tags: item.allergenTags ?? null,
+          // PR3a→PR3: procedencia con la fila; NULL si el item no tiene ninguna
+          // (también limpia una obsoleta). Requiere la migración
+          // 20260924190000 aplicada ANTES de desplegar este cambio: sin la
+          // columna, el upsert y el select de inventario fallan enteros.
+          nutrition_provenance: inventoryProvenanceToColumn(item),
         }),
         { owner_id: userId }
       )
