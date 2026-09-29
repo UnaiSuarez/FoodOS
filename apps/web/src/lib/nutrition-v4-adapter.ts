@@ -1,7 +1,8 @@
-// Nutrition Engine v4, PR2 — traduce el diario real (`FoodLogEntry` de
-// state.tsx) al contrato público de PR1 (`DailyIntegrityWindowInput`, del
-// paquete de tipos compartido), sin llamar a `evaluateNutrientCoverage`
-// ni importar nada del paquete de kernels puros de Nutrition Engine v4.
+// Nutrition Engine v4, PR2 (esqueleto) / PR4 (lectura real de procedencia)
+// — traduce el diario real (`FoodLogEntry` de state.tsx) al contrato
+// público de PR1 (`DailyIntegrityWindowInput`, del paquete de tipos
+// compartido), sin llamar a `evaluateNutrientCoverage` ni importar nada
+// del paquete de kernels puros de Nutrition Engine v4.
 //
 // Corrección de alcance (PR2, segunda ronda): la primera versión de este
 // archivo SÍ llamaba a `evaluateNutrientCoverage`, lo que exigía añadir
@@ -23,11 +24,16 @@
 // aquí para explicar por qué se evitan sería, en sí mismo, la violación.)
 //
 // Responsabilidad ÚNICA de este módulo: traducir `FoodLogEntry[]` real al
-// contrato normalizado que PR1 exige, de la forma más conservadora que el
-// diseño permite — nunca inventar procedencia, nunca inferir "known_*" ni
-// "confirmed" de un número o un nombre guardado. No activa nada: ninguna
-// propuesta adaptativa se genera ni se acepta aquí, y ningún objetivo
-// nutricional que ve el usuario cambia por esto.
+// contrato normalizado que PR1 exige. Desde PR4 lee la procedencia
+// REALMENTE guardada por los escritores de PR3 (`nutrientStatus`,
+// `quantityConfidence`, `foodStateConfidence` — ver food-log-provenance.ts
+// y toKernelEntry más abajo) y la reconcilia con el número guardado antes
+// de traducirla — nunca una copia directa del campo, nunca "known_*" ni
+// "confirmed" inferido del número o del nombre por sí solo; ante metadatos
+// ausentes, inválidos o contradictorios, degrada de forma conservadora
+// (ver toNutrientValue). No activa nada: ninguna propuesta adaptativa se
+// genera ni se acepta aquí, y ningún objetivo nutricional que ve el
+// usuario cambia por esto.
 //
 // docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md, §1.6/§1.7/§7 para el
 // contexto completo de cada decisión comentada abajo.
@@ -37,6 +43,7 @@ import type {
   FoodLogEntry,
   DailyIntegrityEntry as KernelEntry,
   NutrientKey,
+  NutrientStatus,
   NutrientValue,
 } from "@foodos/types";
 
@@ -80,28 +87,86 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
 }
 
 /**
+ * Traduce el par (estado guardado, número guardado) de UN macro a un
+ * `NutrientValue`, reconciliando ambos ANTES de construirlo — nunca una
+ * copia directa del estado. Reglas, en orden:
+ *
+ * 1. Un número no finito no es un dato utilizable bajo ningún estado (ni
+ *    siquiera "legacy_unlabeled" garantiza nada si el número en sí no es
+ *    real): se trata como si no existiera, `unknown`/`null`, cualquiera que
+ *    sea el estado declarado. No debería ocurrir con un `FoodLogEntry` bien
+ *    tipado, pero esta función no asume que todo lo que llega es válido.
+ * 2. Estado ausente = entrada anterior a PR3 o de una migración (ver el
+ *    comentario de `FoodLogEntry.nutrientStatus`): `"legacy_unlabeled"`,
+ *    nunca `"known_*"`. Esto es lo que impide "mejorar" el histórico
+ *    anterior al etiquetado con solo leerlo de nuevo.
+ * 3. `"unknown"` produce SIEMPRE `value: null` — el contrato de
+ *    `NutrientValue` lo exige, y un resto numérico bajo un estado
+ *    explícitamente "unknown" (posible tras una sincronización con
+ *    metadatos parciales) no es una medición: es ruido de una versión
+ *    anterior del dato, y no se expone.
+ * 4. `"known_zero"`/`"known_nonzero"` son afirmaciones verificables contra
+ *    el propio número: el kernel exige cero exacto para el primero y
+ *    estrictamente positivo para el segundo. Si el número guardado ya no
+ *    sostiene la afirmación — cero declarado pero número no-cero, número
+ *    cero o negativo bajo un `known_nonzero` — la entrada deja de afirmar
+ *    una medición y pasa a `"estimated"`, el mismo destino que ya elige
+ *    `reconcileStatusesWithValues` (food-log-provenance.ts) ante la misma
+ *    contradicción al escribir: una entrada que era coherente al guardarse
+ *    y deja de serlo más tarde (migración, edición manual del dato
+ *    guardado) no debe tratarse distinto solo por el momento en que se
+ *    detecta la contradicción.
+ * 5. Cualquier otro estado (`estimated`, `recipe_derived`, `imputed`,
+ *    `legacy_unlabeled`) no tiene una restricción numérica que comprobar:
+ *    pasa tal cual, con el número guardado.
+ */
+function toNutrientValue(status: NutrientStatus | undefined, rawValue: number): NutrientValue {
+  if (!Number.isFinite(rawValue)) return { status: "unknown", value: null };
+
+  const resolved = status ?? "legacy_unlabeled";
+  if (resolved === "unknown") return { status: "unknown", value: null };
+  if (resolved === "known_zero") {
+    return rawValue === 0 ? { status: "known_zero", value: 0 } : { status: "estimated", value: rawValue };
+  }
+  if (resolved === "known_nonzero") {
+    return rawValue > 0 ? { status: "known_nonzero", value: rawValue } : { status: "estimated", value: rawValue };
+  }
+  return { status: resolved, value: rawValue };
+}
+
+/**
+ * `quantityConfidence` de una `FoodLogEntry`: solo `"high"` cuando el campo
+ * lo declara explícitamente así. Ausente, o cualquier otra cosa, es
+ * `"low"` — nunca el valor por defecto optimista. No es una elección
+ * arbitraria de este adaptador: ningún constructor de
+ * food-log-provenance.ts escribe jamás `level: "high"` (solo lo omiten, o
+ * ponen `"low"` con un motivo) precisamente porque, según su propio
+ * comentario, "PR3 nunca afirma 'high' sin una comprobación positiva, y su
+ * ausencia se lee como baja". Leerlo distinto aquí inventaría una confianza
+ * que ni siquiera la escritura se atribuye a sí misma.
+ */
+function quantityConfidenceOf(entry: FoodLogEntry): "high" | "low" {
+  return entry.quantityConfidence?.level === "high" ? "high" : "low";
+}
+
+/**
  * Traduce una `FoodLogEntry` real a una `DailyIntegrityEntry` (el tipo de
- * entrada que el contrato de PR1 exige), con la clasificación más
- * conservadora que el diseño permite:
+ * entrada que el contrato de PR1 exige), leyendo la procedencia
+ * REALMENTE guardada por los escritores de PR3 (ver food-log-provenance.ts)
+ * en vez de tratar toda entrada como `legacy_unlabeled` — la lectura
+ * conservadora por defecto de PR2. Cada macro se reconcilia contra su
+ * propio número guardado con `toNutrientValue`; `quantityConfidence`, con
+ * `quantityConfidenceOf`. `foodStateConfidence` se propaga tal cual (su
+ * ausencia ya significa `"unknown"` en el propio contrato de
+ * `FoodLogEntry`): a diferencia de `nutrientStatus`, no hay un número
+ * asociado con el que reconciliarlo, así que no hay nada que verificar más
+ * allá de leer lo que hay.
  *
- * - Cada uno de los 4 macros guardados se etiqueta `"legacy_unlabeled"`
- *   — NUNCA `"known_nonzero"`/`"known_zero"`, sea cual sea el valor
- *   numérico guardado (incluido 0).
- * - `quantityConfidence: "low"` y `foodStateConfidence: "unknown"`,
- *   `energyConsistency: "not_evaluable"`: sin una base leída, no se afirma
- *   ninguna confianza que no se haya ganado.
- *
- * DECISIÓN DELIBERADA (PR3): desde PR3 los escritores del diario SÍ adjuntan
- * `nutrientStatus`/`foodStateConfidence`/`quantityConfidence` a cada entrada
- * nueva (ver food-log-provenance.ts y el documento de diseño, §18), pero este
- * adaptador NO los lee todavía y sigue tratando toda entrada como
- * `legacy_unlabeled`. Leerlos es trabajo del PR de integración posterior:
- * convertir el estado guardado en un `NutrientValue` exige reconciliarlo con el
- * número (el kernel rechaza la ventana entera ante un `known_nonzero` con valor
- * 0, o un `unknown` con valor) y decidir cómo se traduce cada eje — no es una
- * copia de campos, y hacerlo aquí, sin ese cuidado, sería la "inferencia de
- * datos" que se pidió evitar. Hasta entonces la lectura es más conservadora
- * que la escritura, nunca menos.
+ * `energyConsistency` sigue siendo siempre `"not_evaluable"`: no existe hoy
+ * ninguna señal independiente (un kcal declarado por separado del
+ * calculado a partir de los macros) que leer — calcularla aquí sería
+ * inventar una comprobación nueva, fuera del alcance de "traducir lo ya
+ * guardado".
  *
  * Ninguna entrada se descarta por su contenido (p. ej. por tener kcal 0,
  * o por parecer "poco fiable" de antemano): ese juicio es exclusivamente
@@ -115,13 +180,13 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
 function toKernelEntry(entry: FoodLogEntry): KernelEntry {
   const nutrients: Partial<Record<NutrientKey, NutrientValue>> = {};
   for (const key of DIARY_MACRO_KEYS) {
-    nutrients[key] = { status: "legacy_unlabeled", value: entry[key] };
+    nutrients[key] = toNutrientValue(entry.nutrientStatus?.[key], entry[key]);
   }
   return {
     dateKey: entry.date,
     nutrients,
-    quantityConfidence: "low",
-    foodStateConfidence: "unknown",
+    quantityConfidence: quantityConfidenceOf(entry),
+    foodStateConfidence: entry.foodStateConfidence ?? "unknown",
     energyConsistency: "not_evaluable",
   };
 }

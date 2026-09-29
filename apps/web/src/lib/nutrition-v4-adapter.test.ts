@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DailyIntegrityWindowInput, FoodLogEntry, NutrientValue } from "@foodos/types";
 import { buildDiaryIntegrityInput } from "./nutrition-v4-adapter";
+import { recipeTotalProvenance, sanitizeFoodLogProvenance } from "./food-log-provenance";
 
 // Ningún import del paquete de kernels puros en este archivo — a
 // propósito. Ver la nota de cabecera de nutrition-v4-adapter.ts: apps/web
@@ -190,5 +191,186 @@ describe("el adaptador no modifica las kcal ni los macros históricos almacenado
   it("dos llamadas con el mismo input dan resultados profundamente iguales (determinismo)", () => {
     const entries = [logEntry({ date: "2026-01-03" })];
     expect(buildDiaryIntegrityInput(entries, WINDOW, THRESHOLDS)).toEqual(buildDiaryIntegrityInput(entries, WINDOW, THRESHOLDS));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PR4 — lectura fiel de la procedencia REALMENTE guardada (PR3), reconciliada
+// con el número antes de traducirla. Los bloques de arriba (fixtures sin
+// nutrientStatus) siguen pasando sin cambios: son la prueba de que el
+// histórico anterior al etiquetado no mejora solo por leerlo de nuevo.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function nutrients(entry: FoodLogEntry) {
+  const input = buildDiaryIntegrityInput([entry], WINDOW, THRESHOLDS);
+  return entriesFor(input, entry.date)[0];
+}
+
+// ─── Un estado guardado y coherente con su número se conserva tal cual ────
+
+describe("PR4 — un nutrientStatus guardado y coherente con su número se traduce tal cual, nunca degradado", () => {
+  it("known_zero con un 0 real se mantiene known_zero — se distingue de un 0 sin ninguna etiqueta (legacy_unlabeled)", () => {
+    const declared = logEntry({ date: "2026-01-03", kcal: 0, nutrientStatus: { kcal: "known_zero" } });
+    const absent = logEntry({ date: "2026-01-03", kcal: 0 });
+    expect(nutrients(declared).nutrients.kcal).toEqual({ status: "known_zero", value: 0 });
+    expect(nutrients(absent).nutrients.kcal).toEqual({ status: "legacy_unlabeled", value: 0 });
+  });
+
+  it("known_nonzero con un positivo real se mantiene known_nonzero", () => {
+    const entry = logEntry({ date: "2026-01-03", protein: 42, nutrientStatus: { protein: "known_nonzero" } });
+    expect(nutrients(entry).nutrients.protein).toEqual({ status: "known_nonzero", value: 42 });
+  });
+
+  it("estimated/recipe_derived/imputed pasan tal cual, sin restricción numérica que comprobar", () => {
+    for (const status of ["estimated", "recipe_derived", "imputed"] as const) {
+      const entry = logEntry({ date: "2026-01-03", carbs: 30, nutrientStatus: { carbs: status } });
+      expect(nutrients(entry).nutrients.carbs).toEqual({ status, value: 30 });
+    }
+  });
+
+  it("un nutrientStatus solo parcial (p. ej. solo kcal) deja el resto de macros como si estuviera ausente (legacy_unlabeled)", () => {
+    const entry = logEntry({ date: "2026-01-03", kcal: 500, protein: 40, nutrientStatus: { kcal: "known_nonzero" } });
+    const result = nutrients(entry).nutrients;
+    expect(result.kcal).toEqual({ status: "known_nonzero", value: 500 });
+    expect(result.protein).toEqual({ status: "legacy_unlabeled", value: 40 });
+  });
+});
+
+// ─── Contradicción entre estado y número: degrada a estimated, nunca se descarta ni se mantiene la certeza falsa ─
+
+describe("PR4 — contradicción entre nutrientStatus y el número guardado degrada a estimated (nunca se descarta la entrada ni se conserva known_*)", () => {
+  it("known_zero con un número distinto de 0 (declarado 0, guardado no-0) pasa a estimated", () => {
+    const entry = logEntry({ date: "2026-01-03", kcal: 120, nutrientStatus: { kcal: "known_zero" } });
+    expect(nutrients(entry).nutrients.kcal).toEqual({ status: "estimated", value: 120 });
+  });
+
+  it("known_nonzero con un número exactamente 0 pasa a estimated", () => {
+    const entry = logEntry({ date: "2026-01-03", protein: 0, nutrientStatus: { protein: "known_nonzero" } });
+    expect(nutrients(entry).nutrients.protein).toEqual({ status: "estimated", value: 0 });
+  });
+
+  it("known_nonzero con un número negativo (defensivo — no debería producirse, pero 'positivo' se exige estricto) pasa a estimated", () => {
+    const entry = { ...logEntry({ date: "2026-01-03", nutrientStatus: { fat: "known_nonzero" } }), fat: -5 } as FoodLogEntry;
+    expect(nutrients(entry).nutrients.fat).toEqual({ status: "estimated", value: -5 });
+  });
+});
+
+// ─── unknown produce siempre value:null, con independencia de cualquier resto numérico ─
+
+describe("PR4 — nutrientStatus: 'unknown' produce siempre value:null, incluso con un número guardado presente", () => {
+  it("un macro marcado unknown con un número real guardado (posible tras una sincronización parcial) no expone ese número", () => {
+    const entry = logEntry({ date: "2026-01-03", kcal: 500, nutrientStatus: { kcal: "unknown" } });
+    expect(nutrients(entry).nutrients.kcal).toEqual({ status: "unknown", value: null });
+  });
+
+  it("kcal no ponderable (unknown) no se oculta ni se sustituye: el kernel debe poder verla para marcar el día provisional cuando se conecte", () => {
+    const unweighable = logEntry({ date: "2026-01-03", kcal: 500, nutrientStatus: { kcal: "unknown" } });
+    const normal = logEntry({ date: "2026-01-03", kcal: 600, nutrientStatus: { kcal: "known_nonzero" } });
+    const input = buildDiaryIntegrityInput([unweighable, normal], WINDOW, THRESHOLDS);
+    const day = entriesFor(input, "2026-01-03");
+    expect(day).toHaveLength(2);
+    expect(day.map((e) => e.nutrients.kcal)).toEqual(
+      expect.arrayContaining([{ status: "unknown", value: null }, { status: "known_nonzero", value: 600 }]),
+    );
+  });
+});
+
+// ─── Un número no finito no es un dato utilizable bajo ningún estado ──────
+
+describe("PR4 — un número no finito (defensivo) se trata como si no existiera, cualquiera que sea el estado declarado", () => {
+  it("NaN bajo known_nonzero se traduce a unknown/null, no a estimated ni a known_nonzero", () => {
+    const entry = { ...logEntry({ date: "2026-01-03", nutrientStatus: { kcal: "known_nonzero" } }), kcal: NaN } as FoodLogEntry;
+    expect(nutrients(entry).nutrients.kcal).toEqual({ status: "unknown", value: null });
+  });
+});
+
+// ─── quantityConfidence/foodStateConfidence: solo lo que el dato guardado permite justificar ─
+
+describe("PR4 — quantityConfidence y foodStateConfidence se propagan con lo que el dato guardado permite justificar, nunca menos ni más", () => {
+  it("quantityConfidence.level 'high' explícito se propaga como 'high'", () => {
+    const entry = logEntry({ date: "2026-01-03", quantityConfidence: { level: "high" } });
+    expect(nutrients(entry).quantityConfidence).toBe("high");
+  });
+
+  it("quantityConfidence.level 'low' con un motivo se propaga como 'low' — el motivo no forma parte del contrato del kernel", () => {
+    const entry = logEntry({ date: "2026-01-03", quantityConfidence: { level: "low", reason: "missing_unit_size" } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it.each(["confirmed", "incompatible", "not_applicable"] as const)("foodStateConfidence '%s' guardado se propaga tal cual", (foodStateConfidence) => {
+    const entry = logEntry({ date: "2026-01-03", foodStateConfidence });
+    expect(nutrients(entry).foodStateConfidence).toBe(foodStateConfidence);
+  });
+});
+
+// ─── qtyOverrides ignorados: la baja confianza de cantidad llega al kernel ─
+
+describe("PR4 — qtyOverrides ignorados en una receta cocinada: el adaptador lee la quantityConfidence:low que food-log-provenance.ts decidió al escribir", () => {
+  it("una entrada construida con recipeTotalProvenance({ qtyOverridesIgnored: true }) llega al kernel con quantityConfidence:low", () => {
+    const provenance = recipeTotalProvenance({ qtyOverridesIgnored: true });
+    const entry = logEntry({ date: "2026-01-03", ...provenance });
+    const result = nutrients(entry);
+    expect(result.quantityConfidence).toBe("low");
+    // Los cuatro macros de un total de receta son legacy_unlabeled (AC28: no
+    // se deriva la certeza del total a partir de sus ingredientes).
+    expect(result.nutrients).toEqual({
+      kcal: { status: "legacy_unlabeled", value: entry.kcal },
+      protein: { status: "legacy_unlabeled", value: entry.protein },
+      carbs: { status: "legacy_unlabeled", value: entry.carbs },
+      fat: { status: "legacy_unlabeled", value: entry.fat },
+    });
+  });
+
+  it("una entrada de receta SIN overrides ignorados (recipeTotalProvenance({ qtyOverridesIgnored: false })) no lleva quantityConfidence — se lee como low por ausencia", () => {
+    const provenance = recipeTotalProvenance({ qtyOverridesIgnored: false });
+    expect(provenance.quantityConfidence).toBeUndefined();
+    const entry = logEntry({ date: "2026-01-03", ...provenance });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+});
+
+// ─── Metadatos perdidos o malformados al sincronizar degradan de forma segura ─
+
+describe("PR4 — metadatos perdidos o malformados en la sincronización (client_meta) degradan de forma segura, nunca a known_*", () => {
+  it("un client_meta completamente ajeno (sin ninguno de los tres campos) sanea a 'ausente' y el adaptador lo lee como legacy_unlabeled/low/unknown", () => {
+    const garbage = { foo: "bar", nutrientStatus: "no-es-un-objeto", quantityConfidence: 42, foodStateConfidence: "inventado" };
+    const provenance = sanitizeFoodLogProvenance(garbage);
+    expect(provenance).toEqual({});
+    const entry = logEntry({ date: "2026-01-03", kcal: 300, ...provenance });
+    const result = nutrients(entry);
+    expect(result.nutrients.kcal).toEqual({ status: "legacy_unlabeled", value: 300 });
+    expect(result.quantityConfidence).toBe("low");
+    expect(result.foodStateConfidence).toBe("unknown");
+  });
+
+  it("un client_meta con un nutrientStatus parcialmente válido (una clave con un estado real, una clave con basura) conserva solo la válida", () => {
+    const garbage = { nutrientStatus: { kcal: "known_nonzero", protein: "no-es-un-estado", fat: 99 } };
+    const provenance = sanitizeFoodLogProvenance(garbage);
+    expect(provenance.nutrientStatus).toEqual({ kcal: "known_nonzero" });
+    const entry = logEntry({ date: "2026-01-03", kcal: 400, protein: 40, ...provenance });
+    const result = nutrients(entry);
+    expect(result.nutrients.kcal).toEqual({ status: "known_nonzero", value: 400 });
+    // protein no sobrevivió al saneado: ausente ⇒ legacy_unlabeled, igual que si nunca se hubiera guardado.
+    expect(result.nutrients.protein).toEqual({ status: "legacy_unlabeled", value: 40 });
+  });
+
+  it("un nutrientStatus saneado pero contradictorio con el número guardado (p. ej. tras editar el número sin volver a sincronizar el estado) degrada a estimated, no se descarta", () => {
+    const garbage = { nutrientStatus: { kcal: "known_zero" } };
+    const provenance = sanitizeFoodLogProvenance(garbage);
+    const entry = logEntry({ date: "2026-01-03", kcal: 250, ...provenance });
+    expect(nutrients(entry).nutrients.kcal).toEqual({ status: "estimated", value: 250 });
+  });
+});
+
+// ─── Entrada sintética con procedencia "known_*": se filtra igualmente ────
+
+describe("PR4 — una entrada sintética con nutrientStatus known_* (no debería ocurrir en producción, pero es defendible) se filtra igual que cualquier otra sintética", () => {
+  it("no aparece en absoluto, aunque declare known_nonzero en sus cuatro macros", () => {
+    const synthetic = {
+      ...logEntry({ date: "2026-01-03", kcal: 9999, nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "known_nonzero" } }),
+      synthetic: true,
+    } as FoodLogEntry;
+    const input = buildDiaryIntegrityInput([synthetic], WINDOW, THRESHOLDS);
+    expect(input.entries).toHaveLength(0);
   });
 });
