@@ -51,3 +51,12 @@ export { evaluateAdaptiveReview } from "./adaptive-coordinator-kernel";
 // adaptive-proposal-application-kernel.ts (sin `export`), probadas solo
 // indirectamente a través del resultado público.
 export { evaluateAdaptiveProposalApplication } from "./adaptive-proposal-application-kernel";
+// Nutrition Engine v4 — cobertura e integridad de nutrientes registrados
+// (ver nutrient-value.ts/nutrient-coverage.ts en @foodos/types para el
+// contexto completo). Añade exactamente una función pública,
+// evaluateNutrientCoverage. Todos sus helpers (fechas, validación por
+// fases, ponderación por kcal, canonicalización de razones) son funciones
+// privadas de nutrient-coverage-kernel.ts (sin `export`), probadas solo
+// indirectamente a través del resultado público. No se cablea con PR5A ni
+// PR5B en esta entrega.
+export { evaluateNutrientCoverage } from "./nutrient-coverage-kernel";
