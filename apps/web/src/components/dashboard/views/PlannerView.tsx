@@ -8,6 +8,7 @@ import { CookModal } from "../CookModal";
 import { PlannerAddMealModal } from "../PlannerAddMealModal";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIWeeklyPlan } from "@/lib/ai-provider";
+import { buildPlanLogEntry } from "@/lib/food-log-entries";
 import { dateKeyFromDate, eur } from "@/lib/utils";
 
 type MealSlot = keyof MealPlanDay;
@@ -111,20 +112,15 @@ export function PlannerView() {
     }
     // Plato rápido → registro directo (sin ingredientes que descontar)
     mutate((draft) => {
-      draft.foodLog.push({
+      // PR3: un plato rapido no conserva de donde salen sus totales -> legacy_unlabeled.
+      draft.foodLog.push(buildPlanLogEntry({
         id: crypto.randomUUID(),
         date: dateKey,
         time: new Date().toTimeString().slice(0, 5),
-        name: entry.title,
-        qty: null,
-        unit: null,
-        kcal: entry.kcal,
-        protein: entry.protein,
-        carbs: entry.carbs,
-        fat: entry.fat,
-        source: "recipe",
+        title: entry.title,
+        macros: { kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat },
         mealType,
-      });
+      }));
     });
     showToast(`"${entry.title}" registrado`);
   }

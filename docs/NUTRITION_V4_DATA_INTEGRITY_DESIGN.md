@@ -849,6 +849,67 @@ Análisis con el diseño y el código tal como quedan tras PR3a (no propone cons
 
 ---
 
+## 18. PR3 — etiquetado de procedencia al escribir el diario
+
+PR3 etiqueta cada entrada que un camino real escribe en `foodLog`, en el momento de escribirla, con la procedencia que PR3a capturó en el item o el ingrediente de origen. Ningún número del diario cambia: se añade metadato junto a él. **No conecta `apps/web` con el kernel adaptativo, no genera propuestas, no cambia umbrales y no aplica SQL ni despliega nada.** El código vive en `apps/web/src/lib/food-log-provenance.ts` (reglas puras) y `food-log-entries.ts` (constructores de las entradas de los componentes).
+
+### 18.1 Mapa real de escritores — los 8 del diseño más uno que faltaba
+
+Verificado leyendo el código, no el documento. Cada camino de la tabla tiene una prueba que lo ejerce (los componentes, a través del componente real montado sobre el `FoodOSProvider` real) y una guarda automática (`food-log-writers.guard.test.ts`) que falla si aparece un escritor nuevo sin etiquetar.
+
+| # | Camino real | `nutrientStatus` (kcal/protein/carbs/fat) | `foodStateConfidence` | `quantityConfidence` |
+|---|---|---|---|---|
+| 1 | `actions.cookRecipe` (CookModal, pestaña Receta de LogMealModal) | `legacy_unlabeled` ×4 (AC28) | `unknown` | `low`/`overrides_ignored` si `qtyOverrides` toca un ingrediente de la receta |
+| 2 | `actions.consumeInventoryItem` (ConsumeModal, pestaña Inventario de LogMealModal) | lo guardado en el item; sin él, `legacy_unlabeled`; carbs/grasa que `macrosForQuantity` imputa → `estimated`; `dataSource:"ai"` nunca `known_*` (AC19) | el del item (ausente → `unknown`) | `low`/`missing_unit_size` (`ud` sin tamaño) o `low` sin motivo (carbs/grasa imputados) |
+| 3 | migración `consumedMeals` en `normalizeState` | `legacy_unlabeled` ×4 | `unknown` | — |
+| 4 | `LogMealModal` pestaña **Plato** (`confirmDish`) | `legacy_unlabeled` ×4 | `unknown` | — |
+| 5 | `LogMealModal` pestaña **Externa** (`confirmExternal`, IA) | `estimated` por macro (`unknown` si la IA lo omitió); un macro ajustado a mano sigue `estimated`; nunca `known_*` | `not_applicable` | — |
+| 6 | `HomeView.logPlanEntry` | `legacy_unlabeled` ×4 | `unknown` | — |
+| 7 | `PlannerView.logEntry` (plato rápido) | `legacy_unlabeled` ×4 | `unknown` | — |
+| 8 | `SettingsView.seedHistorico` | **ninguno** — `synthetic:true` | — | — |
+| 9 | **`seedDemo` («Cargar datos demo»)** — no estaba en §1.4 | **ninguno** — `synthetic:true` | — | — |
+
+Caminos que modifican una entrada sin crearla: `EditLogModal` reescala el número y conserva la procedencia (solo ajusta un estado que dejaría de ser coherente con el número, ver 18.3); cambiar el tipo de comida, borrar y deshacer no tocan los campos nuevos. Las entradas históricas sin metadatos **no se reescriben**: siguen sin ellos y se leen como `legacy_unlabeled` por ausencia.
+
+### 18.2 Reglas aplicadas
+
+- **AC28 / §16.4.** Un total de receta se etiqueta `legacy_unlabeled` para los cuatro macros aunque todos sus ingredientes sean `known_*` y estén confirmados: `Recipe` no conserva si el total viene de `macroOverride` o de una suma parcial. La certeza del total no se deriva de los ingredientes.
+- **`overrides_ignored`.** `cookRecipe` usa `qtyOverrides` para descontar inventario pero registra `recipe.kcal × ratio`; si algún override corresponde a un ingrediente real de la receta, la entrada lleva `quantityConfidence: { level: "low", reason: "overrides_ignored" }`. No se compara contra el valor por defecto: ante la duda se marca.
+- **IA de comida completa.** Todos los macros son `estimated` (o `unknown` si la IA los omitió), nunca `known_*`, y `foodStateConfidence` es `not_applicable` (AC25e). Como el modal permite ajustar los macros («puedes ajustarlos»), un macro editado sigue siendo `estimated`, y vaciar el campo (0) no lo convierte en `known_zero`.
+- **Datos de demostración.** `seedHistorico` y `seedDemo` marcan cada fila `synthetic:true` y ninguna lleva procedencia real. El adaptador de PR2 las descarta por entrada, antes de agrupar por día, y la ventana no se reduce (el test siembra 7 días en una ventana de 28 y comprueba que llega intacta y que una entrada real del mismo día se conserva).
+- **Pasado sin reescribir.** Ninguna entrada existente adquiere etiquetas; `normalizeState` conserva las etiquetadas y no añade nada a las que no las tienen.
+
+### 18.3 Decisiones y desviaciones respecto al diseño original
+
+1. **Forma de `FoodLogEntry.nutrientStatus`.** §4 proponía `Partial<Record<NutrientKey, NutrientValue>>` (estado + valor). Se implementa `Partial<Record<NutrientKey, NutrientStatus>>` (solo estado), como en `InventoryItem` y `RecipeIngredient`. Guardar el valor duplicaría el número que la entrada ya tiene y se desincronizaría al editarla; el adaptador de integración construirá el `NutrientValue` a partir del estado y del número guardado.
+2. **Coherencia con el número.** El kernel exige `known_zero` ⇔ 0 y `known_nonzero` ⇒ > 0, y una sola entrada incoherente invalida la ventana entera. Un `known_nonzero` cuyo valor escalado y redondeado queda en 0 (una cantidad diminuta) pasa a `estimated`, tanto al escribir (`consumeInventoryItem`) como al reescalar (`EditLogModal`). Nunca se afirma una medición que el número guardado ya no describe.
+3. **Un plato compuesto y una entrada de planificador son `legacy_unlabeled`, no una combinación de sus ingredientes.** Ni `DishIngredient` (estado del formulario de LogMealModal) ni `PlanEntry`/`QuickMeal` conservan la procedencia por ingrediente, y combinarla sería la inferencia que §16.4 retiró para las recetas. Los ingredientes de un plato o de un plato rápido tampoco pasaron por PR3a (`PlannerAddMealModal` sigue colapsando `carbs ?? 0`/`fat ?? 0`). Subirlo con precisión exigiría llevar la procedencia por ingrediente hasta el momento de registrar; es trabajo de captura análogo a PR3a, fuera del alcance de PR3.
+4. **`quantityConfidence` solo se escribe cuando hay un motivo concreto de desconfianza** (`overrides_ignored`, `missing_unit_size`, o carbs/grasa imputados). PR3 nunca afirma `"high"`; su ausencia se lee como baja. `toGrams` sigue tratando 1 ml = 1 g (P7): no se marca `missing_density`, porque el inventario no registra la base (g/ml) de sus valores por 100 y no hay evidencia para hacerlo.
+5. **El adaptador de PR2 no lee todavía los campos nuevos.** Sigue tratando toda entrada como `legacy_unlabeled` (más conservador que lo escrito). Leerlos exige reconciliar cada estado con el número y decidir la traducción de cada eje; es trabajo del PR de integración. Lo único que cambia en el adaptador es que `synthetic` se lee ya con tipo.
+
+### 18.4 Hallazgos que corrigen el documento
+
+- **`LogMealModal.tsx:354` no es «quick add desde inventario»** (§1.4): es la pestaña **Plato**, un plato compuesto por ingredientes. La pestaña Inventario pasa por `actions.consumeInventoryItem` y la de Receta por `actions.cookRecipe`, así que no son escritores adicionales.
+- **Hay un noveno escritor, `seedDemo`** (`state.tsx`), que asigna `demo.foodLog = [...]` con cinco comidas ficticias; un `grep` de `foodLog.push` no lo encuentra. Ahora marca `synthetic:true` y la guarda de inventario lo cubre.
+- **§1.5 sobreestimaba el acceso a `seedHistorico`.** «Cargar datos demo» y «Sembrar 7 días de historial» están dentro del bloque «Solo admin» de Ajustes (`isAdmin`: en producción con Supabase configurado solo los correos de `NEXT_PUBLIC_ADMIN_EMAILS`; sin Supabase, en modo solo-local, todo el mundo). No eran alcanzables por «cualquier usuario autenticado». El marcado `synthetic:true` sigue siendo necesario (un admin o una instalación local puede sembrar), pero PR11 queda parcialmente mitigado por el propio producto.
+- **`estimateMealMacros`/`estimateMealFromPhoto` no se cablearon en PR3a**, pese a estar en su lista (§9) y en AC25e: seguían colapsando protein/carbs/fat con `?? 0` y no declaraban `not_applicable`. Se completan en PR3 (primer commit de la rama, separable): devuelven `nutrientStatus` por macro y `foodStateConfidence`, sin cambiar los números.
+- **La procedencia no sobrevivía a la sincronización.** La sincronización con Supabase copia a `food_log.client_meta` una lista fija de campos; sin ampliarla, `synthetic` y las etiquetas se perderían en el primer viaje y una fila de demostración volvería como entrada real. Ver 18.5.
+- **`HomeView` no puede «heredar el `nutrientStatus` del `PlanEntry`»** (§1.4): `PlanEntry` no lleva ninguno.
+
+### 18.5 Persistencia — `food_log.client_meta`
+
+Los cuatro campos viajan en `client_meta` (JSONB existente): **sin cambio de esquema ni SQL**. Lectura y escritura pasan por el mismo saneado (`sanitizeFoodLogProvenance`): solo salen y entran valores válidos; cualquier otra cosa se descarta y la entrada se lee como `legacy_unlabeled`, el lado conservador. El comentario de la columna en la base (que enumera las claves) no se ha actualizado: es documentación, y cambiarlo exigiría SQL. Limitaciones: un cliente antiguo que reescriba la fila (el `push` sincroniza el estado completo) descartaría las claves nuevas; y las filas ya guardadas no las tienen (no se hace backfill, §7).
+
+### 18.6 Casos de aceptación cubiertos
+
+AC17 (los escritores, uno por uno, más la guarda de inventario), AC19 (item de IA nunca `known_*`, incluidas todas las combinaciones de estado guardado), AC20/AC21 (filtrado por entrada, botón de demostración sigue funcionando y marca sus filas), AC25e (a nivel de estimador y de escritor) y AC28 (receta con ingredientes `known_*`).
+
+### 18.7 Pendiente después de PR3
+
+Integración del adaptador (leer estas etiquetas reconciliadas con el número), procedencia por ingrediente en platos compuestos y platos rápidos, y la decisión de producto de §17. Sin cambios en ninguno de los tres: ningún umbral se ha relajado.
+
+---
+
 ## Confirmación de cierre — ronda original de diseño (histórica)
 
 *Esta sección describe únicamente la ronda original de diseño, previa a cualquier implementación. No describe PR1, PR2 ni PR3a — ver «Estado actual» más abajo.*
@@ -859,14 +920,15 @@ Análisis con el diseño y el código tal como quedan tras PR3a (no propone cons
 
 ---
 
-## Estado actual — implementación en curso (PR1, PR2, PR3a)
+## Estado actual — implementación en curso (PR1, PR2, PR3a, PR3)
 
 Separado de la confirmación histórica de arriba, que sigue siendo cierta para aquella ronda de diseño y no debe leerse como descripción de lo que ocurre ahora.
 
-- **Código modificado: sí.** La implementación vive en la rama `feature/nutrition-v4-pr3a-provenance`, que acumula, en este orden, PR1 (tipos y kernel puro de cobertura, `packages/types` y `packages/engine`), PR2 (adaptador del diario y `IntentGuard`, `apps/web`) y PR3a (procedencia y estado del alimento en el punto de captura, `packages/types` y `apps/web`), cada una desarrollada en su propio worktree y revisada antes de la siguiente. La numeración PR1–PR3a es la de este documento, no la de la secuencia de PRs ya existente en el repositorio.
+- **Código modificado: sí.** La implementación vive en la rama `feature/nutrition-v4-pr3-diary-labeling`, que añade PR3 encima de `feature/nutrition-v4-pr3a-provenance`; esta última acumula, en este orden, PR1 (tipos y kernel puro de cobertura, `packages/types` y `packages/engine`), PR2 (adaptador del diario y `IntentGuard`, `apps/web`) y PR3a (procedencia y estado del alimento en el punto de captura, `packages/types` y `apps/web`), cada una desarrollada en su propio worktree y revisada antes de la siguiente. La numeración PR1–PR3a es la de este documento, no la de la secuencia de PRs ya existente en el repositorio.
 - **Hay commits** (varios por entrega; `git log` de la rama es la referencia autoritativa).
-- **No conectado**: `apps/web` no importa el motor puro (lo impiden los seis tests de frontera de `packages/engine`); el adaptador de PR2 no llama todavía al kernel; los escritores del diario (PR3) no se han tocado.
+- **No conectado**: `apps/web` no importa el motor puro (lo impiden los seis tests de frontera de `packages/engine`); el adaptador de PR2 no llama todavía al kernel y no lee todavía las etiquetas del diario (§18.3).
+- **PR3 implementado en la rama `feature/nutrition-v4-pr3-diary-labeling`** (sobre PR3a `385f339`, pendiente de revisión): etiquetado de los 9 caminos que escriben `foodLog` y persistencia de la procedencia en `client_meta` (§18).
 - **Sin SQL ni operaciones contra Supabase** en ninguna de las tres entregas.
 - **Decisiones que esta implementación corrigió respecto al diseño original**: catálogo local `known_*` → `legacy_unlabeled` (§15); resolutor de estado de producto y léxico de estado, edición de inventario y totales de receta (§16.1–§16.4); renombrado de `InventoryItem` (§16.5); edición manual de macros y sincronía número/`nutrientStatus`/`foodStateConfidence` (§16.6).
-- **Pendiente para PR3**: etiquetar los 8 escritores reales de `foodLog`, con `Recipe.kcal/protein/carbs/fat` como `legacy_unlabeled` (§16.4, AC28).
+- **Pendiente tras PR3**: integrar el adaptador (leer las etiquetas reconciliadas con el número), llevar la procedencia por ingrediente hasta los platos compuestos y los platos rápidos, y la decisión de §17 (§18.7).
 - **Decisión de producto pendiente antes de la integración adaptativa**: el gate actual es seguro pero probablemente poco utilizable para muchos usuarios (§17); no se ha relajado ningún umbral.

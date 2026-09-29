@@ -8,7 +8,7 @@
 // resto de tablas se sigue intentando (mejor esfuerzo — son independientes
 // entre sí) y que reintentar el mismo snapshot es idempotente.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppSettings, FoodOSState, NutritionCalculationSnapshot, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
+import type { AppSettings, FoodLogEntry, FoodOSState, NutritionCalculationSnapshot, PhysicalProfile, TrainingActivityProfile } from "@foodos/types";
 import { remote, waitForMutationConfirmed } from "./data-layer";
 import * as outbox from "./outbox";
 import { NUTRITION_ENGINE_VERSION } from "./nutrition";
@@ -1013,6 +1013,103 @@ describe("nutrition-v3.1 — round-trip real de trainingActivity (pushState → 
 
     expect(result.profile).not.toBeNull();
     expect(result.profile!.trainingActivity).toEqual(training);
+  });
+});
+
+// ─── PR3 — round-trip real de la procedencia del diario (pushState → pullState) ──
+// Sin esto, nutrientStatus/foodStateConfidence/quantityConfidence y, sobre todo,
+// `synthetic` se perderían en el primer viaje de ida y vuelta con Supabase:
+// una fila de DEMOSTRACIÓN volvería del servidor como una entrada real
+// legacy_unlabeled y dejaría de filtrarse. Se persisten en food_log.client_meta
+// (JSONB existente, sin cambio de esquema). Mismo método que el round-trip de
+// trainingActivity: se captura el payload REAL que pushState envía y se
+// devuelve como la fila leída de vuelta.
+describe("PR3 — round-trip real de la procedencia del diario (pushState → pullState)", () => {
+  const labeled: FoodLogEntry = {
+    id: "11111111-1111-4111-8111-111111111111", date: "2026-09-20", time: "13:00", name: "Pechuga etiquetada",
+    qty: 200, unit: "g", kcal: 330, protein: 62, carbs: 0, fat: 7.2, source: "inventory", mealType: "lunch",
+    nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_zero", fat: "estimated" },
+    foodStateConfidence: "confirmed",
+    quantityConfidence: { level: "low", reason: "missing_unit_size" },
+  };
+  const synthetic: FoodLogEntry = {
+    id: "22222222-2222-4222-8222-222222222222", date: "2026-09-19", time: "08:30", name: "Avena con proteína",
+    qty: null, unit: null, kcal: 380, protein: 28, carbs: 52, fat: 8, source: "manual", mealType: "breakfast", synthetic: true,
+  };
+  const legacy: FoodLogEntry = {
+    id: "33333333-3333-4333-8333-333333333333", date: "2026-09-01", time: "12:00", name: "Comida antigua",
+    qty: null, unit: null, kcal: 500, protein: 30, carbs: 50, fat: 15, source: "manual", mealType: "lunch",
+  };
+
+  async function roundTrip(entries: FoodLogEntry[]) {
+    const calls = setup(successConfig());
+    await remote.pushState(testCtx(), makeState({ foodLog: entries }));
+    const upsert = calls.find((c) => c.table === "food_log" && c.op === "upsert");
+    expect(upsert).toBeDefined();
+    const rows = upsert!.args as Array<Record<string, unknown>>;
+    const rowsBack = rows.map((r) => ({ ...r, created_at: "2026-09-20T12:00:00Z" }));
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeFakePullClient({ food_log: { data: rowsBack, error: null } });
+    r.shoppingListId = "shopping-list-1";
+    const pulled = await remote.pullState(makeState());
+    return { rows, pulled: pulled.foodLog };
+  }
+
+  it("la procedencia y la marca synthetic viajan por client_meta y vuelven intactas", async () => {
+    const { pulled } = await roundTrip([labeled, synthetic, legacy]);
+    const backLabeled = pulled.find((e) => e.name === "Pechuga etiquetada")!;
+    expect(backLabeled.nutrientStatus).toEqual(labeled.nutrientStatus);
+    expect(backLabeled.foodStateConfidence).toBe("confirmed");
+    expect(backLabeled.quantityConfidence).toEqual({ level: "low", reason: "missing_unit_size" });
+    expect(backLabeled).toMatchObject({ qty: 200, unit: "g", kcal: 330, protein: 62 }); // lo demás no cambia
+
+    const backSynthetic = pulled.find((e) => e.name === "Avena con proteína")!;
+    expect(backSynthetic.synthetic).toBe(true);
+    expect(backSynthetic.nutrientStatus).toBeUndefined();
+  });
+
+  it("una entrada sin procedencia no gana ninguna al viajar: sigue siendo legacy_unlabeled por ausencia", async () => {
+    const { rows, pulled } = await roundTrip([legacy]);
+    const meta = rows[0].client_meta as Record<string, unknown>;
+    for (const key of ["nutrientStatus", "foodStateConfidence", "quantityConfidence", "synthetic"]) expect(key in meta).toBe(false);
+    const back = pulled[0];
+    expect(back.nutrientStatus).toBeUndefined();
+    expect(back.foodStateConfidence).toBeUndefined();
+    expect(back.quantityConfidence).toBeUndefined();
+    expect(back.synthetic).toBeUndefined();
+  });
+
+  it("los campos que ya viajaban (mealType, hora, snapshot) no cambian", async () => {
+    const { rows } = await roundTrip([labeled]);
+    const meta = rows[0].client_meta as Record<string, unknown>;
+    expect(meta).toMatchObject({ qty: 200, unit: "g", time: "13:00", mealType: "lunch" });
+  });
+
+  it("al leer, un client_meta con valores inválidos se sanea: se descartan y la entrada queda legacy, sin fallar", async () => {
+    const calls = setup(successConfig());
+    void calls;
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeFakePullClient({
+      food_log: {
+        data: [{
+          id: "44444444-4444-4444-8444-444444444444", log_date: "2026-09-20", created_at: "2026-09-20T12:00:00Z", item_name: "Manipulada",
+          quantity_g: null, kcal: 100, protein_g: 5, carbs_g: 10, fat_g: 2, source: "manual",
+          client_meta: {
+            time: "12:00", mealType: "lunch",
+            nutrientStatus: { kcal: "known_maybe", protein: 5, potassium: "known_nonzero" },
+            foodStateConfidence: "sure", quantityConfidence: { level: "medium" }, synthetic: "true",
+          },
+        }],
+        error: null,
+      },
+    });
+    r.shoppingListId = "shopping-list-1";
+    const pulled = (await remote.pullState(makeState())).foodLog[0];
+    expect(pulled.nutrientStatus).toBeUndefined();
+    expect(pulled.foodStateConfidence).toBeUndefined();
+    expect(pulled.quantityConfidence).toBeUndefined();
+    expect(pulled.synthetic).toBeUndefined();
+    expect(pulled).toMatchObject({ name: "Manipulada", kcal: 100 });
   });
 });
 

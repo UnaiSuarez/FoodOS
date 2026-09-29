@@ -6,6 +6,7 @@ import { remote } from "@/lib/data-layer";
 import { notificationsSupported } from "@/lib/notifications";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { addDaysToDateKey, uid } from "@/lib/utils";
+import { syntheticSeedMealsForDate } from "@/lib/food-log-entries";
 import { Modal } from "../Modal";
 import { StyleGuideModal } from "../StyleGuideModal";
 
@@ -153,29 +154,14 @@ export function SettingsView({
       El agua se fija por fecha con setWaterAbsolute() (mismo motivo que
       clearToday(): pushState() excluye water_log a propósito). */
   function seedHistorico() {
-    const meals = [
-      { name: "Avena con proteína", kcal: 380, protein: 28, carbs: 52, fat: 8, mealType: "breakfast" as const },
-      { name: "Pechuga de pollo con arroz", kcal: 520, protein: 42, carbs: 65, fat: 9, mealType: "lunch" as const },
-      { name: "Salmón con verduras", kcal: 440, protein: 38, carbs: 18, fat: 22, mealType: "dinner" as const },
-    ];
     const todayBase = getToday(state);
     const waterByDate: Record<string, number> = {};
     mutate((draft) => {
       for (let i = 1; i <= 7; i++) {
         const date = addDaysToDateKey(todayBase, -i);
 
-        meals.forEach((meal, idx) => {
-          if (draft.foodLog.some((entry) => entry.date === date && entry.name === meal.name)) return;
-          draft.foodLog.push({
-            id: uid(),
-            date,
-            time: ["08:30", "13:30", "20:30"][idx],
-            qty: null,
-            unit: null,
-            source: "manual",
-            ...meal,
-          });
-        });
+        // PR3: comidas FICTICIAS -> synthetic:true, sin nutrientStatus (food-log-entries.ts).
+        draft.foodLog.push(...syntheticSeedMealsForDate(date, draft.foodLog, uid));
 
         waterByDate[date] = 1600 + ((i * 137) % 1400);
 

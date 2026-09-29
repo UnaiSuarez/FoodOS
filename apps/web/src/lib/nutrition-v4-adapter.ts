@@ -67,18 +67,16 @@ export interface NutritionV4AdapterThresholds {
 const DIARY_MACRO_KEYS = ["kcal", "protein", "carbs", "fat"] as const satisfies readonly NutrientKey[];
 
 /**
- * `synthetic` NO existe todavía en `FoodLogEntry` — lo añade PR3, y hoy
- * ninguna entrada real lo tiene. Esta comprobación es deliberadamente
- * defensiva/adelantada: implementa YA el filtro que PR2 debe aplicar
- * ("filtrar las entradas marcadas synthetic:true antes de construir la
- * entrada del kernel"), sin esperar a que packages/types declare el
- * campo. Con los datos de hoy, esto nunca encuentra nada que filtrar —
- * eso es correcto, no un fallo silencioso: `seedHistorico()`
- * (SettingsView.tsx) no marca sus filas de ninguna forma todavía (esa
- * marca es, a su vez, trabajo de PR3).
+ * `synthetic` lo escriben (PR3) únicamente `seedHistorico` ("Sembrar 7 días de
+ * historial") y "Cargar datos demo": filas FICTICIAS que no representan
+ * ninguna ingesta real. Se descartan aquí, a nivel de ENTRADA y antes de
+ * agrupar por día — nunca se elimina un día de la ventana: un día que solo
+ * tenía filas sintéticas queda sin entradas reales y el kernel lo cuenta como
+ * día sin registrar, sin reducir `windowDays`. Solo el booleano `true` cuenta
+ * (un `"true"` o un `1` no lo son).
  */
 function isSyntheticEntry(entry: FoodLogEntry): boolean {
-  return (entry as { synthetic?: unknown }).synthetic === true;
+  return entry.synthetic === true;
 }
 
 /**
@@ -88,31 +86,22 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
  *
  * - Cada uno de los 4 macros guardados se etiqueta `"legacy_unlabeled"`
  *   — NUNCA `"known_nonzero"`/`"known_zero"`, sea cual sea el valor
- *   numérico guardado (incluido 0): ningún camino de escritura actual
- *   (`actions.cookRecipe`/`actions.consumeInventoryItem` en state.tsx, ni
- *   los otros 6 escritores reales del diario — ver el documento de
- *   diseño §1.4) adjunta todavía ningún metadato de procedencia. Un
- *   número histórico no demuestra por sí solo su procedencia.
- * - `quantityConfidence: "low"` — no existe hoy ningún cálculo real de
- *   resolución de cantidad (densidad, unitSize) que este adaptador pueda
- *   leer; asumir "high" sin esa base sería inventar una confianza que no
- *   se ha ganado.
- * - `foodStateConfidence: "unknown"` — nunca `"confirmed"` ni
- *   `"not_applicable"`. Sería tentador inferir `"not_applicable"` para
- *   `source === "manual"` (asumiendo que es un total ya consumido) o para
- *   `source === "inventory"` (asumiendo que es una referencia por 100 g
- *   escalada), pero `FoodLogSource` no distingue una estimación de IA de
- *   comida completa (que SÍ sería `"not_applicable"`, ver el documento de
- *   diseño §1.6) de una entrada manual de un ingrediente genérico por
- *   100 g (que NO lo sería) — ambas llegan como `"manual"` hoy (hallazgo
- *   P6 de la auditoría: `LogMealModal.tsx` fuerza `source:"manual"` para
- *   estimaciones de IA por foto). Deducir el eje de estado del alimento a
- *   partir de `source` sería exactamente la "inferencia de datos" que se
- *   pidió evitar — se deja `"unknown"` de forma uniforme hasta que PR3a
- *   capture esta distinción con un metadato real, no adivinado.
- * - `energyConsistency: "not_evaluable"` — no existe hoy ningún cálculo
- *   de energía declarada vs. reconstruida (4P+4C+9G) sobre el diario real
- *   que este adaptador pueda leer (eso también es PR3a).
+ *   numérico guardado (incluido 0).
+ * - `quantityConfidence: "low"` y `foodStateConfidence: "unknown"`,
+ *   `energyConsistency: "not_evaluable"`: sin una base leída, no se afirma
+ *   ninguna confianza que no se haya ganado.
+ *
+ * DECISIÓN DELIBERADA (PR3): desde PR3 los escritores del diario SÍ adjuntan
+ * `nutrientStatus`/`foodStateConfidence`/`quantityConfidence` a cada entrada
+ * nueva (ver food-log-provenance.ts y el documento de diseño, §18), pero este
+ * adaptador NO los lee todavía y sigue tratando toda entrada como
+ * `legacy_unlabeled`. Leerlos es trabajo del PR de integración posterior:
+ * convertir el estado guardado en un `NutrientValue` exige reconciliarlo con el
+ * número (el kernel rechaza la ventana entera ante un `known_nonzero` con valor
+ * 0, o un `unknown` con valor) y decidir cómo se traduce cada eje — no es una
+ * copia de campos, y hacerlo aquí, sin ese cuidado, sería la "inferencia de
+ * datos" que se pidió evitar. Hasta entonces la lectura es más conservadora
+ * que la escritura, nunca menos.
  *
  * Ninguna entrada se descarta por su contenido (p. ej. por tener kcal 0,
  * o por parecer "poco fiable" de antemano): ese juicio es exclusivamente
@@ -120,7 +109,8 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
  * aquí una entrada "sin kcal ponderable" repetiría exactamente el error
  * que PR1 corrigió (una comida de magnitud incierta desapareciendo del
  * denominador) — con el agravante de esconderlo antes de que el kernel
- * llegue a verla.
+ * llegue a verla. La única excepción son las filas `synthetic:true` (ver
+ * `isSyntheticEntry`): no son ingesta.
  */
 function toKernelEntry(entry: FoodLogEntry): KernelEntry {
   const nutrients: Partial<Record<NutrientKey, NutrientValue>> = {};

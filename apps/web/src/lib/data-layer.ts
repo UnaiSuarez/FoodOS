@@ -20,6 +20,7 @@ import { migrateLegacyTrainingActivity, sanitizeRemoteGoalRow } from "./nutritio
 import * as outbox from "./outbox";
 import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
+import { sanitizeFoodLogProvenance } from "./food-log-provenance";
 
 /** Snapshot de sincronización programado por mutate() — captura de forma
     INMUTABLE userId/epoch/mutationId/estado en el momento de la mutación,
@@ -1780,6 +1781,9 @@ class RemoteAdapter {
         ...(meta.inventoryItemId != null && { inventoryItemId: meta.inventoryItemId }),
         ...(meta.inventorySnapshot != null && { inventorySnapshot: meta.inventorySnapshot }),
         ...(meta.consumedIngredients != null && { consumedIngredients: meta.consumedIngredients }),
+        // PR3: procedencia y marca `synthetic`, saneadas (un valor inválido se
+        // descarta y la entrada se lee como legacy_unlabeled, el lado conservador).
+        ...sanitizeFoodLogProvenance(meta),
       };
     });
     // TODO water_log: ejecutar supabase/schema.sql actualizado (tabla water_log)
@@ -2221,6 +2225,10 @@ class RemoteAdapter {
             ...(entry.inventoryItemId != null && { inventoryItemId: entry.inventoryItemId }),
             ...(entry.inventorySnapshot != null && { inventorySnapshot: entry.inventorySnapshot }),
             ...(entry.consumedIngredients != null && { consumedIngredients: entry.consumedIngredients }),
+            // PR3: procedencia y marca `synthetic`. Sin esto se perderían en el
+            // primer viaje de ida y vuelta y una fila de demostración volvería del
+            // servidor como una entrada real. client_meta es JSONB: sin cambio de esquema.
+            ...sanitizeFoodLogProvenance(entry),
           },
         }),
         { user_id: userId }
