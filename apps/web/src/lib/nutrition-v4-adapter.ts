@@ -46,6 +46,7 @@ import type {
   NutrientStatus,
   NutrientValue,
 } from "@foodos/types";
+import { sanitizeFoodStateConfidence, sanitizeNutrientStatusMap } from "./food-log-provenance";
 
 export interface NutritionV4AdapterWindow {
   /** `YYYY-MM-DD`, mismo formato que `FoodLogEntry.date` y que el
@@ -91,11 +92,16 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
  * `NutrientValue`, reconciliando ambos ANTES de construirlo — nunca una
  * copia directa del estado. Reglas, en orden:
  *
- * 1. Un número no finito no es un dato utilizable bajo ningún estado (ni
- *    siquiera "legacy_unlabeled" garantiza nada si el número en sí no es
- *    real): se trata como si no existiera, `unknown`/`null`, cualquiera que
- *    sea el estado declarado. No debería ocurrir con un `FoodLogEntry` bien
- *    tipado, pero esta función no asume que todo lo que llega es válido.
+ * 1. Un número no finito O NEGATIVO no es un dato utilizable bajo NINGÚN
+ *    estado: el kernel de PR1 (`isValidNutrientValue`) exige `raw >= 0`
+ *    para `estimated`/`recipe_derived`/`imputed`/`legacy_unlabeled`,
+ *    `raw > 0` para `known_nonzero`, `raw === 0` para `known_zero` y
+ *    `raw === null` para `unknown` — ninguna variante admite un negativo.
+ *    Un macro con un número negativo (no debería producirse nunca en la
+ *    app, pero esta función no lo asume) se trata como si no existiera:
+ *    `unknown`/`null`, cualquiera que sea el estado declarado — nunca
+ *    `"estimated"` con ese negativo dentro, que el kernel rechazaría junto
+ *    con la ventana entera.
  * 2. Estado ausente = entrada anterior a PR3 o de una migración (ver el
  *    comentario de `FoodLogEntry.nutrientStatus`): `"legacy_unlabeled"`,
  *    nunca `"known_*"`. Esto es lo que impide "mejorar" el histórico
@@ -107,21 +113,21 @@ function isSyntheticEntry(entry: FoodLogEntry): boolean {
  *    anterior del dato, y no se expone.
  * 4. `"known_zero"`/`"known_nonzero"` son afirmaciones verificables contra
  *    el propio número: el kernel exige cero exacto para el primero y
- *    estrictamente positivo para el segundo. Si el número guardado ya no
- *    sostiene la afirmación — cero declarado pero número no-cero, número
- *    cero o negativo bajo un `known_nonzero` — la entrada deja de afirmar
- *    una medición y pasa a `"estimated"`, el mismo destino que ya elige
- *    `reconcileStatusesWithValues` (food-log-provenance.ts) ante la misma
- *    contradicción al escribir: una entrada que era coherente al guardarse
- *    y deja de serlo más tarde (migración, edición manual del dato
- *    guardado) no debe tratarse distinto solo por el momento en que se
- *    detecta la contradicción.
+ *    estrictamente positivo para el segundo. Si el número guardado (ya no
+ *    negativo, filtrado en el paso 1) ya no sostiene la afirmación — cero
+ *    declarado pero número no-cero, o número cero bajo un `known_nonzero`
+ *    — la entrada deja de afirmar una medición y pasa a `"estimated"`, el
+ *    mismo destino que ya elige `reconcileStatusesWithValues`
+ *    (food-log-provenance.ts) ante la misma contradicción al escribir: una
+ *    entrada que era coherente al guardarse y deja de serlo más tarde
+ *    (migración, edición manual del dato guardado) no debe tratarse
+ *    distinto solo por el momento en que se detecta la contradicción.
  * 5. Cualquier otro estado (`estimated`, `recipe_derived`, `imputed`,
- *    `legacy_unlabeled`) no tiene una restricción numérica que comprobar:
- *    pasa tal cual, con el número guardado.
+ *    `legacy_unlabeled`) no tiene más restricción numérica que la del paso
+ *    1 (ya aplicada): pasa tal cual, con el número guardado.
  */
 function toNutrientValue(status: NutrientStatus | undefined, rawValue: number): NutrientValue {
-  if (!Number.isFinite(rawValue)) return { status: "unknown", value: null };
+  if (!Number.isFinite(rawValue) || rawValue < 0) return { status: "unknown", value: null };
 
   const resolved = status ?? "legacy_unlabeled";
   if (resolved === "unknown") return { status: "unknown", value: null };
@@ -156,11 +162,24 @@ function quantityConfidenceOf(entry: FoodLogEntry): "high" | "low" {
  * en vez de tratar toda entrada como `legacy_unlabeled` — la lectura
  * conservadora por defecto de PR2. Cada macro se reconcilia contra su
  * propio número guardado con `toNutrientValue`; `quantityConfidence`, con
- * `quantityConfidenceOf`. `foodStateConfidence` se propaga tal cual (su
- * ausencia ya significa `"unknown"` en el propio contrato de
- * `FoodLogEntry`): a diferencia de `nutrientStatus`, no hay un número
- * asociado con el que reconciliarlo, así que no hay nada que verificar más
- * allá de leer lo que hay.
+ * `quantityConfidenceOf`.
+ *
+ * `nutrientStatus`/`foodStateConfidence` se sanean AQUÍ, con los mismos
+ * saneadores que ya usa la sincronización remota
+ * (`sanitizeNutrientStatusMap`/`sanitizeFoodStateConfidence`,
+ * food-log-provenance.ts), antes de leerlos — no se asume que ya llegan
+ * válidos solo porque el tipo de `FoodLogEntry` lo declare así.
+ * `pullState()` sanea la procedencia remota antes de construir cada
+ * `FoodLogEntry` (`sanitizeFoodLogProvenance`, data-layer.ts), pero
+ * `loadLocalState()`/`normalizeState()` (arranque en modo local, o mientras
+ * la hidratación remota no ha completado) leen `localStorage` con
+ * `JSON.parse` crudo y no vuelven a sanear los campos de procedencia del
+ * diario — solo migran forma (p. ej. `mealType`). Un valor técnicamente
+ * inválido en tiempo de ejecución puede llegar así, directo, a este
+ * adaptador. Saneado, un valor inválido cae a "ausente", con el mismo
+ * destino conservador que la ausencia real: `legacy_unlabeled` para el
+ * macro correspondiente, `"unknown"` para `foodStateConfidence` — nunca se
+ * propaga un estado que no es uno de los reconocidos.
  *
  * `energyConsistency` sigue siendo siempre `"not_evaluable"`: no existe hoy
  * ninguna señal independiente (un kcal declarado por separado del
@@ -178,15 +197,18 @@ function quantityConfidenceOf(entry: FoodLogEntry): "high" | "low" {
  * `isSyntheticEntry`): no son ingesta.
  */
 function toKernelEntry(entry: FoodLogEntry): KernelEntry {
+  const nutrientStatus = sanitizeNutrientStatusMap(entry.nutrientStatus);
+  const foodStateConfidence = sanitizeFoodStateConfidence(entry.foodStateConfidence) ?? "unknown";
+
   const nutrients: Partial<Record<NutrientKey, NutrientValue>> = {};
   for (const key of DIARY_MACRO_KEYS) {
-    nutrients[key] = toNutrientValue(entry.nutrientStatus?.[key], entry[key]);
+    nutrients[key] = toNutrientValue(nutrientStatus?.[key], entry[key]);
   }
   return {
     dateKey: entry.date,
     nutrients,
     quantityConfidence: quantityConfidenceOf(entry),
-    foodStateConfidence: entry.foodStateConfidence ?? "unknown",
+    foodStateConfidence,
     energyConsistency: "not_evaluable",
   };
 }
