@@ -3,11 +3,16 @@
 import { useMemo, useState } from "react";
 import type { InventoryItem } from "@foodos/types";
 import { actions, macrosForQuantity, useFoodOS } from "@/lib/state";
+import { intentGuard, runGuardedIntent } from "@/lib/intent-guard";
+import { uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
 // Consumo parcial de un alimento: eliges cuanto y ves sus macros en vivo.
 export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
   const { mutate, showToast, setMascotMessage } = useFoodOS();
+  // Una intención por montaje del modal — ver CookModal.tsx para el mismo
+  // patrón y su justificación completa.
+  const [intentId] = useState(() => uid());
   const [qty, setQty] = useState(item.unit === "ud" ? 1 : Math.min(item.qty, 100));
 
   const safeQty = Math.max(0, Math.min(qty, item.qty));
@@ -111,7 +116,22 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           className="primary-button"
           disabled={safeQty <= 0}
           onClick={() => {
-            mutate((draft) => actions.consumeInventoryItem(draft, item.id, safeQty));
+            // Mismo guard que CookModal.tsx (claim/release síncronos, sin
+            // depender de disabled de React) — pero con una asimetría real
+            // respecto a cocinar, documentada en intent-guard.ts:
+            // actions.consumeInventoryItem hace `if (!item) return;`
+            // cuando el lote ya no está en el inventario del draft (p. ej.
+            // consumido en otra pestaña entre que se abrió este modal y se
+            // confirmó) — en ese caso mutate() sigue devolviendo `true`
+            // (superó mutationsBlocked(), que es lo único que comprueba),
+            // pese a que NO se añadió ninguna fila al diario. El guard
+            // impide una SEGUNDA llamada aceptada con la misma intención;
+            // no puede, por sí solo, distinguir esta "aceptada pero sin
+            // efecto de negocio" de una consumición real.
+            const applied = runGuardedIntent(intentGuard, intentId, () =>
+              mutate((draft) => actions.consumeInventoryItem(draft, item.id, safeQty)),
+            );
+            if (!applied) return;
             setMascotMessage("Consumo registrado en tu diario.");
             showToast(`${item.name}: ${safeQty} ${item.unit} registrados (${macros.kcal} kcal)`);
             onClose();
