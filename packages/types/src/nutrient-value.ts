@@ -76,7 +76,16 @@ export type QuantityResolution =
   | { status: "resolved"; grams: number }
   | { status: "unresolved"; reason: QuantityLowConfidenceReason };
 
-export type DeclaredFoodState = "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified";
+/**
+ * "ambiguous": el texto declara dos o más de estos estados a la vez (ej.
+ * "sopa deshidratada, lista para preparar" declara "dry" Y "reconstituted"
+ * al mismo tiempo) y no hay una regla verificable para reducirlos con
+ * seguridad a uno solo — se trata igual que "unspecified" en todos los
+ * resolutores de `foodStateConfidence` (nunca "confirmed"), pero se
+ * distingue de él porque SÍ hay palabras de estado presentes, solo que
+ * más de una y en conflicto.
+ */
+export type DeclaredFoodState = "raw" | "cooked" | "dry" | "reconstituted" | "drained" | "unspecified" | "ambiguous";
 
 /**
  * Eje INDEPENDIENTE de `NutrientStatus` — ninguno sustituye al otro. Un

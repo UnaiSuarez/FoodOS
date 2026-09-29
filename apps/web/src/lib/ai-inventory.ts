@@ -1,7 +1,13 @@
-import type { StorageName } from "@foodos/types";
+import type { FoodStateConfidence, NutrientKey, NutrientStatus, StorageName } from "@foodos/types";
 import type { AIConfig } from "./ai-config";
 import { findExactFood } from "./food-db";
 import { lookupFoodExternal } from "./food-lookup";
+import {
+  aiStatusFromValue,
+  localCatalogStatusFromValue,
+  resolveFoodStateConfidenceForDirectEntry,
+  resolveFoodStateConfidenceForGenericMatch,
+} from "./nutrient-provenance";
 import { checkRateLimit } from "./ai-rate-limiter";
 
 /** Origen de un dato nutricional: "ai" = estimado por el modelo, no verificado en una BD real. */
@@ -15,6 +21,10 @@ export type FoodNutriData = {
   storage: StorageName;
   expiryDays: number;
   source: NutriDataSource;
+  /** PR3a — solo kcal/protein (los únicos macros que esta forma transporta).
+      Ausente equivale a "unknown" para esa clave (ver InventoryItem). */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
 };
 
 /** Resultado de identificar un alimento desde foto: igual que FoodNutriData pero con nombre. */
@@ -31,6 +41,9 @@ export type ScannedItem = {
   price: number;
   /** El escaneo de tickets/fotos siempre pasa por la IA — no hay BD verificada de por medio. */
   source: "ai";
+  /** PR3a — ver la misma nota en FoodNutriData. */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
 };
 
 function extractJSON(raw: string): string {
@@ -140,7 +153,7 @@ export async function fillFoodData(
   config: AIConfig | null,
   name: string
 ): Promise<FoodNutriData | null> {
-  // 1. BD local
+  // 1. BD local — sin procedencia por ficha (ver food-db.ts): legacy_unlabeled.
   const local = findExactFood(name);
   if (local) {
     return {
@@ -151,10 +164,16 @@ export async function fillFoodData(
       storage: local.storage,
       expiryDays: local.expiryDays,
       source: "local",
+      nutrientStatus: {
+        kcal: localCatalogStatusFromValue(local.kcal),
+        protein: localCatalogStatusFromValue(local.protein),
+      },
+      foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(name, local.name),
     };
   }
 
-  // 2. Open Food Facts + USDA (con caché local)
+  // 2. Open Food Facts + USDA (con caché local) — ya trae su propia
+  // procedencia real calculada en food-lookup.ts, se propaga tal cual.
   const external = await lookupFoodExternal(name);
   if (external) {
     return {
@@ -165,6 +184,14 @@ export async function fillFoodData(
       storage: "Nevera",
       expiryDays: 7,
       source: external.source === "usda" ? "usda" : "off",
+      // Solo las claves de los números que esta forma transporta (kcal/
+      // protein): `external` también trae carbs/fat/etc., pero FoodNutriData
+      // no los guarda — un estado sin número detrás sería metadato huérfano.
+      nutrientStatus: {
+        ...(external.nutrientStatus?.kcal && { kcal: external.nutrientStatus.kcal }),
+        ...(external.nutrientStatus?.protein && { protein: external.nutrientStatus.protein }),
+      },
+      foodStateConfidence: external.foodStateConfidence,
     };
   }
 
@@ -179,6 +206,10 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
   try {
     const text = await callAIText(config, prompt, 256);
     const parsed = JSON.parse(extractJSON(text)) as Partial<FoodNutriData>;
+    // nutrientStatus se calcula sobre el valor CRUDO de parsed (antes del
+    // `?? 0` de abajo): un campo que la IA omitió es unknown, uno que
+    // declaró (incluido un 0 explícito) es estimated — nunca known_*, y
+    // nunca se confunden entre sí por el fallback numérico de la interfaz.
     return {
       kcal: Number(parsed.kcal ?? 0),
       protein: Number(parsed.protein ?? 0),
@@ -187,6 +218,11 @@ Valores válidos → unit: g | ml | ud | kg | L   storage: Nevera | Congelador |
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(parsed.storage)) ? parsed.storage : "Nevera") as StorageName,
       expiryDays: Number(parsed.expiryDays ?? 7),
       source: "ai",
+      nutrientStatus: {
+        kcal: aiStatusFromValue(parsed.kcal),
+        protein: aiStatusFromValue(parsed.protein),
+      },
+      foodStateConfidence: resolveFoodStateConfidenceForDirectEntry("per_unit_reference", name),
     };
   } catch {
     return null;
@@ -320,6 +356,13 @@ Si no hay alimentos visibles devuelve [].`;
       expiryDays: Number(item.expiryDays ?? 7),
       price: Number(item.price ?? 0),
       source: "ai" as const,
+      // nutrientStatus sobre el valor CRUDO de item (antes del `?? 0`): un
+      // campo omitido por la IA es unknown, no estimated ni known_zero.
+      nutrientStatus: {
+        kcal: aiStatusFromValue(item.kcal),
+        protein: aiStatusFromValue(item.protein),
+      },
+      foodStateConfidence: resolveFoodStateConfidenceForDirectEntry("per_unit_reference", String(item.name ?? "")),
     }));
   } catch {
     return [];
@@ -456,6 +499,12 @@ Si no se identifica nada devuelve [].`;
       storage: (["Nevera", "Congelador", "Despensa"].includes(String(parsed.storage)) ? parsed.storage : "Nevera") as StorageName,
       expiryDays: Number(parsed.expiryDays ?? 7),
       source: "ai" as const,
+      // nutrientStatus sobre el valor CRUDO de parsed (antes del `?? 0`).
+      nutrientStatus: {
+        kcal: aiStatusFromValue(parsed.kcal),
+        protein: aiStatusFromValue(parsed.protein),
+      },
+      foodStateConfidence: resolveFoodStateConfidenceForDirectEntry("per_unit_reference", String(parsed.name ?? "")),
     }));
   } catch {
     return [];

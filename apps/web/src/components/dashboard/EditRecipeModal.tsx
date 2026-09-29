@@ -1,15 +1,26 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Recipe, RecipeIngredient, UnitSizeUnit } from "@foodos/types";
+import type { FoodStateConfidence, NutrientKey, NutrientStatus, Recipe, RecipeIngredient, UnitSizeUnit } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { findExactFood } from "@/lib/food-db";
+import {
+  applyManualNutrientEdit,
+  ingredientBasisPatch,
+  legacyOrUnknown,
+  localCatalogStatusFromValue,
+  referenceFieldsFromStatus,
+  restoredIngredientProvenance,
+  resolveFoodStateConfidenceForGenericMatch,
+  resolveOffConfirmedOnlyStatus,
+  resolveOffKcalStatus,
+} from "@/lib/nutrient-provenance";
 import { namesMatch, toGrams } from "@/lib/utils";
 import { Modal } from "./Modal";
 
-type IngStatus = "idle" | "loading" | "found" | "manual";
+export type IngStatus = "idle" | "loading" | "found" | "manual";
 
-type IngDraft = {
+export type IngDraft = {
   name: string;
   quantity: number;
   unit: string;
@@ -22,9 +33,27 @@ type IngDraft = {
   unitSize: number;
   /** Dimensión de unitSize ("g"/"ml") — ver la misma nota en CreateRecipeModal. */
   unitSizeUnit: UnitSizeUnit | undefined;
+  /** PR3a — mismo significado que en CreateRecipeModal.tsx. */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
+  /** PR3a — campos cuyo número viene de la referencia encontrada, y campos que
+      el usuario ha reescrito a mano desde entonces: deciden si foodStateConfidence
+      sigue justificada tras una edición (ver applyManualNutrientEdit). Al
+      recargar una receta guardada el origen por campo no se conserva: todo
+      número con estado se trata como de referencia (lado conservador). */
+  referenceFields?: NutrientKey[];
+  manualFields?: NutrientKey[];
 };
 
-function recipeIngToIng(ri: RecipeIngredient): IngDraft {
+/** PR3a — mismo mapeo que en CreateRecipeModal.tsx. */
+const MACRO_FIELD_TO_NUTRIENT_KEY: Record<"kcalPer100" | "proteinPer100" | "carbsPer100" | "fatPer100", NutrientKey> = {
+  kcalPer100: "kcal",
+  proteinPer100: "protein",
+  carbsPer100: "carbs",
+  fatPer100: "fat",
+};
+
+export function recipeIngToIng(ri: RecipeIngredient): IngDraft {
   const hasMacros = (ri.kcalPer100 ?? 0) > 0 || (ri.proteinPer100 ?? 0) > 0;
   return {
     name: ri.name,
@@ -37,16 +66,22 @@ function recipeIngToIng(ri: RecipeIngredient): IngDraft {
     status: hasMacros ? "found" : "idle",
     unitSize: ri.unitSize ?? 60,
     unitSizeUnit: ri.unitSizeUnit,
+    // PR3a — segundo punto de colapso: ver la misma nota en CreateRecipeModal.tsx.
+    ...restoredIngredientProvenance(ri),
   };
 }
 
-function ingToRecord(ing: IngDraft): RecipeIngredient {
-  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status, unitSize, unitSizeUnit } = ing;
+export function ingToRecord(ing: IngDraft): RecipeIngredient {
+  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status, unitSize, unitSizeUnit, nutrientStatus, foodStateConfidence } = ing;
   return {
     name, quantity, unit,
     ...(unit === "ud" ? { unitSize, unitSizeUnit } : {}),
     ...(status === "found" || status === "manual"
-      ? { kcalPer100, proteinPer100, carbsPer100, fatPer100 }
+      ? {
+          kcalPer100, proteinPer100, carbsPer100, fatPer100,
+          ...(nutrientStatus ? { nutrientStatus } : {}),
+          ...(foodStateConfidence ? { foodStateConfidence } : {}),
+        }
       : {}),
   };
 }
@@ -96,7 +131,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
   function setIng(i: number, patch: Partial<IngDraft>) {
     setIngredients((prev) => {
       const next = [...prev];
-      next[i] = { ...next[i], ...patch };
+      next[i] = { ...next[i], ...patch, ...ingredientBasisPatch(patch) };
       return next;
     });
   }
@@ -105,12 +140,26 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
     if (!name.trim()) return;
     setIng(i, { status: "loading" });
 
+    // 1. Local food-db — sin procedencia por ficha (ver food-db.ts):
+    // legacy_unlabeled, nunca known_*.
     const local = findExactFood(name);
     if (local) {
-      setIng(i, { kcalPer100: local.kcal, proteinPer100: local.protein, carbsPer100: local.carbs ?? 0, fatPer100: local.fat ?? 0, status: "found" });
+      setIng(i, {
+        kcalPer100: local.kcal, proteinPer100: local.protein, carbsPer100: local.carbs, fatPer100: local.fat,
+        status: "found",
+        nutrientStatus: {
+          kcal: localCatalogStatusFromValue(local.kcal),
+          protein: localCatalogStatusFromValue(local.protein),
+          carbs: localCatalogStatusFromValue(local.carbs),
+          fat: localCatalogStatusFromValue(local.fat),
+        },
+        foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(name, local.name),
+      });
       return;
     }
 
+    // 2. Inventory match — hereda la procedencia real del InventoryItem si
+    // la trae; si no, se trata como dato heredado sin procedencia verificable.
     const invMatch = state.inventory.find((item) => namesMatch(item.name, name));
     if (invMatch) {
       setIng(i, {
@@ -118,28 +167,51 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
         carbsPer100: invMatch.carbs ?? 0, fatPer100: invMatch.fat ?? 0,
         ...(invMatch.unit === "ud" ? { unit: "ud", unitSize: invMatch.unitSize ?? 60, unitSizeUnit: invMatch.unitSizeUnit } : {}),
         status: "found",
+        nutrientStatus: {
+          kcal: legacyOrUnknown(invMatch.nutrientStatus?.kcal, invMatch.kcal),
+          protein: legacyOrUnknown(invMatch.nutrientStatus?.protein, invMatch.protein),
+          carbs: legacyOrUnknown(invMatch.nutrientStatus?.carbs, invMatch.carbs),
+          fat: legacyOrUnknown(invMatch.nutrientStatus?.fat, invMatch.fat),
+        },
+        foodStateConfidence: invMatch.foodStateConfidence ?? resolveFoodStateConfidenceForGenericMatch(name, invMatch.name),
       });
       return;
     }
 
+    // 3. OFF proxy — 2 niveles reales para kcal, 1 nivel confirmado para el
+    // resto (misma cadena que CreateRecipeModal.tsx).
     try {
       const res  = await fetch(`/api/food-search?q=${encodeURIComponent(name)}`);
-      const data = await res.json() as { products?: Array<{ nutriments?: Record<string, number> }> };
+      const data = await res.json() as { products?: Array<{ product_name_es?: string; product_name?: string; nutriments?: Record<string, number> }> };
       const hit  = data.products?.[0];
       if (hit?.nutriments) {
         const n = hit.nutriments;
+        const referenceText = hit.product_name_es ?? hit.product_name ?? "";
         setIng(i, {
           kcalPer100:    Math.round(n["energy-kcal_100g"] ?? n["energy-kcal"] ?? 0),
           proteinPer100: Math.round((n["proteins_100g"] ?? 0) * 10) / 10,
           carbsPer100:   Math.round((n["carbohydrates_100g"] ?? 0) * 10) / 10,
           fatPer100:     Math.round((n["fat_100g"] ?? 0) * 10) / 10,
           status: "found",
+          nutrientStatus: {
+            kcal: resolveOffKcalStatus(n["energy-kcal_100g"], n["energy-kcal"], undefined),
+            protein: resolveOffConfirmedOnlyStatus(n["proteins_100g"]),
+            carbs: resolveOffConfirmedOnlyStatus(n["carbohydrates_100g"]),
+            fat: resolveOffConfirmedOnlyStatus(n["fat_100g"]),
+          },
+          foodStateConfidence: resolveFoodStateConfidenceForGenericMatch(name, referenceText),
         });
         return;
       }
     } catch { /* ignore */ }
 
-    setIng(i, { status: "manual" });
+    // 4. No encontrado → el usuario rellena a mano. El 0 que se ve es un
+    // placeholder de interfaz, no un cero declarado.
+    setIng(i, {
+      status: "manual",
+      nutrientStatus: { kcal: "unknown", protein: "unknown", carbs: "unknown", fat: "unknown" },
+      foodStateConfidence: undefined,
+    });
   }
 
   async function lookupAll() {
@@ -234,7 +306,7 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
                   placeholder="Ingrediente"
                   aria-label={`Nombre del ingrediente ${i + 1}`}
                   value={ing.name}
-                  onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0 })}
+                  onChange={(e) => setIng(i, { name: e.target.value, status: "idle", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, nutrientStatus: undefined, foodStateConfidence: undefined, referenceFields: undefined, manualFields: undefined })}
                   onBlur={(e) => { if (ing.status === "idle" && e.target.value.trim()) lookupIngredient(i, e.target.value); }}
                 />
                 <input
@@ -290,7 +362,19 @@ export function EditRecipeModal({ recipe, onClose }: { recipe: Recipe; onClose: 
                         className="ing-macro-input"
                         type="number" min="0" step="0.1"
                         value={ing[key]}
-                        onChange={(e) => setIng(i, { [key]: Number(e.target.value) })}
+                        onChange={(e) => {
+                          const value = Number(e.target.value);
+                          const edit = applyManualNutrientEdit({
+                            key: MACRO_FIELD_TO_NUTRIENT_KEY[key],
+                            value,
+                            name: ing.name,
+                            nutrientStatus: ing.nutrientStatus,
+                            foodStateConfidence: ing.foodStateConfidence,
+                            referenceFields: ing.referenceFields,
+                            manualFields: ing.manualFields,
+                          });
+                          setIng(i, { [key]: value, ...edit });
+                        }}
                       />
                     </label>
                   ))}

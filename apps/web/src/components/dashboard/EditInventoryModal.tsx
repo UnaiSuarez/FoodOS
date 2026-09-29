@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import type { InventoryItem, StorageName, UnitSizeUnit } from "@foodos/types";
+import type { InventoryItem, NutrientKey, NutrientStatus, StorageName, UnitSizeUnit } from "@foodos/types";
 import { isImageUrlReferencedElsewhere, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
+import { foodStateConfidenceAfterInventoryEdit, manualStatusFromValue } from "@/lib/nutrient-provenance";
 import { Modal } from "./Modal";
 import { ImagePickerField } from "./ImagePickerField";
 
@@ -62,8 +63,34 @@ export function EditInventoryModal({ item, onClose }: { item: InventoryItem; onC
       it.imageUrl = newImageUrl;
       // Si el usuario corrige kcal/proteína a mano, ya no es una estimación
       // de IA sin revisar — quitamos el aviso.
-      if (form.kcal !== item.kcal || form.protein !== item.protein) {
+      const kcalChanged = form.kcal !== item.kcal;
+      const proteinChanged = form.protein !== item.protein;
+      if (kcalChanged || proteinChanged) {
         it.dataSource = undefined;
+      }
+      // PR3a — conserva la procedencia de los campos que NO cambiaron (carbs/
+      // fat/salt/fiber/sugars nunca se editan aquí, y kcal/protein tampoco si
+      // el valor guardado es idéntico al que ya tenía el item). Solo el
+      // campo REALMENTE editado pasa a known_* — abrir y guardar sin tocar
+      // nada nunca eleva un dato antiguo sin etiqueta.
+      const nextNutrientStatus: Partial<Record<NutrientKey, NutrientStatus>> = {
+        ...item.nutrientStatus,
+        ...(kcalChanged ? { kcal: manualStatusFromValue(form.kcal, true) } : {}),
+        ...(proteinChanged ? { protein: manualStatusFromValue(form.protein, true) } : {}),
+      };
+      if (Object.keys(nextNutrientStatus).length > 0) {
+        it.nutrientStatus = nextNutrientStatus;
+      }
+      // PR3a — foodStateConfidence acompaña a los números: renombrar de verdad
+      // invalida un "confirmed" previo (la referencia original no se conserva
+      // para recalcular la comparación), y reescribir kcal/proteína a mano
+      // sobre un item respaldado por una referencia también. Un guardado sin
+      // cambio de nombre ni de macros conserva el valor anterior tal cual.
+      const nextFoodState = foodStateConfidenceAfterInventoryEdit({
+        item, nextName: form.name, kcalChanged, proteinChanged,
+      });
+      if (nextFoodState !== item.foodStateConfidence) {
+        it.foodStateConfidence = nextFoodState;
       }
     });
     showToast("Alimento actualizado");

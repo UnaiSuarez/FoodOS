@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { FoodStateConfidence, NutrientKey, NutrientStatus } from "@foodos/types";
 import { parseQuantityString } from "@/lib/food-lookup";
+import {
+  resolveFoodStateConfidenceForProduct,
+  resolveOffConfirmedOnlyStatus,
+  resolveOffKcalStatus,
+} from "@/lib/nutrient-provenance";
 import { useEscapeToClose } from "@/lib/use-escape-key";
 import { useInertBackground } from "@/lib/use-inert-background";
 
@@ -22,11 +28,64 @@ export interface ProductData {
   imageUrl?: string;
   /** Tags de alérgenos sin traducir (ej. "en:gluten"), de OFF. */
   allergenTags?: string[];
+  /** PR3a — ausente equivale a "unknown" para esa clave (ver InventoryItem). */
+  nutrientStatus?: Partial<Record<NutrientKey, NutrientStatus>>;
+  foodStateConfidence?: FoodStateConfidence;
 }
 
 interface Props {
   onFill: (data: ProductData) => void;
   onClose: () => void;
+}
+
+/**
+ * Convierte el `product` de la respuesta de Open Food Facts (código de
+ * barras) en `ProductData`. Los NÚMEROS son la misma cadena `??` de
+ * siempre, sin tocar — `nutrientStatus` solo observa, con la misma
+ * prioridad de campos, cuál ganó. Este endpoint (a diferencia de
+ * food-lookup.ts) solo tiene 2 niveles reales para kcal (ambos base 100g
+ * confirmada: sin el campo bare "energy-kcal") y 1 nivel para el resto
+ * (sin fallback a un campo sin sufijo). `fallbackName` se usa solo si el
+ * producto no trae nombre — normalmente el propio código escaneado.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function parseBarcodeProduct(p: any, fallbackName: string): ProductData {
+  const n = p.nutriments ?? {};
+  const numericQty = Number(p.product_quantity);
+  const packageSize = Number.isFinite(numericQty) && numericQty > 0
+    ? Math.round(numericQty)
+    : parseQuantityString(p.quantity);
+  const rawBrand = Array.isArray(p.brands) ? p.brands[0] : typeof p.brands === "string" ? p.brands.split(",")[0] : "";
+  const brand = rawBrand?.trim() ?? "";
+  const imageUrl = p.image_front_url || p.image_small_url || "";
+  const name = (p.product_name_es || p.product_name || fallbackName).slice(0, 80);
+
+  const nutrientStatus: Partial<Record<NutrientKey, NutrientStatus>> = {
+    kcal: resolveOffKcalStatus(n["energy-kcal_100g"], undefined, n["energy_100g"]),
+    protein: resolveOffConfirmedOnlyStatus(n.proteins_100g),
+    carbs: resolveOffConfirmedOnlyStatus(n.carbohydrates_100g),
+    fat: resolveOffConfirmedOnlyStatus(n.fat_100g),
+  };
+  if (n.salt_100g != null) nutrientStatus.salt = resolveOffConfirmedOnlyStatus(n.salt_100g);
+  if (n.fiber_100g != null) nutrientStatus.fiber = resolveOffConfirmedOnlyStatus(n.fiber_100g);
+  if (n.sugars_100g != null) nutrientStatus.sugars = resolveOffConfirmedOnlyStatus(n.sugars_100g);
+
+  return {
+    name,
+    kcal: Math.round(n["energy-kcal_100g"] ?? (n["energy_100g"] != null ? n["energy_100g"] / 4.184 : 0)),
+    protein: Math.round((n.proteins_100g ?? 0) * 10) / 10,
+    carbs: Math.round((n.carbohydrates_100g ?? 0) * 10) / 10,
+    fat: Math.round((n.fat_100g ?? 0) * 10) / 10,
+    ...(n.salt_100g != null && { salt: Math.round(n.salt_100g * 100) / 100 }),
+    ...(n.fiber_100g != null && { fiber: Math.round(n.fiber_100g * 10) / 10 }),
+    ...(n.sugars_100g != null && { sugars: Math.round(n.sugars_100g * 10) / 10 }),
+    ...(packageSize != null && { packageSize }),
+    ...(brand && { brand }),
+    ...(imageUrl && { imageUrl }),
+    ...(Array.isArray(p.allergens_tags) && p.allergens_tags.length > 0 && { allergenTags: p.allergens_tags }),
+    nutrientStatus,
+    foodStateConfidence: resolveFoodStateConfidenceForProduct(),
+  };
 }
 
 // BarcodeDetector es una API del navegador (Chrome/Edge 83+) que no está en los tipos de TS.
@@ -147,29 +206,7 @@ export function BarcodeScannerModal({ onFill, onClose }: Props) {
         setLoading(false);
         return;
       }
-      const p = json.product;
-      const n = p.nutriments ?? {};
-      const numericQty = Number(p.product_quantity);
-      const packageSize = Number.isFinite(numericQty) && numericQty > 0
-        ? Math.round(numericQty)
-        : parseQuantityString(p.quantity);
-      const rawBrand = Array.isArray(p.brands) ? p.brands[0] : typeof p.brands === "string" ? p.brands.split(",")[0] : "";
-      const brand = rawBrand?.trim() ?? "";
-      const imageUrl = p.image_front_url || p.image_small_url || "";
-      onFill({
-        name: (p.product_name_es || p.product_name || code).slice(0, 80),
-        kcal: Math.round(n["energy-kcal_100g"] ?? (n["energy_100g"] != null ? n["energy_100g"] / 4.184 : 0)),
-        protein: Math.round((n.proteins_100g ?? 0) * 10) / 10,
-        carbs: Math.round((n.carbohydrates_100g ?? 0) * 10) / 10,
-        fat: Math.round((n.fat_100g ?? 0) * 10) / 10,
-        ...(n.salt_100g != null && { salt: Math.round(n.salt_100g * 100) / 100 }),
-        ...(n.fiber_100g != null && { fiber: Math.round(n.fiber_100g * 10) / 10 }),
-        ...(n.sugars_100g != null && { sugars: Math.round(n.sugars_100g * 10) / 10 }),
-        ...(packageSize != null && { packageSize }),
-        ...(brand && { brand }),
-        ...(imageUrl && { imageUrl }),
-        ...(Array.isArray(p.allergens_tags) && p.allergens_tags.length > 0 && { allergenTags: p.allergens_tags }),
-      });
+      onFill(parseBarcodeProduct(json.product, code));
     } catch {
       setError("Error de red. Comprueba tu conexión o introduce el código manualmente.");
     } finally {
