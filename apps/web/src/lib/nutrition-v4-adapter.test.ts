@@ -308,8 +308,13 @@ describe("PR4 — un número no finito (defensivo) se trata como si no existiera
 // ─── quantityConfidence/foodStateConfidence: solo lo que el dato guardado permite justificar ─
 
 describe("PR4 — quantityConfidence y foodStateConfidence se propagan con lo que el dato guardado permite justificar, nunca menos ni más", () => {
-  it("quantityConfidence.level 'high' explícito se propaga como 'high'", () => {
+  it("§20.7B — 'high' SIN declaredGrams (evidencia ausente) degrada a 'low', nunca se propaga a ciegas", () => {
     const entry = logEntry({ date: "2026-01-03", quantityConfidence: { level: "high" } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it("§20.7B — 'high' con declaredGrams coherente con qty/unit (g) sí se propaga como 'high'", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 300, unit: "g", quantityConfidence: { level: "high", declaredGrams: 300 } });
     expect(nutrients(entry).quantityConfidence).toBe("high");
   });
 
@@ -321,6 +326,70 @@ describe("PR4 — quantityConfidence y foodStateConfidence se propagan con lo qu
   it.each(["confirmed", "incompatible", "not_applicable"] as const)("foodStateConfidence '%s' guardado se propaga tal cual", (foodStateConfidence) => {
     const entry = logEntry({ date: "2026-01-03", foodStateConfidence });
     expect(nutrients(entry).foodStateConfidence).toBe(foodStateConfidence);
+  });
+});
+
+// ─── §20.7B — relectura defensiva de 'high': degrada ante evidencia inválida o incoherente, nunca descarta la entrada ─
+
+describe("§20.7B — 'high' degrada a 'low' ante declaredGrams/qty/unit inválidos o incoherentes, sin descartar nunca la entrada", () => {
+  it("declaredGrams coherente con qty/unit 'kg' (misma magnitud, distinta unidad) sigue siendo 'high'", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 0.2, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 200 } });
+    expect(nutrients(entry).quantityConfidence).toBe("high");
+  });
+
+  it("declaredGrams incoherente con qty/unit (edición posterior, p. ej. EditLogModal, sin limpiar la declaración) degrada a 'low'", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 150, unit: "g", quantityConfidence: { level: "high", declaredGrams: 300 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it("declaredGrams=0 degrada a 'low'", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 300, unit: "g", quantityConfidence: { level: "high", declaredGrams: 0 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it("declaredGrams negativo degrada a 'low'", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 300, unit: "g", quantityConfidence: { level: "high", declaredGrams: -300 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it("declaredGrams no finito (NaN/Infinity, defensivo) degrada a 'low'", () => {
+    for (const bad of [NaN, Infinity]) {
+      const entry = { ...logEntry({ date: "2026-01-03", qty: 300, unit: "g" }), quantityConfidence: { level: "high" as const, declaredGrams: bad } };
+      expect(nutrients(entry).quantityConfidence).toBe("low");
+    }
+  });
+
+  it("unidad no admitida ('ud'/'ml'/ausente) degrada a 'low', aunque declaredGrams sea coherente en apariencia", () => {
+    for (const unit of ["ud", "ml", null] as const) {
+      const entry = logEntry({ date: "2026-01-03", qty: 300, unit, quantityConfidence: { level: "high", declaredGrams: 300 } });
+      expect(nutrients(entry).quantityConfidence).toBe("low");
+    }
+  });
+
+  it("qty final inválido (0, negativo, null) degrada a 'low'", () => {
+    for (const qty of [0, -50, null] as const) {
+      const entry = logEntry({ date: "2026-01-03", qty, unit: "g", quantityConfidence: { level: "high", declaredGrams: 300 } });
+      expect(nutrients(entry).quantityConfidence).toBe("low");
+    }
+  });
+
+  it("una discrepancia de ruido de coma flotante (0,01 g) NO se rechaza — comparación con precisión explícita, no exacta", () => {
+    // 0.233 kg * 1000 puede dar 233.00000000000003 en JS — no debe rechazar
+    // un caso perfectamente coherente por representación binaria.
+    const entry = logEntry({ date: "2026-01-03", qty: 0.233, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 233 } });
+    expect(nutrients(entry).quantityConfidence).toBe("high");
+  });
+
+  it("una discrepancia real de varios gramos SÍ se rechaza, aunque sea pequeña en términos relativos", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 0.23, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 233 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it("la entrada NUNCA se descarta por un 'high' inválido — solo pierde la etiqueta, el resto de la entrada se traduce con normalidad", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 300, unit: "g", kcal: 500, nutrientStatus: { kcal: "known_nonzero" }, quantityConfidence: { level: "high", declaredGrams: 999 } });
+    const result = nutrients(entry);
+    expect(result.quantityConfidence).toBe("low");
+    expect(result.nutrients.kcal).toEqual({ status: "known_nonzero", value: 500 });
   });
 });
 

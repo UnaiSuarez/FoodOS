@@ -134,3 +134,29 @@ export function runGuardedIntent(guard: IntentGuard, intentId: string, perform: 
   if (!applied) guard.release(intentId);
   return applied;
 }
+
+/**
+ * §20 — misma política que `runGuardedIntent`, pero para un `perform` que
+ * devuelve un RESULTADO DE NEGOCIO propio (p. ej. `ConsumeInventoryResult`)
+ * en vez de un booleano plano — para un llamador que, precisamente, no
+ * puede decidir "se aceptó" mirando solo el booleano de `mutate()` (ver la
+ * nota de cabecera de este archivo). `isAccepted` decide, a partir de ese
+ * resultado, si la reclamación se conserva (aceptado: no puede repetirse)
+ * o se libera (no aceptado: un reintento explícito con el MISMO intentId
+ * puede volver a intentarlo).
+ *
+ * Devuelve `{ claimed: false }` si ni siquiera se llegó a invocar `perform`
+ * (ya reclamado) — nunca confundible con un resultado real de `perform`,
+ * que el llamador debe tipar sin un campo `claimed`.
+ */
+export function runGuardedIntentResult<T>(
+  guard: IntentGuard,
+  intentId: string,
+  perform: () => T,
+  isAccepted: (result: T) => boolean,
+): T | { claimed: false } {
+  if (!guard.claim(intentId)) return { claimed: false };
+  const result = perform();
+  if (!isAccepted(result)) guard.release(intentId);
+  return result;
+}

@@ -281,6 +281,16 @@ export function toGrams(qty: number, unit: string, unitSize = 60): number {
   }
 }
 
+/** Inversa EXACTA de `toGrams` para las dos únicas unidades de masa exacta
+ *  (`"g"`/`"kg"`, identidad y `÷1000` respectivamente) — nunca para `"ud"`,
+ *  volumen, ni ninguna otra unidad (§20.4 del documento de diseño: esas
+ *  conversiones no son dimensionalmente seguras sin tocar `macrosForQuantity`
+ *  primero). `null` para cualquier otra unidad en vez de adivinar. */
+export function massUnitFromGrams(grams: number, unit: "g" | "kg"): number | null {
+  if (!Number.isFinite(grams)) return null;
+  return unit === "kg" ? grams / 1000 : grams;
+}
+
 /** Dimensión física de una unidad, para impedir conversiones sin sentido:
     - "mass": g, kg, oz, lb — y unidades desconocidas (passthrough como g,
       mismo criterio que toGrams).

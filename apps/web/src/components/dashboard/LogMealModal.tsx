@@ -147,7 +147,7 @@ export function LogMealModal({ onClose }: { onClose: () => void }) {
     if (selectedQtys.size === 0) return;
     mutate(draft => {
       for (const [id, qty] of selectedQtys) {
-        actions.consumeInventoryItem(draft, id, qty, mealType);
+        actions.consumeInventoryItem(draft, id, { qty }, mealType);
       }
     });
     const n = selectedQtys.size;

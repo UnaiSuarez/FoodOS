@@ -47,6 +47,8 @@ import type {
   NutrientValue,
 } from "@foodos/types";
 import { sanitizeFoodStateConfidence, sanitizeNutrientStatusMap } from "./food-log-provenance";
+import { canonicalNumeric2 } from "./pg-numeric";
+import { toGrams } from "./utils";
 
 export interface NutritionV4AdapterWindow {
   /** `YYYY-MM-DD`, mismo formato que `FoodLogEntry.date` y que el
@@ -140,19 +142,53 @@ function toNutrientValue(status: NutrientStatus | undefined, rawValue: number): 
   return { status: resolved, value: rawValue };
 }
 
+/** Unidades de masa exacta admitidas para una declaración de peso — ver
+ *  docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md §20.4: `"ud"`/volumen quedan
+ *  fuera porque la conversión a gramos no es hoy dimensionalmente segura
+ *  para ellas (`macrosForQuantity` no usa `unitSizeUnit`). */
+const MASS_UNITS = new Set(["g", "kg"]);
+
+/**
+ * §20.7B — relectura defensiva de `"high"`, SIEMPRE con una precisión
+ * explícita y documentada: 0,01 g vía `canonicalNumeric2` (`pg-numeric.ts`,
+ * verificada contra 36.040 valores reales de Postgres para B.2). Esa
+ * verificación acredita que el ALGORITMO de redondeo coincide con el de
+ * Postgres — no que cualquier diferencia por debajo de esta precisión sea
+ * necesariamente ruido de representación binaria: 0,01 g es una decisión
+ * del CONTRATO de esta aplicación (más fino que cualquier discrepancia que
+ * importe para macros), no una garantía que Postgres certifique. La
+ * detección del recorte real al ESCRIBIR usa una comparación SIN redondear
+ * (consumeInventoryItem, state.tsx) — esta es una comprobación distinta,
+ * sobre un valor ya persistido.
+ */
+function gramsCoherentForReread(declaredGrams: number, entryGrams: number): boolean {
+  return canonicalNumeric2(declaredGrams) === canonicalNumeric2(entryGrams);
+}
+
 /**
  * `quantityConfidence` de una `FoodLogEntry`: solo `"high"` cuando el campo
- * lo declara explícitamente así. Ausente, o cualquier otra cosa, es
- * `"low"` — nunca el valor por defecto optimista. No es una elección
- * arbitraria de este adaptador: ningún constructor de
- * food-log-provenance.ts escribe jamás `level: "high"` (solo lo omiten, o
- * ponen `"low"` con un motivo) precisamente porque, según su propio
- * comentario, "PR3 nunca afirma 'high' sin una comprobación positiva, y su
- * ausencia se lee como baja". Leerlo distinto aquí inventaría una confianza
- * que ni siquiera la escritura se atribuye a sí misma.
+ * lo declara explícitamente así Y la evidencia que lo acompaña (§20.5/§20.7)
+ * sigue siendo válida y coherente con la propia entrada — nunca una copia
+ * directa de `level`. Ausente, o cualquier otra cosa, es `"low"` — nunca el
+ * valor por defecto optimista.
+ *
+ * Un `"high"` se degrada a `"low"` en la lectura (nunca se descarta la
+ * entrada) si: `declaredGrams` no es finito y estrictamente positivo;
+ * `entry.qty` no es finito y estrictamente positivo; `entry.unit` no es
+ * `"g"`/`"kg"`; o `toGrams(entry.qty, entry.unit)` no coincide con
+ * `declaredGrams` bajo `gramsCoherentForReread`. Esto protege tanto contra
+ * datos corruptos/tocados a mano como contra una entrada cuyo `qty`/`unit`
+ * se editó DESPUÉS de escrita (p. ej. EditLogModal) sin limpiar la
+ * declaración original — con independencia de si el escritor lo hizo bien.
  */
 function quantityConfidenceOf(entry: FoodLogEntry): "high" | "low" {
-  return entry.quantityConfidence?.level === "high" ? "high" : "low";
+  if (entry.quantityConfidence?.level !== "high") return "low";
+  const { declaredGrams } = entry.quantityConfidence;
+  if (typeof declaredGrams !== "number" || !Number.isFinite(declaredGrams) || declaredGrams <= 0) return "low";
+  if (typeof entry.qty !== "number" || !Number.isFinite(entry.qty) || entry.qty <= 0) return "low";
+  if (!entry.unit || !MASS_UNITS.has(entry.unit)) return "low";
+  const entryGrams = toGrams(entry.qty, entry.unit);
+  return gramsCoherentForReread(declaredGrams, entryGrams) ? "high" : "low";
 }
 
 /**
