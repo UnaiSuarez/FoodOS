@@ -7,6 +7,7 @@ import { notificationsSupported } from "@/lib/notifications";
 import { exportFoodDiaryCSV, exportFinancesCSV, exportWeightCSV } from "@/lib/export";
 import { addDaysToDateKey, uid } from "@/lib/utils";
 import { syntheticSeedMealsForDate } from "@/lib/food-log-entries";
+import { NutritionV4CoveragePanel } from "../NutritionV4CoveragePanel";
 import { Modal } from "../Modal";
 import { StyleGuideModal } from "../StyleGuideModal";
 
@@ -693,6 +694,8 @@ export function SettingsView({
           )}
         </article>
       )}
+
+      {isAdmin && <NutritionV4CoveragePanel />}
 
       {showStyleGuide && <StyleGuideModal onClose={() => setShowStyleGuide(false)} />}
 

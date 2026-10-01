@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import * as ts from "typescript";
+import { findWebSrcBoundaryOffenders, repoRootFrom } from "./test-support/web-boundary";
 import type {
   AdaptiveReviewAdjustmentProposal,
   AdaptiveReviewInput,
@@ -1235,32 +1236,8 @@ describe("pureza — accesos directos prohibidos e imports prohibidos (AST real)
 
 // ─── Confirmación estructural — apps/web no importa este kernel ────────
 
-describe("confirmación estructural — apps/web no importa adaptive-coordinator-kernel ni @foodos/engine", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const repoRoot = join(here, "..", "..", "..");
-  const webSrcPath = join(repoRoot, "apps", "web", "src");
-
-  function walkSourceFiles(dir: string): string[] {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const files: string[] = [];
-    for (const entry of entries) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...walkSourceFiles(fullPath));
-      } else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) {
-        files.push(fullPath);
-      }
-    }
-    return files;
-  }
-
-  it("ningún archivo de apps/web/src menciona @foodos/engine ni packages/engine", () => {
-    const files = walkSourceFiles(webSrcPath);
-    expect(files.length).toBeGreaterThan(0);
-    const offenders = files.filter((f) => {
-      const content = readFileSync(f, "utf-8");
-      return /@foodos\/engine/.test(content) || /packages\/engine/.test(content);
-    });
-    expect(offenders).toEqual([]);
+describe("confirmación estructural — apps/web no importa adaptive-coordinator-kernel ni @foodos/engine, salvo el gateway autorizado", () => {
+  it("ningún archivo de apps/web/src menciona el paquete de motores fuera del gateway explícito de Nutrition v4", () => {
+    expect(findWebSrcBoundaryOffenders(repoRootFrom(import.meta.url))).toEqual([]);
   });
 });

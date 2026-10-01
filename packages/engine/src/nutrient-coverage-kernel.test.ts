@@ -16,6 +16,7 @@ import type {
 } from "@foodos/types";
 import { evaluateNutrientCoverage } from "./nutrient-coverage-kernel";
 import * as engineBarrel from "./index";
+import { findWebSrcBoundaryOffenders, repoRootFrom } from "./test-support/web-boundary";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -782,5 +783,74 @@ describe("dominio de fechas — 0001-01-01 a 9999-12-31, gregoriano proléptico,
     expect(expectInvalid(evaluateNutrientCoverage(windowInput([], { startDateKey: "2026-02-29" }))).reasons).toEqual([
       "start_date_key_invalid",
     ]);
+  });
+});
+
+// ─── Confirmación estructural — apps/web, salvo el gateway explícito ──────
+// Hasta el gateway de Nutrition v4, este kernel (a diferencia de los otros
+// seis) no tenía su propia copia de la prueba que impide a apps/web/src
+// mencionar el paquete — la protección dependía por completo de las copias
+// que viven en los OTROS kernels. Cierra ese hueco, y además verifica el
+// propio archivo del gateway: que importa ÚNICAMENTE evaluateNutrientCoverage
+// de este paquete (nada más del barrel) y que su superficie exportada es
+// exactamente esa función, para que no pueda crecer en silencio.
+
+function collectExportedNames(sourceText: string, fileName: string): string[] {
+  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const names: string[] = [];
+  let hasDefaultExport = false;
+  for (const stmt of sourceFile.statements) {
+    const modifiers = ts.canHaveModifiers(stmt) ? ts.getModifiers(stmt) : undefined;
+    const isExported = modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+    const isDefault = modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword) ?? false;
+    if (isExported && isDefault) hasDefaultExport = true;
+    else if (isExported) {
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) names.push(stmt.name.text);
+      else if (ts.isClassDeclaration(stmt) && stmt.name) names.push(stmt.name.text);
+      else if (ts.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name)) names.push(decl.name.text);
+        }
+      }
+    }
+    if (ts.isExportDeclaration(stmt) && stmt.exportClause && ts.isNamedExports(stmt.exportClause)) {
+      for (const el of stmt.exportClause.elements) names.push(el.name.text);
+    }
+  }
+  return hasDefaultExport ? [...names, "default"] : names;
+}
+
+describe("confirmación estructural — apps/web, salvo el gateway explícito de Nutrition v4 (cierra el hueco: este kernel no tenía su propia copia)", () => {
+  it("ningún archivo de apps/web/src menciona el paquete de motores fuera del gateway explícito de Nutrition v4", () => {
+    expect(findWebSrcBoundaryOffenders(repoRootFrom(import.meta.url))).toEqual([]);
+  });
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const gatewayFile = join(here, "..", "..", "..", "apps", "web", "src", "lib", "nutrition-v4-coverage-gateway.ts");
+  const gatewaySource = readFileSync(gatewayFile, "utf-8");
+
+  it("el gateway importa ÚNICAMENTE @foodos/types y @foodos/engine — nada de apps/web, Supabase, red ni filesystem", () => {
+    const specifiers = collectImportModuleSpecifiers(gatewaySource, gatewayFile);
+    expect(specifiers.sort()).toEqual(["@foodos/engine", "@foodos/types"]);
+  });
+
+  it("del barrel @foodos/engine, el gateway importa ÚNICAMENTE evaluateNutrientCoverage — ninguna otra función del paquete", () => {
+    const sourceFile = ts.createSourceFile(gatewayFile, gatewaySource, ts.ScriptTarget.Latest, true);
+    const importedFromEngine: string[] = [];
+    function visit(node: ts.Node): void {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === "@foodos/engine") {
+        const bindings = node.importClause?.namedBindings;
+        if (bindings && ts.isNamedImports(bindings)) {
+          for (const el of bindings.elements) importedFromEngine.push(el.name.text);
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+    expect(importedFromEngine).toEqual(["evaluateNutrientCoverage"]);
+  });
+
+  it("la superficie exportada del gateway es EXACTAMENTE evaluateDiaryNutrientCoverageReadOnly — ninguna otra, sin export default", () => {
+    expect(collectExportedNames(gatewaySource, gatewayFile)).toEqual(["evaluateDiaryNutrientCoverageReadOnly"]);
   });
 });
