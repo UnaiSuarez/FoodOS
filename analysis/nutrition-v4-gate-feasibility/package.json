@@ -1,0 +1,9 @@
+{
+  "name": "nutrition-v4-gate-feasibility-analysis",
+  "private": true,
+  "type": "module",
+  "description": "Analisis de solo lectura de la viabilidad del gate de Nutrition v4: recorre escritores reales de foodLog -> buildDiaryIntegrityInput -> evaluateNutrientCoverage con datos sinteticos. No forma parte de la app ni del workspace de npm; no se ejecuta en ningun build ni test de apps/web o packages/engine.",
+  "devDependencies": {
+    "tsx": "4.23.15"
+  }
+}
