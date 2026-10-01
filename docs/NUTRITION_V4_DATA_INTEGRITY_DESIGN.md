@@ -979,6 +979,103 @@ Un cliente anterior a este cambio no conoce la columna.
 
 ---
 
+## 20. Confianza de cantidad en el consumo de inventario — diseño, sin implementar
+
+Fase de solo diseño: cero código tocado, cero PR abierto. Corrige una propuesta anterior (interacción con el control de cantidad como condición principal) tras una revisión que la rechazó explícitamente por insuficiente. Parte de PR4/el gateway de Nutrition v4 (§17, ya conectado en modo de solo lectura — ver «Estado actual» al final del documento) sin tocar el kernel, sus umbrales ni el histórico.
+
+### 20.1 Por qué la interacción con el control no basta
+
+La propuesta anterior proponía `quantityConfidence:"high"` cuando el usuario tecleaba, movía el slider o pulsaba un preset en `ConsumeModal.tsx`. Revisado contra el código real (`consumeInventoryItem`, `state.tsx:3024`; `ConsumeModal.tsx`), esa condición no distingue tres hechos distintos:
+
+1. **Cantidad seleccionada o estimada** — el slider, los presets («25 %», «50 %», «Todo») y teclear un número a ojo son, los tres, una ESTIMACIÓN. `qty` además se precarga con un valor calculado (`item.unit==="ud" ? 1 : Math.min(item.qty,100)`) que el usuario puede confirmar sin tocar nada — "interacción" ni siquiera ocurrió necesariamente.
+2. **Cantidad que el usuario declara haber pesado** — una afirmación explícita, distinta de cualquier edición del campo normal de cantidad: nadie declara sin querer que pesó algo.
+3. **Cantidad calculada desde unidades con una masa por unidad acreditada** (`"ud"` × `unitSize` confirmado) — una tercera base, ni estimada ni pesada: contada y multiplicada por un dato declarado aparte.
+
+**`"high"` solo puede nacer de (2) o (3), nunca de (1) — y nunca de que el campo haya recibido un evento de cambio.** El sistema puede verificar: que el usuario activó un control que SOLO existe para declarar un peso (nunca el campo de cantidad normal); que el número que acabó usándose para calcular macros coincide exactamente con esa declaración; que la unidad en la que se declaró es masa exacta. El sistema **no puede verificar, y no debe fingir que verifica**: que el usuario puso de verdad el alimento en una báscula; que el peso por unidad declarado una vez sigue siendo exacto esta vez. `"high"` es una declaración acreditada por interacción EXPLÍCITA e inequívoca, nunca una medición confirmada por el sistema.
+
+**Mecanismo propuesto para (2):** un control SEPARADO del campo de cantidad normal — p. ej. una casilla «He pesado esta cantidad (g)», **desmarcada cada vez que se abre el modal, nunca recordada entre aperturas** — que, al marcarse, sustituye el slider/presets/campo normal por un único campo numérico en gramos, vacío por defecto (nunca precargado). Marcar la casilla y usar el slider a la vez es imposible por construcción: son modos mutuamente excluyentes, no dos señales que puedan contradecirse.
+
+### 20.2 Cerrar el recorte previo del modal
+
+`setQtyClamped` (`ConsumeModal.tsx:25`) recorta la entrada **dentro del propio componente**, antes de que `qty` llegue a ningún escritor: si el usuario teclea `999` con `item.qty=100`, el estado `qty` pasa a `100` en el mismo evento — comparar después `consumed === qty` (como proponía el diseño anterior) compara `100` contra `100` y nunca ve que la persona escribió `999`.
+
+**Corrección: en el modo «He pesado» (20.1.2), `setQtyClamped` no se aplica.** El campo de gramos pesados acepta el número tal cual se teclea, sin recortarlo en silencio. Si el número declarado supera el stock disponible en ese momento, el formulario muestra un error explícito («Has pesado más de lo que tienes en inventario: quedan X g») y bloquea el envío — nunca sustituye el número por otro más pequeño sin que la persona lo vea y lo corrija a propósito. Esto cierra el hueco exacto que señaló la revisión: ya no puede haber una transformación oculta entre lo tecleado y lo comparado, porque en este modo no hay ninguna transformación — solo validación bloqueante.
+
+**Cambios entre la confirmación y la escritura.** `consumeInventoryItem` ya lee `item.qty` fresco dentro de la mutación (no un valor capturado antes en el componente) — la misma ruta que hoy evita escribir de más si el stock cambió en otra pestaña entre abrir el modal y confirmar (comentario ya existente en `ConsumeModal.tsx` sobre esta condición de carrera). La comprobación de `"high"` reutiliza ese mismo punto, no uno nuevo:
+
+- Dentro de la mutación, con `item` ya recuperado del `draft`: si `item.qty` en ese instante es **menor** que los gramos declarados, `consumed = Math.min(declaredGrams, item.qty)` sigue escribiendo lo que corresponda (comportamiento actual, sin cambios) — pero la entrada se etiqueta `"low"`, nunca `"high"`: el número que acabó usándose ya no es el que la persona confirmó.
+- Si `item.unit` en ese instante ya no es una unidad de masa exacta (alguien lo cambió a `"ud"`/`"ml"` entre que se abrió el modal y se confirmó) — `"low"`: la base de la declaración («pesé N gramos») ya no corresponde al item tal como existe al escribir.
+- En cualquier otro caso de discrepancia respecto a lo confirmado (incluida una referencia de tamaño por unidad que cambiara, si el alcance llegara a incluir `"ud"` — ver 20.3), el resultado es siempre degradar a `"low"`, nunca mantener `"high"` para una base distinta de la declarada, y nunca bloquear la escritura en sí: el peor caso es una entrada correcta en número pero con confianza conservadora, igual que cualquier otro camino del diseño.
+
+### 20.3 `unitSizeUnit` y la conversión que de verdad se usa
+
+Hallazgo que cambia el alcance recomendado: **`toGrams` (`utils.ts:271`), la función que `macrosForQuantity` usa de verdad para calcular los macros de un consumo, no recibe `unitSizeUnit` en absoluto.** Su rama `"ud"` es `qty * unitSize` sin más — trata `unitSize` como si ya estuviera en gramos, sea cual sea su `unitSizeUnit` real. Existe una función distinta, `convertQty` (`utils.ts:329`), que sí es consciente de la dimensión (masa/volumen/conteo) y exige que `unitSizeUnit` coincida antes de cruzar de `"ud"` a gramos o mililitros, devolviendo `null` en vez de inventar — pero **`macrosForQuantity` no la usa**. Esto significa que, HOY, un item `"ud"` con `unitSizeUnit:"ml"` (una lata de 330 ml) ya calcula sus macros tratando 330 como si fueran 330 g — una suposición de densidad 1 completamente silenciosa, independiente de cualquier trabajo de procedencia.
+
+Un `unitSize` positivo y declarado no basta, entonces, ni siquiera cuando `unitSizeUnit` es `"g"` de verdad: **la propia función de cálculo no distingue el caso correcto del incorrecto.** Acreditar `"high"` para un consumo en `"ud"` sin corregir primero `macrosForQuantity`/`toGrams` significaría certificar una cifra que puede estar sosteniendo una conversión volumen→masa no reconocida.
+
+**Alcance recomendado para el primer PR de implementación: únicamente `"g"`/`"kg"`.** Son masa exacta sin ninguna conversión de por medio — `toGrams` ya las trata correctamente hoy (`kg: qty*1000`, `g`: identidad) — así que no hace falta tocar ningún cálculo existente, solo decidir cuándo etiquetar la entrada. `"ud"` y cualquier volumen (`"ml"`/`"L"`) quedan en `"low"` siempre, en este primer PR, sin excepción — no por una limitación del diseño de procedencia, sino porque el cálculo de macros que los alimenta no es hoy dimensionalmente correcto para `"ud"`, y nunca lo es para volumen sin densidad.
+
+**Si un PR posterior quisiera admitir `"ud"`:** tendría que, a la vez, (a) corregir `macrosForQuantity` para que, cuando `unitSizeUnit==="g"`, calcule igual que hoy (ya es correcto en ese caso concreto), y cuando `unitSizeUnit==="ml"` o esté ausente, NO use `toGrams` sin más — enrutar por `convertQty(qty, "ud", "g", {fromUnitSize, fromUnitSizeUnit})`, que devuelve `null` en vez de inventar, y decidir qué hacer con ese `null` (tratar el lote como no convertible para macros, igual que ya se hace para comparar/descontar cantidades); y (b) exigir que `unitSize`/`unitSizeUnit` fueran declarados explícitamente para ESE item (mismo patrón de interacción explícita que 20.1, nunca heredado del 60 por defecto). Es trabajo de cálculo, no solo de procedencia — motivo suficiente para no mezclarlo con este primer PR.
+
+### 20.4 Contrato — sin cambios de esquema
+
+`FoodLogEntry.quantityConfidence?: { level: "high" | "low"; reason?: QuantityLowConfidenceReason }` ya admite `"high"` hoy — ningún escritor real lo emite todavía, pero el tipo no necesita ninguna migración. Se añade una propiedad opcional nueva, solo informativa, para la relectura defensiva (20.6):
+
+```ts
+quantityConfidence?: {
+  level: "high" | "low";
+  reason?: QuantityLowConfidenceReason;
+  /** Solo con level:"high" — los gramos declarados en el momento de
+   *  escribir, para poder comprobar en la relectura que la entrada no
+   *  fue alterada después sin volver a sanear la confianza. */
+  declaredGrams?: number;
+};
+```
+
+`sanitizeFoodLogProvenance`/`sanitizeNutrientStatusMap` (`food-log-provenance.ts`) necesitan aceptar y sanear `declaredGrams` igual que ya sanean `reason`: un valor que no sea un número finito ≥0 se descarta sin más, sin invalidar `level`.
+
+### 20.5 Recorrido modal → escritor → diario → sincronización
+
+1. **`ConsumeModal`**: casilla «He pesado esta cantidad (g)», desmarcada al abrir. Marcada, sustituye el control normal por un campo de gramos vacío, sin recorte (20.2). Al confirmar, pasa a `consumeInventoryItem` tanto la cantidad como si fue una declaración de peso (`{ qty, declaredAsWeighed: true }` en vez de un número suelto).
+2. **`consumeInventoryItem`** (escritor): recupera `item` fresco del `draft`. Calcula `consumed = Math.min(qty, item.qty)` igual que hoy. Si `declaredAsWeighed`, `consumed === qty` (no hubo recorte) y `item.unit` sigue siendo `"g"`/`"kg"` → `quantityConfidence: { level: "high", declaredGrams: qty }`. Cualquier otra combinación (no declarado, recortado, unidad cambiada) → mismo comportamiento que hoy (ausente, o `"low"` con el motivo que ya corresponda).
+3. **`FoodLogEntry`**: el campo viaja como cualquier otro de procedencia — mismo `food_log.client_meta`, mismo saneado de ida y vuelta (B.1), sin cambio de esquema en Supabase.
+4. **Adaptador** (`nutrition-v4-adapter.ts`, `quantityConfidenceOf`): al leer `level:"high"`, comprueba `declaredGrams === entry.qty` (el `qty` real de la entrada, no el del inventario) antes de confiarlo — si no coincide o `declaredGrams` está ausente/corrupto, degrada a `"low"` en silencio, nunca lanza ni descarta la entrada. Esto es relectura defensiva (20.6), no una repetición de la comprobación del escritor.
+5. **Kernel**: sin cambios — sigue leyendo `"high"|"low"` exactamente como hoy.
+
+### 20.6 Persistencia y relectura — nunca se eleva por defecto
+
+Mismo principio que PR4 (adaptador) y B.2 (inventario): una entrada antigua, o de un cliente que no implementa esta declaración, no tiene `declaredGrams` ni `level:"high"` en absoluto — se lee exactamente como hoy, `"low"` por ausencia, sin ninguna migración retroactiva. Un `level:"high"` que SÍ aparece pero sin un `declaredGrams` coherente con el `qty` de esa misma entrada (dato corrupto, tocado a mano, o sincronizado por un cliente que implementó mal la función) se trata como el resto de metadatos inválidos descubiertos en PR4: degrada a `"low"`, nunca se descarta la entrada ni se eleva por el hecho de no detectar un error.
+
+### 20.7 Tabla de aceptación
+
+| Caso | `quantityConfidence` resultante | Motivo |
+|---|---|---|
+| Valor precargado, sin ninguna declaración adicional | `"low"` (ausente) | Nunca hubo declaración — el valor ni siquiera fue tecleado |
+| Cantidad estimada con slider o preset | `"low"` (ausente) | Estimación, no declaración de peso — con independencia de cuánto se interactuó |
+| Cantidad declarada como pesada, en g/kg, sin recorte ni cambio posterior | `"high"`, `declaredGrams` = el número declarado | Única vía que cumple las tres condiciones de 20.1–20.2 |
+| Recorte en el propio control (p. ej. tecleó 999 con 100 g disponibles) | `"low"` (el modo «He pesado» bloquea el envío en vez de recortar en silencio; el modo estimado nunca llega a `"high"`) | Sin transformación oculta: se bloquea, no se sustituye |
+| Recorte posterior por cambio de stock (otra pestaña consumió entre confirmar y escribir) | `"low"`, se escribe `consumed = Math.min(...)` igual que hoy | El número final ya no es el declarado |
+| Cambio de unidad o de tamaño por unidad después de confirmar | `"low"` | La base de la declaración ya no corresponde al item al escribir |
+| Tamaño por unidad ausente, inválido, en gramos o en mililitros | Irrelevante en este PR — `"ud"` queda siempre en `"low"`, cualquiera que sea `unitSize`/`unitSizeUnit` (20.3) | Alcance explícitamente reducido a g/kg |
+| Entrada antigua, o cliente que no envía la nueva evidencia | `"low"` (ausente), sin migración retroactiva | Mismo criterio que toda ausencia de procedencia en este diseño |
+| Persistencia y relectura de la confianza | Nunca se eleva por defecto; un `"high"` sin `declaredGrams` coherente con `qty` degrada a `"low"` en la lectura | Relectura defensiva, mismo principio que PR4/B.2 |
+
+### 20.8 Recomendación de alcance mínimo para el siguiente PR de implementación
+
+1. La casilla «He pesado esta cantidad (g)» en `ConsumeModal.tsx`, con el campo de gramos sin recorte y el bloqueo de envío cuando supera el stock (20.1–20.2).
+2. La decisión de `quantityConfidence`/`declaredGrams` dentro de `consumeInventoryItem`, limitada a `"g"`/`"kg"` (20.3).
+3. El saneado de `declaredGrams` en `sanitizeFoodLogProvenance` (20.4) y la relectura defensiva en el adaptador (20.5–20.6).
+4. Pruebas centradas en la tabla de 20.7 — en particular el caso de recorte posterior por stock y el de un `"high"` con `declaredGrams` incoherente llegado por sincronización.
+
+Fuera de este PR, explícitamente: `"ud"` (requiere corregir primero `macrosForQuantity`/`toGrams`, 20.3); volumen; ningún cambio al kernel, a sus umbrales, ni al histórico; ninguna conexión con el gate ni con propuestas adaptativas.
+
+**Decisiones que siguen pendientes, no resueltas por este diseño:**
+- Si `"ud"` merece su propio PR de corrección de cálculo antes de poder acreditar cantidad ahí, o si se deja fuera indefinidamente.
+- Si la casilla «He pesado» debería ofrecerse también en otros escritores que hoy nunca pueden ser `"high"` (p. ej. un ingrediente de receta pesado al cocinar) — hoy fuera de alcance porque el total de una receta sigue siendo `legacy_unlabeled` incondicional (AC28, §16.4) con independencia de la cantidad.
+- Cómo se comunica en la interfaz, si es que se comunica, que un consumo es `"high"` — este diseño no incluye ningún indicador visual nuevo.
+
+---
+
 ## Confirmación de cierre — ronda original de diseño (histórica)
 
 *Esta sección describe únicamente la ronda original de diseño, previa a cualquier implementación. No describe PR1, PR2 ni PR3a — ver «Estado actual» más abajo.*
