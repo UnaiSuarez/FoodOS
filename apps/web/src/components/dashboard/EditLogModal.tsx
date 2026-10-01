@@ -53,6 +53,15 @@ export function EditLogModal({ entry, onClose }: Props) {
       // Update log entry
       const e = draft.foodLog.find((x) => x.id === entry.id);
       if (!e) return;
+      // §20.6, punto 4 — una declaración de peso describe la cantidad
+      // ORIGINAL registrada; si esa cantidad cambia aquí, la declaración ya
+      // no describe la nueva entrada y se limpia (limpieza proactiva del
+      // escritor). El adaptador (§20.7B) ya se defiende de forma
+      // independiente ante un `qty` editado sin pasar por aquí — esto es
+      // además de esa defensa, no en su lugar.
+      if (qty !== baseQty && e.quantityConfidence?.level === "high") {
+        e.quantityConfidence = { level: "low" };
+      }
       e.qty = qty;
       e.kcal = preview.kcal;
       e.protein = preview.protein;

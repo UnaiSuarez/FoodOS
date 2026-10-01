@@ -243,7 +243,19 @@ export function sanitizeFoodLogProvenance(source: unknown): PersistedProvenance 
     const q = rawQuantity as Record<string, unknown>;
     if (q.level === "high" || q.level === "low") {
       const reason = typeof q.reason === "string" && (QUANTITY_REASONS as readonly string[]).includes(q.reason) ? (q.reason as QuantityLowConfidenceReason) : undefined;
-      out.quantityConfidence = reason ? { level: q.level, reason } : { level: q.level };
+      // §20.5 — declaredGrams SOLO con level:"high", y solo si sobrevive el
+      // saneado estricto (finito, estrictamente positivo): un "high" sin
+      // evidencia válida se escribe SIN declaredGrams, nunca con uno
+      // inventado — el adaptador (§20.7B) lo lee como "high" sin evidencia
+      // y lo degrada a "low" en la relectura, no aquí.
+      const declaredGrams = q.level === "high" && typeof q.declaredGrams === "number" && Number.isFinite(q.declaredGrams) && q.declaredGrams > 0
+        ? q.declaredGrams
+        : undefined;
+      out.quantityConfidence = {
+        level: q.level,
+        ...(reason && { reason }),
+        ...(declaredGrams !== undefined && { declaredGrams }),
+      };
     }
   }
 
