@@ -5,6 +5,7 @@
   "description": "Motores puros de calculo (nutricion, ejercicio, adaptativo) compartidos entre web, movil y escritorio.",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "sideEffects": false,
   "files": [
     "src/**/*.ts",
     "!src/**/*.test.ts"

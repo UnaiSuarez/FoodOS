@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { findWebSrcBoundaryOffenders, repoRootFrom, WEB_ENGINE_ALLOWLIST } from "./test-support/web-boundary";
 import type {
   ApplicabilityLevel,
   DataSufficiency,
@@ -611,72 +612,51 @@ describe("combineApplicability — API con propiedades nombradas (Corrección de
   });
 });
 
-describe("confirmacion estructural — apps/web no llega a @foodos/engine (Corrección de revisión #5)", () => {
+describe("confirmación estructural — apps/web solo llega a @foodos/engine por el gateway explícito de Nutrition v4 (Corrección de revisión #5, actualizado para el gateway)", () => {
   // ALCANCE EXACTO de este test — ni más ni menos de lo siguiente:
-  // 1. apps/web/package.json: ninguna entrada de dependencies/devDependencies
-  //    llamada "@foodos/engine".
-  // 2. apps/web/tsconfig.json: el bloque "paths" no mapea ningún alias hacia
-  //    "@foodos/engine" ni hacia una ruta que contenga "packages/engine";
-  //    también se busca el texto "packages/engine" en todo el archivo por si
-  //    apareciera fuera de "paths".
-  // 3. No existe tsconfig raíz ni tsconfig base compartido en este repo hoy
-  //    (se comprueba su ausencia explícitamente) — si en el futuro aparece
-  //    uno, este test empieza a fallar por "no encontrado" en vez de dar un
-  //    falso verde silencioso, así que hará falta añadirlo aquí explícitamente.
-  // 4. next.config.mjs: no contiene "@foodos/engine" ni "packages/engine" en
-  //    ningún punto del archivo (cubre tanto transpilePackages como
-  //    cualquier alias dentro de una función webpack()/turbopack, en la
-  //    medida en que ese texto aparezca literalmente en el archivo).
-  // 5. Todo archivo fuente (.ts/.tsx/.js/.jsx/.mjs/.cjs) bajo apps/web/src:
-  //    se busca "@foodos/engine" (nombre de paquete) y "packages/engine"
-  //    (ruta relativa) como subcadenas de texto — cubre imports estáticos,
-  //    `import()` dinámico, `require()`, y cualquier alias cuyo destino
-  //    real se escriba con una de esas dos cadenas, sin necesitar parsear
-  //    cada sintaxis por separado.
+  // 1. apps/web/package.json: declara "@foodos/engine" como dependencia,
+  //    con el mismo patrón ("*") que ya usa "@foodos/types" — ya NO está
+  //    prohibida (lo estaba antes del gateway de Nutrition v4), pero debe
+  //    seguir el mismo mecanismo de workspace, no una versión fijada aparte.
+  // 2. apps/web/tsconfig.json: el bloque "paths" SIGUE sin mapear ningún
+  //    alias hacia "@foodos/engine" ni hacia una ruta que contenga
+  //    "packages/engine" — la resolución es la normal de workspace de npm,
+  //    igual que "@foodos/types", nunca un alias especial.
+  // 3. No existe tsconfig raíz ni tsconfig base compartido en este repo hoy.
+  // 4. next.config.mjs: AHORA debe mencionar "@foodos/engine" — pero
+  //    ÚNICAMENTE dentro del array transpilePackages (ver
+  //    nutrition-v4-coverage-gateway.ts: su "main" es TypeScript sin
+  //    compilar, igual que @foodos/types, y Next.js no transpila paquetes
+  //    de node_modules/workspace por defecto). Cualquier otra mención
+  //    (dentro de una función webpack()/turbopack, por ejemplo) sigue
+  //    prohibida.
+  // 5. Todo archivo fuente de apps/web/src: se busca "@foodos/engine" y
+  //    "packages/engine" como subcadenas de texto, EXCEPTO en la lista de
+  //    excepciones explícita (ver test-support/web-boundary.ts) — hoy,
+  //    exactamente nutrition-v4-coverage-gateway.ts.
   //
-  // LÍMITES EXPLÍCITOS — lo que este test NO demuestra:
-  // - No ejecuta el resolutor de módulos real de Node/TypeScript/Next ni
-  //   simula webpack/Turbopack: un plugin de resolución suficientemente
-  //   indirecto (que construya el nombre del paquete dinámicamente, lo lea
-  //   de una variable de entorno, o lo resuelva vía un paquete de terceros)
-  //   podría escapar a esta búsqueda por texto.
-  // - No analiza configuraciones fuera de esta lista (p. ej. un babel.config
-  //   o un .swcrc, que este repo no tiene hoy).
-  // - Es una fotografía del estado ACTUAL del repositorio, no una frontera
-  //   técnica infalible — ver la nota de nutrition-evidence-classifier.ts
-  //   sobre por qué "ausente de dependencies" no es una imposibilidad de
-  //   resolución en un workspace de npm.
+  // LÍMITES EXPLÍCITOS — lo que este test NO demuestra: ver
+  // test-support/web-boundary.ts (mismos límites que antes: no ejecuta el
+  // resolutor de módulos real, es una fotografía del estado actual, no una
+  // frontera técnica infalible — complementa, no sustituye, a las pruebas
+  // de comportamiento del gateway y del panel de diagnóstico).
   const here = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(here, "..", "..", "..");
   const webPackageJsonPath = join(repoRoot, "apps", "web", "package.json");
   const webTsconfigPath = join(repoRoot, "apps", "web", "tsconfig.json");
   const webNextConfigPath = join(repoRoot, "apps", "web", "next.config.mjs");
-  const webSrcPath = join(repoRoot, "apps", "web", "src");
-
-  function walkSourceFiles(dir: string): string[] {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    const files: string[] = [];
-    for (const entry of entries) {
-      const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...walkSourceFiles(fullPath));
-      } else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) {
-        files.push(fullPath);
-      }
-    }
-    return files;
-  }
 
   const byPackageName = /@foodos\/engine/;
   const byRelativePath = /packages\/engine/;
 
-  it("apps/web/package.json no depende de @foodos/engine", () => {
+  it("apps/web/package.json declara @foodos/engine como dependencia de workspace, igual que @foodos/types", () => {
     const pkg = JSON.parse(readFileSync(webPackageJsonPath, "utf-8"));
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-    expect(allDeps["@foodos/engine"]).toBeUndefined();
+    expect(allDeps["@foodos/engine"]).toBe("*");
+    expect(allDeps["@foodos/types"]).toBe("*"); // mismo mecanismo, para comparar
   });
 
-  it("apps/web/tsconfig.json no define ningún alias hacia @foodos/engine ni packages/engine", () => {
+  it("apps/web/tsconfig.json sigue sin definir ningún alias hacia @foodos/engine ni packages/engine", () => {
     const tsconfig = readFileSync(webTsconfigPath, "utf-8");
     expect(byPackageName.test(tsconfig)).toBe(false);
     expect(byRelativePath.test(tsconfig)).toBe(false);
@@ -693,20 +673,22 @@ describe("confirmacion estructural — apps/web no llega a @foodos/engine (Corre
     expect(rootTsconfigExists).toBe(false);
   });
 
-  it("next.config.mjs no incluye @foodos/engine ni packages/engine en ningún punto del archivo", () => {
+  it("next.config.mjs menciona @foodos/engine ÚNICAMENTE dentro de transpilePackages, nunca en otro punto del archivo", () => {
     const config = readFileSync(webNextConfigPath, "utf-8");
-    expect(byPackageName.test(config)).toBe(false);
-    expect(byRelativePath.test(config)).toBe(false);
+    const insideTranspilePackages = /transpilePackages:\s*\[[^\]]*@foodos\/engine[^\]]*\]/.test(config);
+    expect(insideTranspilePackages).toBe(true);
+    // Fuera de ese array no debe aparecer en absoluto — quita la mención de
+    // dentro de transpilePackages y comprueba que no quede ninguna otra.
+    const withoutTranspileArray = config.replace(/transpilePackages:\s*\[[^\]]*\]/, "");
+    expect(byPackageName.test(withoutTranspileArray)).toBe(false);
+    expect(byRelativePath.test(config)).toBe(false); // la ruta relativa nunca es necesaria, ni siquiera aquí
   });
 
-  it("ningún archivo fuente de apps/web/src menciona @foodos/engine ni packages/engine como subcadena de texto", () => {
-    const files = walkSourceFiles(webSrcPath);
-    expect(files.length).toBeGreaterThan(0); // confirma que de verdad recorrimos algo
+  it("ningún archivo fuente de apps/web/src menciona @foodos/engine ni packages/engine, salvo el gateway explícito de la lista de excepciones", () => {
+    expect(findWebSrcBoundaryOffenders(repoRootFrom(import.meta.url))).toEqual([]);
+  });
 
-    const offenders = files.filter((f) => {
-      const content = readFileSync(f, "utf-8");
-      return byPackageName.test(content) || byRelativePath.test(content);
-    });
-    expect(offenders).toEqual([]);
+  it("la lista de excepciones tiene exactamente una entrada — el gateway de Nutrition v4, nada más", () => {
+    expect(WEB_ENGINE_ALLOWLIST).toEqual(["lib/nutrition-v4-coverage-gateway.ts"]);
   });
 });
