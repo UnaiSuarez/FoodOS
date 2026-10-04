@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Recipe, RecipeIngredient } from "@foodos/types";
+import type { Recipe, RecipeIngredient, UnitSizeUnit } from "@foodos/types";
 import { useFoodOS } from "@/lib/state";
 import { findExactFood } from "@/lib/food-db";
 import { namesMatch, toGrams, uid } from "@/lib/utils";
@@ -18,19 +18,23 @@ type IngDraft = {
   carbsPer100: number;
   fatPer100: number;
   status: IngStatus;
-  /** Gramos/ml por unidad cuando unit==="ud" (ej. 1 huevo = 60g). */
+  /** Cantidad por unidad cuando unit==="ud" (ej. 1 huevo = 60g). */
   unitSize: number;
+  /** Dimensión de unitSize ("g"/"ml") — sin ella, este ingrediente en "ud"
+      no cuenta contra el inventario para descuento/disponibilidad (ver
+      convertQty en utils.ts). undefined = sin elegir todavía. */
+  unitSizeUnit: UnitSizeUnit | undefined;
 };
 
 function blankIng(): IngDraft {
-  return { name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle", unitSize: 60 };
+  return { name: "", quantity: 100, unit: "g", kcalPer100: 0, proteinPer100: 0, carbsPer100: 0, fatPer100: 0, status: "idle", unitSize: 60, unitSizeUnit: undefined };
 }
 
 function ingToRecord(ing: IngDraft): RecipeIngredient {
-  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status, unitSize } = ing;
+  const { name, quantity, unit, kcalPer100, proteinPer100, carbsPer100, fatPer100, status, unitSize, unitSizeUnit } = ing;
   return {
     name, quantity, unit,
-    ...(unit === "ud" ? { unitSize } : {}),
+    ...(unit === "ud" ? { unitSize, unitSizeUnit } : {}),
     ...(status === "found" || status === "manual"
       ? { kcalPer100, proteinPer100, carbsPer100, fatPer100 }
       : {}),
@@ -47,6 +51,7 @@ function riToIngDraft(ri: RecipeIngredient): IngDraft {
     fatPer100:     ri.fatPer100     ?? 0,
     status: hasMacros ? "found" : "idle",
     unitSize: ri.unitSize ?? 60,
+    unitSizeUnit: ri.unitSizeUnit,
   };
 }
 
@@ -121,7 +126,7 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
       setIng(i, {
         kcalPer100: invMatch.kcal, proteinPer100: invMatch.protein,
         carbsPer100: invMatch.carbs ?? 0, fatPer100: invMatch.fat ?? 0,
-        ...(invMatch.unit === "ud" ? { unit: "ud", unitSize: invMatch.unitSize ?? 60 } : {}),
+        ...(invMatch.unit === "ud" ? { unit: "ud", unitSize: invMatch.unitSize ?? 60, unitSizeUnit: invMatch.unitSizeUnit } : {}),
         status: "found",
       });
       return;
@@ -263,13 +268,25 @@ export function CreateRecipeModal({ onClose, initialData }: CreateRecipeModalPro
                   <option>kg</option><option>L</option><option>cucharada</option><option>pizca</option>
                 </select>
                 {ing.unit === "ud" && (
-                  <input
-                    type="number" min="1" step="1"
-                    className="create-ing-qty"
-                    title="Gramos/ml por unidad"
-                    value={ing.unitSize}
-                    onChange={(e) => setIng(i, { unitSize: Number(e.target.value) })}
-                  />
+                  <>
+                    <input
+                      type="number" min="1" step="1"
+                      className="create-ing-qty"
+                      title="Cantidad por unidad"
+                      value={ing.unitSize}
+                      onChange={(e) => setIng(i, { unitSize: Number(e.target.value) })}
+                    />
+                    <select
+                      className="create-ing-unit"
+                      title="¿Esa cantidad es en gramos o mililitros? Sin elegirlo, este ingrediente no cuenta contra el inventario."
+                      value={ing.unitSizeUnit ?? ""}
+                      onChange={(e) => setIng(i, { unitSizeUnit: (e.target.value || undefined) as UnitSizeUnit | undefined })}
+                    >
+                      <option value="" disabled>¿g o ml?</option>
+                      <option value="g">g (sólido)</option>
+                      <option value="ml">ml (líquido)</option>
+                    </select>
+                  </>
                 )}
                 <span className={`ing-status ing-status--${ing.status}`}>
                   {ing.status === "loading" ? "…" : ing.status === "found" ? "✓" : ing.status === "manual" ? "?" : ""}

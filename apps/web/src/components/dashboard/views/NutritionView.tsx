@@ -1871,10 +1871,21 @@ function MacroAdherencePanel() {
           </div>
         </div>
 
-        {/* Heatmap 28 días: 4 filas × 7 cols */}
+        {/* Heatmap 28 días: cabecera L…D + celdas de relleno al inicio para que
+            cada fecha caiga bajo SU día de la semana real — sin el offset, la
+            primera celda (hace 27 días) aterrizaba siempre bajo "L" aunque
+            fuera miércoles, y toda la cuadrícula quedaba desplazada salvo que
+            hoy fuera domingo. */}
         <div className="adherence-heatmap">
           {["L", "M", "X", "J", "V", "S", "D"].map((d) => (
             <span key={d} className="adherence-heatmap-header">{d}</span>
+          ))}
+          {Array.from({
+            length: history.length > 0
+              ? (new Date(`${history[0].date}T12:00:00`).getDay() + 6) % 7
+              : 0,
+          }).map((_, i) => (
+            <div key={`pad-${i}`} className="adherence-cell" aria-hidden="true" style={{ visibility: "hidden" }} />
           ))}
           {history.map((day) => (
             <div

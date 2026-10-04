@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useMemo, useEffect, type FormEvent } from "react";
-import type { InventoryItem, StorageName } from "@foodos/types";
-import { DEFAULT_SETTINGS, expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
+import type { InventoryItem, StorageName, UnitSizeUnit } from "@foodos/types";
+import { DEFAULT_SETTINGS, expiryBadge, findRememberedUnitPrice, findRememberedUnitSize, findRememberedUnitSizeUnit, isImageUrlReferencedElsewhere, matchAllergens, UNDO_TOAST_MS, useFoodOS } from "@/lib/state";
 import { remote } from "@/lib/data-layer";
 import { daysUntil, eur, fileToBase64, todayPlus, uid } from "@/lib/utils";
 import { searchFoodDB, type FoodEntry } from "@/lib/food-db";
@@ -29,8 +29,12 @@ type FormState = {
   price: number;
   kcal: number;
   protein: number;
-  /** Gramos/ml que representa 1 unidad, solo aplica cuando unit==="ud" (ej. lata de 250 ml). */
+  /** Cantidad que representa 1 unidad, solo aplica cuando unit==="ud" (ej. lata de 250 ml). */
   unitSize: number;
+  /** Dimensión de unitSize ("g"=sólido, "ml"=líquido) — sin ella, unitSize
+      no sirve para descontar/comparar contra masa o volumen (convertQty).
+      undefined = aún sin elegir; addItem() bloquea guardar un "ud" así. */
+  unitSizeUnit: UnitSizeUnit | undefined;
   /** De dónde vienen kcal/protein ahora mismo — undefined = el usuario los ha escrito a mano. */
   dataSource?: InventoryItem["dataSource"];
 };
@@ -54,6 +58,7 @@ const DEFAULT_FORM: FormState = {
   kcal: 0,
   protein: 0,
   unitSize: 60,
+  unitSizeUnit: undefined,
   dataSource: undefined,
 };
 
@@ -127,6 +132,8 @@ export function InventoryView() {
 
     const remembered = findRememberedUnitSize(state, value);
     if (remembered != null) setField("unitSize", remembered);
+    const rememberedUnit = findRememberedUnitSizeUnit(state, value);
+    if (rememberedUnit != null) setField("unitSizeUnit", rememberedUnit);
 
     // Prefija el precio con el €/unidad recordado, escalado a la cantidad actual
     // (así no reescribes el precio de algo que ya tienes). El usuario puede
@@ -163,6 +170,12 @@ export function InventoryView() {
   function applySuggestion(entry: FoodEntry) {
     prevQtyRef.current = entry.defaultQty;
     const remembered = entry.unit === "ud" ? findRememberedUnitSize(state, entry.name) : undefined;
+    // El propio food-db local no guarda unitSize/dimensión por "ud" (solo
+    // "Huevos" usa esta unidad hoy, un sólido) — si no hay nada recordado
+    // para este nombre, "g" es lo correcto para las entradas actuales de
+    // esta base local. Si en el futuro se añade un "ud" líquido aquí, este
+    // default tendría que venir del propio FoodEntry, no asumirse.
+    const rememberedUnit = entry.unit === "ud" ? findRememberedUnitSizeUnit(state, entry.name) : undefined;
     setForm((prev) => ({
       ...prev,
       name: entry.name,
@@ -173,6 +186,7 @@ export function InventoryView() {
       kcal: entry.kcal,
       protein: entry.protein,
       unitSize: remembered ?? prev.unitSize,
+      unitSizeUnit: rememberedUnit ?? (entry.unit === "ud" ? "g" : prev.unitSizeUnit),
       dataSource: "local",
     }));
     setItemExtras({ carbs: entry.carbs, fat: entry.fat });
@@ -187,6 +201,12 @@ export function InventoryView() {
     const unitSize = remembered ?? s.packageSize;
     // Si conocemos el tamaño del envase, lo tratamos como "1 ud" (ej. 1 lata) en vez de 100 g/ml sueltos.
     const useUnits = unitSize != null;
+    // OFF (product_quantity/quantity) no distingue si su cifra es g o ml en
+    // el tipo ExternalFoodSuggestion actual — NO se asume: si hay un valor
+    // recordado (con su propia dimensión) se usa; si no, queda sin declarar
+    // y el usuario lo confirma en el selector "Ese tamaño es en..." antes de
+    // que cuente para descuentos/comparaciones de inventario (convertQty).
+    const rememberedUnit = findRememberedUnitSizeUnit(state, s.name);
     prevQtyRef.current = useUnits ? 1 : 100;
     setForm((prev) => ({
       ...prev,
@@ -196,6 +216,10 @@ export function InventoryView() {
       kcal: s.kcal,
       protein: s.protein,
       unitSize: unitSize ?? prev.unitSize,
+      // OFF no declara la dimensión de packageSize: solo se rellena si hay
+      // un valor recordado con su propia unitSizeUnit; si no, queda sin
+      // elegir y el selector "Ese tamaño es en..." lo pide antes de guardar.
+      unitSizeUnit: rememberedUnit,
       dataSource: "off",
     }));
     setItemExtras({
@@ -270,6 +294,7 @@ export function InventoryView() {
 
   function handleScanFill(data: ProductData) {
     const remembered = findRememberedUnitSize(state, data.name);
+    const rememberedUnit = findRememberedUnitSizeUnit(state, data.name);
     const unitSize = remembered ?? data.packageSize;
     const useUnits = unitSize != null;
     if (useUnits) prevQtyRef.current = 1;
@@ -280,6 +305,10 @@ export function InventoryView() {
       protein: data.protein ?? prev.protein,
       ...(useUnits && { unit: "ud", qty: 1 }),
       unitSize: unitSize ?? prev.unitSize,
+      // data.packageSize (OFF, por código de barras) no declara su dimensión
+      // — igual que en applyOFFSuggestion, solo se rellena desde un valor
+      // recordado; si no, el usuario la confirma en el selector.
+      unitSizeUnit: rememberedUnit,
       dataSource: "off",
     }));
     setItemExtras({
@@ -357,6 +386,9 @@ export function InventoryView() {
     if (form.unit === "ud" && !(form.unitSize > 0)) {
       showToast("El tamaño por unidad debe ser mayor que 0"); return;
     }
+    if (form.unit === "ud" && !form.unitSizeUnit) {
+      showToast("Indica si el tamaño por unidad es en gramos o mililitros"); return;
+    }
     if ([form.price, form.kcal, form.protein].some((n) => Number.isNaN(n) || n < 0)) {
       showToast("Precio, kcal y proteína no pueden ser negativos"); return;
     }
@@ -372,6 +404,7 @@ export function InventoryView() {
         kcal: form.kcal,
         protein: form.protein,
         unitSize: form.unit === "ud" ? form.unitSize : undefined,
+        unitSizeUnit: form.unit === "ud" ? form.unitSizeUnit : undefined,
         dataSource: form.dataSource,
         ...itemExtras,
       });
@@ -636,17 +669,31 @@ export function InventoryView() {
             </label>
 
             {form.unit === "ud" && (
-              <label>
-                Tamaño por unidad (g/ml)
-                <input
-                  name="unitSize"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={form.unitSize}
-                  onChange={(e) => setField("unitSize", Number(e.target.value))}
-                />
-              </label>
+              <>
+                <label>
+                  Tamaño por unidad
+                  <input
+                    name="unitSize"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={form.unitSize}
+                    onChange={(e) => setField("unitSize", Number(e.target.value))}
+                  />
+                </label>
+                <label>
+                  Ese tamaño es en...
+                  <select
+                    name="unitSizeUnit"
+                    value={form.unitSizeUnit ?? ""}
+                    onChange={(e) => setField("unitSizeUnit", (e.target.value || undefined) as UnitSizeUnit | undefined)}
+                  >
+                    <option value="" disabled>Selecciona una magnitud…</option>
+                    <option value="g">Gramos (sólido, ej. 1 huevo = 60 g)</option>
+                    <option value="ml">Mililitros (líquido, ej. 1 lata = 250 ml)</option>
+                  </select>
+                </label>
+              </>
             )}
 
             <label>
@@ -873,7 +920,7 @@ export function InventoryView() {
                             draft.cart.push({
                               id: uid(), name: item.name, qty: item.qty, unit: item.unit,
                               price: item.price, store: "Mercadona", checked: false,
-                              unitSize: item.unitSize,
+                              unitSize: item.unitSize, unitSizeUnit: item.unitSizeUnit,
                             });
                           });
                           showToast("Producto enviado al carrito");

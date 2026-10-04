@@ -68,8 +68,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             con la página pintada), causando un flash visible. Un <script>
             síncrono aquí, antes de cualquier otro contenido, bloquea el
             pintado hasta fijar el atributo correcto — se necesita el mismo
-            nonce que exige script-src en la CSP (ver middleware.ts). */}
+            nonce que exige script-src en la CSP (ver middleware.ts).
+            suppressHydrationWarning: el navegador OCULTA el valor del
+            atributo nonce tras parsear el HTML (lo mueve a la propiedad
+            interna y deja el atributo vacío, por seguridad) — React comparaba
+            el nonce del servidor contra ese "" y avisaba de un mismatch de
+            hidratación en CADA carga de página, sin que hubiera ningún
+            problema real. */}
         <script
+          suppressHydrationWarning
           nonce={nonce}
           dangerouslySetInnerHTML={{
             __html:

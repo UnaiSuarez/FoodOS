@@ -1113,11 +1113,11 @@ class RemoteAdapter {
         .maybeSingle(),
       client
         .from("inventory_items")
-        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, carbs_per_100, fat_per_100, salt_per_100, fiber_per_100, sugars_per_100, unit_size, brand, image_url, allergen_tags, almacen_id")
+        .select("id, name, quantity, unit, expiry_date, price_estimate, kcal_per_100, protein_per_100, carbs_per_100, fat_per_100, salt_per_100, fiber_per_100, sugars_per_100, unit_size, unit_size_unit, brand, image_url, allergen_tags, almacen_id")
         .eq("owner_id", userId),
       client
         .from("shopping_items")
-        .select("id, name, quantity, unit, estimated_price, store, checked, unit_size")
+        .select("id, name, quantity, unit, estimated_price, store, checked, unit_size, unit_size_unit")
         .eq("user_id", userId)
         .eq("list_id", this.shoppingListId),
       client.from("gastos").select("id, amount, description, category, txn_date").eq("user_id", userId),
@@ -1318,6 +1318,11 @@ class RemoteAdapter {
       fiber: row.fiber_per_100 != null ? Number(row.fiber_per_100) : undefined,
       sugars: row.sugars_per_100 != null ? Number(row.sugars_per_100) : undefined,
       unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
+      // unit_size_unit: columna pendiente de migración (ver
+      // supabase/migrations/*_unit_size_dimension.sql) — hasta que se
+      // aplique, row.unit_size_unit es undefined y unitSize se comporta
+      // como antes (solo escala para estimaciones, ver toGrams en utils.ts).
+      unitSizeUnit: row.unit_size_unit ?? undefined,
       brand: row.brand ?? undefined,
       imageUrl: row.image_url ?? undefined,
       allergenTags: row.allergen_tags ?? undefined,
@@ -1332,6 +1337,7 @@ class RemoteAdapter {
       store: row.store ?? "Mercadona",
       checked: row.checked,
       unitSize: row.unit_size != null ? Number(row.unit_size) : undefined,
+      unitSizeUnit: row.unit_size_unit ?? undefined,
     }));
 
     state.expenses = (gastosRes.data ?? []).map((row) => ({
@@ -1713,6 +1719,9 @@ class RemoteAdapter {
           fiber_per_100: item.fiber ?? null,
           sugars_per_100: item.sugars ?? null,
           unit_size: item.unitSize ?? null,
+          // Requiere la migración supabase/migrations/*_unit_size_dimension.sql
+          // (añade la columna) aplicada ANTES de desplegar este cambio.
+          unit_size_unit: item.unitSizeUnit ?? null,
           brand: item.brand ?? null,
           image_url: item.imageUrl ?? null,
           allergen_tags: item.allergenTags ?? null,
@@ -1737,6 +1746,8 @@ class RemoteAdapter {
           store: item.store || null,
           checked: Boolean(item.checked),
           unit_size: item.unitSize ?? null,
+          // Ídem: requiere la migración de shopping_items aplicada antes.
+          unit_size_unit: item.unitSizeUnit ?? null,
         }),
         { user_id: userId, list_id: this.shoppingListId! }
       )
