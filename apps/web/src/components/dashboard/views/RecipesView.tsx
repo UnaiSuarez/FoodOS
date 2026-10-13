@@ -297,9 +297,10 @@ export function RecipesView({ openRecipe }: { openRecipe: (id: string) => void }
                     </button>
                     <button
                       className="small-action good"
+                      aria-label={`Cocinar y registrar ${recipe.title}: abre el diálogo que anota la ración en tu diario`}
                       onClick={() => setCookingRecipe(recipe)}
                     >
-                      Cocinar
+                      Cocinar y registrar
                     </button>
                     {isCustom && (
                       <button

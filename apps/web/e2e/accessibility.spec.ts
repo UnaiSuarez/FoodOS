@@ -67,7 +67,7 @@ for (const path of VIEWS) {
 test("sin violaciones Axe graves con un modal abierto (LogMealModal)", async ({ page }) => {
   await seedDemo(page);
   await page.goto("/dashboard/diary");
-  await page.getByRole("button", { name: "¿Qué has comido?" }).click();
+  await page.getByRole("button", { name: "Registrar comida" }).click();
   await expect(page.getByRole("dialog", { name: "¿Qué has comido?" })).toBeVisible();
   await expectNoSeriousViolations(page);
 });

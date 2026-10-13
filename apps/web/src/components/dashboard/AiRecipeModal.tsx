@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import type { Recipe } from "@foodos/types";
-import { actions, useFoodOS } from "@/lib/state";
+import { actions, getToday, useFoodOS } from "@/lib/state";
 import { eur } from "@/lib/utils";
 import { loadAIConfig } from "@/lib/ai-config";
 import { generateAIRecipe } from "@/lib/ai-provider";
+import { describeLogTarget } from "./cook-log-copy";
 import { Modal } from "./Modal";
 
 export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () => void }) {
@@ -71,18 +72,29 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
 
   function save(cook: boolean) {
     const recipe = buildRecipe();
-    mutate((draftState) => {
+    // Solo se avisa y se cierra si la mutación se aplicó (gate de hidratación).
+    const applied = mutate((draftState) => {
       draftState.customRecipes.unshift(recipe);
+      // Sin `deductIngredients`: registra la ración en el diario sin tocar el inventario.
       if (cook) actions.cookRecipe(draftState, recipe);
     });
+    if (!applied) return;
     setMascotMessage(
-      cook ? "Receta guardada y registrada en tu día." : "Receta guardada en tu colección."
+      cook
+        ? `Receta guardada y 1 ración registrada en tu diario (${macros.kcal} kcal), sin descontar inventario.`
+        : "Receta guardada en tu colección."
     );
-    showToast(cook ? "Guardada y cocinada" : "Receta IA guardada");
+    showToast(
+      cook
+        ? "Receta guardada y 1 ración registrada en tu diario · inventario sin cambios"
+        : "Receta IA guardada"
+    );
     onClose();
   }
 
   const hasConfig = !!loadAIConfig();
+  // cookRecipe sin opciones: hoy y tipo de comida según la hora.
+  const logTarget = describeLogTarget({ today: getToday(state) });
 
   return (
     <Modal title="Receta generada para ti" onClose={onClose}>
@@ -180,6 +192,16 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
             <textarea rows={4} value={steps} onChange={(event) => setSteps(event.target.value)} />
           </label>
 
+          <div className="cook-log-summary" role="note">
+            <p>
+              <strong>«Guardar y registrar en el diario»</strong> guarda la receta y anota{" "}
+              <strong>1 ración ({macros.kcal} kcal · {macros.protein} g de proteína)</strong> en tu diario
+              personal — {logTarget.dateLabel} · {logTarget.mealLabel}
+              {logTarget.mealFromClock ? " (según la hora actual)" : ""}. No descuenta ingredientes del
+              inventario. «Guardar receta» solo la guarda en tu colección.
+            </p>
+          </div>
+
           <div className="recipe-detail-actions">
             {hasConfig && (
               <button
@@ -197,7 +219,7 @@ export function AiRecipeModal({ draft, onClose }: { draft: Recipe; onClose: () =
               Guardar receta
             </button>
             <button className="primary-button" onClick={() => save(true)}>
-              Guardar y cocinar
+              Guardar y registrar en el diario
             </button>
           </div>
         </>

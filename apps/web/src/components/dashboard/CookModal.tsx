@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import type { MealType, Recipe } from "@foodos/types";
-import { actions, availableForIngredient, getPendingMacros, useFoodOS } from "@/lib/state";
+import { actions, availableForIngredient, getPendingMacros, getToday, useFoodOS } from "@/lib/state";
 import { eur, toGrams, uid } from "@/lib/utils";
 import { intentGuard, runGuardedIntent } from "@/lib/intent-guard";
+import { describeLogTarget, inventoryOutcome, registeredWord, servingsLabel } from "./cook-log-copy";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -76,6 +77,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
   }, [recipe, ratio, state, qtyOverrides]);
 
   const missingCount = ingStatus.filter((i) => i.status !== "ok").length;
+  // Dónde se escribirá la entrada: los mismos criterios que cookRecipe
+  // (fecha y tipo de comida recibidos, o hoy y la hora actual).
+  const target = describeLogTarget({ today: getToday(state), date: logDate, mealType });
   const pending = getPendingMacros(state);
   const exceedKcal = pending.kcal > 0 && scaled.kcal > pending.kcal + 100;
   const coversProtein = scaled.protein >= pending.protein * 0.7;
@@ -117,6 +121,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
 
   function cook() {
     const overrides = Object.keys(qtyOverrides).length > 0 ? qtyOverrides : undefined;
+    // Lotes del inventario que cookRecipe realmente tocó (puede ser parcial si
+    // falta stock): se lee de la entrada escrita, no se supone.
+    let lotsTouched = 0;
     // Guard síncrono contra doble-ingesta por la misma intención (dos
     // clics/toques antes del primer repintado): claim() y la llamada a
     // mutate() ocurren en la misma tarea de JS, sin ningún await de por
@@ -131,21 +138,25 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     // ConsumeModal.tsx, ver su comentario (intent-guard.ts tiene el
     // detalle completo de esta asimetría).
     const applied = runGuardedIntent(intentGuard, intentId, () =>
-      mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType })),
+      mutate((draft) => {
+        actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType });
+        lotsTouched = draft.foodLog[draft.foodLog.length - 1]?.consumedIngredients?.length ?? 0;
+      }),
     );
     if (!applied) return; // ya reclamado (doble clic) o mutate() no aceptó la operación — ningún toast, ningún cierre
     const lines: string[] = [];
     if (exceedKcal) lines.push("Atención: superas el objetivo de calorías de hoy.");
     if (coversProtein) lines.push("Proteína del día cubierta ✓");
+    const outcome = inventoryOutcome({ deduct, shortCount: missingCount, lotsTouched });
     setMascotMessage(
-      `${recipe.title} cocinado. ${scaled.kcal} kcal y ${scaled.protein}g de proteína registrados. ${lines.join(" ")}`
+      `${recipe.title}: ${servingsLabel(servings)} ${registeredWord(servings)} en tu diario (${scaled.kcal} kcal y ${scaled.protein} g de proteína), ${outcome}. ${lines.join(" ")}`.trim()
     );
-    showToast(`${recipe.title} cocinado (${servings} ración${servings !== 1 ? "es" : ""})`);
+    showToast(`${recipe.title}: ${servingsLabel(servings)} ${registeredWord(servings)} en tu diario · ${outcome}`);
     onClose();
   }
 
   return (
-    <Modal title={`Cocinar: ${recipe.title}`} onClose={onClose}>
+    <Modal title={`Cocinar y registrar: ${recipe.title}`} onClose={onClose}>
       {/* Servings */}
       <div className="cook-servings">
         <span className="cook-label">Raciones</span>
@@ -251,10 +262,30 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
         Descontar ingredientes del inventario al cocinar
       </label>
 
+      {/* Qué va a pasar al confirmar — con los valores reales de este diálogo. */}
+      <div className="cook-log-summary" role="note">
+        <p>
+          <strong>Al confirmar se registrará en tu diario personal:</strong>{" "}
+          {servingsLabel(servings)} · {scaled.kcal} kcal · {scaled.protein} g de proteína.
+        </p>
+        <p>
+          Fecha y comida: <strong>{target.dateLabel}</strong> · <strong>{target.mealLabel}</strong>
+          {target.mealFromClock ? " (según la hora actual)" : ""}.
+        </p>
+        <p>
+          Inventario:{" "}
+          {!deduct
+            ? "no se modificará."
+            : missingCount > 0
+              ? `se descontará solo lo que tienes; ${missingCount} ${missingCount === 1 ? "ingrediente no llega" : "ingredientes no llegan"} a la cantidad necesaria.`
+              : "se descontarán los ingredientes."}
+        </p>
+      </div>
+
       <div className="recipe-detail-actions">
         <button className="secondary-button" onClick={onClose}>Cancelar</button>
         <button className="primary-button" onClick={cook}>
-          Cocinar {servings} ración{servings !== 1 ? "es" : ""}
+          Cocinar y registrar {servingsLabel(servings)}
         </button>
       </div>
     </Modal>

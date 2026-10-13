@@ -104,6 +104,14 @@ export function PlannerView() {
     });
   }
 
+  /** Nombre accesible (y tooltip) del «✓»: describe el efecto REAL según el tipo de entrada. */
+  function logLabel(entry: PlanEntry): string {
+    const isRecipe = !entry.isQuick && recipes.some((r) => r.id === entry.id);
+    return isRecipe
+      ? `Cocinar y registrar ${entry.title}: abre el diálogo de cocinar y registrar; allí eliges si se descuentan ingredientes del inventario`
+      : `Registrar ${entry.title} en el diario`;
+  }
+
   function logEntry(dateKey: string, mealType: MealType, entry: PlanEntry) {
     if (!entry.isQuick) {
       // Receta real → abre CookModal para descuento de inventario
@@ -261,6 +269,10 @@ export function PlannerView() {
             <span className="planner-summary-chip cost"><b>{eur(weekCost)}</b> coste</span>
             <span className="planner-drag-hint">Arrastra recetas (escritorio) o tócalas para seleccionarlas (móvil)</span>
           </div>
+          <p className="planner-log-legend">
+            <strong>✓</strong> en una receta abre «Cocinar y registrar» (allí eliges si se descuentan ingredientes del
+            inventario). <strong>✓</strong> en un plato rápido lo registra directamente en el diario.
+          </p>
 
           {/* Grid */}
           <div className="planner-scroll">
@@ -327,7 +339,8 @@ export function PlannerView() {
                               <div className="planner-cell-actions">
                                 <button
                                   className="planner-cell-log"
-                                  title="Registrar en el diario"
+                                  title={logLabel(entry)}
+                                  aria-label={logLabel(entry)}
                                   onClick={(e) => { e.stopPropagation(); logEntry(dateKey, mealType, entry); }}
                                 >
                                   ✓
@@ -335,6 +348,7 @@ export function PlannerView() {
                                 <button
                                   className="planner-cell-remove"
                                   title="Quitar"
+                                  aria-label={`Quitar ${entry.title} del plan`}
                                   onClick={(e) => { e.stopPropagation(); setMeal(dateKey, key, null); }}
                                 >
                                   ×

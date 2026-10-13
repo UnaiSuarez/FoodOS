@@ -55,7 +55,7 @@ export function DiaryView() {
       {/* Registro de comida */}
       <div className="diary-log-btn-wrap">
         <button className="primary-button diary-log-btn" onClick={() => setShowLogMeal(true)}>
-          + ¿Qué has comido?
+          + Registrar comida
         </button>
       </div>
 

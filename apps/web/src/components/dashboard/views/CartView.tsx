@@ -159,7 +159,7 @@ export function CartView() {
           <span>✦ Sugerencias inteligentes</span>
           <span className="suggest-counts">
             <span className="badge amber">{lowStock.length} stock bajo</span>
-            <span className="badge blue">{planList.length} del plan</span>
+            <span className="badge blue">{planList.length} del plan sugerido</span>
           </span>
           <span className="suggest-chevron">{suggestOpen ? "▲" : "▼"}</span>
         </button>
@@ -178,18 +178,24 @@ export function CartView() {
                 className={`suggest-tab ${activeTab === "plan" ? "active" : ""}`}
                 onClick={() => setActiveTab("plan")}
               >
-                📅 Del plan semanal
+                📅 Plan sugerido
                 {planList.length > 0 && <b className="tab-count">{planList.length}</b>}
               </button>
             </div>
+
+            {activeTab === "plan" && (
+              <p className="suggest-note" id="cart-plan-note">
+                Generado automáticamente; no corresponde a las comidas que has colocado en el Planificador.
+              </p>
+            )}
 
             {suggestions.length === 0 ? (
               <p className="suggest-empty">
                 {activeTab === "lowstock"
                   ? "Todo el inventario tiene stock suficiente ✓"
                   : state.profile
-                    ? "Todos los ingredientes del plan están en tu despensa ✓"
-                    : "Configura tu perfil físico para generar el plan semanal."}
+                    ? "Para el plan sugerido no falta ningún ingrediente: todo está en tu despensa ✓"
+                    : "Configura tu perfil físico para generar el plan sugerido."}
               </p>
             ) : (
               <>
@@ -272,12 +278,16 @@ export function CartView() {
           <div className="panel-head">
             <h2>Carrito</h2>
             <div className="panel-actions">
+              <button className="primary-button" onClick={handleCompleteCart}>
+                Completar compra
+              </button>
               <button
                 className="secondary-button"
+                aria-describedby="cart-actions-hint"
                 onClick={() => {
                   let moved = 0;
                   mutate((draft) => { moved = actions.moveCheckedToInventory(draft); });
-                  showToast(`${moved} productos movidos a despensa`);
+                  showToast(`${moved} productos movidos a despensa (sin registrar gasto)`);
                 }}
               >
                 Mover a despensa
@@ -291,11 +301,14 @@ export function CartView() {
               >
                 Limpiar marcados
               </button>
-              <button className="primary-button" onClick={handleCompleteCart}>
-                Completar compra
-              </button>
             </div>
           </div>
+
+          <p className="cart-actions-hint" id="cart-actions-hint">
+            <strong>Completar compra</strong> revisa precios y caducidades, registra el gasto y da de alta los
+            productos. <strong>Mover a despensa</strong> pasa lo marcado al inventario sin registrar gasto y con
+            caducidades predeterminadas.
+          </p>
 
           {/* Resumen */}
           <div className="cart-summary">
