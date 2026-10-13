@@ -277,6 +277,34 @@ describe("EditLogModal — reescalar una entrada conserva su procedencia", () =>
     expect(saved.quantityConfidence).toBeUndefined();
   });
 
+  // §20.6, punto 4 — limpieza proactiva: una declaración de peso describe
+  // la cantidad ORIGINAL; si esa cantidad cambia aquí, deja de describir la
+  // entrada y se limpia. El adaptador (§20.7B) también se defendería solo,
+  // pero esta limpieza evita que una entrada editada quede con un "high"
+  // incoherente esperando a que la relectura lo detecte.
+  it("§20.6 — cambiar qty retira un quantityConfidence:high (la declaración ya no describe la nueva cantidad)", async () => {
+    const weighed: FoodLogEntry = { ...base, id: "log-weighed", qty: 200, unit: "g", quantityConfidence: { level: "high", declaredGrams: 200 } };
+    const holder = await openEdit(weighed);
+    saveWithQty("150");
+    const saved = holder.current!.state.foodLog[0];
+    expect(saved.qty).toBe(150);
+    expect(saved.quantityConfidence).toEqual({ level: "low" });
+  });
+
+  it("§20.6 — guardar SIN cambiar qty (mismo valor) conserva el quantityConfidence:high tal cual", async () => {
+    const weighed: FoodLogEntry = { ...base, id: "log-weighed-2", qty: 200, unit: "g", quantityConfidence: { level: "high", declaredGrams: 200 } };
+    const holder = await openEdit(weighed);
+    saveWithQty("200"); // mismo valor que baseQty — no es un cambio real
+    const saved = holder.current!.state.foodLog[0];
+    expect(saved.quantityConfidence).toEqual({ level: "high", declaredGrams: 200 });
+  });
+
+  it("un quantityConfidence:low (p. ej. missing_unit_size) se conserva sin cambios al reescalar — la limpieza es exclusiva de 'high'", async () => {
+    const holder = await openEdit(base); // base ya tiene level:"low", reason:"missing_unit_size"
+    saveWithQty("200");
+    expect(holder.current!.state.foodLog[0].quantityConfidence).toEqual({ level: "low", reason: "missing_unit_size" });
+  });
+
 });
 
 describe("HomeView — 'Plan de hoy' (logPlanEntry)", () => {

@@ -100,7 +100,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
         foodStateConfidence: "confirmed",
       }),
     ];
-    actions.consumeInventoryItem(draft, "inv-1", 200);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 200 });
     const entry = lastEntry(draft);
     expect(entry).toMatchObject({ kcal: 330, protein: 62, carbs: 0, fat: 7.2, source: "inventory", qty: 200, unit: "g" });
     expect(entry.nutrientStatus).toEqual({ kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_zero", fat: "known_nonzero" });
@@ -112,7 +112,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
   it("un item anterior a PR3a (sin nutrientStatus) queda legacy_unlabeled: que el número exista no lo hace known_*", () => {
     const draft = structuredClone(defaultState);
     draft.inventory = [inv({ carbs: 0, fat: 3.6 })];
-    actions.consumeInventoryItem(draft, "inv-1", 100);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
     const entry = lastEntry(draft);
     for (const key of MACROS) expect(entry.nutrientStatus?.[key]).toBe("legacy_unlabeled");
     expect(entry.foodStateConfidence).toBe("unknown");
@@ -123,7 +123,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
     const item = inv({ nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero" } });
     draft.inventory = [item];
     const expected = macrosForQuantity(item, 100);
-    actions.consumeInventoryItem(draft, "inv-1", 100);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
     const entry = lastEntry(draft);
     expect(entry).toMatchObject(expected); // los números imputados son los de siempre
     expect(entry.nutrientStatus).toMatchObject({ kcal: "known_nonzero", protein: "known_nonzero", carbs: "estimated", fat: "estimated" });
@@ -139,7 +139,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
         foodStateConfidence: "not_applicable",
       }),
     ];
-    actions.consumeInventoryItem(draft, "inv-1", 100);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
     const entry = lastEntry(draft);
     for (const key of MACROS) expect(KNOWN).not.toContain(entry.nutrientStatus?.[key]);
     expect(entry.nutrientStatus).toEqual({ kcal: "estimated", protein: "estimated", carbs: "estimated", fat: "estimated" });
@@ -153,7 +153,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
         nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "known_nonzero", fat: "known_nonzero" },
       }),
     ];
-    actions.consumeInventoryItem(draft, "inv-1", 5); // 5 g: protein 0.015 → 0.0
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 5 }); // 5 g: protein 0.015 → 0.0
     const entry = lastEntry(draft);
     expect(entry.protein).toBe(0);
     expect(entry.nutrientStatus?.protein).toBe("estimated");
@@ -168,7 +168,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
         nutrientStatus: { kcal: "known_zero", protein: "known_zero", carbs: "known_zero", fat: "known_zero" },
       }),
     ];
-    actions.consumeInventoryItem(draft, "inv-1", 100);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
     const entry = lastEntry(draft);
     for (const key of MACROS) expect(entry.nutrientStatus?.[key]).toBe("known_zero");
   });
@@ -178,7 +178,7 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
     draft.inventory = [
       inv({ carbs: 0, fat: 0, nutrientStatus: { kcal: "known_nonzero", protein: "known_nonzero", carbs: "unknown", fat: "unknown" } }),
     ];
-    actions.consumeInventoryItem(draft, "inv-1", 100);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
     const entry = lastEntry(draft);
     expect(entry.nutrientStatus).toMatchObject({ carbs: "unknown", fat: "unknown" });
   });
@@ -186,14 +186,245 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
   it("'ud' sin tamaño de unidad → missing_unit_size", () => {
     const draft = structuredClone(defaultState);
     draft.inventory = [inv({ unit: "ud", qty: 3, carbs: 1, fat: 1 })];
-    actions.consumeInventoryItem(draft, "inv-1", 1);
+    actions.consumeInventoryItem(draft, "inv-1", { qty: 1 });
     expect(lastEntry(draft).quantityConfidence).toEqual({ level: "low", reason: "missing_unit_size" });
   });
 
-  it("un item inexistente no escribe nada (comportamiento previo intacto)", () => {
+  it("un item inexistente no escribe nada (comportamiento previo intacto) y devuelve item_missing", () => {
     const draft = structuredClone(defaultState);
-    actions.consumeInventoryItem(draft, "no-existe", 10);
+    const result = actions.consumeInventoryItem(draft, "no-existe", { qty: 10 });
     expect(draft.foodLog).toHaveLength(0);
+    expect(result).toEqual({ kind: "item_missing" });
+  });
+
+  it("el camino estimado de siempre devuelve 'written' con el id de la entrada creada", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ qty: 500 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { qty: 100 });
+    expect(result.kind).toBe("written");
+    if (result.kind === "written") expect(lastEntry(draft).id).toBe(result.entryId);
+  });
+
+  it("el camino estimado, si pide más de lo disponible, escribe lo que cabe y devuelve 'written_reduced'", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ qty: 50 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { qty: 200 });
+    expect(result.kind).toBe("written_reduced");
+    expect(lastEntry(draft).qty).toBe(50);
+    expect(draft.inventory).toHaveLength(0); // se agotó
+  });
+});
+
+// ─── §20 — declaración explícita de peso (g/kg), alcance mínimo de implementación ─
+
+describe("consumeInventoryItem — declaración de peso (§20): unidades separadas, nunca comparadas directamente", () => {
+  it("inventario en 'kg': el modo pesado NO se acredita — bloqueado sin escribir ni tocar el stock (alcance limitado a gramos)", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "kg", qty: 1, carbs: 0, fat: 3.6 })];
+    const before = structuredClone(draft.inventory);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before);
+  });
+
+  it("inventario en 'kg': el recorrido estimado de siempre sigue funcionando y nunca lleva quantityConfidence 'high'", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "kg", qty: 1.5, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { qty: 0.25 });
+    expect(result.kind).toBe("written");
+    expect(lastEntry(draft).quantityConfidence).toBeUndefined();
+    expect(draft.inventory[0].qty).toBe(1.25);
+  });
+
+  it("unidad 'g': declaredGrams y qty coinciden exactamente (identidad, sin conversión)", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 150 });
+    expect(result.kind).toBe("written");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(150);
+    expect(entry.unit).toBe("g");
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 150 });
+  });
+
+  it("§20.6b — 233 g desde 1,5 kg: bloqueado (kg fuera de alcance), el stock sigue en 1,5 — nunca 1,27 por redondeo", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "kg", qty: 1.5, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 233 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory[0].qty).toBe(1.5);
+  });
+
+  it("233,6 g (inventario en g): se registra 233,6 EXACTO — ni 234 ni 233 — con high, y el stock baja exactamente 233,6", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 233.6 });
+    expect(result.kind).toBe("written");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(233.6);
+    expect(entry.unit).toBe("g");
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 233.6 });
+    expect(draft.inventory[0].qty).toBe(266.4);
+    // Los macros registrados son los de 233,6 g — los mismos que la vista previa.
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 233.6));
+  });
+
+  it("0,4 g: se registra 0,4 EXACTO (positivo), con macros de 0,4 g y el stock baja 0,4 — nunca qty 0", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 0.4 });
+    expect(result.kind).toBe("written");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(0.4);
+    expect(entry.qty).toBeGreaterThan(0);
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 0.4 });
+    expect(draft.inventory[0].qty).toBe(499.6);
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 0.4));
+  });
+
+  it.each([233.456, 0.004, 0.001, 200.004, 1e-7])(
+    "declaredGrams=%p (más de 2 decimales) se RECHAZA, no se redondea: no escribe fila ni toca el inventario",
+    (grams) => {
+      const draft = structuredClone(defaultState);
+      draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+      const before = structuredClone(draft.inventory);
+      const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: grams });
+      expect(result).toEqual({ kind: "invalid_declared_grams" });
+      expect(draft.foodLog).toHaveLength(0);
+      expect(draft.inventory).toEqual(before);
+    },
+  );
+
+  it("sin stock utilizable (qty 0) no se escribe un registro de 0 g", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 0, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 10 });
+    expect(result).toEqual({ kind: "item_missing" });
+    expect(draft.foodLog).toHaveLength(0);
+  });
+
+  it.each([0, -50, NaN, Infinity])("§20.5 — declaredGrams=%p se rechaza EN EL ESCRITOR (defensa propia, no solo del modal): no escribe fila, no toca inventario", (bad) => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const before = structuredClone(draft);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: bad });
+    expect(result).toEqual({ kind: "invalid_declared_grams" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before.inventory);
+  });
+});
+
+describe("consumeInventoryItem — declaración de peso (§20): recorte real, SIN redondear, antes de comparar (§20.7A)", () => {
+  it("un recorte real por stock nunca acredita 'high', aunque los dos números redondeados a 2 decimales coincidieran", () => {
+    const draft = structuredClone(defaultState);
+    // 200.01 g declarados, 200 g disponibles: la comparación SIN redondear ve
+    // 200 !== 200.01 — un redondeo a 2 decimales (200.00 vs 200.01) también lo
+    // vería, pero el punto es que esta comprobación NUNCA pasa por un redondeo.
+    draft.inventory = [inv({ unit: "g", qty: 200, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200.01 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(200);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+  });
+
+  it("declaración superior al stock (500 g sobre 200,6 g): registra EXACTAMENTE 200,6 — positivo, sin superar el stock, macros coherentes — y nunca high", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.6, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 500 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(200.6);
+    expect(entry.qty!).toBeLessThanOrEqual(200.6);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 200.6));
+    expect(draft.inventory).toHaveLength(0);
+  });
+
+  it("recorte oculto, números literales del encargo: 200,004 declarados frente a 200,001 disponibles NUNCA conservan high ni escriben el declarado", () => {
+    // 200,004 tiene 3 decimales: fuera de la precisión admitida, se rechaza
+    // ANTES de consumir nada (no se redondea a 200,00 que "coincidiría" con
+    // 200,001 redondeado). Es la salida correcta: nada escrito, nada high.
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.001, carbs: 0, fat: 3.6 })];
+    const before = structuredClone(draft.inventory);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200.004 });
+    expect(result).toEqual({ kind: "invalid_declared_grams" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before);
+  });
+
+  it("recorte oculto dentro de la precisión admitida: 200,01 declarados frente a 200,009 disponibles (iguales redondeados a 2 decimales) → low, se detecta antes del redondeo", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.009, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200.01 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    // Lo registrado es el stock entero y exacto — no 200,01, no 200,01 "redondeado".
+    expect(entry.qty).toBe(200.009);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+  });
+
+  it("sin recorte (declarado === disponible exacto) sí acredita 'high'", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result.kind).toBe("written");
+    expect(lastEntry(draft).quantityConfidence).toEqual({ level: "high", declaredGrams: 200 });
+  });
+
+  it("reducción de stock tras confirmar (stock insuficiente) escribe lo que cabe, 'low', 'written_reduced'", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 80, carbs: 0, fat: 3.6 })]; // menos de lo que se va a declarar
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(80);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect(draft.inventory).toHaveLength(0); // se agotó
+  });
+});
+
+describe("consumeInventoryItem — declaración de peso (§20.3b): cambio de unidad bloquea, nunca escribe un cálculo no seguro", () => {
+  it("'ud' en el momento de escribir (cambió desde que se declaró) bloquea entero: no escribe fila, no toca inventario", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "ud", qty: 5, unitSize: 60, unitSizeUnit: "g" })];
+    const before = structuredClone(draft);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before.inventory);
+  });
+
+  it("'ml' en el momento de escribir bloquea entero", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "ml", qty: 500 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+  });
+
+  it("g→kg mientras el modal estaba abierto también bloquea: ya no hay familia de masa admitida salvo 'g'", () => {
+    const draft = structuredClone(defaultState);
+    // Simula que el item, declarado mientras estaba en "g", ahora está en "kg"
+    // (otra pestaña cambió la unidad) — el escritor solo mira la unidad FRESCA.
+    draft.inventory = [inv({ unit: "kg", qty: 1, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory[0].qty).toBe(1);
+  });
+
+  it("estimado (sin declaredGrams) nunca puede devolver unit_incompatible — esa variante es exclusiva del camino pesado", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "ud", qty: 5, unitSize: 60, unitSizeUnit: "g" })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { qty: 2 });
+    expect(result.kind).not.toBe("unit_incompatible");
   });
 });
 

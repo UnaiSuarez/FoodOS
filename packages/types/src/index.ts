@@ -265,8 +265,14 @@ export interface FoodLogEntry extends MacroTotals {
    * PR3 — confianza en la cantidad registrada. Solo se escribe cuando hay un
    * motivo concreto para NO fiarse (`level: "low"`): PR3 nunca afirma `"high"`
    * sin una comprobación positiva, y su ausencia se lee como baja.
+   *
+   * §20 — `"high"` solo lo emite un consumo directo de inventario declarado
+   * como pesado, en `"g"`/`"kg"`. `declaredGrams` SIEMPRE son gramos — nunca
+   * la unidad de la entrada (`unit`/`qty` arriba) — y solo acompaña a
+   * `level:"high"`; la relectura lo compara contra `qty` convertido a
+   * gramos, nunca contra `qty` directamente (docs/NUTRITION_V4_DATA_INTEGRITY_DESIGN.md §20.5/§20.7).
    */
-  quantityConfidence?: { level: "high" | "low"; reason?: QuantityLowConfidenceReason };
+  quantityConfidence?: { level: "high" | "low"; reason?: QuantityLowConfidenceReason; declaredGrams?: number };
   /** PR3 — mismo significado que en InventoryItem (eje independiente de
       `nutrientStatus`). Ausente = "unknown". */
   foodStateConfidence?: FoodStateConfidence;

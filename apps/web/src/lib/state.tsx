@@ -21,7 +21,8 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
-import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
+import { hasAtMostTwoDecimals } from "./pg-numeric";
+import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, massUnitFromGrams, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -2967,6 +2968,40 @@ export function deductFromInventoryFIFO(
   return consumed;
 }
 
+/**
+ * §20 — resultado de negocio explícito de `actions.consumeInventoryItem`:
+ * NUNCA uses únicamente el booleano de `mutate()` para decidir que se
+ * registró una comida (ver la nota de cabecera de intent-guard.ts).
+ * - `"written"`: se registró exactamente la cantidad pedida/declarada.
+ * - `"written_reduced"`: se registró, pero MENOS de lo pedido/declarado
+ *   (el stock disponible en el momento de escribir no llegaba) — sigue
+ *   siendo un registro real, solo que `quantityConfidence` nunca es
+ *   `"high"` en este caso.
+ * - `"item_missing"`: el lote ya no existe en el inventario al escribir
+ *   (consumido/borrado por otra pestaña/acción entre abrir el modal y
+ *   confirmar) — no se escribió nada, no se tocó el inventario.
+ * - `"unit_incompatible"`: solo alcanzable con una declaración de peso —
+ *   `item.unit` no es `"g"` al escribir (cambió entre declarar y escribir,
+ *   o es `"kg"`, fuera del alcance del modo pesado — §20.10); no se escribió
+ *   nada, no se tocó el inventario (§20.3b).
+ * - `"mutation_blocked"`: `mutate()` ni siquiera ejecutó este updater (gate
+ *   de hidratación cerrado) — distinto de `"item_missing"`: aquí no se
+ *   sabe si el item sigue existiendo, simplemente no se llegó a mirar.
+ * - `"invalid_declared_grams"`: solo alcanzable con una declaración de
+ *   peso — `declaredGrams` no finito, cero, negativo o con más de 2
+ *   decimales (la precisión persistida; se rechaza, no se redondea). El modal ya lo
+ *   impide (botón deshabilitado); este es el escritor defendiéndose por su
+ *   cuenta, no confiando en que todo llamador futuro repita esa validación
+ *   (§20.5). No se escribió nada, no se tocó el inventario.
+ */
+export type ConsumeInventoryResult =
+  | { kind: "written"; entryId: string }
+  | { kind: "written_reduced"; entryId: string }
+  | { kind: "item_missing" }
+  | { kind: "unit_incompatible" }
+  | { kind: "mutation_blocked" }
+  | { kind: "invalid_declared_grams" };
+
 export const actions = {
   /** Descarta una sugerencia de stock bajo; desaparece hasta que se re-añade al inventario. */
   dismissSuggestion(draft: FoodOSState, name: string) {
@@ -3021,17 +3056,79 @@ export const actions = {
 
   /** Consume una cantidad PARCIAL de un alimento: registra en el diario y
       descuenta del inventario (si queda 0, lo elimina). */
-  consumeInventoryItem(draft: FoodOSState, itemId: string, qty: number, overrideMealType?: MealType) {
+  /**
+   * §20 — `input` es una de dos cosas, nunca mezclables: `{ qty }` es el
+   * camino de siempre (estimado, en `item.unit`); `{ declaredGrams }` es
+   * una declaración de PESO (siempre gramos, nunca `item.unit` — §20.2),
+   * solo válida si `item.unit` es `"g"` en el momento de escribir (§20.3b,
+   * §20.10) y con como mucho 2 decimales: si no, esta función NO escribe nada (ver
+   * `ConsumeInventoryResult`, más abajo).
+   *
+   * Devuelve un resultado de negocio explícito — nunca `void` — porque
+   * `mutate()` (su único booleano) no distingue "se registró la ingesta"
+   * de "el gate de hidratación dejó pasar la mutación pero esta función no
+   * hizo nada" (ver la nota de cabecera de intent-guard.ts, que documentaba
+   * exactamente este hueco antes de que existiera este tipo).
+   */
+  consumeInventoryItem(
+    draft: FoodOSState,
+    itemId: string,
+    input: { qty: number } | { declaredGrams: number },
+    overrideMealType?: MealType,
+  ): ConsumeInventoryResult {
     const item = draft.inventory.find((candidate) => candidate.id === itemId);
-    if (!item) return;
-    const consumed = Math.min(qty, item.qty);
+    if (!item) return { kind: "item_missing" };
+
+    const isWeighed = "declaredGrams" in input;
+    let consumed: number;
+    let reduced: boolean;
+    let quantityConfidence: FoodLogEntry["quantityConfidence"];
+
+    if (isWeighed) {
+      // §20.5 — validación TAMBIÉN en el escritor, no solo en el modal: una
+      // declaración no finita, cero o negativa no puede escribir ninguna
+      // ingesta ni tocar el inventario. El modal ya lo impide (botón
+      // deshabilitado), pero este escritor es la autoridad final — no
+      // confía en que todo llamador futuro repita esa validación.
+      // Precisión admitida (§20.6b): como mucho 2 decimales — la de
+      // inventory_items.quantity numeric(10,2). Más decimales se RECHAZAN, no
+      // se redondean: el peso declarado nunca se sustituye por otro en silencio.
+      if (!Number.isFinite(input.declaredGrams) || input.declaredGrams <= 0 || !hasAtMostTwoDecimals(input.declaredGrams)) {
+        return { kind: "invalid_declared_grams" };
+      }
+      // §20.3b / §20.6b — la declaración solo es interpretable y persistible
+      // sin pérdida con inventario en GRAMOS en este instante (no cuando se
+      // tecleó). "kg" queda fuera: numeric(10,2) en kg deja 10 g de
+      // granularidad, así que 1,5 kg − 233 g (1,267) no sobreviviría a la
+      // sincronización. Cualquier otra unidad, o un cambio de unidad entre
+      // confirmar y escribir, bloquea entero: no se escribe nada.
+      if (item.unit !== "g") return { kind: "unit_incompatible" };
+      // Sin stock utilizable no hay nada que consumir: nunca se escribe un
+      // registro de 0 g ni se acredita una declaración sobre nada.
+      if (!(item.qty > 0)) return { kind: "item_missing" };
+      // §20.7A — gramos contra gramos, sin conversión ni redondeo: el recorte
+      // se decide con los números EN BRUTO. Redondear antes de comparar podría
+      // esconder un recorte real si ambas cifras coincidieran tras redondear
+      // (p. ej. 200,01 declarados frente a 200,009 disponibles).
+      reduced = input.declaredGrams > item.qty;
+      // Lo registrado es exactamente lo declarado, o exactamente el stock
+      // entero si no llega: nunca un tercer número, nunca por encima del stock.
+      consumed = reduced ? item.qty : input.declaredGrams;
+      quantityConfidence = reduced ? { level: "low" } : { level: "high", declaredGrams: input.declaredGrams };
+    } else {
+      consumed = Math.min(input.qty, item.qty);
+      reduced = consumed !== input.qty;
+      quantityConfidence = undefined; // sin cambios respecto al camino estimado de siempre
+    }
+
     const macros = macrosForQuantity(item, consumed);
     const t = nowTime();
     // PR3: procedencia leída del item (capturada en PR3a), no inferida del número.
     // Un known_* cuyo valor escalado y redondeado queda en 0 deja de afirmarse.
     const provenance = inventoryConsumptionProvenance(item);
+    const id = uid();
     draft.foodLog.push({
-      id: uid(),
+      id,
       date: getToday(draft),
       time: t,
       name: item.name,
@@ -3042,6 +3139,13 @@ export const actions = {
       mealType: overrideMealType ?? mealTypeFromTime(t),
       ...provenance,
       nutrientStatus: reconcileStatusesWithValues(provenance.nutrientStatus, macros),
+      // §20.6 — una declaración de peso decide quantityConfidence por sí
+      // misma y sustituye lo que inventoryConsumptionProvenance hubiera
+      // decidido por otros motivos (p. ej. un macro imputado): es el eje
+      // de CANTIDAD, y la declaración explícita del usuario es la señal
+      // más directa que existe sobre cuánto se consumió, más que un
+      // valor por defecto sobre la calidad del dato del item.
+      ...(quantityConfidence !== undefined && { quantityConfidence }),
       inventoryItemId: item.id,
       inventorySnapshot: {
         storage: item.storage,
@@ -3058,10 +3162,14 @@ export const actions = {
         unitSizeUnit: item.unitSizeUnit,
       },
     });
+    // 2 decimales: la precisión persistida de inventory_items.quantity. En el
+    // camino pesado (solo "g") `consumed` ya tiene como mucho 2 decimales, así
+    // que lo descontado coincide exactamente con lo registrado en el diario.
     item.qty = Math.round((item.qty - consumed) * 100) / 100;
     if (item.qty <= 0) {
       draft.inventory = draft.inventory.filter((candidate) => candidate.id !== itemId);
     }
+    return reduced ? { kind: "written_reduced", entryId: id } : { kind: "written", entryId: id };
   },
 
   /** Devuelve `qty` de una entrada del diario al inventario: si el item original

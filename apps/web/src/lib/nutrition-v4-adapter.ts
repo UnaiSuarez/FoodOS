@@ -47,6 +47,7 @@ import type {
   NutrientValue,
 } from "@foodos/types";
 import { sanitizeFoodStateConfidence, sanitizeNutrientStatusMap } from "./food-log-provenance";
+import { hasAtMostTwoDecimals } from "./pg-numeric";
 
 export interface NutritionV4AdapterWindow {
   /** `YYYY-MM-DD`, mismo formato que `FoodLogEntry.date` y que el
@@ -142,17 +143,30 @@ function toNutrientValue(status: NutrientStatus | undefined, rawValue: number): 
 
 /**
  * `quantityConfidence` de una `FoodLogEntry`: solo `"high"` cuando el campo
- * lo declara explícitamente así. Ausente, o cualquier otra cosa, es
- * `"low"` — nunca el valor por defecto optimista. No es una elección
- * arbitraria de este adaptador: ningún constructor de
- * food-log-provenance.ts escribe jamás `level: "high"` (solo lo omiten, o
- * ponen `"low"` con un motivo) precisamente porque, según su propio
- * comentario, "PR3 nunca afirma 'high' sin una comprobación positiva, y su
- * ausencia se lee como baja". Leerlo distinto aquí inventaría una confianza
- * que ni siquiera la escritura se atribuye a sí misma.
+ * lo declara explícitamente así Y la evidencia que lo acompaña (§20.5/§20.7)
+ * sigue siendo válida y coherente con la propia entrada — nunca una copia
+ * directa de `level`. Ausente, o cualquier otra cosa, es `"low"` — nunca el
+ * valor por defecto optimista.
+ *
+ * Un `"high"` se degrada a `"low"` en la lectura (nunca se descarta la
+ * entrada) si: `declaredGrams` no es finito, estrictamente positivo y con
+ * como mucho 2 decimales (la precisión admitida, §20.6b); `entry.qty` no es
+ * finito y estrictamente positivo; `entry.unit` no es `"g"` (el modo pesado
+ * está limitado a inventario en gramos: en "kg" numeric(10,2) no conserva
+ * 1 g de fidelidad); o `entry.qty` no es EXACTAMENTE `declaredGrams`. En
+ * gramos el escritor guarda la cifra declarada sin conversión ni redondeo y
+ * `client_meta` (JSONB) la devuelve sin pérdida, así que la igualdad exacta
+ * es alcanzable y no hace falta tolerancia: cualquier diferencia —aunque sea
+ * de milésimas— es una entrada editada después o un dato manipulado.
  */
 function quantityConfidenceOf(entry: FoodLogEntry): "high" | "low" {
-  return entry.quantityConfidence?.level === "high" ? "high" : "low";
+  if (entry.quantityConfidence?.level !== "high") return "low";
+  const { declaredGrams } = entry.quantityConfidence;
+  if (typeof declaredGrams !== "number" || !Number.isFinite(declaredGrams) || declaredGrams <= 0) return "low";
+  if (!hasAtMostTwoDecimals(declaredGrams)) return "low";
+  if (typeof entry.qty !== "number" || !Number.isFinite(entry.qty) || entry.qty <= 0) return "low";
+  if (entry.unit !== "g") return "low";
+  return entry.qty === declaredGrams ? "high" : "low";
 }
 
 /**
