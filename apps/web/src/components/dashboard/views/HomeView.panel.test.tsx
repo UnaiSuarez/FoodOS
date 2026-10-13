@@ -4,7 +4,7 @@
 // Fija las reglas de producto de la entrega: lo planificado no cuenta como
 // consumido, nada de «N de 5 comidas» ni horas inventadas, la barra de energía
 // no oculta el exceso, y los hábitos (agua/pasos) siguen siendo accesibles.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FoodLogEntry, Recipe } from "@foodos/types";
@@ -80,7 +80,13 @@ function logEntry(d: Ctx["state"], over: Partial<FoodLogEntry>): FoodLogEntry {
   };
 }
 
+// Reloj fijo para TODO el archivo (mediodía): ninguna prueba depende de la hora
+// real en la que se ejecuta la suite. Las que necesitan otra hora la cambian con
+// `hourSpy.mockReturnValue(...)` antes de montar.
+let hourSpy: MockInstance<() => number>;
+
 beforeEach(() => {
+  hourSpy = vi.spyOn(Date.prototype, "getHours").mockReturnValue(12);
   localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -93,6 +99,7 @@ afterEach(() => {
   }
   container.remove();
   localStorage.clear();
+  hourSpy.mockRestore(); // restaura Date.prototype.getHours: no afecta a otras pruebas
 });
 
 describe("Panel diario — día sin registros", () => {
@@ -211,13 +218,46 @@ describe("Panel diario — hábitos accesibles", () => {
 });
 
 describe("Panel diario — Zana y acciones", () => {
-  it("la mascota muestra su nombre y el mensaje contextual real", async () => {
-    const holder = await mount((d) => { d.foodLog = []; });
+  // `mascotInsight` (lógica de producto existente, sin cambios) depende de la
+  // hora real: a partir de las 20:00 con >300 kcal pendientes cambia de mensaje.
+  // El reloj se fija con un espía de `getHours` — sin temporizadores simulados,
+  // que podrían interferir con la hidratación asíncrona del proveedor — y el
+  // espía se restaura en el `afterEach` global de este archivo.
+  const zanaSeed = (d: Ctx["state"]) => {
+    d.foodLog = [];
+    d.inventory = []; // sin caducidades urgentes, que tienen prioridad sobre ambos mensajes
+    d.nutrition = { ...d.nutrition, kcal: 2200, protein: 150, carbs: 225, fat: 70 };
+  };
+
+  it("de día, con el diario vacío, Zana dice la proteína pendiente (mensaje diurno)", async () => {
+    hourSpy.mockReturnValue(12);
+    const holder = await mount(zanaSeed);
     const bubble = container.querySelector(".hv-bubble")!;
-    // Mensaje existente (mascotInsight): con el diario vacío, la proteína pendiente.
-    expect(bubble.textContent).toContain("Te faltan");
-    expect(bubble.textContent).toContain("de proteína");
+    expect(bubble.textContent).toContain("Zana");
+    expect(bubble.textContent).toContain("Te faltan 150 g de proteína para cerrar el día.");
+    expect(bubble.textContent).not.toMatch(/Son las \d+h/);
     expect(holder.current!.state.mascotId).toBeTruthy();
+  });
+
+  it("de noche (≥ 20:00) con kcal pendientes, Zana cambia al mensaje de cierre del día (mensaje nocturno)", async () => {
+    hourSpy.mockReturnValue(21);
+    await mount(zanaSeed);
+    const bubble = container.querySelector(".hv-bubble")!;
+    expect(bubble.textContent).toContain("Zana");
+    expect(bubble.textContent).toContain("Son las 21h y faltan 2200 kcal");
+    expect(bubble.textContent).not.toContain("Te faltan 150 g de proteína");
+  });
+
+  it("en el límite, a las 19:59 aún es el mensaje diurno y a las 20:00 el nocturno", async () => {
+    hourSpy.mockReturnValue(19);
+    await mount(zanaSeed);
+    expect(container.querySelector(".hv-bubble")!.textContent).toContain("Te faltan 150 g de proteína");
+    act(() => { root!.unmount(); });
+    root = null;
+
+    hourSpy.mockReturnValue(20);
+    await mount(zanaSeed);
+    expect(container.querySelector(".hv-bubble")!.textContent).toContain("Son las 20h y faltan 2200 kcal");
   });
 
   it("las cinco acciones frecuentes siguen presentes", async () => {
