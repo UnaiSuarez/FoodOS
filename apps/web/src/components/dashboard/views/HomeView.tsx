@@ -16,6 +16,7 @@ import {
   getPendingMacros,
   getRecipeMatch,
   getStepsToday,
+  getTodayLog,
   getToday,
   getWaterToday,
   useFoodOS,
@@ -175,8 +176,39 @@ export function HomeView({
     return "Todo en orden. Sigue así.";
   })();
 
+  /* ── Panel diario v2: lo REGISTRADO y lo PLANIFICADO siempre por separado ──
+     El diario no guarda a qué entrada del plan corresponde cada registro
+     (buildPlanLogEntry solo conserva el título), así que no se puede demostrar
+     qué comida planificada ya está registrada. Por eso la barra de energía
+     representa SOLO lo registrado y el plan se muestra aparte, sin sumarlo. */
+  const todayLog = getTodayLog(state);
+  const goalKcal = state.nutrition.kcal;
+  const consumedKcal = Math.round(consumed.kcal);
+  const overKcal = goalKcal > 0 ? Math.max(0, consumedKcal - goalKcal) : 0;
+  // La escala crece con el exceso: la barra nunca oculta que se superó el objetivo.
+  const barScale = Math.max(goalKcal, consumedKcal, 1);
+  const barRegPct = Math.min(100, (consumedKcal / barScale) * 100);
+  const goalTickPct = overKcal > 0 ? (goalKcal / barScale) * 100 : null;
+
+  const plannedSlots = TODAY_SLOTS.flatMap((slot) => {
+    const entryId = todayPlan[slot.key];
+    const entry = entryId ? findPlanEntry(state, entryId) : null;
+    return entry && entryId ? [{ ...slot, entryId, entry }] : [];
+  });
+  const plannedKcal = plannedSlots.reduce((sum, slot) => sum + slot.entry.kcal, 0);
+  const loggedNames = new Set(todayLog.map((entry) => entry.name.trim().toLowerCase()));
+  const MAX_LOGGED_SHOWN = 6;
+  const shownLog = todayLog.length > MAX_LOGGED_SHOWN ? todayLog.slice(-MAX_LOGGED_SHOWN) : todayLog;
+  const hiddenLogCount = todayLog.length - shownLog.length;
+  const MEAL_ICON: Record<string, string> = { breakfast: "☀", lunch: "◉", dinner: "◑", snack: "◔" };
+
+  const statusLine =
+    todayLog.length === 0
+      ? "Sin comidas registradas hoy. El total empieza en cuanto registres una."
+      : `${todayLog.length} ${todayLog.length === 1 ? "comida registrada" : "comidas registradas"} hoy. El total solo incluye lo que has registrado.`;
+
   return (
-    <section className="view">
+    <section className="view home-v2">
       {!state.profile && (
         <button className="profile-banner" onClick={() => goTo("nutrition")}>
           <span>
@@ -187,124 +219,142 @@ export function HomeView({
         </button>
       )}
 
-      <div className={`bento-grid ${activeSuggestion ? "" : "no-suggest"}`}>
-        {/* Macros del dia — la tarjeta principal */}
-        <article className="panel bento-macros" data-tour="panel-macros">
-          <div className="bento-macros-head">
-            <div>
-              <p className="eyebrow">Hoy</p>
-              <h2>
-                {Math.round(consumed.kcal)} <small>/ {state.nutrition.kcal} kcal</small>
-              </h2>
-            </div>
-            <div className="bento-day-badges">
-              {state.profile && (
-                <>
-                  <span className={`badge ${isGymDay(state.profile, todayDate) ? "green" : "blue"}`}>
-                    {isGymDay(state.profile, todayDate) ? "💪 Gym" : "Descanso"}
-                  </span>
-                  <span className="badge">{GOAL_LABELS[state.profile.goal]}</span>
-                </>
-              )}
-              {streak >= 2 && (
-                <span
-                  className="badge green"
-                  title={`${streak} días consecutivos cumpliendo objetivos${!adherence.historyComplete ? " (provisional, histórico incompleto)" : ""}`}
-                >
-                  🔥 {streak}d{!adherence.historyComplete ? "…" : ""}
-                </span>
-              )}
-            </div>
+      {/* 1 · Banda del día: energía registrada, macros, hábitos y acciones */}
+      <article className="hv-band" data-tour="panel-macros" aria-labelledby="hv-band-title">
+        <div className="hv-band-top">
+          <div>
+            <p className="hv-eyebrow" id="hv-band-title">
+              Hoy · {todayDate.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+            </p>
+            <p className="hv-hero">
+              <span className="hv-hero-num">{consumedKcal}</span>
+              <span className="hv-hero-unit">
+                kcal registradas{goalKcal > 0 ? ` de ${goalKcal}` : ""}
+              </span>
+            </p>
+            <p className="hv-status">{statusLine}</p>
           </div>
-          {/* E05-02: "estado del día" en una frase clara, no solo implícito en
-              barras/badges — reutiliza mascotInsight (antes solo vivía en la
-              tarjeta de la mascota) como la afirmación de estado principal.
-              E05-05: al mostrarla aquí, la tarjeta de la mascota deja de
-              repetir el mismo texto por duplicado (ver más abajo). */}
-          <p className="bento-status-line">{mascotInsight}</p>
-          <div className="bento-macros-body">
-            <div
-              className="macro-ring"
-              role="img"
-              aria-label={`${kcalPct}% de las calorías del día`}
-              style={{
-                background: `radial-gradient(circle, #11170d 0 55%, transparent 56%), conic-gradient(var(--green) 0 ${kcalPct * 3.6}deg, rgba(240, 244, 238, 0.1) ${kcalPct * 3.6}deg)`,
-              }}
-            >
-              <span>{kcalPct}%</span>
-            </div>
-            <div className="bars">
-              <MacroBar label="Proteína" value={consumed.protein} max={state.nutrition.protein} accent />
-              <MacroBar label="Carbos" value={consumed.carbs} max={state.nutrition.carbs} />
-              <MacroBar label="Grasas" value={consumed.fat} max={state.nutrition.fat} />
-              {pending.protein > 0 ? (
-                <p className="bars-note">
-                  Te quedan <strong>{Math.round(pending.protein)} g de proteína</strong> y{" "}
-                  {Math.round(pending.kcal)} kcal.
-                </p>
-              ) : (
-                <p className="bars-note">Proteína del día cubierta ✓</p>
-              )}
-            </div>
+          <div className="hv-chips">
+            {state.profile && (
+              <>
+                <span className="hv-chip">{isGymDay(state.profile, todayDate) ? "💪 Gym" : "Descanso"}</span>
+                <span className="hv-chip">{GOAL_LABELS[state.profile.goal]}</span>
+              </>
+            )}
+            {streak >= 2 && (
+              <span
+                className="hv-chip"
+                title={`${streak} días consecutivos cumpliendo objetivos${!adherence.historyComplete ? " (provisional, histórico incompleto)" : ""}`}
+              >
+                🔥 {streak}d{!adherence.historyComplete ? "…" : ""}
+              </span>
+            )}
           </div>
+        </div>
 
-          {/* Agua */}
-          <div className="bento-water">
-            <div className="bento-water-head">
-              <span className="bento-water-label">💧 Agua</span>
-              <span className="bento-water-value">
+        <div className="hv-meter">
+          <div
+            className="hv-meter-bar"
+            role="img"
+            aria-label={
+              goalKcal > 0
+                ? `${consumedKcal} kcal registradas de un objetivo de ${goalKcal}${overKcal > 0 ? `; ${overKcal} kcal por encima` : ""}`
+                : `${consumedKcal} kcal registradas`
+            }
+          >
+            <div className={`hv-meter-fill ${overKcal > 0 ? "over" : ""}`} style={{ width: `${barRegPct}%` }} />
+            {goalTickPct !== null && <i className="hv-meter-goal" style={{ left: `${goalTickPct}%` }} aria-hidden="true" />}
+          </div>
+          <div className="hv-meter-legend">
+            <span><i className="hv-key" /> Registrado <b>{consumedKcal} kcal</b></span>
+            {goalKcal > 0 && <span>Objetivo <b>{goalKcal} kcal</b></span>}
+            {overKcal > 0 ? (
+              <span className="hv-over" role="status">+{overKcal} kcal sobre el objetivo</span>
+            ) : (
+              goalKcal > 0 && <span>Hasta el objetivo <b>{Math.round(pending.kcal)} kcal</b></span>
+            )}
+          </div>
+          {plannedSlots.length > 0 && (
+            <p className="hv-plan-note">
+              En tu plan de hoy:{" "}
+              <b>
+                {plannedSlots.length} {plannedSlots.length === 1 ? "comida" : "comidas"} · {Math.round(plannedKcal)} kcal
+              </b>
+              . Va aparte: no cuenta como consumido hasta que la registras.
+            </p>
+          )}
+        </div>
+
+        <div className="hv-macros">
+          <MacroTile label="Proteína" value={consumed.protein} max={state.nutrition.protein} />
+          <MacroTile label="Carbohidratos" value={consumed.carbs} max={state.nutrition.carbs} />
+          <MacroTile label="Grasas" value={consumed.fat} max={state.nutrition.fat} />
+        </div>
+
+        {/* Hábitos: agua y pasos, visibles al entrar y con su control a mano */}
+        <div className="hv-habits">
+          <section className="hv-hab" aria-labelledby="hv-water-title">
+            <div className="hv-hab-top">
+              <span id="hv-water-title">💧 Agua</span>
+              <span className="hv-hab-val">
                 {waterMl >= 1000 ? `${(waterMl / 1000).toFixed(1).replace(".", ",")} L` : `${waterMl} ml`}
-                <em> / {waterGoalMl >= 1000 ? `${waterGoalMl / 1000}L` : `${waterGoalMl}ml`}</em>
+                <small> / {waterGoalMl >= 1000 ? `${waterGoalMl / 1000} L` : `${waterGoalMl} ml`}</small>
               </span>
             </div>
-            <div className="bento-water-track">
-              <div className="bento-water-fill" style={{ width: `${waterPct}%` }} />
+            <div
+              className="hv-hab-bar"
+              role="progressbar"
+              aria-label="Agua de hoy"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={waterPct}
+            >
+              <i className="water" style={{ width: `${waterPct}%` }} />
             </div>
-            <div className="bento-water-btns">
-              {[250, 500, 750].map(ml => (
-                <button
-                  key={ml}
-                  className="bento-water-btn"
-                  onClick={() => addWater(ml)}
-                >
-                  +{ml < 1000 ? `${ml}ml` : `${ml / 1000}L`}
+            <div className="hv-hab-ctl">
+              {[250, 500, 750].map((ml) => (
+                <button key={ml} className="hv-hchip" onClick={() => addWater(ml)} aria-label={`Añadir ${ml} ml de agua`}>
+                  +{ml}<span className="hv-hunit"> ml</span>
                 </button>
               ))}
               {waterMl > 0 && (
-                <button
-                  className="bento-water-btn dim"
-                  onClick={() => addWater(-250)}
-                >
-                  −250ml
+                <button className="hv-hchip dim" onClick={() => addWater(-250)} aria-label="Quitar 250 ml de agua">
+                  −250<span className="hv-hunit"> ml</span>
                 </button>
               )}
             </div>
-          </div>
+          </section>
 
-          {/* Pasos */}
-          <div className="bento-water bento-steps">
-            <div className="bento-water-head">
-              <span className="bento-water-label">👟 Pasos</span>
-              <span className="bento-water-value">
+          <section className="hv-hab" aria-labelledby="hv-steps-title">
+            <div className="hv-hab-top">
+              <span id="hv-steps-title">👟 Pasos</span>
+              <span className="hv-hab-val">
                 {stepsToday.toLocaleString("es-ES")}
-                <em> / {stepsGoal.toLocaleString("es-ES")}</em>
+                <small> / {stepsGoal.toLocaleString("es-ES")}</small>
               </span>
             </div>
-            <div className="bento-water-track">
-              <div className="bento-water-fill" style={{ width: `${stepsPct}%` }} />
+            <div
+              className="hv-hab-bar"
+              role="progressbar"
+              aria-label="Pasos de hoy"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={stepsPct}
+            >
+              <i style={{ width: `${stepsPct}%` }} />
             </div>
-            <div className="bento-water-btns">
+            <div className="hv-hab-ctl">
               <input
                 type="number"
                 min="0"
-                className="bento-steps-input"
+                className="hv-steps-input"
                 placeholder="Pasos de hoy"
                 aria-label="Pasos de hoy"
                 value={stepsInput}
                 onChange={(e) => setStepsInput(e.target.value)}
               />
               <button
-                className="bento-water-btn"
+                className="hv-hchip strong"
                 onClick={() => {
                   const steps = parseInt(stepsInput, 10);
                   if (!Number.isFinite(steps) || steps < 0) return;
@@ -315,63 +365,303 @@ export function HomeView({
                 Guardar
               </button>
             </div>
+          </section>
+        </div>
+
+        {/* Acciones frecuentes */}
+        <div className="hv-actions" aria-label="Acciones frecuentes">
+          <button className="hv-act primary" onClick={() => goTo("diary")}>
+            <span aria-hidden="true">🍽</span> Registrar comida
+          </button>
+          <button className="hv-act" onClick={() => goTo("inventory")}>
+            <span aria-hidden="true">＋</span> Añadir alimento
+          </button>
+          <button className="hv-act" onClick={() => goTo("cart")}>
+            <span aria-hidden="true">🛒</span> Carrito
+            {pendingCart.length > 0 && <b className="hv-act-n">{pendingCart.length}</b>}
+          </button>
+          <button className="hv-act" onClick={() => goTo("recipes")}>
+            <span aria-hidden="true">✦</span> Recetas
+          </button>
+          <button
+            className="hv-act"
+            onClick={() => setWhatToEatOpen((v) => !v)}
+            aria-expanded={whatToEatOpen}
+          >
+            <span aria-hidden="true">🤔</span> ¿Qué como ahora?
+          </button>
+        </div>
+      </article>
+
+      {/* Panel "¿Qué como ahora?" (sin cambios de contenido) */}
+      {whatToEatOpen && (
+        <article className="panel bento-what-to-eat hv-block">
+          <div className="panel-head">
+            <h3>🤔 Mejor opción ahora mismo</h3>
+            <button className="text-button" onClick={() => setWhatToEatOpen(false)}>Cerrar</button>
+          </div>
+          <p className="what-to-eat-context">
+            Te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
+            <strong>{Math.round(pending.protein)}g de proteína</strong>.{" "}
+            Presupuesto: <strong>{eur(budgetLeft)}</strong>.
+          </p>
+          <div className="what-to-eat-list">
+            {allRecipes(state)
+              .map((r) => {
+                const match = getRecipeMatch(state, r);
+                const kcalFit = pending.kcal > 0 ? 1 - Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1) : 0.5;
+                const score = match.pct * 0.5 + Math.max(0, kcalFit) * 30 + (r.cost <= budgetLeft ? 20 : 0);
+                return { r, match, score };
+              })
+              .filter((e) => e.r.cost <= Math.max(budgetLeft + 1, 2))
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 4)
+              .map(({ r, match }) => (
+                <div key={r.id} className="what-to-eat-card">
+                  <div className="what-to-eat-info">
+                    <strong>{r.title}</strong>
+                    <small>{r.kcal} kcal · {r.protein}g prot · {eur(r.cost)} · {match.pct}% disponible</small>
+                  </div>
+                  <div className="what-to-eat-actions">
+                    <button className="small-action" onClick={() => { openRecipe(r.id); setWhatToEatOpen(false); }}>
+                      Ver
+                    </button>
+                    <button className="small-action good" onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}>
+                      Cocinar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            {allRecipes(state).length === 0 && (
+              <p className="empty">Añade recetas para ver sugerencias.</p>
+            )}
           </div>
         </article>
+      )}
 
-        {/* Caducidades + Stock bajo */}
-        <article className="panel bento-expiry">
-          <div className="panel-head">
-            <h3>🥕 Alertas</h3>
-            <button className="text-button" onClick={() => goTo("inventory")}>
-              Inventario
+      {/* Sugerencia inteligente — cena para cerrar macros o receta con caducidad */}
+      {activeSuggestion && (
+        <article className={`panel bento-suggest hv-block ${activeSuggestion.kind === "dinner" ? "dinner" : ""}`}>
+          {activeSuggestion.kind === "dinner" ? (
+            <>
+              <p className="eyebrow">🌙 Cena para cerrar macros</p>
+              <h3>{activeSuggestion.recipe.title}</h3>
+              <p className="suggest-why">
+                Te quedan <strong>{activeSuggestion.pendingKcal} kcal</strong> y{" "}
+                <strong>{activeSuggestion.pendingProtein} g de proteína</strong> — esta receta encaja bien para cenar.
+                {activeSuggestion.usedExpiringItem && (
+                  <> Además usa <strong>{activeSuggestion.usedExpiringItem.name.toLowerCase()}</strong>, que caduca{" "}
+                  {daysUntil(activeSuggestion.usedExpiringItem.expires) <= 0
+                    ? "hoy"
+                    : daysUntil(activeSuggestion.usedExpiringItem.expires) === 1
+                      ? "mañana"
+                      : `en ${daysUntil(activeSuggestion.usedExpiringItem.expires)} días`}.</>
+                )}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="eyebrow">Sugerencia con motivo</p>
+              <h3>{activeSuggestion.recipe.title}</h3>
+              <p className="suggest-why">
+                Usa <strong>{activeSuggestion.usedItem.name.toLowerCase()}</strong> que caduca{" "}
+                {daysUntil(activeSuggestion.usedItem.expires) <= 0
+                  ? "hoy"
+                  : daysUntil(activeSuggestion.usedItem.expires) === 1
+                    ? "mañana"
+                    : `en ${daysUntil(activeSuggestion.usedItem.expires)} días`}
+                , aporta <strong>{activeSuggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
+                {eur(activeSuggestion.recipe.cost)} — dentro de tu presupuesto.
+              </p>
+            </>
+          )}
+          <div className="card-actions">
+            <button className="small-action" onClick={() => openRecipe(activeSuggestion.recipe.id)}>
+              Ver receta
+            </button>
+            <button
+              className="small-action good"
+              onClick={() => setCookingRecipe(activeSuggestion.recipe)}
+            >
+              Cocinar
             </button>
           </div>
-          {expiring.length ? (
-            <ul className="expiry-list">
-              {expiring.map((item) => {
-                const days = daysUntil(item.expires);
+        </article>
+      )}
+
+      {/* 2 · Plan del día en línea temporal + Inventario */}
+      <div className="hv-cols">
+        <article className="hv-card today-plan-panel">
+          <div className="hv-card-head">
+            <div>
+              <p className="hv-eyebrow">
+                {todayDate.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+              </p>
+              <h3>Tu plan de hoy</h3>
+            </div>
+            <div className="hv-head-right">
+              {state.profile && (() => {
+                // PR A (revisión — P3): denominador = días realmente
+                // evaluables esa semana (excluye unknown_target/unlogged) —
+                // con cero evaluables no hay fracción que mostrar en absoluto,
+                // nunca un "0/7" que se leería como fracaso.
+                const weekFraction = describeEvaluableFraction(hitThisWeek, adherenceLast7Evaluable.length);
                 return (
-                  <li key={item.id}>
-                    <span className={`expiry-dot ${days <= 1 ? "red" : "amber"}`} />
-                    <div>
-                      <strong>{item.name}</strong>
-                      <small>{days < 0 ? "caducado" : days === 0 ? "hoy" : days === 1 ? "mañana" : `en ${days} días`}</small>
+                  <span
+                    className="hv-chip soft"
+                    title={`Días esta semana con objetivos de macros cumplidos${adherenceFreshness ? ` — ${adherenceFreshness}` : ""}`}
+                  >
+                    {weekFraction.hasEvaluableDays ? `${weekFraction.label} días ✓` : "Sin días evaluables"}
+                    {!adherence.historyComplete ? "…" : ""}
+                  </span>
+                );
+              })()}
+              <button className="hv-link" onClick={() => goTo("planner")}>
+                {plannedCount === 0 ? "Planificar →" : "Editar →"}
+              </button>
+            </div>
+          </div>
+
+          {/* PR A (revisión — P2): antes solo iba en el `title` del badge —
+              invisible en móvil, donde no hay hover. Nota visible, distinta
+              para loading/error (`adherenceFreshnessNote`, compartida con
+              NutritionView/StatsView) — "ready" no renderiza nada. */}
+          {adherenceFreshness && (
+            <p
+              className="chart-legend"
+              role={adherence.remoteStatus === "error" ? "alert" : "status"}
+            >
+              {adherenceFreshness}
+            </p>
+          )}
+
+          {todayLog.length === 0 && plannedSlots.length === 0 ? (
+            <p className="today-plan-empty">
+              {plannedCount === 0
+                ? <>Todavía no hay nada registrado ni planificado para hoy.{" "}
+                    <button className="link-button" onClick={() => goTo("planner")}>Ir al planificador</button></>
+                : <>Tienes comidas en el plan de hoy que ya no existen. <button className="link-button" onClick={() => goTo("planner")}>Revisar el plan</button></>}
+            </p>
+          ) : (
+            <ol className="hv-line">
+              {hiddenLogCount > 0 && (
+                <li className="hv-step more">
+                  <span className="hv-node" aria-hidden="true">…</span>
+                  <div>
+                    <button className="hv-link" onClick={() => goTo("diary")}>
+                      {hiddenLogCount} {hiddenLogCount === 1 ? "registro anterior" : "registros anteriores"} en el registro →
+                    </button>
+                  </div>
+                </li>
+              )}
+              {shownLog.map((entry) => (
+                <li key={entry.id} className="hv-step reg">
+                  <span className="hv-node" aria-hidden="true">✓</span>
+                  <div>
+                    <div className="hv-step-time">{entry.time}</div>
+                    <div className="hv-step-name">{entry.name}</div>
+                    <div className="hv-step-meta">
+                      <span className="hv-tag reg">Registrado</span>
+                      {Math.round(entry.kcal)} kcal · {Math.round(entry.protein)} g P
                     </div>
-                    <button className="small-action good" onClick={() => setConsumeItem(item)}>
-                      Usar
+                  </div>
+                </li>
+              ))}
+              {plannedSlots.map(({ key, label, icon, mealType, entryId, entry }) => {
+                const maybeLogged = loggedNames.has(entry.title.trim().toLowerCase());
+                return (
+                  <li key={key} className="hv-step plan">
+                    <span className="hv-node" aria-hidden="true">{icon}</span>
+                    <div>
+                      <div className="hv-step-time">{label}</div>
+                      <div className="hv-step-name">{entry.title}</div>
+                      <div className="hv-step-meta">
+                        <span className="hv-tag plan">Planificado</span>
+                        {entry.kcal} kcal · {Math.round(entry.protein)} g P
+                      </div>
+                      {maybeLogged && (
+                        <div className="hv-step-warn" role="note">
+                          Ya hay un registro con este nombre hoy: comprueba antes de registrarlo otra vez.
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="hv-btn"
+                      onClick={() => logPlanEntry(entryId, mealType)}
+                      title="Registrar en el diario"
+                    >
+                      {maybeLogged ? "Registrar otra vez" : "✓ Registrar"}
                     </button>
                   </li>
                 );
               })}
-            </ul>
+            </ol>
+          )}
+          {plannedSlots.length > 0 && (
+            <p className="hv-foot">Lo planificado no cuenta como consumido hasta que lo registras.</p>
+          )}
+        </article>
+
+        {/* Inventario: caducidades y stock bajo */}
+        <article className="hv-card hv-watch">
+          <div className="hv-card-head">
+            <div>
+              <p className="hv-eyebrow">Inventario</p>
+              <h3>🥕 Para vigilar</h3>
+            </div>
+            <button className="hv-link" onClick={() => goTo("inventory")}>
+              Inventario →
+            </button>
+          </div>
+          {expiring.length ? (
+            <div className="hv-group">
+              <p className="hv-group-title">Caduca pronto</p>
+              <ul className="hv-att">
+                {expiring.map((item) => {
+                  const days = daysUntil(item.expires);
+                  return (
+                    <li key={item.id}>
+                      <span className={`hv-bar ${days <= 1 ? "bad" : ""}`} aria-hidden="true" />
+                      <span className="hv-att-main">
+                        <strong>{item.name}</strong>
+                        <small>{days < 0 ? "caducado" : days === 0 ? "hoy" : days === 1 ? "mañana" : `en ${days} días`}</small>
+                      </span>
+                      <button className="hv-btn ghost" onClick={() => setConsumeItem(item)}>
+                        Usar
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           ) : state.inventory.length === 0 ? (
             // E05-09: "Nada en riesgo" sugería que ya estaba todo revisado y en
             // orden — con el inventario vacío, lo real es que todavía no hay
             // nada que vigilar, no que esté "todo bien".
-            <p className="bento-empty">
+            <p className="hv-empty">
               Tu inventario está vacío.{" "}
-              <button className="text-button" onClick={() => goTo("inventory")}>
+              <button className="link-button" onClick={() => goTo("inventory")}>
                 Añade tus primeros alimentos
               </button>
               {" "}para que FoodOS vigile caducidades.
             </p>
           ) : (
-            <p className="bento-empty">Nada en riesgo ✓</p>
+            <p className="hv-empty">Nada en riesgo ✓</p>
           )}
 
           {lowStock.length > 0 && (
-            <>
-              <p className="bento-section-divider">Stock bajo</p>
-              <ul className="expiry-list">
+            <div className="hv-group">
+              <p className="hv-group-title">Stock bajo</p>
+              <ul className="hv-att">
                 {lowStock.map((item) => (
                   <li key={item.id}>
-                    <span className="expiry-dot blue" />
-                    <div>
+                    <span className="hv-bar info" aria-hidden="true" />
+                    <span className="hv-att-main">
                       <strong>{item.name}</strong>
                       <small>quedan pocas unidades</small>
-                    </div>
+                    </span>
                     <button
-                      className="small-action"
+                      className="hv-btn ghost"
                       onClick={() => {
                         mutate(draft => { draft.cart.push({ ...item, id: crypto.randomUUID() }); });
                         showToast(`${item.name} añadido al carrito`);
@@ -382,254 +672,53 @@ export function HomeView({
                   </li>
                 ))}
               </ul>
-            </>
+            </div>
           )}
         </article>
-
-        {/* Presupuesto semanal */}
-        <article className="panel bento-budget">
-          <div className="panel-head">
-            <h3>€ Presupuesto semanal</h3>
-            <button className="text-button" onClick={() => goTo("finance")}>
-              Finanzas
-            </button>
-          </div>
-          <strong className="budget-big">{eur(budgetLeft)}</strong>
-          <small className="budget-sub">
-            disponibles de {eur(state.weeklyBudget)} · gastados {eur(foodSpend)}
-          </small>
-          <div className={`budget-track ${budgetPct >= budgetWarnPct ? "warn" : ""}`}>
-            <i style={{ width: `${budgetPct}%` }} />
-          </div>
-          {state.weeklyBudget > 0 && budgetPct >= budgetWarnPct && (
-            <p className={`budget-alert ${budgetPct < 100 ? "warn" : ""}`} role="status">
-              {budgetPct >= 100
-                ? <>⚠ Presupuesto semanal agotado ({eur(foodSpend)} de {eur(state.weeklyBudget)}).</>
-                : <>⚠ Llevas {eur(foodSpend)} de {eur(state.weeklyBudget)} ({budgetPct}%) y aún es {dateFromKey(getToday(state)).toLocaleDateString("es-ES", { weekday: "long" })}.</>}
-              {" "}
-              <button className="text-button" onClick={() => goTo("recipes")}>
-                Ver recetas económicas
-              </button>
-            </p>
-          )}
-        </article>
-
-        {/* Accesos rapidos */}
-        <article className="panel bento-actions">
-          <button className="quick-action" onClick={() => goTo("inventory")}>
-            <span>＋</span> Añadir alimento
-          </button>
-          <button className="quick-action" onClick={() => goTo("diary")}>
-            <span>🍽</span> Registro
-          </button>
-          <button className="quick-action" onClick={() => goTo("cart")}>
-            <span>🛒</span> Carrito
-            {pendingCart.length > 0 && <b className="quick-badge">{pendingCart.length}</b>}
-          </button>
-          <button className="quick-action" onClick={() => goTo("recipes")}>
-            <span>✦</span> Recetas
-          </button>
-          <button
-            className="quick-action what-to-eat"
-            onClick={() => setWhatToEatOpen((v) => !v)}
-          >
-            <span>🤔</span> ¿Qué como ahora?
-          </button>
-        </article>
-
-        {/* Panel "¿Qué como ahora?" */}
-        {whatToEatOpen && (
-          <article className="panel bento-what-to-eat">
-            <div className="panel-head">
-              <h3>🤔 Mejor opción ahora mismo</h3>
-              <button className="text-button" onClick={() => setWhatToEatOpen(false)}>Cerrar</button>
-            </div>
-            <p className="what-to-eat-context">
-              Te quedan <strong>{Math.round(pending.kcal)} kcal</strong> y{" "}
-              <strong>{Math.round(pending.protein)}g de proteína</strong>.{" "}
-              Presupuesto: <strong>{eur(budgetLeft)}</strong>.
-            </p>
-            <div className="what-to-eat-list">
-              {allRecipes(state)
-                .map((r) => {
-                  const match = getRecipeMatch(state, r);
-                  const kcalFit = pending.kcal > 0 ? 1 - Math.abs(r.kcal - pending.kcal) / Math.max(pending.kcal, 1) : 0.5;
-                  const score = match.pct * 0.5 + Math.max(0, kcalFit) * 30 + (r.cost <= budgetLeft ? 20 : 0);
-                  return { r, match, score };
-                })
-                .filter((e) => e.r.cost <= Math.max(budgetLeft + 1, 2))
-                .sort((a, b) => b.score - a.score)
-                .slice(0, 4)
-                .map(({ r, match }) => (
-                  <div key={r.id} className="what-to-eat-card">
-                    <div className="what-to-eat-info">
-                      <strong>{r.title}</strong>
-                      <small>{r.kcal} kcal · {r.protein}g prot · {eur(r.cost)} · {match.pct}% disponible</small>
-                    </div>
-                    <div className="what-to-eat-actions">
-                      <button className="small-action" onClick={() => { openRecipe(r.id); setWhatToEatOpen(false); }}>
-                        Ver
-                      </button>
-                      <button className="small-action good" onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}>
-                        Cocinar
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              {allRecipes(state).length === 0 && (
-                <p className="empty">Añade recetas para ver sugerencias.</p>
-              )}
-            </div>
-          </article>
-        )}
-
-        {/* E05-05: el insight contextual (mascotInsight) ya se muestra como
-            "estado del día" arriba, en la tarjeta principal — mostrarlo aquí
-            también era la misma frase por duplicado. La mascota se queda
-            como presencia/personalidad, no como segunda fuente de estado. */}
-        <article className="panel bento-mascot">
-          <div className="bento-mascot-avatar">
-            <Image src={mascot.image} alt={mascot.name} width={120} height={134} />
-          </div>
-          <div>
-            <strong>{mascot.name}</strong>
-            <p>Aquí para ayudarte a llegar a tus objetivos de hoy.</p>
-          </div>
-        </article>
-
-        {/* Sugerencia inteligente — cena para cerrar macros o receta con caducidad */}
-        {activeSuggestion && (
-          <article className={`panel bento-suggest ${activeSuggestion.kind === "dinner" ? "dinner" : ""}`}>
-            {activeSuggestion.kind === "dinner" ? (
-              <>
-                <p className="eyebrow">🌙 Cena para cerrar macros</p>
-                <h3>{activeSuggestion.recipe.title}</h3>
-                <p className="suggest-why">
-                  Te quedan <strong>{activeSuggestion.pendingKcal} kcal</strong> y{" "}
-                  <strong>{activeSuggestion.pendingProtein} g de proteína</strong> — esta receta encaja bien para cenar.
-                  {activeSuggestion.usedExpiringItem && (
-                    <> Además usa <strong>{activeSuggestion.usedExpiringItem.name.toLowerCase()}</strong>, que caduca{" "}
-                    {daysUntil(activeSuggestion.usedExpiringItem.expires) <= 0
-                      ? "hoy"
-                      : daysUntil(activeSuggestion.usedExpiringItem.expires) === 1
-                        ? "mañana"
-                        : `en ${daysUntil(activeSuggestion.usedExpiringItem.expires)} días`}.</>
-                  )}
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="eyebrow">Sugerencia con motivo</p>
-                <h3>{activeSuggestion.recipe.title}</h3>
-                <p className="suggest-why">
-                  Usa <strong>{activeSuggestion.usedItem.name.toLowerCase()}</strong> que caduca{" "}
-                  {daysUntil(activeSuggestion.usedItem.expires) <= 0
-                    ? "hoy"
-                    : daysUntil(activeSuggestion.usedItem.expires) === 1
-                      ? "mañana"
-                      : `en ${daysUntil(activeSuggestion.usedItem.expires)} días`}
-                  , aporta <strong>{activeSuggestion.recipe.protein} g de proteína</strong> y cuesta{" "}
-                  {eur(activeSuggestion.recipe.cost)} — dentro de tu presupuesto.
-                </p>
-              </>
-            )}
-            <div className="card-actions">
-              <button className="small-action" onClick={() => openRecipe(activeSuggestion.recipe.id)}>
-                Ver receta
-              </button>
-              <button
-                className="small-action good"
-                onClick={() => setCookingRecipe(activeSuggestion.recipe)}
-              >
-                Cocinar
-              </button>
-            </div>
-          </article>
-        )}
       </div>
 
-      {/* Plan de hoy */}
-      <article className="panel today-plan-panel">
-        <div className="panel-head">
-          <div>
-            <p className="eyebrow">
-              {todayDate.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
-            </p>
-            <h3>Tu plan de hoy</h3>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {state.profile && (() => {
-              // PR A (revisión — P3): denominador = días realmente
-              // evaluables esa semana (excluye unknown_target/unlogged) —
-              // con cero evaluables no hay fracción que mostrar en absoluto,
-              // nunca un "0/7" que se leería como fracaso.
-              const weekFraction = describeEvaluableFraction(hitThisWeek, adherenceLast7Evaluable.length);
-              return (
-                <span
-                  className="badge"
-                  title={`Días esta semana con objetivos de macros cumplidos${adherenceFreshness ? ` — ${adherenceFreshness}` : ""}`}
-                >
-                  {weekFraction.hasEvaluableDays ? `${weekFraction.label} días ✓` : "Sin días evaluables"}
-                  {!adherence.historyComplete ? "…" : ""}
-                </span>
-              );
-            })()}
-            <button className="text-button" onClick={() => goTo("planner")}>
-              {plannedCount === 0 ? "Planificar →" : "Editar →"}
-            </button>
-          </div>
+      {/* 3 · Presupuesto semanal en franja inferior */}
+      <article className="hv-card hv-budget">
+        <div>
+          <p className="hv-eyebrow">Presupuesto semanal</p>
+          <p className="hv-budget-fig">
+            <strong>{eur(budgetLeft)}</strong>
+            <span>disponibles de {eur(state.weeklyBudget)}</span>
+          </p>
         </div>
-
-        {/* PR A (revisión — P2): antes solo iba en el `title` del badge —
-            invisible en móvil, donde no hay hover. Nota visible, distinta
-            para loading/error (`adherenceFreshnessNote`, compartida con
-            NutritionView/StatsView) — "ready" no renderiza nada. */}
-        {adherenceFreshness && (
-          <p
-            className="chart-legend"
-            role={adherence.remoteStatus === "error" ? "alert" : "status"}
+        <div className="hv-budget-mid">
+          <div
+            className={`hv-budget-bar ${budgetPct >= budgetWarnPct ? "warn" : ""}`}
+            role="img"
+            aria-label={`${budgetPct} % del presupuesto semanal gastado`}
           >
-            {adherenceFreshness}
-          </p>
-        )}
-
-        {plannedCount === 0 ? (
-          <p className="today-plan-empty">
-            No tienes nada planificado para hoy.{" "}
-            <button className="link-button" onClick={() => goTo("planner")}>Ir al planificador</button>
-          </p>
-        ) : (
-          <div className="today-plan-slots">
-            {TODAY_SLOTS.map(({ key, label, icon, mealType }) => {
-              const entryId = todayPlan[key];
-              const entry = entryId ? findPlanEntry(state, entryId) : null;
-              return (
-                <div key={key} className={`today-plan-slot ${entry ? "filled" : "empty"}`}>
-                  <div className="today-plan-slot-head">
-                    <span className="today-plan-slot-icon">{icon}</span>
-                    <span className="today-plan-slot-label">{label}</span>
-                  </div>
-                  {entry ? (
-                    <>
-                      <p className="today-plan-slot-name">{entry.title}</p>
-                      <p className="today-plan-slot-meta">{entry.kcal} kcal · {Math.round(entry.protein)}g P</p>
-                      <button
-                        className="today-plan-slot-log"
-                        onClick={() => logPlanEntry(entryId!, mealType)}
-                        title="Registrar en el diario"
-                      >
-                        ✓ Registrar
-                      </button>
-                    </>
-                  ) : (
-                    <p className="today-plan-slot-empty">—</p>
-                  )}
-                </div>
-              );
-            })}
+            <i style={{ width: `${budgetPct}%` }} />
           </div>
+          <small>Gastados {eur(foodSpend)} de {eur(state.weeklyBudget)} esta semana</small>
+        </div>
+        <button className="hv-link" onClick={() => goTo("finance")}>
+          Finanzas →
+        </button>
+        {state.weeklyBudget > 0 && budgetPct >= budgetWarnPct && (
+          <p className={`budget-alert hv-budget-alert ${budgetPct < 100 ? "warn" : ""}`} role="status">
+            {budgetPct >= 100
+              ? <>⚠ Presupuesto semanal agotado ({eur(foodSpend)} de {eur(state.weeklyBudget)}).</>
+              : <>⚠ Llevas {eur(foodSpend)} de {eur(state.weeklyBudget)} ({budgetPct}%) y aún es {dateFromKey(getToday(state)).toLocaleDateString("es-ES", { weekday: "long" })}.</>}
+            {" "}
+            <button className="text-button" onClick={() => goTo("recipes")}>
+              Ver recetas económicas
+            </button>
+          </p>
         )}
       </article>
+
+      {/* 4 · Zana acompaña con el mensaje contextual real */}
+      <div className="hv-pet">
+        <Image className="hv-pet-img" src={mascot.image} alt={mascot.name} width={120} height={134} />
+        <p className="hv-bubble">
+          <strong>{mascot.name}</strong> {mascotInsight}
+        </p>
+      </div>
 
       {consumeItem && <ConsumeModal item={consumeItem} onClose={() => setConsumeItem(null)} />}
       {cookingRecipe && <CookModal recipe={cookingRecipe} onClose={() => setCookingRecipe(null)} />}
@@ -637,23 +726,19 @@ export function HomeView({
   );
 }
 
-function MacroBar({
-  label,
-  value,
-  max,
-  accent = false,
-}: {
-  label: string;
-  value: number;
-  max: number;
-  accent?: boolean;
-}) {
+function MacroTile({ label, value, max }: { label: string; value: number; max: number }) {
+  const over = max > 0 ? Math.round(value) - Math.round(max) : 0;
   return (
-    <label className={accent ? "accent" : ""}>
-      {label} <b>{`${Math.round(value)}/${Math.round(max)}g`}</b>
-      <i>
+    <div className="hv-mac">
+      <span>{label}</span>
+      <b>
+        {Math.round(value)}
+        <small> / {Math.round(max)} g</small>
+      </b>
+      <i aria-hidden="true">
         <em style={{ width: `${clampPct(value, max)}%` }} />
       </i>
-    </label>
+      {over > 0 && <span className="hv-mac-over">+{over} g sobre el objetivo</span>}
+    </div>
   );
 }

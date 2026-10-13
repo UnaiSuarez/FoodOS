@@ -1,0 +1,379 @@
+/* ---------- Panel diario v2 (HomeView) ----------
+   Todo el CSS de este archivo cuelga de `.home-v2`: no toca `.panel`, `.badge`,
+   `.small-action` ni ninguna regla compartida, así que no afecta a otras vistas.
+   Va el ÚLTIMO en dashboard.css (el orden de la cascada importa).
+
+   Tokens: se reutilizan los compartidos (--text, --muted, --hint, --border,
+   --surface, --surface-2, --green, --amber, --red, --blue, --radius-*). Solo se
+   definen aquí, y solo dentro de `.home-v2`, los que son propios de la banda. */
+
+.home-v2 {
+  container: home / inline-size;
+  display: grid;
+  gap: 16px;
+
+  --hv-band: #0f2519;
+  --hv-band-2: #16341f;
+  --hv-band-ink: #eef6ec;
+  --hv-band-muted: #a3c0ab;
+  --hv-accent: #4ade80;
+  --hv-on-accent: #06140a;
+  --hv-card: var(--surface);
+  --hv-card-2: var(--surface-2);
+  --hv-line: var(--border);
+  --hv-brand: var(--green);
+  --hv-on-brand: #07140a;
+  --hv-reg-bg: rgba(74, 222, 128, 0.14);
+  --hv-reg: #6ee79a;
+  --hv-plan-bg: rgba(96, 165, 250, 0.16);
+  --hv-plan: #8fbfff;
+  --hv-warn-bg: rgba(251, 146, 60, 0.16);
+  --hv-warn: #fdab6e;
+  --hv-bad: #fca5a5;
+  --hv-water: #8ec5ff;
+}
+
+/* Claro cálido: papel, tarjetas blancas, verde profundo */
+[data-theme="light"] .home-v2 {
+  --hv-band: #12352a;
+  --hv-band-2: #1a4636;
+  --hv-band-ink: #f2f7ec;
+  --hv-band-muted: #b7cdbd;
+  --hv-accent: #cbe98f;
+  --hv-on-accent: #11271b;
+  --hv-card: #ffffff;
+  --hv-card-2: #f1eee5;
+  --hv-line: #e3ddd0;
+  --hv-brand: #1c6a4b;
+  --hv-on-brand: #ffffff;
+  --hv-reg-bg: #e2f0e3;
+  --hv-reg: #1c6a4b;
+  --hv-plan-bg: #e5edf8;
+  --hv-plan: #2f5d9e;
+  --hv-warn-bg: #fbefd2;
+  --hv-warn: #8a5410;
+  --hv-bad: #a3271e;
+  --hv-water: #8ec5ff;
+  background: #f6f3ec;
+  border-radius: 26px;
+  padding: 18px;
+}
+
+/* Una sola columna explícita. Las tarjetas «¿Qué como ahora?» y «Sugerencia»
+   conservan sus clases antiguas (.bento-*), cuyo `grid-area` con nombre crearía
+   líneas implícitas y una segunda columna aquí: se anula solo dentro del panel. */
+.home-v2 { grid-template-columns: minmax(0, 1fr); }
+.home-v2 > .bento-suggest,
+.home-v2 > .bento-what-to-eat { grid-area: auto; }
+
+/* Los botones nativos traen borde propio; los de este panel parten de cero. */
+.home-v2 :where(.hv-link, .hv-btn, .hv-act, .hv-hchip) { border: 0; }
+
+.home-v2 :focus-visible { outline: 3px solid var(--hv-brand); outline-offset: 2px; border-radius: 8px; }
+.home-v2 .hv-band :focus-visible { outline-color: var(--hv-accent); }
+
+.home-v2 .hv-eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hint);
+}
+
+/* ===== 1 · Banda del día ===== */
+.home-v2 .hv-band {
+  position: relative;
+  display: grid;
+  gap: 20px;
+  padding: 26px;
+  border-radius: 24px;
+  color: var(--hv-band-ink);
+  background: var(--hv-band);
+  overflow: hidden;
+}
+.home-v2 .hv-band::after {
+  content: "";
+  position: absolute;
+  right: -60px;
+  top: -80px;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(203, 233, 143, 0.14), transparent 70%);
+  pointer-events: none;
+}
+.home-v2 .hv-band > * { position: relative; z-index: 1; }
+.home-v2 .hv-band .hv-eyebrow { color: var(--hv-band-muted); }
+.home-v2 .hv-band-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 24px; align-items: flex-start; }
+
+.home-v2 .hv-hero { margin: 8px 0 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.home-v2 .hv-hero-num {
+  font-size: clamp(52px, 8vw, 84px);
+  line-height: 0.95;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.home-v2 .hv-hero-unit { font-size: 18px; font-weight: 600; color: var(--hv-band-muted); }
+.home-v2 .hv-status { margin: 8px 0 0; max-width: 56ch; color: var(--hv-band-muted); }
+
+.home-v2 .hv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.home-v2 .hv-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--hv-band-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+.home-v2 .hv-chip.soft { background: var(--hv-card-2); color: var(--muted); border: 1px solid var(--hv-line); }
+
+/* Barra: SOLO lo registrado. El exceso se ve: la escala crece y hay marca de objetivo. */
+.home-v2 .hv-meter { display: grid; gap: 10px; }
+.home-v2 .hv-meter-bar {
+  position: relative;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+.home-v2 .hv-meter-fill { height: 100%; background: var(--hv-accent); border-radius: 999px; }
+.home-v2 .hv-meter-fill.over { background: var(--hv-accent); }
+.home-v2 .hv-meter-goal {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  margin-left: -1.5px;
+  background: var(--hv-band-ink);
+  box-shadow: 0 0 0 2px var(--hv-band);
+}
+.home-v2 .hv-meter-legend { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px; color: var(--hv-band-muted); }
+.home-v2 .hv-meter-legend b { color: var(--hv-band-ink); font-variant-numeric: tabular-nums; }
+.home-v2 .hv-key { display: inline-block; width: 12px; height: 12px; margin-right: 7px; border-radius: 4px; background: var(--hv-accent); vertical-align: -1px; }
+.home-v2 .hv-over { font-weight: 800; color: #ffd8a8; }
+.home-v2 .hv-plan-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--hv-band-muted);
+  font-size: 13px;
+}
+.home-v2 .hv-plan-note b { color: var(--hv-band-ink); }
+
+.home-v2 .hv-macros { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.home-v2 .hv-mac { display: grid; gap: 4px; padding: 14px 16px; border-radius: 16px; background: var(--hv-band-2); min-width: 0; }
+.home-v2 .hv-mac > span { font-size: 12px; color: var(--hv-band-muted); }
+.home-v2 .hv-mac b { font-size: 28px; line-height: 1.1; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.home-v2 .hv-mac b small { font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--hv-band-muted); }
+.home-v2 .hv-mac i { display: block; height: 5px; margin-top: 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.home-v2 .hv-mac em { display: block; height: 100%; border-radius: inherit; background: var(--hv-accent); }
+.home-v2 .hv-mac .hv-mac-over { margin-top: 2px; font-size: 12px; font-weight: 700; color: #ffd8a8; }
+
+/* Hábitos */
+.home-v2 .hv-habits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.home-v2 .hv-hab { display: grid; gap: 10px; padding: 14px 16px; border-radius: 16px; background: var(--hv-band-2); min-width: 0; }
+.home-v2 .hv-hab-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; flex-wrap: wrap; }
+.home-v2 .hv-hab-val { font-size: 24px; line-height: 1; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.home-v2 .hv-hab-val small { font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--hv-band-muted); }
+.home-v2 .hv-hab-bar { height: 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.home-v2 .hv-hab-bar i { display: block; height: 100%; border-radius: inherit; background: var(--hv-accent); }
+.home-v2 .hv-hab-bar i.water { background: var(--hv-water); }
+.home-v2 .hv-hab-ctl { display: flex; flex-wrap: wrap; gap: 8px; }
+.home-v2 .hv-hchip {
+  min-height: 40px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--hv-band-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+.home-v2 .hv-hchip:hover { background: rgba(255, 255, 255, 0.22); }
+.home-v2 .hv-hchip.dim { background: transparent; border: 1px solid rgba(255, 255, 255, 0.25); }
+.home-v2 .hv-hchip.strong { background: var(--hv-accent); color: var(--hv-on-accent); }
+.home-v2 .hv-steps-input {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--hv-band-ink);
+  font: inherit;
+}
+.home-v2 .hv-steps-input::placeholder { color: var(--hv-band-muted); }
+
+/* Acciones frecuentes */
+.home-v2 .hv-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.home-v2 .hv-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--hv-band-ink);
+  font-weight: 700;
+}
+.home-v2 .hv-act:hover { background: rgba(255, 255, 255, 0.2); }
+.home-v2 .hv-act.primary { background: var(--hv-accent); color: var(--hv-on-accent); }
+.home-v2 .hv-act-n { padding: 0 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.2); font-size: 12px; }
+
+/* ===== 2 · Plan (línea temporal) + inventario ===== */
+.home-v2 .hv-block { margin: 0; }
+.home-v2 .hv-cols { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 16px; align-items: start; }
+.home-v2 .hv-card {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--hv-line);
+  border-radius: 20px;
+  background: var(--hv-card);
+  color: var(--text);
+}
+.home-v2 .hv-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.home-v2 .hv-card h3 { margin: 4px 0 0; font-size: 19px; letter-spacing: -0.015em; }
+.home-v2 .hv-head-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.home-v2 .hv-link {
+  min-height: 32px;
+  padding: 6px 2px;
+  background: none;
+  color: var(--hv-brand);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+}
+.home-v2 .today-plan-empty { margin: 0; color: var(--muted); }
+.home-v2 .chart-legend { margin: 0 0 12px; }
+.home-v2 .hv-foot { margin: 14px 0 0; color: var(--muted); font-size: 12.5px; }
+
+.home-v2 .hv-line { position: relative; margin: 0; padding: 0; list-style: none; }
+.home-v2 .hv-line::before { content: ""; position: absolute; left: 15px; top: 8px; bottom: 8px; width: 2px; background: var(--hv-line); }
+.home-v2 .hv-step { position: relative; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 14px; padding: 0 0 20px; }
+.home-v2 .hv-step:last-child { padding-bottom: 0; }
+.home-v2 .hv-node {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--hv-line);
+  background: var(--hv-card);
+  color: var(--muted);
+  font-size: 14px;
+}
+.home-v2 .hv-step.reg .hv-node { background: var(--hv-brand); border-color: var(--hv-brand); color: var(--hv-on-brand); }
+.home-v2 .hv-step.plan .hv-node { border: 2px dashed var(--hv-plan); color: var(--hv-plan); }
+.home-v2 .hv-step-time { font-size: 12px; color: var(--hint); font-variant-numeric: tabular-nums; }
+.home-v2 .hv-step-name { font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+.home-v2 .hv-step-meta { margin-top: 2px; font-size: 13px; color: var(--muted); }
+.home-v2 .hv-step-warn { margin-top: 6px; padding: 6px 10px; border-radius: 10px; background: var(--hv-warn-bg); color: var(--hv-warn); font-size: 12.5px; }
+.home-v2 .hv-tag { display: inline-block; margin-right: 6px; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+.home-v2 .hv-tag.reg { background: var(--hv-reg-bg); color: var(--hv-reg); }
+.home-v2 .hv-tag.plan { background: var(--hv-plan-bg); color: var(--hv-plan); }
+
+.home-v2 .hv-btn {
+  min-height: 42px;
+  padding: 8px 16px;
+  border-radius: 12px;
+  background: var(--hv-brand);
+  color: var(--hv-on-brand);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.home-v2 .hv-btn.ghost { background: transparent; color: var(--hv-brand); border: 1px solid var(--hv-line); }
+
+/* Inventario */
+.home-v2 .hv-group + .hv-group,
+.home-v2 .hv-group + .hv-empty,
+.home-v2 .hv-empty + .hv-group { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--hv-line); }
+.home-v2 .hv-group-title { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--hint); }
+.home-v2 .hv-att { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.home-v2 .hv-att li { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 14px; background: var(--hv-card-2); }
+.home-v2 .hv-bar { width: 8px; height: 38px; border-radius: 99px; background: var(--hv-warn); }
+.home-v2 .hv-bar.bad { background: var(--hv-bad); }
+.home-v2 .hv-bar.info { background: var(--hv-plan); }
+.home-v2 .hv-att-main strong { display: block; }
+.home-v2 .hv-att-main small { color: var(--muted); }
+.home-v2 .hv-empty { margin: 0; color: var(--muted); }
+
+/* ===== 3 · Presupuesto ===== */
+.home-v2 .hv-budget { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 28px; align-items: center; padding: 20px 24px; }
+.home-v2 .hv-budget-fig { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 8px 0 0; }
+.home-v2 .hv-budget-fig strong { font-size: 34px; line-height: 1; font-weight: 800; letter-spacing: -0.035em; font-variant-numeric: tabular-nums; }
+.home-v2 .hv-budget-fig span { color: var(--muted); }
+.home-v2 .hv-budget-bar { height: 10px; margin-bottom: 8px; border-radius: 99px; background: var(--hv-card-2); border: 1px solid var(--hv-line); overflow: hidden; }
+.home-v2 .hv-budget-bar i { display: block; height: 100%; border-radius: inherit; background: var(--hv-brand); }
+.home-v2 .hv-budget-bar.warn i { background: var(--hv-warn); }
+.home-v2 .hv-budget-mid small { color: var(--muted); }
+.home-v2 .hv-budget-alert { grid-column: 1 / -1; margin: 0; }
+
+/* ===== 4 · Zana ===== */
+.home-v2 .hv-pet { display: flex; align-items: center; gap: 14px; padding: 4px 6px; }
+.home-v2 .hv-pet-img { width: 56px; height: 56px; object-fit: cover; border-radius: 16px; background: var(--hv-card-2); border: 1px solid var(--hv-line); flex: none; }
+.home-v2 .hv-bubble {
+  position: relative;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--hv-line);
+  border-radius: 16px;
+  background: var(--hv-card);
+  color: var(--muted);
+}
+.home-v2 .hv-bubble strong { margin-right: 6px; color: var(--text); }
+.home-v2 .hv-bubble::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 20px;
+  width: 12px;
+  height: 12px;
+  background: var(--hv-card);
+  border-left: 1px solid var(--hv-line);
+  border-bottom: 1px solid var(--hv-line);
+  transform: rotate(45deg);
+}
+
+/* ===== Responsive por contenedor ===== */
+.home-v2 .hv-step .hv-btn { align-self: center; }
+
+@container home (max-width: 780px) {
+  .home-v2 .hv-cols { grid-template-columns: 1fr; }
+  .home-v2 .hv-budget { grid-template-columns: 1fr auto; }
+  .home-v2 .hv-budget-mid { grid-column: 1 / -1; grid-row: 2; }
+}
+@container home (max-width: 700px) {
+  .home-v2 { gap: 12px; }
+  .home-v2 .hv-band { padding: 20px; border-radius: 20px; gap: 16px; }
+  .home-v2 .hv-macros { gap: 8px; }
+  .home-v2 .hv-mac { padding: 12px; }
+  .home-v2 .hv-mac b { font-size: 22px; }
+  /* Hábitos compactos: dos mitades, sin ocultar ningún incremento de agua */
+  .home-v2 .hv-habits { gap: 10px; }
+  .home-v2 .hv-hab { padding: 12px; gap: 8px; }
+  .home-v2 .hv-hab-top { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .home-v2 .hv-hab-val { font-size: 22px; }
+  .home-v2 .hv-hab-ctl { gap: 6px; }
+  .home-v2 .hv-hchip { padding: 6px 10px; }
+  .home-v2 .hv-hunit { display: none; }
+  .home-v2 .hv-steps-input { flex-basis: 100%; width: 100%; }
+  .home-v2 .hv-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .home-v2 .hv-act { justify-content: flex-start; gap: 7px; padding: 10px 12px; font-size: 13px; border-radius: 16px; }
+  .home-v2 .hv-act.primary { grid-column: 1 / -1; justify-content: center; }
+  .home-v2 .hv-card { padding: 18px; border-radius: 18px; }
+  .home-v2 .hv-step { grid-template-columns: 32px minmax(0, 1fr); }
+  .home-v2 .hv-step .hv-btn { grid-column: 2; justify-self: start; }
+  .home-v2 .hv-budget { padding: 18px; gap: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-v2 * { transition: none !important; }
+}
