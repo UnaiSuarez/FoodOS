@@ -188,7 +188,8 @@ describe("ConsumeModal — precisión admitida (2 decimales): ni validación, ni
     const holder = await mount((d) => { d.inventory = [low]; }, low);
     click(checkboxByLabel("He pesado"));
     setNativeValue(numberInputByLabel("Gramos pesados"), "500");
-    expect(container.textContent).toContain("Solo hay 200.6 g");
+    expect(container.textContent).toContain("Solo quedan 200.6 g. Se registrará esa cantidad; el peso registrado será distinto del que has indicado (500 g).");
+    expect(container.textContent).not.toContain("confianza");
 
     const expected = macrosForQuantity(low, 200.6);
     expect(macroCells()[0]).toBe(String(expected.kcal));

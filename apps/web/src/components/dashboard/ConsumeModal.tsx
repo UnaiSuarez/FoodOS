@@ -185,8 +185,8 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           )}
           {weighedReduced && (
             <small style={{ color: "var(--amber, #c90)" }}>
-              Solo hay {item.qty} g: se registrará esa cantidad (no los {declaredGramsInput} g) y no contará como
-              peso declarado con confianza alta.
+              Solo quedan {item.qty} g. Se registrará esa cantidad; el peso registrado será distinto del que has
+              indicado ({declaredGramsInput} g).
             </small>
           )}
           {blockedReason && <small style={{ color: "var(--amber, #c90)" }}>{blockedReason}</small>}

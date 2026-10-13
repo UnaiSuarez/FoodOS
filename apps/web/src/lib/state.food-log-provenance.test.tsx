@@ -248,7 +248,7 @@ describe("consumeInventoryItem — declaración de peso (§20): unidades separad
     expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 150 });
   });
 
-  it("§20.6b — 233 g desde 1,5 kg: bloqueado (kg fuera de alcance), el stock sigue en 1,5 — nunca 1,27 por truncado", () => {
+  it("§20.6b — 233 g desde 1,5 kg: bloqueado (kg fuera de alcance), el stock sigue en 1,5 — nunca 1,27 por redondeo", () => {
     const draft = structuredClone(defaultState);
     draft.inventory = [inv({ unit: "kg", qty: 1.5, carbs: 0, fat: 3.6 })];
     const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 233 });
