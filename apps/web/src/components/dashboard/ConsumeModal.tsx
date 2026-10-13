@@ -4,19 +4,27 @@ import { useMemo, useState } from "react";
 import type { InventoryItem } from "@foodos/types";
 import { actions, macrosForQuantity, useFoodOS, type ConsumeInventoryResult } from "@/lib/state";
 import { intentGuard, runGuardedIntentResult } from "@/lib/intent-guard";
+import { hasAtMostTwoDecimals } from "@/lib/pg-numeric";
 import { uid } from "@/lib/utils";
 import { Modal } from "./Modal";
 
-const WEIGHABLE_UNITS = new Set(["g", "kg"]);
+// El modo pesado solo se ofrece con inventario en gramos: en "kg",
+// inventory_items.quantity numeric(10,2) deja 10 g de granularidad y no
+// conserva el peso declarado (1,5 kg − 233 g = 1,267 kg se guardaría como 1,27).
+const WEIGHABLE_UNIT = "g";
 
-/** §20.5 — mismo saneado estricto que `sanitizeFoodLogProvenance`: finito y
- *  estrictamente positivo, o un mensaje de error comprensible. Nunca
- *  convierte una entrada vacía o inválida en 0 en silencio. */
+/** §20.5 — mismo saneado estricto que `sanitizeFoodLogProvenance`: finito,
+ *  estrictamente positivo y con como mucho 2 decimales (la precisión
+ *  persistida), o un mensaje de error comprensible. Nunca convierte una
+ *  entrada vacía o inválida en 0 ni redondea en silencio un peso con más
+ *  decimales: lo rechaza. */
 function parseDeclaredGrams(raw: string): { value: number } | { error: string } {
-  if (raw.trim() === "") return { error: "Indica cuántos gramos has pesado." };
-  const value = Number(raw);
+  const text = raw.trim().replace(",", ".");
+  if (text === "") return { error: "Indica cuántos gramos has pesado." };
+  const value = Number(text);
   if (!Number.isFinite(value)) return { error: "No es un número válido." };
   if (value <= 0) return { error: "Debe ser mayor que 0." };
+  if (!hasAtMostTwoDecimals(value)) return { error: "Usa como máximo 2 decimales (0,01 g)." };
   return { value };
 }
 
@@ -32,8 +40,8 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
   // normal, nunca recordado entre aperturas del modal (useState vuelve a
   // `false` cada vez que este componente se monta de nuevo — no hay
   // ninguna fuente que lo precargue a `true`). Solo se ofrece cuando la
-  // unidad del item YA es masa exacta — nunca para "ud"/"ml"/etc (§20.3).
-  const canWeigh = WEIGHABLE_UNITS.has(item.unit);
+  // unidad del item YA es "g" — nunca para "kg"/"ud"/"ml"/etc (§20.3).
+  const canWeigh = item.unit === WEIGHABLE_UNIT;
   const [weighed, setWeighed] = useState(false);
   const [declaredGramsInput, setDeclaredGramsInput] = useState("");
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
@@ -55,12 +63,19 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
       : [Math.round(item.qty * 0.25), Math.round(item.qty * 0.5), item.qty].filter((v) => v > 0);
 
   const declaredGrams = parseDeclaredGrams(declaredGramsInput);
-  // Vista previa de macros SOLO cuando hay un número válido — un campo vacío
-  // o inválido no debe mostrar una cifra inventada.
+  // Lo que el escritor registrará de verdad: lo declarado, o el stock entero
+  // si no llega (comparación en bruto, sin redondear — mismo criterio que
+  // consumeInventoryItem). null mientras no haya un número válido: un campo
+  // vacío o inválido no debe mostrar una cifra inventada.
+  const weighedGrams = "value" in declaredGrams ? Math.min(declaredGrams.value, item.qty) : null;
+  const weighedReduced = "value" in declaredGrams && declaredGrams.value > item.qty;
+  // Misma función y mismo número que el escritor → los macros mostrados son
+  // exactamente los que se registran.
   const weighedMacros = useMemo(
-    () => ("value" in declaredGrams ? macrosForQuantity(item, item.unit === "kg" ? declaredGrams.value / 1000 : declaredGrams.value) : null),
-    [item, declaredGrams],
+    () => (weighedGrams !== null ? macrosForQuantity(item, weighedGrams) : null),
+    [item, weighedGrams],
   );
+  const weighedRemaining = weighedGrams !== null ? Math.round((item.qty - weighedGrams) * 100) / 100 : null;
 
   function handleWeighedToggle(next: boolean) {
     setWeighed(next);
@@ -94,7 +109,7 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
     switch (outcome.kind) {
       case "written":
         setMascotMessage("Consumo registrado en tu diario.");
-        showToast(weighed ? `${item.name}: ${declaredGramsInput} g registrados` : `${item.name}: ${safeQty} ${item.unit} registrados (${macros.kcal} kcal)`);
+        showToast(weighed ? `${item.name}: ${weighedGrams} g registrados` : `${item.name}: ${safeQty} ${item.unit} registrados (${macros.kcal} kcal)`);
         onClose();
         return;
       case "written_reduced":
@@ -142,6 +157,14 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           He pesado esta cantidad (g)
         </label>
       )}
+      {item.unit === "kg" && (
+        <p className="consume-remaining" style={{ marginTop: 8 }}>
+          <small>
+            Declarar un peso exacto solo está disponible con inventario en gramos; en kg se registra la cantidad
+            estimada de siempre.
+          </small>
+        </p>
+      )}
 
       {weighed ? (
         <div className="consume-controls">
@@ -150,7 +173,7 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
             <input
               type="number"
               min="0"
-              step="1"
+              step="0.01"
               value={declaredGramsInput}
               onChange={(event) => { setDeclaredGramsInput(event.target.value); setBlockedReason(null); }}
               autoFocus
@@ -159,6 +182,12 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           </label>
           {"error" in declaredGrams && declaredGramsInput !== "" && (
             <small style={{ color: "var(--red, #c33)" }}>{declaredGrams.error}</small>
+          )}
+          {weighedReduced && (
+            <small style={{ color: "var(--amber, #c90)" }}>
+              Solo hay {item.qty} g: se registrará esa cantidad (no los {declaredGramsInput} g) y no contará como
+              peso declarado con confianza alta.
+            </small>
           )}
           {blockedReason && <small style={{ color: "var(--amber, #c90)" }}>{blockedReason}</small>}
         </div>
@@ -219,6 +248,19 @@ export function ConsumeModal({ item, onClose }: { item: InventoryItem; onClose: 
           <span className="macro-lbl">grasas est.</span>
         </div>
       </div>
+
+      {weighed && weighedGrams !== null && weighedRemaining !== null && (
+        <p className="consume-remaining">
+          Se registrarán <strong>{weighedGrams} g</strong>
+          {weighedRemaining > 0 ? (
+            <>
+              {" "}— quedarán <strong>{weighedRemaining} g</strong> en tu inventario.
+            </>
+          ) : (
+            <> — el alimento se eliminará del inventario.</>
+          )}
+        </p>
+      )}
 
       {!weighed && (
         <p className="consume-remaining">

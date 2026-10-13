@@ -1,0 +1,9 @@
+{
+  "name": "inventory-quantity-precision-verification",
+  "private": true,
+  "type": "module",
+  "description": "Verificacion en un Postgres aislado (PGlite) de que inventory_items.quantity numeric(10,2) trunca a 2 decimales al persistir, y reproduccion del recorrido consumo->pushState->pullState para 1,5 kg - 233 g. No forma parte de la app ni del workspace.",
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}

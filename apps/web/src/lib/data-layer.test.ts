@@ -13,6 +13,8 @@ import { remote, waitForMutationConfirmed } from "./data-layer";
 import * as outbox from "./outbox";
 import { NUTRITION_ENGINE_VERSION } from "./nutrition";
 import { inventoryConsumptionProvenance } from "./food-log-provenance";
+import { buildDiaryIntegrityInput } from "./nutrition-v4-adapter";
+import { actions } from "./state";
 import { todayPlus } from "./utils";
 
 // ─── Cliente Supabase falso ─────────────────────────────────────────────────
@@ -1149,7 +1151,9 @@ function makeColumnAwarePullClient(tableData: Record<string, FakeSelectResult>) 
               .filter((column) => column in row)
               .map((column) => {
                 const value = row[column];
-                const rounded = /_per_100$|^unit_size$/.test(column) && typeof value === "number" ? postgresNumeric2(value) : value;
+                // inventory_items.quantity es numeric(10,2) y food_log.quantity_g
+                // numeric(8,2) en el esquema real (information_schema, solo lectura).
+                const rounded = /_per_100$|^unit_size$|^quantity$|^quantity_g$/.test(column) && typeof value === "number" ? postgresNumeric2(value) : value;
                 return [column, rounded];
               }),
           ),
@@ -3184,5 +3188,101 @@ describe("subscribeRealtime — generación única y topic por generación (dise
     // ejercitan exactamente ese patrón contra subscribeRealtime() real sin
     // que nada lance — esa es la defensa que este test contrasta, no una
     // afirmación sobre qué disparó el incidente real.
+  });
+});
+
+// ─── §20.6b — consumo pesado: consumo → pushState → pullState → relectura ──────
+// Reproduce el recorrido completo del PR #150 con las funciones REALES (escritor,
+// pushState, pullState, adaptador) y un cliente falso que redondea a numeric(…,2)
+// las columnas que el esquema real declara así (inventory_items.quantity
+// numeric(10,2), food_log.quantity_g numeric(8,2)). El diario guarda qty/unit
+// exactos en client_meta (JSONB); el inventario solo conserva 2 decimales.
+
+describe("§20.6b — consumo pesado: consumo → sincronización → relectura conserva cantidad, stock y confianza", () => {
+  const windowOneDay = (date: string) => ({ startDateKey: date, endDateKey: date });
+  const THRESHOLDS_REREAD = { dailyReliabilityThreshold: 0.8, provisionalKcalFractionThreshold: 0.25 };
+  const ITEM_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+  function pantry(unit: string, qty: number): InventoryItem {
+    return { id: ITEM_ID, name: "Pechuga", qty, unit, storage: "Nevera", expires: "2099-01-01", price: 4, kcal: 165, protein: 31, carbs: 0, fat: 3.6 };
+  }
+
+  async function consumeSyncReload(item: InventoryItem, input: { declaredGrams: number } | { qty: number }) {
+    const state = makeState({ inventory: [structuredClone(item)] });
+    const result = actions.consumeInventoryItem(state, ITEM_ID, input);
+    const calls = setup(successConfig());
+    await remote.pushState(testCtx(), state);
+    const rowsOf = (table: string) => structuredClone((calls.find((c) => c.table === table && c.op === "upsert")?.args ?? []) as Array<Record<string, unknown>>);
+    const inventoryRows = rowsOf("inventory_items");
+    const foodRows = rowsOf("food_log").map((r) => ({ ...r, created_at: "2026-09-20T12:00:00Z" }));
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeColumnAwarePullClient({
+      inventory_items: { data: inventoryRows, error: null },
+      food_log: { data: foodRows, error: null },
+    });
+    r.shoppingListId = "shopping-list-1";
+    const pulled = await remote.pullState(makeState());
+    return { result, written: state.foodLog[state.foodLog.length - 1], pulled };
+  }
+
+  function rereadConfidence(entry: FoodLogEntry) {
+    const input = buildDiaryIntegrityInput([entry], windowOneDay(entry.date), THRESHOLDS_REREAD);
+    return input.entries.find((e) => e.dateKey === entry.date)!.quantityConfidence;
+  }
+
+  it("233,6 g de 500 g: tras sincronizar y recargar, qty 233,6, stock 266,4 y confianza high", async () => {
+    const { result, pulled } = await consumeSyncReload(pantry("g", 500), { declaredGrams: 233.6 });
+    expect(result.kind).toBe("written");
+    const entry = pulled.foodLog[0];
+    expect(entry).toMatchObject({ qty: 233.6, unit: "g", quantityConfidence: { level: "high", declaredGrams: 233.6 } });
+    expect(pulled.inventory[0].qty).toBe(266.4);
+    expect(rereadConfidence(entry)).toBe("high");
+  });
+
+  it("0,4 g de 500 g: tras sincronizar y recargar, qty 0,4 (positiva), stock 499,6 y confianza high", async () => {
+    const { pulled } = await consumeSyncReload(pantry("g", 500), { declaredGrams: 0.4 });
+    const entry = pulled.foodLog[0];
+    expect(entry.qty).toBe(0.4);
+    expect(pulled.inventory[0].qty).toBe(499.6);
+    expect(rereadConfidence(entry)).toBe("high");
+  });
+
+  it("500 g declarados sobre 200,6 g disponibles: se registra 200,6 (nunca más que el stock), low, y el item se agota", async () => {
+    const { result, pulled } = await consumeSyncReload(pantry("g", 200.6), { declaredGrams: 500 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = pulled.foodLog[0];
+    expect(entry.qty).toBe(200.6);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect(rereadConfidence(entry)).toBe("low");
+    expect(pulled.inventory).toHaveLength(0);
+  });
+
+  it("recorte oculto: 200,01 declarados frente a 200,009 disponibles (iguales a 2 decimales) sigue siendo low tras releer", async () => {
+    const { result, pulled } = await consumeSyncReload(pantry("g", 200.009), { declaredGrams: 200.01 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = pulled.foodLog[0];
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect(rereadConfidence(entry)).toBe("low");
+  });
+
+  it("kg: el modo pesado queda bloqueado y no escribe nada que sincronizar", async () => {
+    const { result, pulled } = await consumeSyncReload(pantry("kg", 1.5), { declaredGrams: 233 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(pulled.foodLog).toHaveLength(0);
+    expect(pulled.inventory[0].qty).toBe(1.5);
+  });
+
+  it("la limitación a gramos existe porque numeric(10,2) NO conserva 3 decimales: 1,267 kg vuelve como 1,27", async () => {
+    // Sin consumo de por medio: un stock local de 1,267 kg (lo que dejaría
+    // 1,5 kg − 233 g con fidelidad de 1 g) se sincroniza y se relee. Documenta
+    // la pérdida real que justifica no ofrecer el modo pesado en kg.
+    const calls = setup(successConfig());
+    await remote.pushState(testCtx(), makeState({ inventory: [pantry("kg", 1.267)] }));
+    const rows = structuredClone((calls.find((c) => c.table === "inventory_items" && c.op === "upsert")!.args) as Array<Record<string, unknown>>);
+    const r = remote as unknown as { client: unknown; shoppingListId: string | null };
+    r.client = makeColumnAwarePullClient({ inventory_items: { data: rows, error: null } });
+    r.shoppingListId = "shopping-list-1";
+    const pulled = await remote.pullState(makeState());
+    expect(pulled.inventory[0].qty).toBe(1.27);
   });
 });

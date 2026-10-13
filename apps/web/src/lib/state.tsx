@@ -21,6 +21,7 @@ import { DEMO_RECIPES } from "./recipes";
 import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
+import { hasAtMostTwoDecimals } from "./pg-numeric";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, massUnitFromGrams, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
@@ -2980,13 +2981,15 @@ export function deductFromInventoryFIFO(
  *   (consumido/borrado por otra pestaña/acción entre abrir el modal y
  *   confirmar) — no se escribió nada, no se tocó el inventario.
  * - `"unit_incompatible"`: solo alcanzable con una declaración de peso —
- *   `item.unit` dejó la familia de masa exacta entre declarar y escribir;
- *   no se escribió nada, no se tocó el inventario (§20.3b).
+ *   `item.unit` no es `"g"` al escribir (cambió entre declarar y escribir,
+ *   o es `"kg"`, fuera del alcance del modo pesado — §20.10); no se escribió
+ *   nada, no se tocó el inventario (§20.3b).
  * - `"mutation_blocked"`: `mutate()` ni siquiera ejecutó este updater (gate
  *   de hidratación cerrado) — distinto de `"item_missing"`: aquí no se
  *   sabe si el item sigue existiendo, simplemente no se llegó a mirar.
  * - `"invalid_declared_grams"`: solo alcanzable con una declaración de
- *   peso — `declaredGrams` no finito, cero o negativo. El modal ya lo
+ *   peso — `declaredGrams` no finito, cero, negativo o con más de 2
+ *   decimales (la precisión persistida; se rechaza, no se redondea). El modal ya lo
  *   impide (botón deshabilitado); este es el escritor defendiéndose por su
  *   cuenta, no confiando en que todo llamador futuro repita esa validación
  *   (§20.5). No se escribió nada, no se tocó el inventario.
@@ -3057,8 +3060,8 @@ export const actions = {
    * §20 — `input` es una de dos cosas, nunca mezclables: `{ qty }` es el
    * camino de siempre (estimado, en `item.unit`); `{ declaredGrams }` es
    * una declaración de PESO (siempre gramos, nunca `item.unit` — §20.2),
-   * solo válida si `item.unit` está en la familia de masa exacta en el
-   * momento de escribir (§20.3b): si no, esta función NO escribe nada (ver
+   * solo válida si `item.unit` es `"g"` en el momento de escribir (§20.3b,
+   * §20.10) y con como mucho 2 decimales: si no, esta función NO escribe nada (ver
    * `ConsumeInventoryResult`, más abajo).
    *
    * Devuelve un resultado de negocio explícito — nunca `void` — porque
@@ -3087,25 +3090,30 @@ export const actions = {
       // ingesta ni tocar el inventario. El modal ya lo impide (botón
       // deshabilitado), pero este escritor es la autoridad final — no
       // confía en que todo llamador futuro repita esa validación.
-      if (!Number.isFinite(input.declaredGrams) || input.declaredGrams <= 0) return { kind: "invalid_declared_grams" };
-      // §20.3b — la declaración en gramos solo es interpretable mientras el
-      // item sigue en la familia de masa exacta EN ESTE INSTANTE, no en el
-      // momento en que se tecleó: un cambio de unidad entre confirmar y
-      // escribir (otra pestaña, otra acción) deja de ser una pérdida de
-      // confianza y pasa a ser un cálculo no seguro — se bloquea entero.
-      if (item.unit !== "g" && item.unit !== "kg") return { kind: "unit_incompatible" };
-      const availableGrams = toGrams(item.qty, item.unit);
-      const consumedGrams = Math.min(input.declaredGrams, availableGrams);
-      // §20.7A — el recorte se decide AQUÍ, SIN redondear: comparar cifras
-      // ya redondeadas a 2 decimales podría esconder un recorte real si
-      // ambas coincidieran por casualidad tras el redondeo.
-      reduced = consumedGrams !== input.declaredGrams;
-      // §20.6b — fidelidad de 1 g para "kg" (3 decimales), no los 2
-      // decimales/10 g que usa cualquier otro consumo: con menos
-      // precisión aquí, la comprobación de coherencia de la relectura
-      // (§20.7B, 0,01 g) rechazaría sistemáticamente un camino correcto.
-      const consumedGramsRounded = Math.round(consumedGrams);
-      consumed = item.unit === "kg" ? consumedGramsRounded / 1000 : consumedGramsRounded;
+      // Precisión admitida (§20.6b): como mucho 2 decimales — la de
+      // inventory_items.quantity numeric(10,2). Más decimales se RECHAZAN, no
+      // se redondean: el peso declarado nunca se sustituye por otro en silencio.
+      if (!Number.isFinite(input.declaredGrams) || input.declaredGrams <= 0 || !hasAtMostTwoDecimals(input.declaredGrams)) {
+        return { kind: "invalid_declared_grams" };
+      }
+      // §20.3b / §20.6b — la declaración solo es interpretable y persistible
+      // sin pérdida con inventario en GRAMOS en este instante (no cuando se
+      // tecleó). "kg" queda fuera: numeric(10,2) en kg deja 10 g de
+      // granularidad, así que 1,5 kg − 233 g (1,267) no sobreviviría a la
+      // sincronización. Cualquier otra unidad, o un cambio de unidad entre
+      // confirmar y escribir, bloquea entero: no se escribe nada.
+      if (item.unit !== "g") return { kind: "unit_incompatible" };
+      // Sin stock utilizable no hay nada que consumir: nunca se escribe un
+      // registro de 0 g ni se acredita una declaración sobre nada.
+      if (!(item.qty > 0)) return { kind: "item_missing" };
+      // §20.7A — gramos contra gramos, sin conversión ni redondeo: el recorte
+      // se decide con los números EN BRUTO. Redondear antes de comparar podría
+      // esconder un recorte real si ambas cifras coincidieran tras redondear
+      // (p. ej. 200,01 declarados frente a 200,009 disponibles).
+      reduced = input.declaredGrams > item.qty;
+      // Lo registrado es exactamente lo declarado, o exactamente el stock
+      // entero si no llega: nunca un tercer número, nunca por encima del stock.
+      consumed = reduced ? item.qty : input.declaredGrams;
       quantityConfidence = reduced ? { level: "low" } : { level: "high", declaredGrams: input.declaredGrams };
     } else {
       consumed = Math.min(input.qty, item.qty);
@@ -3154,14 +3162,10 @@ export const actions = {
         unitSizeUnit: item.unitSizeUnit,
       },
     });
-    // §20.6b — la misma precisión de 1 g (3 decimales en "kg") se usa para
-    // el stock restante SOLO en el camino pesado, para que la cantidad
-    // registrada en el diario y la descontada del inventario nunca se
-    // desincronicen entre sí. El resto de consumos sigue en 2 decimales,
-    // sin cambios.
-    item.qty = isWeighed && item.unit === "kg"
-      ? Math.round((item.qty - consumed) * 1000) / 1000
-      : Math.round((item.qty - consumed) * 100) / 100;
+    // 2 decimales: la precisión persistida de inventory_items.quantity. En el
+    // camino pesado (solo "g") `consumed` ya tiene como mucho 2 decimales, así
+    // que lo descontado coincide exactamente con lo registrado en el diario.
+    item.qty = Math.round((item.qty - consumed) * 100) / 100;
     if (item.qty <= 0) {
       draft.inventory = draft.inventory.filter((candidate) => candidate.id !== itemId);
     }

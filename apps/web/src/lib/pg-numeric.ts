@@ -35,6 +35,16 @@ function plainDecimal(abs: number): { int: string; frac: string } {
 }
 
 /**
+ * ¿Sobrevive `value` sin cambio a una columna numeric(p,2)? Es decir: finito y
+ * con, como mucho, 2 decimales. Es la precisión ADMITIDA para una cantidad
+ * pesada en gramos (`inventory_items.quantity` es numeric(10,2)): lo que no la
+ * cumple se rechaza explícitamente, nunca se redondea en silencio.
+ */
+export function hasAtMostTwoDecimals(value: number): boolean {
+  return Number.isFinite(value) && canonicalNumeric2(value) === value;
+}
+
+/**
  * El valor que devuelve PostgreSQL tras guardar `value` en una columna
  * numeric(p,2): redondeo a 2 decimales, mitad hacia arriba en valor absoluto,
  * sobre la representación decimal del número. Un valor no finito se devuelve tal

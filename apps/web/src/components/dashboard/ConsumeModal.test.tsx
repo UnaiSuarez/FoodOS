@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { FoodLogEntry, InventoryItem } from "@foodos/types";
-import { FoodOSProvider, useFoodOS } from "@/lib/state";
+import { FoodOSProvider, macrosForQuantity, useFoodOS } from "@/lib/state";
 import { ConsumeModal } from "./ConsumeModal";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,7 +31,7 @@ function makeCapture() {
 
 function item(overrides: Partial<InventoryItem> = {}): InventoryItem {
   return {
-    id: "inv-1", name: "Pechuga de pollo", qty: 1, unit: "kg", storage: "Nevera", expires: "2099-01-01", price: 4,
+    id: "inv-1", name: "Pechuga de pollo", qty: 1000, unit: "g", storage: "Nevera", expires: "2099-01-01", price: 4,
     kcal: 165, protein: 31, carbs: 0, fat: 3.6,
     ...overrides,
   };
@@ -105,10 +105,21 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("ConsumeModal — modo «He pesado»: visible solo para g/kg, desmarcado al abrir", () => {
-  it("la casilla aparece para un item en 'kg'", async () => {
+describe("ConsumeModal — modo «He pesado»: visible solo para inventario en gramos, desmarcado al abrir", () => {
+  it("la casilla aparece para un item en 'g'", async () => {
     await mount((d) => { d.inventory = [item()]; }, item());
     expect(() => checkboxByLabel("He pesado")).not.toThrow();
+  });
+
+  it("la casilla NO aparece para un item en 'kg' y la interfaz explica por qué; el recorrido estimado sigue disponible", async () => {
+    const kg = item({ unit: "kg", qty: 1.5 });
+    const holder = await mount((d) => { d.inventory = [kg]; }, kg);
+    expect(() => checkboxByLabel("He pesado")).toThrow();
+    expect(container.textContent).toContain("solo está disponible con inventario en gramos");
+    expect(() => numberInputByLabel("Cantidad (kg)")).not.toThrow();
+    // El estimado de siempre registra sin quantityConfidence.
+    click(buttonByText("Registrar consumo"));
+    expect(lastEntry(holder).quantityConfidence).toBeUndefined();
   });
 
   it("la casilla NO aparece para un item en 'ud'", async () => {
@@ -119,22 +130,74 @@ describe("ConsumeModal — modo «He pesado»: visible solo para g/kg, desmarcad
   it("empieza desmarcada — el recorrido estimado (slider/presets) sigue visible por defecto", async () => {
     await mount((d) => { d.inventory = [item()]; }, item());
     expect(checkboxByLabel("He pesado").checked).toBe(false);
-    expect(() => numberInputByLabel("Cantidad (kg)")).not.toThrow();
+    expect(() => numberInputByLabel("Cantidad (g)")).not.toThrow();
   });
 });
 
-describe("ConsumeModal — modo «He pesado»: 200 g desde 1 kg (ejemplo obligatorio de §20)", () => {
-  it("registra con qty:0.2, unit:'kg', quantityConfidence high con declaredGrams:200", async () => {
+describe("ConsumeModal — modo «He pesado»: 200 g desde 1000 g", () => {
+  it("registra con qty:200, unit:'g', quantityConfidence high con declaredGrams:200", async () => {
     const holder = await mount((d) => { d.inventory = [item()]; }, item());
     click(checkboxByLabel("He pesado"));
     setNativeValue(numberInputByLabel("Gramos pesados"), "200");
     click(buttonByText("Registrar consumo"));
 
     const entry = lastEntry(holder);
-    expect(entry.qty).toBe(0.2);
-    expect(entry.unit).toBe("kg");
+    expect(entry.qty).toBe(200);
+    expect(entry.unit).toBe("g");
     expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 200 });
-    expect(holder.current!.state.inventory[0].qty).toBe(0.8);
+    expect(holder.current!.state.inventory[0].qty).toBe(800);
+  });
+});
+
+describe("ConsumeModal — precisión admitida (2 decimales): ni validación, ni vista previa, ni registro, ni stock redondean en silencio", () => {
+  function macroCells() {
+    return Array.from(container.querySelectorAll(".macro-val")).map((n) => n.textContent);
+  }
+
+  it.each(["233.6", "0.4"])("%s g: se acepta, la vista previa muestra los macros de ESA cantidad y se registra exactamente igual", async (typed) => {
+    const grams = Number(typed);
+    const holder = await mount((d) => { d.inventory = [item()]; }, item());
+    click(checkboxByLabel("He pesado"));
+    setNativeValue(numberInputByLabel("Gramos pesados"), typed);
+    expect(buttonByText("Registrar consumo").disabled).toBe(false);
+
+    const expected = macrosForQuantity(item(), grams);
+    expect(macroCells()).toEqual([String(expected.kcal), `${expected.protein}g`, `~${expected.carbs}g`, `~${expected.fat}g`]);
+    expect(container.textContent).toContain(`Se registrarán ${grams} g`);
+
+    click(buttonByText("Registrar consumo"));
+    const entry = lastEntry(holder);
+    expect(entry.qty).toBe(grams);
+    expect(entry.qty!).toBeGreaterThan(0);
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: grams });
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(expected);
+    expect(holder.current!.state.inventory[0].qty).toBe(Math.round((1000 - grams) * 100) / 100);
+  });
+
+  it.each(["233.456", "0.004", "200.004"])("%s g (más de 2 decimales): el botón se deshabilita y se explica, no se redondea", async (typed) => {
+    const holder = await mount((d) => { d.inventory = [item()]; }, item());
+    click(checkboxByLabel("He pesado"));
+    setNativeValue(numberInputByLabel("Gramos pesados"), typed);
+    expect(buttonByText("Registrar consumo").disabled).toBe(true);
+    expect(container.textContent).toContain("como máximo 2 decimales");
+    expect(holder.current!.state.foodLog).toHaveLength(0);
+  });
+
+  it("declaración superior al stock (500 g sobre 200,6 g): avisa, muestra los macros de lo que de verdad se registra y registra 200,6 con low", async () => {
+    const low = item({ qty: 200.6 });
+    const holder = await mount((d) => { d.inventory = [low]; }, low);
+    click(checkboxByLabel("He pesado"));
+    setNativeValue(numberInputByLabel("Gramos pesados"), "500");
+    expect(container.textContent).toContain("Solo hay 200.6 g");
+
+    const expected = macrosForQuantity(low, 200.6);
+    expect(macroCells()[0]).toBe(String(expected.kcal));
+
+    click(buttonByText("Registrar consumo"));
+    const entry = lastEntry(holder);
+    expect(entry.qty).toBe(200.6);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect({ kcal: entry.kcal, protein: entry.protein }).toEqual({ kcal: expected.kcal, protein: expected.protein });
   });
 });
 
@@ -170,13 +233,13 @@ describe("ConsumeModal — validación: una declaración vacía o inválida no s
 
 describe("ConsumeModal — recorte real por stock: low, nunca high, aunque se registre igualmente", () => {
   it("declarar más de lo disponible registra lo que cabe, etiquetado low", async () => {
-    const holder = await mount((d) => { d.inventory = [item({ qty: 0.1 })]; }, item({ qty: 0.1 })); // 100 g disponibles
+    const holder = await mount((d) => { d.inventory = [item({ qty: 100 })]; }, item({ qty: 100 })); // 100 g disponibles
     click(checkboxByLabel("He pesado"));
     setNativeValue(numberInputByLabel("Gramos pesados"), "200");
     click(buttonByText("Registrar consumo"));
 
     const entry = lastEntry(holder);
-    expect(entry.qty).toBe(0.1); // lo que cupo
+    expect(entry.qty).toBe(100); // lo que cupo
     expect(entry.quantityConfidence).toEqual({ level: "low" });
   });
 });
@@ -191,7 +254,7 @@ describe("ConsumeModal — la unidad real del item (draft) ya no coincide con la
   it("bloquea sin escribir nada y conserva la declaración en el campo", async () => {
     const holder = await mount(
       (d) => { d.inventory = [item({ unit: "ud", qty: 5, unitSize: 60, unitSizeUnit: "g" })]; },
-      item({ unit: "kg", qty: 1 }), // prop: lo que el modal "vio" al abrirse
+      item({ unit: "g", qty: 1000 }), // prop: lo que el modal "vio" al abrirse
     );
     click(checkboxByLabel("He pesado"));
     setNativeValue(numberInputByLabel("Gramos pesados"), "200");
@@ -206,8 +269,8 @@ describe("ConsumeModal — la unidad real del item (draft) ya no coincide con la
 
   it("reintento tras corregir la unidad (modal reabierto con el item ya consistente) registra con normalidad", async () => {
     const holder = await mount(
-      (d) => { d.inventory = [item({ unit: "kg", qty: 1 })]; },
-      item({ unit: "kg", qty: 1 }), // ahora sí coincide — "se corrigió y se reabrió"
+      (d) => { d.inventory = [item({ unit: "g", qty: 1000 })]; },
+      item({ unit: "g", qty: 1000 }), // ahora sí coincide — "se corrigió y se reabrió"
     );
     click(checkboxByLabel("He pesado"));
     setNativeValue(numberInputByLabel("Gramos pesados"), "200");

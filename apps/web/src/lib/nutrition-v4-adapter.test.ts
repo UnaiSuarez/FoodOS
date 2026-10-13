@@ -332,9 +332,19 @@ describe("PR4 — quantityConfidence y foodStateConfidence se propagan con lo qu
 // ─── §20.7B — relectura defensiva de 'high': degrada ante evidencia inválida o incoherente, nunca descarta la entrada ─
 
 describe("§20.7B — 'high' degrada a 'low' ante declaredGrams/qty/unit inválidos o incoherentes, sin descartar nunca la entrada", () => {
-  it("declaredGrams coherente con qty/unit 'kg' (misma magnitud, distinta unidad) sigue siendo 'high'", () => {
+  it("'kg' nunca conserva 'high' (modo pesado limitado a gramos: numeric(10,2) no guarda 1 g en kg), aunque la magnitud sea coherente", () => {
     const entry = logEntry({ date: "2026-01-03", qty: 0.2, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 200 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
+  });
+
+  it.each([233.6, 0.4, 0.01, 233.45])("declaredGrams=%p (≤ 2 decimales) con qty idéntico en 'g' conserva 'high' tras releer", (grams) => {
+    const entry = logEntry({ date: "2026-01-03", qty: grams, unit: "g", quantityConfidence: { level: "high", declaredGrams: grams } });
     expect(nutrients(entry).quantityConfidence).toBe("high");
+  });
+
+  it.each([233.456, 0.004, 200.004])("declaredGrams=%p con más de 2 decimales degrada a 'low' (fuera de la precisión admitida), aunque qty coincida", (grams) => {
+    const entry = logEntry({ date: "2026-01-03", qty: grams, unit: "g", quantityConfidence: { level: "high", declaredGrams: grams } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
   });
 
   it("declaredGrams incoherente con qty/unit (edición posterior, p. ej. EditLogModal, sin limpiar la declaración) degrada a 'low'", () => {
@@ -373,15 +383,16 @@ describe("§20.7B — 'high' degrada a 'low' ante declaredGrams/qty/unit inváli
     }
   });
 
-  it("una discrepancia de ruido de coma flotante (0,01 g) NO se rechaza — comparación con precisión explícita, no exacta", () => {
-    // 0.233 kg * 1000 puede dar 233.00000000000003 en JS — no debe rechazar
-    // un caso perfectamente coherente por representación binaria.
-    const entry = logEntry({ date: "2026-01-03", qty: 0.233, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 233 } });
-    expect(nutrients(entry).quantityConfidence).toBe("high");
+  it("en gramos la igualdad es exacta: la discrepancia redondeada que antes pasaba (233,6 declarados, qty 234) ahora degrada a 'low'", () => {
+    // Es el defecto reproducido en b469a84: el escritor redondeaba 233,6 a
+    // 234 g y conservaba declaredGrams=233,6. Con tolerancia de 0,01 g, un
+    // número ajeno al declarado no puede pasar por "el mismo peso".
+    const entry = logEntry({ date: "2026-01-03", qty: 234, unit: "g", quantityConfidence: { level: "high", declaredGrams: 233.6 } });
+    expect(nutrients(entry).quantityConfidence).toBe("low");
   });
 
-  it("una discrepancia real de varios gramos SÍ se rechaza, aunque sea pequeña en términos relativos", () => {
-    const entry = logEntry({ date: "2026-01-03", qty: 0.23, unit: "kg", quantityConfidence: { level: "high", declaredGrams: 233 } });
+  it("una discrepancia de milésimas (200,004 declarados, 200 registrados) SÍ se rechaza: nada de tolerancia oculta", () => {
+    const entry = logEntry({ date: "2026-01-03", qty: 200, unit: "g", quantityConfidence: { level: "high", declaredGrams: 200.004 } });
     expect(nutrients(entry).quantityConfidence).toBe("low");
   });
 

@@ -218,16 +218,23 @@ describe("consumeInventoryItem — lee la procedencia del item (PR3a)", () => {
 // ─── §20 — declaración explícita de peso (g/kg), alcance mínimo de implementación ─
 
 describe("consumeInventoryItem — declaración de peso (§20): unidades separadas, nunca comparadas directamente", () => {
-  it("§20.2, ejemplo obligatorio — 200 g desde un inventario de 1 kg: qty:0.2, unit:'kg', declaredGrams:200, high", () => {
+  it("inventario en 'kg': el modo pesado NO se acredita — bloqueado sin escribir ni tocar el stock (alcance limitado a gramos)", () => {
     const draft = structuredClone(defaultState);
     draft.inventory = [inv({ unit: "kg", qty: 1, carbs: 0, fat: 3.6 })];
+    const before = structuredClone(draft.inventory);
     const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before);
+  });
+
+  it("inventario en 'kg': el recorrido estimado de siempre sigue funcionando y nunca lleva quantityConfidence 'high'", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "kg", qty: 1.5, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { qty: 0.25 });
     expect(result.kind).toBe("written");
-    const entry = lastEntry(draft);
-    expect(entry.qty).toBe(0.2);
-    expect(entry.unit).toBe("kg");
-    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 200 });
-    expect(draft.inventory[0].qty).toBe(0.8);
+    expect(lastEntry(draft).quantityConfidence).toBeUndefined();
+    expect(draft.inventory[0].qty).toBe(1.25);
   });
 
   it("unidad 'g': declaredGrams y qty coinciden exactamente (identidad, sin conversión)", () => {
@@ -241,25 +248,63 @@ describe("consumeInventoryItem — declaración de peso (§20): unidades separad
     expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 150 });
   });
 
-  it("§20.6b — consumo decimal (233 g desde 1,5 kg) se escribe con fidelidad de 1 g (3 decimales), no 2", () => {
+  it("§20.6b — 233 g desde 1,5 kg: bloqueado (kg fuera de alcance), el stock sigue en 1,5 — nunca 1,27 por truncado", () => {
     const draft = structuredClone(defaultState);
     draft.inventory = [inv({ unit: "kg", qty: 1.5, carbs: 0, fat: 3.6 })];
     const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 233 });
-    expect(result.kind).toBe("written");
-    const entry = lastEntry(draft);
-    expect(entry.qty).toBe(0.233); // NO 0.23 (lo que darían los 2 decimales habituales)
-    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 233 });
-    // Stock restante coherente con lo registrado, con la MISMA precisión —
-    // 1.5 - 0.233 = 1.267, no 1.27 (lo que darían los 2 decimales habituales).
-    expect(draft.inventory[0].qty).toBe(1.267);
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory[0].qty).toBe(1.5);
   });
 
-  it("Math.round(declaredGrams) se aplica ANTES de convertir a kg — un decimal de gramo no cuela como fidelidad falsa", () => {
+  it("233,6 g (inventario en g): se registra 233,6 EXACTO — ni 234 ni 233 — con high, y el stock baja exactamente 233,6", () => {
     const draft = structuredClone(defaultState);
-    draft.inventory = [inv({ unit: "kg", qty: 1, carbs: 0, fat: 3.6 })];
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
     const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 233.6 });
     expect(result.kind).toBe("written");
-    expect(lastEntry(draft).qty).toBe(0.234); // 233.6 redondeado a 234 g, no 233
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(233.6);
+    expect(entry.unit).toBe("g");
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 233.6 });
+    expect(draft.inventory[0].qty).toBe(266.4);
+    // Los macros registrados son los de 233,6 g — los mismos que la vista previa.
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 233.6));
+  });
+
+  it("0,4 g: se registra 0,4 EXACTO (positivo), con macros de 0,4 g y el stock baja 0,4 — nunca qty 0", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 0.4 });
+    expect(result.kind).toBe("written");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(0.4);
+    expect(entry.qty).toBeGreaterThan(0);
+    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 0.4 });
+    expect(draft.inventory[0].qty).toBe(499.6);
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 0.4));
+  });
+
+  it.each([233.456, 0.004, 0.001, 200.004, 1e-7])(
+    "declaredGrams=%p (más de 2 decimales) se RECHAZA, no se redondea: no escribe fila ni toca el inventario",
+    (grams) => {
+      const draft = structuredClone(defaultState);
+      draft.inventory = [inv({ unit: "g", qty: 500, carbs: 0, fat: 3.6 })];
+      const before = structuredClone(draft.inventory);
+      const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: grams });
+      expect(result).toEqual({ kind: "invalid_declared_grams" });
+      expect(draft.foodLog).toHaveLength(0);
+      expect(draft.inventory).toEqual(before);
+    },
+  );
+
+  it("sin stock utilizable (qty 0) no se escribe un registro de 0 g", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 0, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 10 });
+    expect(result).toEqual({ kind: "item_missing" });
+    expect(draft.foodLog).toHaveLength(0);
   });
 
   it.each([0, -50, NaN, Infinity])("§20.5 — declaredGrams=%p se rechaza EN EL ESCRITOR (defensa propia, no solo del modal): no escribe fila, no toca inventario", (bad) => {
@@ -284,6 +329,44 @@ describe("consumeInventoryItem — declaración de peso (§20): recorte real, SI
     expect(result.kind).toBe("written_reduced");
     const entry = lastEntry(draft);
     expect(entry.qty).toBe(200);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+  });
+
+  it("declaración superior al stock (500 g sobre 200,6 g): registra EXACTAMENTE 200,6 — positivo, sin superar el stock, macros coherentes — y nunca high", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.6, carbs: 0, fat: 3.6 })];
+    const item = structuredClone(draft.inventory[0]);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 500 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    expect(entry.qty).toBe(200.6);
+    expect(entry.qty!).toBeLessThanOrEqual(200.6);
+    expect(entry.quantityConfidence).toEqual({ level: "low" });
+    expect({ kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }).toEqual(macrosForQuantity(item, 200.6));
+    expect(draft.inventory).toHaveLength(0);
+  });
+
+  it("recorte oculto, números literales del encargo: 200,004 declarados frente a 200,001 disponibles NUNCA conservan high ni escriben el declarado", () => {
+    // 200,004 tiene 3 decimales: fuera de la precisión admitida, se rechaza
+    // ANTES de consumir nada (no se redondea a 200,00 que "coincidiría" con
+    // 200,001 redondeado). Es la salida correcta: nada escrito, nada high.
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.001, carbs: 0, fat: 3.6 })];
+    const before = structuredClone(draft.inventory);
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200.004 });
+    expect(result).toEqual({ kind: "invalid_declared_grams" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory).toEqual(before);
+  });
+
+  it("recorte oculto dentro de la precisión admitida: 200,01 declarados frente a 200,009 disponibles (iguales redondeados a 2 decimales) → low, se detecta antes del redondeo", () => {
+    const draft = structuredClone(defaultState);
+    draft.inventory = [inv({ unit: "g", qty: 200.009, carbs: 0, fat: 3.6 })];
+    const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200.01 });
+    expect(result.kind).toBe("written_reduced");
+    const entry = lastEntry(draft);
+    // Lo registrado es el stock entero y exacto — no 200,01, no 200,01 "redondeado".
+    expect(entry.qty).toBe(200.009);
     expect(entry.quantityConfidence).toEqual({ level: "low" });
   });
 
@@ -326,17 +409,15 @@ describe("consumeInventoryItem — declaración de peso (§20.3b): cambio de uni
     expect(draft.foodLog).toHaveLength(0);
   });
 
-  it("g→kg (sigue dentro de la familia de masa) NO bloquea — se reinterpreta correctamente sobre la unidad fresca", () => {
+  it("g→kg mientras el modal estaba abierto también bloquea: ya no hay familia de masa admitida salvo 'g'", () => {
     const draft = structuredClone(defaultState);
     // Simula que el item, declarado mientras estaba en "g", ahora está en "kg"
     // (otra pestaña cambió la unidad) — el escritor solo mira la unidad FRESCA.
     draft.inventory = [inv({ unit: "kg", qty: 1, carbs: 0, fat: 3.6 })];
     const result = actions.consumeInventoryItem(draft, "inv-1", { declaredGrams: 200 });
-    expect(result.kind).toBe("written");
-    const entry = lastEntry(draft);
-    expect(entry.unit).toBe("kg");
-    expect(entry.qty).toBe(0.2);
-    expect(entry.quantityConfidence).toEqual({ level: "high", declaredGrams: 200 });
+    expect(result).toEqual({ kind: "unit_incompatible" });
+    expect(draft.foodLog).toHaveLength(0);
+    expect(draft.inventory[0].qty).toBe(1);
   });
 
   it("estimado (sin declaredGrams) nunca puede devolver unit_incompatible — esa variante es exclusiva del camino pesado", () => {
