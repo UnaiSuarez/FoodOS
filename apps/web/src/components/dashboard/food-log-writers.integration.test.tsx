@@ -81,6 +81,14 @@ function buttonByText(text: string): HTMLButtonElement {
   return found as HTMLButtonElement;
 }
 
+/** El botón «Registrar» de una comida del plan de hoy (HomeView). Se localiza por
+    su `title`, no por texto: el panel también tiene la acción «Registrar comida». */
+function planLogButton(): HTMLButtonElement {
+  const found = container.querySelector('button[title="Registrar en el diario"]');
+  if (!found) throw new Error("No hay botón de registrar del plan de hoy");
+  return found as HTMLButtonElement;
+}
+
 function click(el: Element) {
   act(() => { (el as HTMLElement).click(); });
 }
@@ -313,7 +321,7 @@ describe("HomeView — 'Plan de hoy' (logPlanEntry)", () => {
       d.customRecipes.push(structuredClone(RECIPE));
       d.mealPlan[getToday(d)] = { lunch: RECIPE.id };
     }, <HomeView goTo={() => {}} openRecipe={() => {}} />);
-    click(buttonByText("Registrar"));
+    click(planLogButton());
     const entry = entriesOf(holder).find((e) => e.name === "Guiso de prueba PR3")!;
     expect(entry).toMatchObject({ kcal: 420, protein: 30, carbs: 55, fat: 10, source: "recipe", mealType: "lunch", qty: null, unit: null });
     for (const key of MACROS) expect(entry.nutrientStatus?.[key]).toBe("legacy_unlabeled");
@@ -325,7 +333,7 @@ describe("HomeView — 'Plan de hoy' (logPlanEntry)", () => {
       d.plannerQuickMeals.push({ id: "qm-1", name: "Bocata rápido", kcal: 350, protein: 20, carbs: 40, fat: 12, cost: 0 });
       d.mealPlan[getToday(d)] = { dinner: "qm-1" };
     }, <HomeView goTo={() => {}} openRecipe={() => {}} />);
-    click(buttonByText("Registrar"));
+    click(planLogButton());
     const entry = entriesOf(holder).find((e) => e.name === "Bocata rápido")!;
     expect(entry).toMatchObject({ kcal: 350, protein: 20, carbs: 40, fat: 12, mealType: "dinner" });
     for (const key of MACROS) expect(entry.nutrientStatus?.[key]).toBe("legacy_unlabeled");
