@@ -22,6 +22,7 @@ import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { hasAtMostTwoDecimals } from "./pg-numeric";
+import { handlePlanReadback, sanitizeProfilePlanFields } from "./plan-state";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, massUnitFromGrams, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
@@ -166,6 +167,11 @@ export function normalizeState(state: FoodOSState): FoodOSState {
     // autoritativa sigue en curso. Pura, sin efectos secundarios — quien
     // llama decide si además hace falta persistir el cambio (ver los dos
     // call sites en FoodOSProvider).
+    // C0: valores de plan inválidos (fecha inexistente, futura, offset no entero…) heredados de un
+    // localStorage antiguo o de un pull anterior no se propagan: pasan a «sin valor». Misma política
+    // temporal que el servidor; usa el reloj REAL (nunca debugDate).
+    sanitizeProfilePlanFields(next.profile, todayPlus(0));
+
     const transitioned = applyEngineVersionTransition(next.profile, getToday(next));
     if (transitioned) next.profile = transitioned;
 
@@ -1633,6 +1639,30 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
     });
     return true;
   }, [showToast]);
+
+  // C0: lectura autoritativa del estado de plan tras cada sincronización. La identidad (userId, epoch) con
+  // la que se pidió viaja con la lectura; handlePlanReadback la descarta si la sesión ya cambió y actúa
+  // sobre el estado más reciente (nunca sobre el snapshot enviado).
+  const planStateRef = useRef(state);
+  useEffect(() => { planStateRef.current = state; });
+  useEffect(() => {
+    remote.onPlanReadback = ({ userId, epoch, readback }) => {
+      const outcome = handlePlanReadback({ userId, epoch }, readback, {
+        currentIdentity: () => (remote.user ? { userId: remote.user.id, epoch: remote.sessionEpoch } : null),
+        getState: () => planStateRef.current,
+        mutate,
+        todayKey: () => todayPlus(0),
+        notify: showToast,
+        acknowledgeConflicts: (u, e, ids) => { void remote.ackPlanConflicts(u, e, ids); },
+      });
+      // Si otro dispositivo cambió el offset, la propuesta pendiente / fecha de última decisión de este
+      // dispositivo también pueden estar obsoletas: se refresca por la vía de hidratación normal.
+      if (outcome.kind === "reconciled" && outcome.delta.offset !== undefined) {
+        requestHydrationRef.current(userId, epoch);
+      }
+    };
+    return () => { remote.onPlanReadback = null; };
+  }, [mutate, showToast]);
 
   // Corrección de revisión (P1): setWaterAbsolute()/addWater() llamaban a
   // remote.setWaterTargetDurable() DENTRO del updater de setState — los

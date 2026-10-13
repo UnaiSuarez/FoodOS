@@ -1,0 +1,66 @@
+{
+  "note": "datos sintéticos; PGlite una conexión; migración real",
+  "results": {
+    "sealRemoval": {
+      "firstUpdateOk": true,
+      "afterNull": {
+        "kcal": 1939,
+        "basis": -100
+      },
+      "secondUpdateOk": true,
+      "final": {
+        "kcal": 1939,
+        "basis": -100,
+        "snapKept": true
+      },
+      "conflicts": [
+        "daily_goal_overwrite_prevented:goal:2026-10-14"
+      ]
+    },
+    "legitRecalc": {
+      "ok": true,
+      "kcal": 2100,
+      "basis": -100,
+      "snapshotAfter": null
+    },
+    "delete": {
+      "sealedKept": true
+    },
+    "legacyUpsert": {
+      "same": [
+        {
+          "kcal": 1939,
+          "basis": -100
+        }
+      ],
+      "diff": []
+    },
+    "legacyTelemetry": {
+      "rows": 1
+    },
+    "invalidCalibration": {
+      "badOk": true,
+      "nextOk": true,
+      "stored": "2026-10-01",
+      "conflicts": [
+        "calibration_invalid_value_rejected:adaptiveCalibrationStartedAt"
+      ]
+    },
+    "read": {
+      "goal": null,
+      "offset": 0,
+      "protocol": 1,
+      "conflicts": [
+        {
+          "id": "694a5284-7382-4e7b-b695-03d77831e6cd",
+          "kind": "calibration_invalid_value_rejected",
+          "subject": "adaptiveCalibrationStartedAt"
+        }
+      ],
+      "serverDate": "2026-10-13",
+      "engineVersion": null,
+      "lastTargetChangedAt": "2026-10-02",
+      "calibrationStartedAt": null
+    }
+  }
+}

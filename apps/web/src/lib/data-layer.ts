@@ -23,6 +23,7 @@ import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 import { sanitizeFoodLogProvenance } from "./food-log-provenance";
 import { inventoryProvenanceFromColumn, inventoryProvenanceToColumn } from "./inventory-provenance-persistence";
+import { parsePlanReadback, sanitizePlanDate, sanitizePlanOffset, type PlanReadback } from "./plan-state";
 
 /** Snapshot de sincronización programado por mutate() — captura de forma
     INMUTABLE userId/epoch/mutationId/estado en el momento de la mutación,
@@ -312,6 +313,20 @@ class RemoteAdapter {
   private activeWaterWorker: { token: string } | null = null;
   private waterHasError = false;
 
+  /** C0 — ¿soporta el servidor la protección del estado de plan
+      (fn_plan_state_read + guardas)? "unknown" hasta la primera sonda de la
+      sesión; "absent" = servidor anterior a la migración (el cliente se
+      comporta exactamente como antes: sin base ni lectura autoritativa).
+      Se reinicia en resetSessionState(): es una propiedad del servidor que
+      se vuelve a comprobar por sesión, nunca se asume. */
+  private planProtection: "unknown" | "available" | "absent" = "unknown";
+
+  /** C0 — el proveedor de estado se engancha aquí para reconciliar el
+      estado local con la lectura autoritativa del plan tras cada
+      sincronización. Recibe SIEMPRE la identidad con la que se pidió (userId,
+      epoch): quien la consume debe descartarla si la sesión ya cambió. */
+  onPlanReadback: ((info: { userId: string; epoch: number; readback: PlanReadback }) => void) | null = null;
+
   /** La UI se engancha aquí para avisar al usuario de que un guardado no
       llegó al servidor (queda solo en este dispositivo hasta reintentar). */
   onPushError: ((error: unknown) => void) | null = null;
@@ -403,6 +418,7 @@ class RemoteAdapter {
     this.pushQueued = null;
     this.activePush?.controller.abort();
     this.activePush = null;
+    this.planProtection = "unknown";
     this.almacenIdByName = {};
     this.shoppingListId = null;
     if (this.waterRetryTimer) { clearTimeout(this.waterRetryTimer); this.waterRetryTimer = null; }
@@ -1629,16 +1645,19 @@ class RemoteAdapter {
         // extra_state (igual que trainingActivity/macroPreference): es
         // aditivo, no requiere migración. Solo lo escribe aceptar/rechazar
         // una AdjustmentProposal (PR6), nunca un guardado normal de perfil.
-        if (state.profile && typeof extra.adaptiveKcalOffsetKcal === "number") {
-          state.profile.adaptiveKcalOffsetKcal = extra.adaptiveKcalOffsetKcal;
+        // C0: un valor inválido (texto, decimal, fuera de rango, fecha inexistente o futura) NO se
+        // propaga al estado: se trata como ausente con el mismo criterio que el servidor.
+        const planOffset = sanitizePlanOffset(extra.adaptiveKcalOffsetKcal);
+        if (state.profile && planOffset !== null) {
+          state.profile.adaptiveKcalOffsetKcal = planOffset;
         }
         // adaptiveCalibrationStartedAt/lastTargetChangedAt (PR9): mismo
         // criterio que adaptiveKcalOffsetKcal — viven en extra_state, aditivo.
         if (state.profile && (typeof extra.adaptiveCalibrationStartedAt === "string" || extra.adaptiveCalibrationStartedAt === null)) {
-          state.profile.adaptiveCalibrationStartedAt = extra.adaptiveCalibrationStartedAt as string | null;
+          state.profile.adaptiveCalibrationStartedAt = sanitizePlanDate(extra.adaptiveCalibrationStartedAt, todayPlus(0));
         }
         if (state.profile && (typeof extra.lastTargetChangedAt === "string" || extra.lastTargetChangedAt === null)) {
-          state.profile.lastTargetChangedAt = extra.lastTargetChangedAt as string | null;
+          state.profile.lastTargetChangedAt = sanitizePlanDate(extra.lastTargetChangedAt, todayPlus(0));
         }
         // lastCalculationEngineVersion (nutrition-v3.1): mismo criterio —
         // vive en extra_state, aditivo. Sin este dato (perfiles guardados
@@ -1917,6 +1936,38 @@ class RemoteAdapter {
     this.onPushError(error);
   }
 
+  /** C0 — sonda de capacidad, una vez por sesión. Un servidor sin la migración responde "función no
+      encontrada" (PGRST202 / 42883 / 404): entonces el cliente se comporta como antes. Cualquier otro
+      error (red, permisos) NO se cachea: se reintenta en el siguiente push y este se hace sin base. */
+  private async ensurePlanProtection(client: SupabaseClient): Promise<boolean> {
+    if (this.planProtection === "available") return true;
+    if (this.planProtection === "absent") return false;
+    const rpc = (client as unknown as { rpc?: unknown }).rpc;
+    if (typeof rpc !== "function") { this.planProtection = "absent"; return false; }
+    try {
+      const { error } = await client.rpc("fn_plan_state_read", { p_goal_date: null });
+      if (!error) { this.planProtection = "available"; return true; }
+      const e = error as { code?: string; message?: string };
+      if (e.code === "PGRST202" || e.code === "42883" || /could not find the function|does not exist/i.test(e.message ?? "")) {
+        this.planProtection = "absent";
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** C0 — marca como vistos conflictos ya mostrados al usuario. Informativo y de mejor esfuerzo: nunca
+      lanza ni bloquea. Comprueba la identidad ANTES de escribir. */
+  async ackPlanConflicts(userId: string, epoch: number, ids: string[]): Promise<void> {
+    if (!this.client || this.user?.id !== userId || this.sessionEpoch !== epoch || ids.length === 0) return;
+    try {
+      await this.client.from("nutrition_sync_conflicts").update({ acknowledged_at: new Date().toISOString() }).in("id", ids);
+    } catch (error) {
+      console.warn("FoodOS: no se pudieron marcar los conflictos como vistos", error);
+    }
+  }
+
   /**
    * Sincroniza el snapshot completo del estado local con Supabase.
    *
@@ -1969,6 +2020,11 @@ class RemoteAdapter {
     const checkAlive = () => {
       if (ctx.signal.aborted || ctx.epoch !== this.sessionEpoch) throw new AbortedPushError();
     };
+    checkAlive();
+
+    // C0: ¿el servidor protege el estado de plan? Se decide ANTES de escribir nada porque cambia el
+    // contenido del upsert de objetivos (base declarada). Nunca lanza.
+    const planProtected = await this.ensurePlanProtection(client);
     checkAlive();
 
     // upsert(onConflict: "user_id"), NO update().eq("user_id", userId) (B2,
@@ -2107,12 +2163,35 @@ class RemoteAdapter {
           fat_target_g: state.nutrition.fat,
           mode: state.nutrition.mode,
           calculation_version: todayGoalEntry.calculationVersion,
+          // C0: con qué offset se calcularon estas cifras. El servidor solo acepta el objetivo si
+          // coincide con el offset que él tiene; si no, lo conserva y registra un conflicto. Solo se
+          // envía cuando el servidor lo soporta (columna inexistente en un servidor anterior).
+          ...(planProtected ? { basis_offset_kcal: sanitizePlanOffset(state.profile?.adaptiveKcalOffsetKcal) ?? 0 } : {}),
         },
         { onConflict: "user_id,goal_date" }
       );
       if (goalError) failures.push(`objetivos nutricionales: ${goalError.message}`);
     }
     checkAlive();
+
+    // C0: lectura autoritativa EXPLÍCITA tras escribir. Ni el éxito del upsert ni su RETURNING prueban lo
+    // almacenado (una guarda puede conservar el valor anterior, y un INSERT omitido no devuelve fila).
+    // Un fallo aquí no es un fallo de sincronización: se reintentará con la siguiente.
+    if (planProtected) {
+      try {
+        const { data: rb, error: rbError } = await client.rpc("fn_plan_state_read", { p_goal_date: goalDateKey });
+        checkAlive(); // si la sesión cambió mientras tanto, nada de esto llega al estado de otra cuenta
+        if (!rbError) {
+          const parsed = parsePlanReadback(rb, todayPlus(0));
+          if (parsed) this.onPlanReadback?.({ userId: ctx.userId, epoch: ctx.epoch, readback: parsed });
+        } else {
+          console.warn("FoodOS: no se pudo leer el estado de plan tras sincronizar", rbError.message);
+        }
+      } catch (error) {
+        if (error instanceof AbortedPushError) throw error;
+        console.warn("FoodOS: lectura del estado de plan fallida", error);
+      }
+    }
 
     // Cada syncTable() es independiente de las demás (tablas sin relación
     // entre sí) — un fallo en una no impide intentar el resto; se recoge el
