@@ -50,7 +50,7 @@ async function bump(page: Page): Promise<number> {
   return v;
 }
 
-/** Cuenta QA + sesión en el navegador + datos demo sintéticos + espera a que el servidor tenga el objetivo de hoy. */
+/** Cuenta QA + perfil sintético + sesión en el navegador + espera a que el servidor tenga el objetivo de hoy. */
 async function bootDevice(page: Page, label: string) {
   const failedRest: string[] = [];
   page.on("response", (res) => { if (res.url().includes("/rest/v1/") && res.status() >= 400) failedRest.push(`${res.request().method()} ${res.url().split("/rest/v1/")[1]?.split("?")[0]} ${res.status()}`); });
@@ -69,7 +69,8 @@ async function bootDevice(page: Page, label: string) {
   await uiLogin(page, user);
   await gotoSettings(page);
   await expect.poll(async () => (await localState(page)).profile?.weightKg, { timeout: 60_000, message: "la app no cargó el perfil sintético" }).toBe(80);
-  await bump(page); // edición mínima: dispara la sincronización completa, que registra y envía el objetivo de hoy  const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
+  await bump(page); // edición mínima: dispara la sincronización completa, que registra y envía el objetivo de hoy
+  const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
   try {
     await expect.poll(async () => (await serverGoal(a, user.id)) !== null, { timeout: 60_000, message: "el servidor no recibió el objetivo de hoy" }).toBe(true);
   } catch (e) {
