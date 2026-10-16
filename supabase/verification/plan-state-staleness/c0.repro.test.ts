@@ -20,7 +20,7 @@ import type { FoodOSState, NutritionCalculationSnapshot, PhysicalProfile } from 
 import { remote } from "../../../apps/web/src/lib/data-layer";
 import { calcDailyTargets, calcSummary, evaluateNutritionSafety, NUTRITION_ENGINE_VERSION } from "../../../apps/web/src/lib/nutrition";
 import { recordTodayNutritionGoal } from "../../../apps/web/src/lib/state";
-import { handlePlanReadback, newPlanReconcileBudget } from "../../../apps/web/src/lib/plan-state";
+import { handlePlanReadback, newPlanReconcileBudget, planOutcomeAck } from "../../../apps/web/src/lib/plan-state";
 // @ts-expect-error módulos .mjs sin tipos
 import { buildDb, seedUser } from "./schema.mjs";
 // @ts-expect-error módulos .mjs sin tipos
@@ -109,6 +109,7 @@ class Device {
         },
         todayKey: () => TODAY,
         isLatestMutation: () => true,
+        hydrationReady: () => true,
         requestRefresh: () => { this.outcomes.push("refresh"); },
         notify: (m) => this.notices.push(m),
         acknowledgeConflicts: (_u, _e, ids) => {
@@ -117,6 +118,7 @@ class Device {
         },
       }, this.budget);
       this.outcomes.push(out.kind);
+      return planOutcomeAck(out);
     };
   }
   /** Envía el estado y reconcilia hasta que no haya nada más que enviar (máx. 6 vueltas). */

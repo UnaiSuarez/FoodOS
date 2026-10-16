@@ -1,4 +1,4 @@
-﻿// @vitest-environment jsdom
+// @vitest-environment jsdom
 //
 // C0 — integración con el FoodOSProvider REAL (react-dom/client + act + jsdom): cola de salida (outbox),
 // hidratación, pendiente tras recarga, ediciones durante una sincronización en vuelo, orden de lecturas,
@@ -42,6 +42,8 @@ function makeServer() {
     /** Si no es null, las lecturas autoritativas esperan a esta promesa. */
     holdRead: null as Promise<void> | null,
     failReads: 0,
+    /** El servidor recibe pero nunca almacena el objetivo del día (respuesta válida, reconciliación imposible). */
+    dropGoals: false,
     readCount: 0,
   };
 }
@@ -70,7 +72,7 @@ function makeClient(s: Server, initialUser: string | null) {
         op = "upsert"; s.calls.push({ table, op, args: p });
         if (table === "nutrition_goals" && typeof p.goal_date === "string") {
           // Guarda del servidor: el objetivo solo se almacena si su base coincide con el offset vigente.
-          if (p.basis_offset_kcal === s.offset) {
+          if (!s.dropGoals && p.basis_offset_kcal === s.offset) {
             s.goal = { goalDate: p.goal_date as string, kcal: p.kcal_target as number, protein: p.protein_target_g as number, carbs: p.carbs_target_g as number, fat: p.fat_target_g as number, mode: p.mode as string, basisOffsetKcal: p.basis_offset_kcal as number, calculationVersion: p.calculation_version as string, sourceSnapshotId: null };
           }
         }
@@ -308,6 +310,44 @@ describe("FoodOSProvider real — reconciliación del estado de plan", () => {
     await settle(15_000);
     expect(remote.hasPendingPlanRecheck()).toBe(false);
     expect(holder.current!.state.profile?.adaptiveKcalOffsetKcal).toBe(-100);
+    expect(localStorage.getItem(`foodos-plan-recheck-v1-${A}`)).toBeNull();
+  });
+
+  it("recibido ≠ confirmado: lectura VÁLIDA pero no reconciliable de forma persistente → reintentos acotados, error visible, marca durable; tras recargar y A→B se conserva; al poder reconciliar, se confirma y se borra", async () => {
+    const server = makeServer();
+    server.dropGoals = true; // el objetivo de hoy nunca llega a almacenarse: server_row_missing una y otra vez
+    const p = seedProfile({ adaptiveKcalOffsetKcal: -100 });
+    server.profile = p;
+    outbox.recordMutation(A, baseState(p), "tab-1");
+    await mount(server, A);
+    await settle(520_000, 1_000); // cubre 5+15+45+120+300 s de reintentos
+    const readsAfter = server.readCount;
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    expect(localStorage.getItem(`foodos-plan-recheck-v1-${A}`)).not.toBeNull();
+    expect(readsAfter).toBeLessThan(25); // acotado: no hay bucle de relectura
+    expect(goalUpserts(server).length).toBeLessThan(25);
+    await settle(60_000, 1_000);
+    expect(server.readCount).toBe(readsAfter); // agotado: ni un intento más ni temporizadores huérfanos
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Recarga + cambio de cuenta A→B: la marca de A no se toca ni se atribuye a B (el modelo de servidor es compartido,
+    // así que B puede tener la suya propia: es otra clave).
+    const markA = localStorage.getItem(`foodos-plan-recheck-v1-${A}`);
+    await act(async () => { root!.unmount(); }); root = null;
+    remote.resetSessionState();
+    const r = remote as unknown as Record<string, unknown>; r.client = null; r.user = null;
+    await mount(server, B);
+    await settle(10_000, 1_000);
+    expect(localStorage.getItem(`foodos-plan-recheck-v1-${A}`)).toBe(markA);
+    expect(markA).not.toBeNull();
+
+    // Vuelve A y el servidor ya puede reconciliar: se confirma y solo entonces se borra la marca.
+    await act(async () => { root!.unmount(); }); root = null;
+    remote.resetSessionState(); r.client = null; r.user = null;
+    server.dropGoals = false;
+    await mount(server, A);
+    await settle(30_000, 1_000);
+    expect(remote.hasPendingPlanRecheck()).toBe(false);
     expect(localStorage.getItem(`foodos-plan-recheck-v1-${A}`)).toBeNull();
   });
 });

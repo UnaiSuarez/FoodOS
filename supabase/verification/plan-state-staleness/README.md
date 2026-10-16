@@ -8,7 +8,7 @@ bases **aisladas y desechables**; no toca ninguna base de Supabase ni usa datos 
 
 ```bash
 cd supabase/verification/plan-state-staleness
-npm install                      # @electric-sql/pglite, pg y vitest fijados; no toca el workspace
+pnpm install --frozen-lockfile --ignore-workspace   # lockfile propio (pnpm-lock.yaml); no usa los workspaces de npm de la raíz (allí `npm install` falla)
 
 # 1) PGlite (en memoria, UNA conexión) — no necesita nada instalado:
 npx vitest run --config vitest.config.ts
@@ -25,7 +25,7 @@ en `results/` (`sql.json`, `repro.json`).
 |---|---|
 | `schema.mjs` | Construye el esquema real: aplica `supabase/migrations/` sobre stubs mínimos (esquema `auth`, `auth.uid()`, roles `anon`/`authenticated`/`service_role`, publicación realtime). Con `withProtection:false` omite C0 (estado de producción hoy). Los privilegios de `authenticated` replican una consulta de solo lectura a producción (14/10/2026) y se aplican **antes** de la migración C0. Lo comparten PGlite y el Postgres real de CI |
 | `postgrest.mjs` | Cliente con forma de supabase-js que traduce las llamadas del cliente real al SQL que PostgREST generaría, como rol `authenticated` con `auth.uid()` fijado y la cabecera `X-Client-Info` simulada |
-| `c0.sql.test.ts` | 30 casos SQL: sello (incluida la reproducción de Codex), procedencia, identidad, borrado, snapshot estricto con rollback, fechas inválidas, offset, políticas de clientes antiguos, aceptación, lectura |
+| `c0.sql.test.ts` | 31 casos SQL: sello (incluida la reproducción de Codex), procedencia, identidad, borrado, snapshot estricto con rollback, fechas inválidas, offset, políticas de clientes antiguos, aceptación, lectura |
 | `c0.repro.test.ts` | 11 casos de extremo a extremo con el **cliente real** en dos esquemas («previo» y «migrado»): R1 aceptación + dispositivo obsoleto, R2 calibración, R3 cambio legítimo, R4 respuesta perdida, R5 cambio de cuenta, y cliente antiguo |
 | `concurrency/run.mjs` | Carreras reales K1–K7 (**no ejecutadas por su autora**, ver abajo) |
 

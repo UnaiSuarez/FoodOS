@@ -8,6 +8,7 @@ import {
   mergePlanDate,
   newPlanReconcileBudget,
   parsePlanReadback,
+  planOutcomeAck,
   planSliceDelta,
   sanitizePlanDate,
   sanitizePlanOffset,
@@ -140,6 +141,7 @@ function harness(state: FoodOSState, over: Partial<PlanReadbackDeps> = {}) {
   const deps: PlanReadbackDeps = {
     currentIdentity: () => ({ userId: "A", epoch: 1 }),
     getState: () => state,
+    hydrationReady: () => true,
     mutate: (fn) => { calls.mutate++; const draft = structuredClone(state); fn(draft); state = draft; return true; },
     todayKey: () => TODAY,
     isLatestMutation: () => true,
@@ -187,8 +189,49 @@ describe("handlePlanReadback", () => {
   it("plan al día + objetivo coincidente: in_sync y SOLO entonces se reconocen los conflictos", () => {
     const h = harness(stateOf(profile()));
     const out = handlePlanReadback(id, readback({ conflicts: conflict }), h.deps, newPlanReconcileBudget());
-    expect(out.kind).toBe("in_sync");
+    expect(out).toEqual({ kind: "in_sync", goalCompared: true });
     expect(h.calls.ack).toEqual([["c1"]]);
+    expect(planOutcomeAck(out)).toBe("confirmed");
+  });
+
+  it("not_applicable (sin ledger coherente): el plan coincide pero el objetivo NO se comparó → solo se reconocen los conflictos del plan, no los del objetivo", () => {
+    const noLedger = stateOf(profile(), { nutritionGoalsHistory: {} as never });
+    const h = harness(noLedger);
+    const conflicts = [
+      { id: "c-off", kind: "offset_overwrite_prevented", subject: "adaptiveKcalOffsetKcal" },
+      { id: "c-cal", kind: "calibration_regression_prevented", subject: "adaptiveCalibrationStartedAt" },
+      { id: "c-goal", kind: "daily_goal_overwrite_prevented", subject: `goal:${TODAY}` },
+      { id: "c-miss", kind: "daily_goal_missing_basis", subject: `goal:${TODAY}` },
+    ];
+    const out = handlePlanReadback(id, readback({ conflicts }), h.deps, newPlanReconcileBudget());
+    expect(out).toEqual({ kind: "in_sync", goalCompared: false });
+    expect(h.calls.ack).toEqual([["c-off", "c-cal"]]); // los daily_goal_* siguen abiertos
+  });
+
+  it("recibido ≠ confirmado: solo in_sync (y «sin perfil» con la hidratación terminada) confirman; todo lo demás deja la relectura pendiente", () => {
+    const pending: Array<Parameters<typeof planOutcomeAck>[0]> = [
+      { kind: "reconciled", delta: { offset: -100 } },
+      { kind: "deferred_newer_mutation" },
+      { kind: "blocked" },
+      { kind: "repush", verdict: "basis_stale" },
+      { kind: "refresh", verdict: "figures_diverged" },
+      { kind: "unresolved", verdict: "server_row_missing" },
+      { kind: "ignored", reason: "no_session" },
+      { kind: "ignored", reason: "identity_changed" },
+      { kind: "ignored", reason: "not_hydrated" },
+    ];
+    for (const o of pending) expect(planOutcomeAck(o), o.kind).toBe("pending");
+    expect(planOutcomeAck({ kind: "in_sync", goalCompared: true })).toBe("confirmed");
+    expect(planOutcomeAck({ kind: "in_sync", goalCompared: false })).toBe("confirmed");
+    expect(planOutcomeAck({ kind: "ignored", reason: "no_profile" })).toBe("confirmed");
+  });
+
+  it("sin perfil: con la hidratación terminada es definitivo (no_profile); mientras carga es provisional (not_hydrated)", () => {
+    const empty = stateOf(null);
+    const ready = harness(empty);
+    expect(handlePlanReadback(id, readback(), ready.deps, newPlanReconcileBudget())).toEqual({ kind: "ignored", reason: "no_profile" });
+    const loading = harness(empty, { hydrationReady: () => false });
+    expect(handlePlanReadback(id, readback(), loading.deps, newPlanReconcileBudget())).toEqual({ kind: "ignored", reason: "not_hydrated" });
   });
 
   it("offset y fechas iguales pero objetivo con otra base: re-push (mutate sin cambios), sin reconocer conflictos", () => {

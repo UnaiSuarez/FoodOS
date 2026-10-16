@@ -87,7 +87,7 @@ describe("sonda de capacidad", () => {
     const { client, calls } = makeClient(() => ({ data: null, error: { code: "PGRST202", message: "Could not find the function public.fn_plan_state_read(p_goal_date) in the schema cache" } }));
     attach(client);
     const seen: PlanReadback[] = [];
-    remote.onPlanReadback = (i) => seen.push(i.readback);
+    remote.onPlanReadback = (i) => { seen.push(i.readback); return "confirmed"; };
     await expect(remote.pushState(ctx(), stateWithGoal())).resolves.toBeUndefined();
     const up = goalUpserts(calls);
     expect(up.length).toBe(1);
@@ -119,7 +119,7 @@ describe("sonda de capacidad", () => {
     const { client, calls } = makeClient(() => ({ data: serverRead(), error: null }));
     attach(client);
     const seen: Array<{ userId: string; epoch: number; readback: PlanReadback }> = [];
-    remote.onPlanReadback = (i) => seen.push(i);
+    remote.onPlanReadback = (i) => { seen.push(i); return "confirmed"; };
     await remote.pushState(ctx({ mutationId: "m-77" }), stateWithGoal(-100));
     expect(goalUpserts(calls)[0].args).toMatchObject({ basis_offset_kcal: -100 });
     const reads = calls.filter((c) => c.op === "rpc");
@@ -149,7 +149,7 @@ describe("lectura autoritativa tras escribir", () => {
     });
     attach(client);
     const seen: PlanReadback[] = [];
-    remote.onPlanReadback = (i) => seen.push(i.readback);
+    remote.onPlanReadback = (i) => { seen.push(i.readback); return "confirmed"; };
     const p1 = remote.pushState(ctx({ mutationId: "m-1" }), stateWithGoal());
     await vi.waitFor(() => expect(resolveFirst).toBeTypeOf("function"));
     const p2 = remote.pushState(ctx({ mutationId: "m-2" }), stateWithGoal());
@@ -167,7 +167,7 @@ describe("lectura autoritativa tras escribir", () => {
     const { client } = makeClient((_n, _a, n) => (n === 1 ? { data: serverRead(), error: null } : new Promise<RpcResult>((r) => { resolveRead = r; })));
     attach(client);
     const seen: unknown[] = [];
-    remote.onPlanReadback = (i) => seen.push(i);
+    remote.onPlanReadback = (i) => { seen.push(i); return "confirmed"; };
     const p = remote.pushState(ctx(), stateWithGoal());
     await vi.waitFor(() => expect(resolveRead).toBeTypeOf("function"));
     (remote as unknown as { user: unknown }).user = { id: "user-B" }; // A→B
@@ -181,7 +181,7 @@ describe("lectura autoritativa tras escribir", () => {
     const { client } = makeClient((_n, _a, n) => (n === 1 ? { data: serverRead(), error: null } : new Promise<RpcResult>((r) => { resolveRead = r; })));
     attach(client);
     const seen: unknown[] = [];
-    remote.onPlanReadback = (i) => seen.push(i);
+    remote.onPlanReadback = (i) => { seen.push(i); return "confirmed"; };
     const p = remote.pushState(ctx(), stateWithGoal());
     await vi.waitFor(() => expect(resolveRead).toBeTypeOf("function"));
     (remote as unknown as { sessionEpoch: number }).sessionEpoch += 1;
@@ -208,7 +208,7 @@ describe("lectura fallida: relectura pendiente, durable y acotada", () => {
     const statuses: string[] = [];
     remote.onStatusChange = (s) => statuses.push(s);
     const seen: PlanReadback[] = [];
-    remote.onPlanReadback = (i) => seen.push(i.readback);
+    remote.onPlanReadback = (i) => { seen.push(i.readback); return "confirmed"; };
     await remote.pushState(ctx(), stateWithGoal());
     expect(remote.hasPendingPlanRecheck()).toBe(true);
     expect(localStorage.getItem(`foodos-plan-recheck-v1-${USER}`)).toBe(JSON.stringify({ goalDate: TODAY }));
@@ -244,7 +244,7 @@ describe("lectura fallida: relectura pendiente, durable y acotada", () => {
     const { client } = makeClient(() => ({ data: serverRead({ offset: -100 }), error: null }));
     attach(client);
     const seen: PlanReadback[] = [];
-    remote.onPlanReadback = (i) => seen.push(i.readback);
+    remote.onPlanReadback = (i) => { seen.push(i.readback); return "confirmed"; };
     remote.resumePlanRecheckFor(USER);
     expect(remote.hasPendingPlanRecheck()).toBe(true);
     await vi.advanceTimersByTimeAsync(5_100);
@@ -267,5 +267,120 @@ describe("lectura fallida: relectura pendiente, durable y acotada", () => {
     (remote as unknown as { sessionEpoch: number }).sessionEpoch += 1; // logout/login mientras esperaba
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls.filter((c) => c.op === "rpc").length).toBe(0);
+  });
+});
+
+describe("recibido ≠ confirmado: solo una reconciliación confirmada retira la relectura pendiente", () => {
+  const validRead = () => ({ data: serverRead({ offset: -100 }), error: null });
+  const markKey = `foodos-plan-recheck-v1-${USER}`;
+
+  it("regresión de Codex: el consumidor pide otra relectura mientras la recuperación sigue activa (como el proveedor bloqueado) y devuelve «pending» → NO se borra la marca ni se anuncia «guardado»", async () => {
+    vi.useFakeTimers();
+    let n = 0;
+    const { client } = makeClient((_name, _a, k) => (k === 1 ? { data: serverRead(), error: null } : (++n === 1 ? { data: null, error: { code: "08006", message: "caída" } } : validRead())));
+    attach(client);
+    const statuses: string[] = [];
+    remote.onStatusChange = (s) => statuses.push(s);
+    let deliveries = 0;
+    remote.onPlanReadback = (i) => {
+      deliveries++;
+      remote.requestPlanRecheck(i.userId, i.epoch, i.readback.requestedGoalDate); // el proveedor pide otra vez…
+      return "pending"; // …y no ha podido reconciliar
+    };
+    await remote.pushState(ctx(), stateWithGoal()); // la lectura posterior a escribir falla → relectura pendiente
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_100); // la relectura recibe una respuesta VÁLIDA pero no se reconcilia
+    expect(deliveries).toBe(1);
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    expect(localStorage.getItem(markKey)).not.toBeNull();
+    expect(statuses).not.toContain("saved");
+  });
+
+  it("respuestas válidas pero no aplicables consumen el presupuesto acotado; agotado: error, marca durable, sin temporizadores huérfanos", async () => {
+    vi.useFakeTimers();
+    const { client, calls } = makeClient(() => validRead());
+    attach(client);
+    const statuses: string[] = [];
+    remote.onStatusChange = (s) => statuses.push(s);
+    remote.onPlanReadback = () => "pending";
+    await remote.pushState(ctx(), stateWithGoal()); // lectura válida, no confirmada → relectura pendiente
+    await vi.advanceTimersByTimeAsync(5_000 + 15_000 + 45_000 + 120_000 + 300_000 + 1_000);
+    const reads = calls.filter((c) => c.op === "rpc" && (c.args as { p_goal_date: unknown }).p_goal_date === TODAY).length;
+    expect(reads).toBe(1 + 5); // la de tras escribir + 5 reintentos, ni uno más
+    expect(statuses.at(-1)).toBe("error");
+    expect(statuses).not.toContain("saved");
+    expect(localStorage.getItem(markKey)).not.toBeNull();
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gate cerrado y reapertura: «pending» mientras no se puede aplicar; al reabrirse devuelve «confirmed» y solo entonces se retira, se borra la marca y se anuncia «guardado»", async () => {
+    vi.useFakeTimers();
+    const { client } = makeClient(() => validRead());
+    attach(client);
+    const statuses: string[] = [];
+    remote.onStatusChange = (s) => statuses.push(s);
+    let gateOpen = false;
+    let calls = 0;
+    remote.onPlanReadback = () => { calls++; return gateOpen ? "confirmed" : "pending"; };
+    await remote.pushState(ctx(), stateWithGoal());
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_100); // intento 1: cerrado
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    gateOpen = true;
+    await vi.advanceTimersByTimeAsync(15_100); // intento 2: abierto
+    expect(remote.hasPendingPlanRecheck()).toBe(false);
+    expect(localStorage.getItem(markKey)).toBeNull();
+    expect(statuses.at(-1)).toBe("saved");
+    expect(calls).toBe(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("sin consumidor registrado no hay quien reconcilie: nada queda confirmado", async () => {
+    vi.useFakeTimers();
+    const { client } = makeClient(() => validRead());
+    attach(client);
+    remote.onPlanReadback = null;
+    await remote.pushState(ctx(), stateWithGoal());
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+  });
+
+  it("un push cuya lectura SÍ se confirma retira el pendiente anterior de la misma identidad; uno sin confirmar no lo retira", async () => {
+    vi.useFakeTimers();
+    const { client } = makeClient(() => validRead());
+    attach(client);
+    localStorage.setItem(markKey, JSON.stringify({ goalDate: TODAY }));
+    remote.resumePlanRecheckFor(USER);
+    remote.onPlanReadback = () => "pending";
+    await remote.pushState(ctx(), stateWithGoal());
+    expect(remote.hasPendingPlanRecheck()).toBe(true);
+    expect(localStorage.getItem(markKey)).not.toBeNull();
+    remote.onPlanReadback = () => "confirmed";
+    await remote.pushState(ctx(), stateWithGoal());
+    expect(remote.hasPendingPlanRecheck()).toBe(false);
+    expect(localStorage.getItem(markKey)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("A→B con una relectura en vuelo: lo que responda para A no retira la marca de A ni se entrega a B", async () => {
+    vi.useFakeTimers();
+    let release!: (v: RpcResult) => void;
+    const delivered: string[] = [];
+    const { client } = makeClient((_n, _a, k) => (k === 1 ? { data: serverRead(), error: null } : new Promise<RpcResult>((r) => { release = r; })));
+    attach(client);
+    remote.onPlanReadback = (i) => { delivered.push(i.userId); return "confirmed"; };
+    localStorage.setItem(markKey, JSON.stringify({ goalDate: TODAY }));
+    remote.resumePlanRecheckFor(USER);
+    await vi.advanceTimersByTimeAsync(5_100); // el reintento queda en vuelo
+    expect(release).toBeTypeOf("function");
+    const r = remote as unknown as { user: unknown };
+    remote.resetSessionState(); // logout / cambio de sesión
+    r.user = { id: "user-B" };
+    release({ data: serverRead({ offset: -100 }), error: null });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(delivered).toEqual([]);
+    expect(localStorage.getItem(markKey)).not.toBeNull(); // la marca de A sigue ahí para cuando vuelva A
+    expect(remote.hasPendingPlanRecheck()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

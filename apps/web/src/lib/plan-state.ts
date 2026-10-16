@@ -245,6 +245,8 @@ export interface PlanReadbackDeps {
   /** Identidad ACTUAL de la sesión; null si no hay. */
   currentIdentity: () => { userId: string; epoch: number } | null;
   getState: () => FoodOSState;
+  /** ¿Terminó la hidratación de esta sesión? (un estado sin perfil durante la carga es provisional). */
+  hydrationReady: () => boolean;
   /** Aplica una mutación equivalente a una edición del usuario (recalcula objetivos, ledger de HOY, outbox y push). */
   mutate: (fn: (draft: FoodOSState) => void | false) => boolean;
   /** Fecha local del dispositivo (solo referencia cuando la lectura no trae serverDate). */
@@ -269,10 +271,18 @@ export function newPlanReconcileBudget(): PlanReconcileBudget {
   return { repush: 0, refresh: 0, warned: false, notifiedOffset: null };
 }
 
+/** Qué le devuelve el consumidor a la capa de datos tras RECIBIR una lectura:
+ *  - "confirmed": el estado local quedó comprobado contra el servidor → se puede retirar la relectura pendiente;
+ *  - "pending": se recibió pero no está reconciliado (aplicación diferida, bloqueada, reintentos en curso o
+ *    agotados, mutación más nueva en cola, otra identidad) → la relectura pendiente se MANTIENE. */
+export type PlanReadbackAck = "confirmed" | "pending";
+
 export type PlanReadbackOutcome =
-  | { kind: "ignored"; reason: "no_session" | "identity_changed" | "no_profile" }
-  /** Todo coincide: perfil, calibración y objetivo de hoy. Es el ÚNICO resultado que reconoce conflictos. */
-  | { kind: "in_sync" }
+  | { kind: "ignored"; reason: "no_session" | "identity_changed" | "no_profile" | "not_hydrated" }
+  /** El plan (offset, calibración, versión) coincide. `goalCompared` indica si además se pudo COMPARAR el
+   *  objetivo de hoy: sin un ledger coherente no se compara, y entonces no se reconocen los conflictos del
+   *  objetivo (solo los del plan, que sí se verificaron). */
+  | { kind: "in_sync"; goalCompared: boolean }
   /** Se aplicó un cambio de plan; el objetivo se reescribirá con el push que genera esa mutación. */
   | { kind: "reconciled"; delta: PlanProfileDelta }
   /** Hay una mutación local más nueva: su propio push traerá su lectura; no se concluye nada aún. */
@@ -283,6 +293,15 @@ export type PlanReadbackOutcome =
   | { kind: "refresh"; verdict: GoalVerdict }
   /** Agotados los reintentos acotados: NO se da por reconciliado ni se reconocen conflictos. */
   | { kind: "unresolved"; verdict: GoalVerdict };
+
+/** Recibido ≠ aplicado ≠ confirmado. Solo `in_sync` (y «no hay perfil», donde no existe estado de plan que
+ *  reconciliar) confirma; todo lo demás deja la relectura pendiente — incluida `reconciled`, que solo encola
+ *  el cambio: lo confirmará la lectura de su propio push. */
+export function planOutcomeAck(outcome: PlanReadbackOutcome): PlanReadbackAck {
+  if (outcome.kind === "in_sync") return "confirmed";
+  if (outcome.kind === "ignored" && outcome.reason === "no_profile") return "confirmed";
+  return "pending";
+}
 
 /**
  * Recibe una lectura autoritativa de la identidad (userId, epoch) con la que se pidió. Garantías:
@@ -307,7 +326,11 @@ export function handlePlanReadback(
   if (current.userId !== identity.userId || current.epoch !== identity.epoch) return { kind: "ignored", reason: "identity_changed" };
 
   const state = deps.getState();
-  if (!state.profile) return { kind: "ignored", reason: "no_profile" };
+  if (!state.profile) {
+    // «Sin perfil» solo es definitivo (cuenta sin onboarding, nada que reconciliar) con la hidratación
+    // terminada; mientras carga, el estado puede ser provisional y no se confirma nada.
+    return { kind: "ignored", reason: deps.hydrationReady() ? "no_profile" : "not_hydrated" };
+  }
 
   const ref = readback.serverDate ?? deps.todayKey();
   const delta = planSliceDelta(state.profile, readback.slice, ref);  if (delta) {
@@ -337,8 +360,12 @@ export function handlePlanReadback(
     budget.refresh = 0;
     budget.warned = false;
     budget.notifiedOffset = null;
-    if (readback.conflicts.length > 0) deps.acknowledgeConflicts(identity.userId, identity.epoch, readback.conflicts.map((c) => c.id));
-    return { kind: "in_sync" };
+    const goalCompared = verdict === "in_sync";
+    // Solo se reconoce lo que se verificó: el plan coincide, así que los conflictos del plan se pueden
+    // reconocer; los del objetivo diario (`daily_goal_*`) solo si el objetivo de hoy se pudo comparar.
+    const ackable = readback.conflicts.filter((c) => goalCompared || !c.kind.startsWith("daily_goal_"));
+    if (ackable.length > 0) deps.acknowledgeConflicts(identity.userId, identity.epoch, ackable.map((c) => c.id));
+    return { kind: "in_sync", goalCompared };
   }
 
   if (verdict === "figures_diverged") {

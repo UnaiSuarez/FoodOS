@@ -38,6 +38,15 @@
     "legacyTelemetry": {
       "rows": 1
     },
+    "legacyReturnsAfterReject": {
+      "offset": -100,
+      "goalKcal": 1939,
+      "conflicts": [
+        "daily_goal_overwrite_prevented:goal:2026-10-13",
+        "daily_goal_overwrite_prevented:goal:2026-10-14",
+        "offset_overwrite_prevented:adaptiveKcalOffsetKcal"
+      ]
+    },
     "invalidCalibration": {
       "badOk": true,
       "nextOk": true,
@@ -78,7 +87,7 @@
       "protocol": 1,
       "conflicts": [
         {
-          "id": "33bfcdc4-6b3b-4f1b-bb10-17684c4a8f1a",
+          "id": "d94903f2-90db-4b27-9c2c-13662659ed34",
           "kind": "calibration_invalid_value_rejected",
           "subject": "adaptiveCalibrationStartedAt"
         }

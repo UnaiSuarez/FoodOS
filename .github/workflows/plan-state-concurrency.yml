@@ -2,6 +2,11 @@
 # No toca Supabase, producción ni secretos. Trabajo separado del job `ci` a propósito: si tarda o falla por
 # infraestructura no bloquea el type-check/vitest, pero DEBE estar en verde antes de dar por validada la
 # protección frente a carreras (ver docs/NUTRITION_V4_C0_PLAN_STATE_PROTECTION.md).
+#
+# Instalación aislada y reproducible: la carpeta de verificación vive DENTRO del monorepo (workspaces de npm),
+# y `npm install` allí falló con «Cannot read properties of null (reading 'edgesOut')» (run 38899575343). Por eso
+# se instala con pnpm, con lockfile propio versionado (pnpm-lock.yaml), `--frozen-lockfile` (falla si el
+# lockfile no coincide con package.json) e `--ignore-workspace` (no mira el package.json de la raíz).
 name: Plan-state concurrency
 
 on:
@@ -12,9 +17,17 @@ on:
       - ".github/workflows/plan-state-concurrency.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: plan-state-concurrency-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   postgres17-multi-connection:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -29,6 +42,9 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    defaults:
+      run:
+        working-directory: supabase/verification/plan-state-staleness
     steps:
       - uses: actions/checkout@v4
 
@@ -36,15 +52,23 @@ jobs:
         with:
           node-version: 22
 
-      - name: Instalar dependencias de la verificación (versiones fijadas)
-        working-directory: supabase/verification/plan-state-staleness
-        run: npm install --no-audit --no-fund
+      - name: Instalar pnpm (versión fijada)
+        working-directory: .
+        timeout-minutes: 3
+        run: npm install --global pnpm@11.25.0 --no-audit --no-fund
 
-      - name: Versión de PostgreSQL (evidencia)
+      - name: Instalar dependencias de la verificación (lockfile congelado, fuera del workspace)
+        timeout-minutes: 5
+        run: pnpm install --frozen-lockfile --ignore-workspace
+
+      - name: Versiones resueltas (evidencia)
+        timeout-minutes: 2
         run: |
-          node -e "import('pg').then(async ({default: pg}) => { const c = new pg.Client({connectionString: process.env.DATABASE_URL}); await c.connect(); console.log((await c.query('select version() as v')).rows[0].v); await c.end(); })"
-        working-directory: supabase/verification/plan-state-staleness
+          node --version
+          pnpm --version
+          pnpm ls --depth 0
+          node -e "import('pg').then(async ({default: pg}) => { const c = new pg.Client({connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 10000}); try { await c.connect(); console.log((await c.query('select version() as v')).rows[0].v); } finally { await c.end(); } })"
 
       - name: Carreras reales (varias conexiones)
-        working-directory: supabase/verification/plan-state-staleness
+        timeout-minutes: 8
         run: node concurrency/run.mjs

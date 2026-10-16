@@ -194,6 +194,30 @@ describe("política de clientes antiguos y telemetría", () => {
     }
   });
 
+  it("reject: un dispositivo ANTIGUO que estuvo offline y vuelve tras activar la política no deshace el ajuste ya aceptado ni crea objetivos (14 días sin tráfico antiguo no prueban que no queden dispositivos offline)", async () => {
+    const { u, snap } = await sealed(); // ajuste aceptado en otro dispositivo: offset −100, objetivo del día sellado a 1939
+    await admin(`select public.fn_plan_set_legacy_goal_write_policy('reject')`);
+    try {
+      // El cliente antiguo vuelve con su estado de antes del ajuste: perfil con offset 0 y objetivo 2039, sin protocolo.
+      const prof = await tryQ(u, `update public.user_profiles set extra_state = extra_state || '{"adaptiveKcalOffsetKcal":0,"adaptiveCalibrationStartedAt":null}'::jsonb where user_id=$1 returning extra_state`, [u], true);
+      expect(prof.ok).toBe(true);
+      expect((await extra(u)).adaptiveKcalOffsetKcal).toBe(-100);
+      const sameDay = await upsertGoal(u, 2039, undefined, true);
+      expect(sameDay.rows).toEqual([]);
+      const g = await goal(u);
+      expect(g.kcal).toBe(1939);
+      expect(g.basis).toBe(-100);
+      expect(g.snap).toBe(snap);
+      // un día sin fila: tampoco persiste nada
+      const other = await tryQ(u, `insert into public.nutrition_goals (user_id, goal_date, kcal_target, protein_target_g, carbs_target_g, fat_target_g, mode, calculation_version) values ($1,'2026-10-13',2039,160,204,54,'fat_loss','nutrition-v3.1') returning 1`, [u], true);
+      expect(other.rows).toEqual([]);
+      expect(await goal(u, "2026-10-13")).toBeNull();
+      results.legacyReturnsAfterReject = { offset: (await extra(u)).adaptiveKcalOffsetKcal, goalKcal: g.kcal, conflicts: await conflicts(u) };
+    } finally {
+      await admin(`select public.fn_plan_set_legacy_goal_write_policy('allow_unsealed')`);
+    }
+  });
+
   it("la política solo la cambia el rol de servicio: un usuario autenticado no puede", async () => {
     const u = await newUser();
     const r = await tryQ(u, `select public.fn_plan_set_legacy_goal_write_policy('reject')`);

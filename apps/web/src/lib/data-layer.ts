@@ -23,7 +23,7 @@ import { getSupabase } from "./supabase";
 import { ensureUuid, mealTypeFromTime, todayPlus } from "./utils";
 import { sanitizeFoodLogProvenance } from "./food-log-provenance";
 import { inventoryProvenanceFromColumn, inventoryProvenanceToColumn } from "./inventory-provenance-persistence";
-import { parsePlanReadback, sanitizePlanDate, sanitizePlanOffset, type PlanReadback } from "./plan-state";
+import { parsePlanReadback, sanitizePlanDate, sanitizePlanOffset, type PlanReadback, type PlanReadbackAck } from "./plan-state";
 
 /** Snapshot de sincronización programado por mutate() — captura de forma
     INMUTABLE userId/epoch/mutationId/estado en el momento de la mutación,
@@ -343,7 +343,7 @@ class RemoteAdapter {
       estado local con la lectura autoritativa del plan tras cada
       sincronización. Recibe SIEMPRE la identidad con la que se pidió (userId,
       epoch): quien la consume debe descartarla si la sesión ya cambió. */
-  onPlanReadback: ((info: { userId: string; epoch: number; readback: PlanReadback }) => void) | null = null;
+  onPlanReadback: ((info: { userId: string; epoch: number; readback: PlanReadback }) => PlanReadbackAck) | null = null;
 
   /** La UI se engancha aquí para avisar al usuario de que un guardado no
       llegó al servidor (queda solo en este dispositivo hasta reintentar). */
@@ -1997,13 +1997,21 @@ class RemoteAdapter {
    * C0 — lee el estado de plan del servidor y lo entrega a `onPlanReadback` con la identidad de quien lo
    * pidió. Orden: cada petición toma un número al emitirse y una respuesta más antigua que otra ya aplicada
    * se descarta. Nunca lanza; devuelve qué ocurrió.
+   *
+   * RECIBIR UNA RESPUESTA NO ES RECONCILIAR. Resultados:
+   *  - `confirmed`   → el consumidor comprobó que el estado local coincide con el servidor (devolvió
+   *                    "confirmed"). Es el ÚNICO resultado que permite retirar una relectura pendiente;
+   *  - `unconfirmed` → respuesta válida pero el consumidor no pudo aplicarla / sigue sin coincidir / no hay
+   *                    consumidor ("pending"); la relectura pendiente se mantiene;
+   *  - `stale`       → llegó después de una lectura más reciente ya entregada: no confirma nada por sí sola;
+   *  - `failed`      → red, error o respuesta inválida; `aborted` → la sesión cambió.
    */
   private async fetchPlanReadback(
     client: SupabaseClient,
     identity: { userId: string; epoch: number },
     goalDate: string | null,
     mutationId: string | null,
-  ): Promise<"delivered" | "stale" | "failed" | "aborted"> {
+  ): Promise<"confirmed" | "unconfirmed" | "stale" | "failed" | "aborted"> {
     const seq = ++this.planReadbackSeq;
     let result: { data: unknown; error: unknown };
     try {
@@ -2021,8 +2029,15 @@ class RemoteAdapter {
     if (!parsed) return "failed";
     if (seq < this.planReadbackApplied) return "stale"; // llegó después de una lectura más reciente ya aplicada
     this.planReadbackApplied = seq;
-    this.onPlanReadback?.({ userId: identity.userId, epoch: identity.epoch, readback: parsed });
-    return "delivered";
+    let ack: PlanReadbackAck = "pending"; // sin consumidor no hay quien reconcilie: nada queda confirmado
+    try {
+      if (this.onPlanReadback) ack = this.onPlanReadback({ userId: identity.userId, epoch: identity.epoch, readback: parsed });
+    } catch (error) {
+      console.warn("FoodOS: el consumidor de la lectura del plan falló", error);
+    }
+    // La identidad pudo cambiar durante la entrega: lo confirmado entonces no pertenece a esta sesión.
+    if (this.user?.id !== identity.userId || this.sessionEpoch !== identity.epoch) return "aborted";
+    return ack === "confirmed" ? "confirmed" : "unconfirmed";
   }
 
   // ── Relectura pendiente (durable) ────────────────────────────────────────────────────────────────
@@ -2073,19 +2088,24 @@ class RemoteAdapter {
     if (this.user?.id !== rc.userId || this.sessionEpoch !== rc.epoch || !this.client) { this.planRecheck = null; return; }
     // Si hay una sincronización en curso o en cola, su propia lectura sustituye a esta.
     if (this.activePush || this.pushTimer || this.pushQueued) { this.armPlanRecheck(); return; }
-    let outcome: "delivered" | "stale" | "failed" | "aborted" = "failed";
+    let outcome: "confirmed" | "unconfirmed" | "stale" | "failed" | "aborted" = "failed";
     try {
       if (await this.ensurePlanProtection(this.client)) outcome = await this.fetchPlanReadback(this.client, { userId: rc.userId, epoch: rc.epoch }, rc.goalDate, null);
-      else outcome = "delivered"; // servidor anterior: no hay nada que reconciliar
+      else outcome = "confirmed"; // servidor anterior confirmado: no hay estado de plan que reconciliar
     } catch { outcome = "failed"; }
-    if (this.planRecheck !== rc) return; // la sesión cambió o se sustituyó mientras tanto
-    if (outcome === "delivered" || outcome === "stale") {
+    // Identidad Y generación: si la sesión cambió o este intento fue sustituido mientras esperaba, esta
+    // respuesta no puede retirar ni modificar el pendiente vigente (que pertenece a otra generación).
+    if (this.planRecheck !== rc) return;
+    if (outcome === "confirmed") {
       this.planRecheck = null;
+      if (this.planRecheckTimer) { clearTimeout(this.planRecheckTimer); this.planRecheckTimer = null; }
       this.clearPlanRecheckMark(rc.userId);
       if (this.pushIsFullyIdle()) this.notifyStatus("saved");
       return;
     }
     if (outcome === "aborted") { this.planRecheck = null; return; }
+    // failed | unconfirmed | stale: una respuesta recibida pero no confirmada consume intentos igual que un
+    // fallo de red — el presupuesto acotado es el mismo.
     rc.attempt += 1;
     if (rc.attempt >= RemoteAdapter.PLAN_RECHECK_DELAYS_MS.length) {
       rc.exhausted = true; // se deja de insistir en esta carga; la marca durable permanece y se retoma tras recargar
@@ -2318,15 +2338,21 @@ class RemoteAdapter {
     if (planProtected) {
       const outcome = await this.fetchPlanReadback(client, { userId: ctx.userId, epoch: ctx.epoch }, goalDateKey, ctx.mutationId);
       checkAlive(); // si la sesión cambió mientras tanto, nada de esto llega al estado de otra cuenta
-      if (outcome === "failed") {
-        // Lo escrito NO está comprobado: la relectura queda pendiente (durable y acotada) y el estado no se
-        // presenta como «guardado» hasta que se complete. No es un fallo del push: el pendiente se confirma.
+      if (outcome === "failed" || outcome === "unconfirmed") {
+        // Lo escrito NO está comprobado (la lectura falló, o llegó pero el estado local no pudo
+        // reconciliarse todavía): la relectura queda pendiente (durable y acotada) y el estado no se
+        // presenta como «guardado» hasta que se confirme. No es un fallo del push: el pendiente se confirma.
         this.requestPlanRecheck(ctx.userId, ctx.epoch, goalDateKey);
-      } else if (this.planRecheck && this.planRecheck.userId === ctx.userId) {
-        this.planRecheck = null;
-        if (this.planRecheckTimer) { clearTimeout(this.planRecheckTimer); this.planRecheckTimer = null; }
+      } else if (outcome === "confirmed") {
+        // Solo una reconciliación CONFIRMADA de esta misma identidad y generación (checkAlive acaba de
+        // comprobarlo) retira el pendiente, en memoria y en disco.
+        if (this.planRecheck && this.planRecheck.userId === ctx.userId && this.planRecheck.epoch === ctx.epoch) {
+          this.planRecheck = null;
+          if (this.planRecheckTimer) { clearTimeout(this.planRecheckTimer); this.planRecheckTimer = null; }
+        }
         this.clearPlanRecheckMark(ctx.userId);
       }
+      // `stale`: otra lectura más reciente ya fue entregada; su propio resultado decide. No confirma ni crea nada.
     }
 
     // Cada syncTable() es independiente de las demás (tablas sin relación

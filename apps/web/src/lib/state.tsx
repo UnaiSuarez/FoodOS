@@ -22,7 +22,7 @@ import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { hasAtMostTwoDecimals } from "./pg-numeric";
-import { handlePlanReadback, newPlanReconcileBudget, sanitizeProfilePlanFields, type PlanReconcileBudget } from "./plan-state";
+import { handlePlanReadback, newPlanReconcileBudget, planOutcomeAck, sanitizeProfilePlanFields, type PlanReconcileBudget } from "./plan-state";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, massUnitFromGrams, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
@@ -1658,6 +1658,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
       const outcome = handlePlanReadback({ userId, epoch }, readback, {
         currentIdentity: () => (remote.user ? { userId: remote.user.id, epoch: remote.sessionEpoch } : null),
         getState: () => planStateRef.current,
+        hydrationReady: () => hydrationScopeRef.current?.phase === "ready",
         mutate,
         todayKey: () => todayPlus(0),
         isLatestMutation: (mutationId) => {
@@ -1673,11 +1674,10 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
         // dispositivo también pueden estar obsoletas → se refrescan por la vía de hidratación normal.
         requestHydrationRef.current(userId, epoch);
       }
-      // Lo leído no se pudo aplicar (mutaciones bloqueadas) o no se pudo confirmar tras los reintentos
-      // acotados: no se da por reconciliado; queda una relectura pendiente, durable y acotada.
-      if (outcome.kind === "blocked" || outcome.kind === "unresolved") {
-        remote.requestPlanRecheck(userId, epoch, readback.requestedGoalDate);
-      }
+      // Recibido ≠ reconciliado: solo `in_sync` confirma. Todo lo demás (bloqueado, en reintento, agotado,
+      // mutación más nueva en cola…) devuelve «pending» y la capa de datos MANTIENE la relectura pendiente,
+      // durable y acotada. El proveedor no la solicita por su cuenta (eso la reiniciaba mientras seguía activa).
+      return planOutcomeAck(outcome);
     };
     return () => { remote.onPlanReadback = null; };
   }, [mutate, showToast]);

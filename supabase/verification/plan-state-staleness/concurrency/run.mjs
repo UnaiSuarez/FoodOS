@@ -20,9 +20,26 @@ const D2 = "2026-10-15";
 const results = [];
 const note = (name, detail) => { results.push({ name, ...detail }); console.log(`OK  ${name}`, detail ?? ""); };
 
+// Límites de tiempo: ninguna consulta ni espera de bloqueo puede colgar el job indefinidamente.
+// Las esperas de bloqueo DESEADAS (K1–K3) duran milisegundos; 20 s sobran y 15 s de lock_timeout las acota.
+const QUERY_TIMEOUT_MS = 30_000;
+const GLOBAL_TIMEOUT_MS = 6 * 60_000;
+const opened = new Set();
+async function closeAll() {
+  await Promise.allSettled([...opened].map((c) => Promise.race([c.end(), new Promise((r) => setTimeout(r, 3000))])));
+  opened.clear();
+}
+const watchdog = setTimeout(() => {
+  console.error(`FALLO: la verificación superó el límite global de ${GLOBAL_TIMEOUT_MS / 1000} s`);
+  process.exit(2);
+}, GLOBAL_TIMEOUT_MS);
+watchdog.unref();
+
 async function connect() {
-  const c = new Client({ connectionString: URL_ });
+  const c = new Client({ connectionString: URL_, connectionTimeoutMillis: 10_000, query_timeout: QUERY_TIMEOUT_MS, statement_timeout: QUERY_TIMEOUT_MS, lock_timeout: 15_000 });
+  c.on("error", (e) => console.error("error de conexión", e.message));
   await c.connect();
+  opened.add(c);
   c.pid = (await c.query("select pg_backend_pid() as p")).rows[0].p;
   return c;
 }
@@ -198,12 +215,12 @@ async function main() {
       assert.equal(g.kcal, 1939);
     }
     assert.equal(deadlocks, 0);
-    for (const c of extra) await c.end();
     note("K7 estrés (30 iteraciones × 5 conexiones): sin interbloqueos y siempre prevalece el offset y el objetivo de la aceptación", { deadlocks });
   }
 
-  for (const c of [A, B, C, admin]) await c.end();
   console.log(JSON.stringify({ ok: true, postgres: "ver select version() del servicio", scenarios: results.length }, null, 2));
 }
 
-main().catch((e) => { console.error("FALLO", e); process.exit(1); });
+main()
+  .then(async () => { await closeAll(); clearTimeout(watchdog); })
+  .catch(async (e) => { console.error("FALLO", e); await closeAll(); process.exit(1); });
