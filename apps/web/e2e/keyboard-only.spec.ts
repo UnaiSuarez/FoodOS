@@ -31,7 +31,7 @@ test("navegar entre secciones del nav solo con Tab/Enter (E18-17)", async ({ pag
 
 test("abrir y cerrar un modal solo con teclado devuelve el foco a quien lo abrió (E18-17)", async ({ page }) => {
   await page.goto("/dashboard/diary");
-  const openButton = page.getByRole("button", { name: "¿Qué has comido?" });
+  const openButton = page.getByRole("button", { name: "Registrar comida" });
 
   await openButton.focus();
   await page.keyboard.press("Enter");

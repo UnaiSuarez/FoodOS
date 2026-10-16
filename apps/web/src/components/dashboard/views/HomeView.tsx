@@ -23,6 +23,7 @@ import {
 } from "@/lib/state";
 import { GOAL_LABELS, isGymDay } from "@/lib/nutrition";
 import { buildPlanLogEntry } from "@/lib/food-log-entries";
+import { setQuickAddSignal } from "@/lib/quick-add-signal";
 import { adherenceFreshnessNote, describeEvaluableFraction, useAdherenceWindow } from "@/lib/nutrition-history";
 import { clampPct, dateFromKey, daysUntil, eur, namesMatch } from "@/lib/utils";
 import { ConsumeModal } from "../ConsumeModal";
@@ -370,10 +371,18 @@ export function HomeView({
 
         {/* Acciones frecuentes */}
         <div className="hv-actions" aria-label="Acciones frecuentes">
-          <button className="hv-act primary" onClick={() => goTo("diary")}>
+          {/* La señal (misma que usa el «+» universal) hace que el destino abra
+              el modal / enfoque el formulario al montar; se consume una sola vez. */}
+          <button
+            className="hv-act primary"
+            onClick={() => { setQuickAddSignal("meal"); goTo("diary"); }}
+          >
             <span aria-hidden="true">🍽</span> Registrar comida
           </button>
-          <button className="hv-act" onClick={() => goTo("inventory")}>
+          <button
+            className="hv-act"
+            onClick={() => { setQuickAddSignal("food"); goTo("inventory"); }}
+          >
             <span aria-hidden="true">＋</span> Añadir alimento
           </button>
           <button className="hv-act" onClick={() => goTo("cart")}>
@@ -426,8 +435,12 @@ export function HomeView({
                     <button className="small-action" onClick={() => { openRecipe(r.id); setWhatToEatOpen(false); }}>
                       Ver
                     </button>
-                    <button className="small-action good" onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}>
-                      Cocinar
+                    <button
+                      className="small-action good"
+                      aria-label={`Cocinar y registrar ${r.title}: abre el diálogo que anota la ración en tu diario`}
+                      onClick={() => { setCookingRecipe(r); setWhatToEatOpen(false); }}
+                    >
+                      Cocinar y registrar
                     </button>
                   </div>
                 </div>
@@ -481,9 +494,10 @@ export function HomeView({
             </button>
             <button
               className="small-action good"
+              aria-label={`Cocinar y registrar ${activeSuggestion.recipe.title}: abre el diálogo que anota la ración en tu diario`}
               onClick={() => setCookingRecipe(activeSuggestion.recipe)}
             >
-              Cocinar
+              Cocinar y registrar
             </button>
           </div>
         </article>
@@ -589,6 +603,7 @@ export function HomeView({
                       className="hv-btn"
                       onClick={() => logPlanEntry(entryId, mealType)}
                       title="Registrar en el diario"
+                      aria-label={`Registrar «${entry.title}» en el diario. No descuenta ingredientes del inventario`}
                     >
                       {maybeLogged ? "Registrar otra vez" : "✓ Registrar"}
                     </button>
@@ -598,7 +613,10 @@ export function HomeView({
             </ol>
           )}
           {plannedSlots.length > 0 && (
-            <p className="hv-foot">Lo planificado no cuenta como consumido hasta que lo registras.</p>
+            <p className="hv-foot">
+              Lo planificado no cuenta como consumido hasta que lo registras. «Registrar» lo anota en tu diario y{" "}
+              <strong>no descuenta ingredientes del inventario</strong>.
+            </p>
           )}
         </article>
 

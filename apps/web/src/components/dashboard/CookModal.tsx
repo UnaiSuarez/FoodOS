@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import type { MealType, Recipe } from "@foodos/types";
-import { actions, availableForIngredient, getPendingMacros, useFoodOS } from "@/lib/state";
+import { actions, availableForIngredient, getPendingMacros, getToday, useFoodOS } from "@/lib/state";
 import { eur, toGrams, uid } from "@/lib/utils";
 import { intentGuard, runGuardedIntent } from "@/lib/intent-guard";
+import { describeLogTarget, inventoryOutcome, registeredTotals, registeredWord, servingsLabel } from "./cook-log-copy";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -51,13 +52,10 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     };
   }, [recipe.ingredients, ratio, qtyOverrides]);
 
-  const scaled = {
-    kcal:    derivedMacros?.kcal    ?? Math.round(recipe.kcal * ratio),
-    protein: derivedMacros?.protein ?? Math.round(recipe.protein * ratio * 10) / 10,
-    carbs:   derivedMacros?.carbs   ?? Math.round(recipe.carbs * ratio * 10) / 10,
-    fat:     derivedMacros?.fat     ?? Math.round(recipe.fat * ratio * 10) / 10,
-    cost: scaledCost,
-  };
+  // Lo que cookRecipe PERSISTE: totales de la receta × ratio. El resumen, los
+  // avisos y el feedback usan exactamente estos valores. La derivación por
+  // ingredientes (derivedMacros) es solo una estimación aparte y no se registra.
+  const scaled = { ...registeredTotals(recipe, ratio), cost: scaledCost };
 
   // Ingredient status with aggregated qty from all matching inventory lots.
   // availableForIngredient suma los lotes convertibles EN LA UNIDAD DEL
@@ -76,6 +74,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
   }, [recipe, ratio, state, qtyOverrides]);
 
   const missingCount = ingStatus.filter((i) => i.status !== "ok").length;
+  // Dónde se escribirá la entrada: los mismos criterios que cookRecipe
+  // (fecha y tipo de comida recibidos, o hoy y la hora actual).
+  const target = describeLogTarget({ today: getToday(state), date: logDate, mealType });
   const pending = getPendingMacros(state);
   const exceedKcal = pending.kcal > 0 && scaled.kcal > pending.kcal + 100;
   const coversProtein = scaled.protein >= pending.protein * 0.7;
@@ -117,6 +118,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
 
   function cook() {
     const overrides = Object.keys(qtyOverrides).length > 0 ? qtyOverrides : undefined;
+    // El updater de mutate() sigue siendo puro: no asigna variables externas ni
+    // notifica, y el aviso de abajo no afirma un resultado que React aún no ha
+    // calculado (mutate() solo garantiza que la operación quedó encolada).
     // Guard síncrono contra doble-ingesta por la misma intención (dos
     // clics/toques antes del primer repintado): claim() y la llamada a
     // mutate() ocurren en la misma tarea de JS, sin ningún await de por
@@ -131,21 +135,24 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     // ConsumeModal.tsx, ver su comentario (intent-guard.ts tiene el
     // detalle completo de esta asimetría).
     const applied = runGuardedIntent(intentGuard, intentId, () =>
-      mutate((draft) => actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType })),
+      mutate((draft) => {
+        actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType });
+      }),
     );
     if (!applied) return; // ya reclamado (doble clic) o mutate() no aceptó la operación — ningún toast, ningún cierre
     const lines: string[] = [];
     if (exceedKcal) lines.push("Atención: superas el objetivo de calorías de hoy.");
     if (coversProtein) lines.push("Proteína del día cubierta ✓");
+    const outcome = inventoryOutcome({ deduct, shortCount: missingCount });
     setMascotMessage(
-      `${recipe.title} cocinado. ${scaled.kcal} kcal y ${scaled.protein}g de proteína registrados. ${lines.join(" ")}`
+      `${recipe.title}: ${servingsLabel(servings)} ${registeredWord(servings)} en tu diario (${scaled.kcal} kcal y ${scaled.protein} g de proteína), ${outcome}. ${lines.join(" ")}`.trim()
     );
-    showToast(`${recipe.title} cocinado (${servings} ración${servings !== 1 ? "es" : ""})`);
+    showToast(`${recipe.title}: ${servingsLabel(servings)} ${registeredWord(servings)} en tu diario · ${outcome}`);
     onClose();
   }
 
   return (
-    <Modal title={`Cocinar: ${recipe.title}`} onClose={onClose}>
+    <Modal title={`Cocinar y registrar: ${recipe.title}`} onClose={onClose}>
       {/* Servings */}
       <div className="cook-servings">
         <span className="cook-label">Raciones</span>
@@ -157,7 +164,7 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
         <span className="cook-hint">Base: {recipe.servings || 1} ración{(recipe.servings || 1) !== 1 ? "es" : ""}</span>
       </div>
 
-      {/* Macro impact */}
+      {/* Macro impact: totales que se registrarán (los de la receta × raciones) */}
       <div className="cook-macros">
         <div className={`cook-macro-item ${exceedKcal ? "warn" : ""}`}>
           <span>{scaled.kcal}</span>
@@ -196,6 +203,14 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
       {/* Ingredient status — with editable quantities */}
       <div className="cook-ingredients">
         <h4>Ingredientes</h4>
+        <p className="cook-hint cook-qty-note">
+          Cambiar una cantidad solo modifica lo que se descuenta del inventario; las kcal y macros registrados son los de la receta.
+        </p>
+        {derivedMacros && (
+          <p className="cook-hint cook-estimate">
+            Estimación por ingredientes (no es lo que se registra): {derivedMacros.kcal} kcal · {derivedMacros.protein} g de proteína.
+          </p>
+        )}
         <ul className="cook-ing-list">
           {ingStatus.map((ing) => {
             const isOverridden = ing.name in qtyOverrides;
@@ -212,6 +227,7 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
                     type="number"
                     min="0"
                     step="1"
+                    aria-label={`Cantidad de ${ing.name} a descontar, en ${ing.unit}`}
                     value={ing.needed}
                     className={`cook-ing-qty-input ${isOverridden ? "overridden" : ""}`}
                     onChange={(e) => updateIngQty(ing.name, Number(e.target.value))}
@@ -251,10 +267,30 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
         Descontar ingredientes del inventario al cocinar
       </label>
 
+      {/* Qué va a pasar al confirmar — con los valores reales de este diálogo. */}
+      <div className="cook-log-summary" role="note">
+        <p>
+          <strong>Al confirmar se registrará en tu diario personal:</strong>{" "}
+          {servingsLabel(servings)} · {scaled.kcal} kcal · {scaled.protein} g de proteína.
+        </p>
+        <p>
+          Fecha y comida: <strong>{target.dateLabel}</strong> · <strong>{target.mealLabel}</strong>
+          {target.mealFromClock ? " (según la hora actual)" : ""}.
+        </p>
+        <p>
+          Inventario:{" "}
+          {!deduct
+            ? "no se modificará."
+            : missingCount > 0
+              ? `se descontará solo lo que tienes; ${missingCount} ${missingCount === 1 ? "ingrediente no llega" : "ingredientes no llegan"} a la cantidad necesaria.`
+              : "se descontarán los ingredientes."}
+        </p>
+      </div>
+
       <div className="recipe-detail-actions">
         <button className="secondary-button" onClick={onClose}>Cancelar</button>
         <button className="primary-button" onClick={cook}>
-          Cocinar {servings} ración{servings !== 1 ? "es" : ""}
+          Cocinar y registrar {servingsLabel(servings)}
         </button>
       </div>
     </Modal>

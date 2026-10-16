@@ -34,13 +34,13 @@ test("cocinar una receta descuenta la cantidad correcta de cada ingrediente (E21
   // tomate cherry — los datos demo tienen 260g/500g/180g de cada uno.
   await page.goto("/dashboard/recipes");
   const card = page.locator(".recipe-card", { hasText: "Bowl proteico de pollo" });
-  await card.getByRole("button", { name: "Cocinar" }).click();
+  await card.getByRole("button", { name: "Cocinar y registrar" }).click();
 
-  const modal = page.getByRole("dialog", { name: "Cocinar: Bowl proteico de pollo" });
+  const modal = page.getByRole("dialog", { name: "Cocinar y registrar: Bowl proteico de pollo" });
   await expect(modal.getByRole("checkbox", { name: "Descontar ingredientes del inventario al cocinar" })).toBeChecked();
-  await modal.getByRole("button", { name: "Cocinar 1 ración" }).click();
+  await modal.getByRole("button", { name: "Cocinar y registrar 1 ración" }).click();
 
-  await expect(page.locator(".toast")).toHaveText("Bowl proteico de pollo cocinado (1 ración)");
+  await expect(page.locator(".toast")).toHaveText("Bowl proteico de pollo: 1 ración registrada en tu diario · se descuentan los ingredientes del inventario");
 
   await page.goto("/dashboard/inventory");
   await expect(page.locator(".card", { hasText: "Pechuga de pollo" }).locator("small")).toContainText("80g");
@@ -68,7 +68,7 @@ test("borrar una comida y deshacer restaura diario e inventario juntos (E21-03)"
 
   // Registra 100g de pechuga de pollo desde inventario (260g -> 160g).
   await page.goto("/dashboard/diary");
-  await page.getByRole("button", { name: "¿Qué has comido?" }).click();
+  await page.getByRole("button", { name: "Registrar comida" }).click();
   const modal = page.getByRole("dialog", { name: "¿Qué has comido?" });
   await modal.getByLabel("Filtrar alimentos").fill("Pechuga");
   const row = modal.locator(".lm-inv-row", { hasText: "Pechuga de pollo" });
@@ -126,7 +126,7 @@ test("la lista de compra del plan solo añade lo que falta de verdad (E21-04)", 
   await page.goto("/dashboard/cart");
   // El panel de sugerencias arranca ya abierto (suggestOpen=true por
   // defecto) — solo hace falta cambiar a la pestaña del plan.
-  await page.getByRole("button", { name: "📅 Del plan semanal" }).click();
+  await page.getByRole("button", { name: "📅 Plan sugerido" }).click();
 
   const suggestList = page.locator(".suggest-list");
   await expect(suggestList.locator(".suggest-name", { hasText: "pechuga de pollo" })).toBeVisible();

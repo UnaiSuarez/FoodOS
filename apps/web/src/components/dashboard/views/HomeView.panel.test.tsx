@@ -154,6 +154,32 @@ describe("Panel diario — lo planificado no cuenta como consumido", () => {
     expect(container.querySelector(".hv-step.plan .hv-step-time")?.textContent).toBe("Cena");
   });
 
+  it("el «Registrar» del plan dice, visible y en su nombre accesible, que NO descuenta inventario, y así es", async () => {
+    const holder = await mount((d) => {
+      d.foodLog = [];
+      d.inventory = [{ id: "l-pollo", name: "Pollo", qty: 1000, unit: "g", storage: "Nevera", expires: "2099-01-01", price: 2, kcal: 150, protein: 20 }];
+      d.customRecipes.push({ ...structuredClone(RECIPE), ingredients: [{ name: "Pollo", quantity: 200, unit: "g" }] });
+      d.mealPlan[getToday(d)] = { lunch: RECIPE.id };
+    });
+    expect(container.querySelector(".hv-foot")!.textContent).toContain("no descuenta ingredientes del inventario");
+    const button = container.querySelector('button[title="Registrar en el diario"]') as HTMLButtonElement;
+    expect(button.getAttribute("aria-label")).toBe(
+      "Registrar «Guiso de prueba» en el diario. No descuenta ingredientes del inventario",
+    );
+    click(button);
+    expect(holder.current!.state.foodLog).toHaveLength(1);
+    expect(holder.current!.state.inventory[0].qty).toBe(1000); // efecto real: inventario intacto
+  });
+
+  it("«Cocinar y registrar» (sugerencias) lo dice en su texto y en su nombre accesible", async () => {
+    // El panel «¿Qué como ahora?» lista recetas con el mismo botón.
+    await mount((d) => { d.foodLog = []; });
+    click(buttonByText("¿Qué como ahora?"));
+    const cook = container.querySelector('.what-to-eat-actions button.good') as HTMLButtonElement;
+    expect(cook.textContent).toBe("Cocinar y registrar");
+    expect(cook.getAttribute("aria-label")).toContain("anota la ración en tu diario");
+  });
+
   it("avisa si ya hay un registro con el mismo nombre que la comida planificada, sin tocar los totales", async () => {
     await mount((d) => {
       d.foodLog = [];

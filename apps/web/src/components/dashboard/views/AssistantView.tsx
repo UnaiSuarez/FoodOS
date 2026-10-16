@@ -364,9 +364,13 @@ export function AssistantView() {
                         showToast("Ingredientes añadidos al carrito");
                       }}
                       onCook={() => {
-                        mutate((draft) => actions.cookRecipe(draft, msg.recipe!));
-                        showToast("Receta registrada en nutrición");
-                        setMascotMessage("¡Receta cocinada! Macros actualizados.");
+                        const applied = mutate((draft) => actions.cookRecipe(draft, msg.recipe!));
+                        if (!applied) return false;
+                        showToast(`${msg.recipe!.title}: 1 ración registrada en tu diario · inventario sin cambios`);
+                        setMascotMessage(
+                          `${msg.recipe!.title}: ${msg.recipe!.kcal} kcal registradas en tu diario, sin descontar inventario.`,
+                        );
+                        return true;
                       }}
                     />
                   )}
@@ -491,7 +495,7 @@ export function AssistantView() {
 
 // ── Tarjeta de receta inline ──────────────────────────────────────
 
-function ChatRecipeCard({
+export function ChatRecipeCard({
   recipe,
   onReview,
   onCart,
@@ -500,7 +504,8 @@ function ChatRecipeCard({
   recipe: Recipe;
   onReview: () => void;
   onCart: () => void;
-  onCook: () => void;
+  /** Devuelve true si el registro se aplicó (el gate de hidratación puede rechazarlo). */
+  onCook: () => boolean;
 }) {
   const [cooked, setCooked] = useState(false);
 
@@ -537,6 +542,11 @@ function ChatRecipeCard({
         </ol>
       )}
 
+      <p className="cook-log-help">
+        «Cocinar y registrar» anota <strong>1 ración ({recipe.kcal} kcal · {recipe.protein} g de proteína)</strong>{" "}
+        en tu diario de hoy y no descuenta ingredientes del inventario.
+      </p>
+
       <div className="card-actions">
         <button className="small-action good" onClick={onReview}>
           Revisar y guardar
@@ -546,10 +556,15 @@ function ChatRecipeCard({
         </button>
         <button
           className={`small-action ${cooked ? "good" : ""}`}
-          onClick={() => { onCook(); setCooked(true); }}
+          onClick={() => { if (onCook()) setCooked(true); }}
           disabled={cooked}
+          aria-label={
+            cooked
+              ? `${recipe.title}: ya registrada en tu diario`
+              : `Cocinar y registrar ${recipe.title}: anota 1 ración en tu diario, sin descontar inventario`
+          }
         >
-          {cooked ? "Cocinada ✓" : "Cocinar ahora"}
+          {cooked ? "Registrada ✓" : "Cocinar y registrar"}
         </button>
       </div>
     </div>

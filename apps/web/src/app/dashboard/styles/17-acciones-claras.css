@@ -1,0 +1,75 @@
+/* ---------- Acciones claras en el recorrido receta → plan → registro → compra ----------
+   Solo bloques de texto explicativos nuevos. Usa los tokens compartidos
+   (--text, --muted, --border, --surface-2, --green), así que respeta tema
+   claro y oscuro sin reglas por tema. Va el último en dashboard.css. */
+
+/* Resumen «qué va a pasar al confirmar» (CookModal, detalle de receta, receta IA) */
+.cook-log-summary {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.cook-log-summary p {
+  margin: 0;
+  color: inherit;
+}
+
+.cook-log-summary p + p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+/* Ayuda corta bajo la tarjeta de receta del asistente */
+.cook-log-help {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* Carrito: explicación de «Completar compra» frente a «Mover a despensa» */
+.cart-actions-hint {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.cart-actions-hint strong {
+  color: var(--text);
+}
+
+/* Carrito: aclaración visible de que «Plan sugerido» no es el Planificador */
+.suggest-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* Planificador: qué hace el «✓» según el tipo de comida */
+.planner-log-legend {
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.planner-log-legend strong {
+  color: var(--green);
+}
+
+/* CookModal: el ámbar del aviso "te falta parte" daba 4,4:1 sobre el fondo claro. */
+[data-theme="light"] .cook-ing-item.partial .cook-ing-avail { color: #92400e; }
+.cook-estimate, .cook-qty-note { margin: 4px 0 8px; }

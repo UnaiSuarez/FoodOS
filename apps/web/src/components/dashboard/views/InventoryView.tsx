@@ -880,7 +880,7 @@ export function InventoryView() {
         <article className="panel">
           <div className="panel-head">
             <h2>Inventario</h2>
-            <div className="segmented" role="tablist" aria-label="Filtro de almacén">
+            <div className="segmented" role="group" aria-label="Filtro de almacén">
               {STORAGES.map((storage) => (
                 <button
                   key={storage}
@@ -901,7 +901,7 @@ export function InventoryView() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
-            <div className="segmented" role="tablist" aria-label="Filtro rápido">
+            <div className="segmented" role="group" aria-label="Filtro rápido">
               <button
                 className={`filter ${quickFilter === "all" ? "active" : ""}`}
                 aria-pressed={quickFilter === "all"}
