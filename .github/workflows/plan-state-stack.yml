@@ -59,6 +59,7 @@ jobs:
           echo "STACK_ANON_KEY=$ANON" >> "$GITHUB_ENV"
           echo "STACK_SERVICE_KEY=$SERVICE" >> "$GITHUB_ENV"
           echo "STACK_RUN_ID=${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          {
           echo "commit: $GITHUB_SHA"
           echo "api_url: $API_URL"
           echo "project_id (config.toml): $(grep -E '^project_id' supabase/config.toml)"
@@ -67,6 +68,7 @@ jobs:
           docker exec "$DB" psql -U postgres -Atc "select count(*) || ' migraciones aplicadas' from supabase_migrations.schema_migrations"
           docker exec "$DB" psql -U postgres -Atc "select version from supabase_migrations.schema_migrations order by 1 desc limit 3"
           docker ps --format '{{.Image}}' | sort
+          } | tee "$RUNNER_TEMP/env-evidence.txt"
 
       - name: Instalar Chromium
         working-directory: apps/web
@@ -77,6 +79,17 @@ jobs:
         working-directory: apps/web
         timeout-minutes: 20
         run: npx playwright test -c playwright.stack.config.ts
+
+      - name: Evidencia como anotaciones (visibles sin descargar artefactos; sin secretos)
+        if: ${{ !cancelled() }}
+        working-directory: apps/web
+        run: |
+          echo "::notice title=C0 stack - entorno::$(cat "$RUNNER_TEMP/env-evidence.txt" | sed -z 's/\n/ | /g')"
+          echo "::notice title=C0 stack - versiones::$(supabase --version) | node $(node --version) | supabase-js $(node -p "require('@supabase/supabase-js/package.json').version") | playwright $(node -p "require('@playwright/test/package.json').version")"
+          for f in stack-evidence/api.json stack-evidence/browser.json; do
+            [ -f "$f" ] && echo "::notice title=C0 evidencia $(basename $f)::$(jq -c . "$f")"
+          done
+          exit 0
 
       - name: Subir informe y evidencia (sin secretos)
         if: ${{ !cancelled() }}
