@@ -12,6 +12,7 @@ import {
   acceptArgs, assertIsolated, createQaUser, deleteQaUser, propose, serverGoal, serverOffset, signedClient, todayUtc, type QaUser,
 } from "./helpers";
 import { PLAN_PROTOCOL_CLIENT_INFO } from "../src/lib/supabase";
+import { PLAN_RECONCILE_MAX_REPUSH } from "../src/lib/plan-state";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const evidence: Record<string, unknown> = {};
@@ -248,23 +249,33 @@ test("E: respuesta VÁLIDA que no se puede reconciliar → no «guardado», pres
       return route.fulfill({ response: res, json: { ...body, goal: null } }); // válida, pero el objetivo de hoy «no existe»
     });
     await bump(page);
-    // El tiempo es virtual pero cada lectura tarda tiempo REAL: el siguiente reintento solo se arma cuando llega la
-    // respuesta. Se avanza el reloj hasta que el número de lecturas lleve 14 pasos (420 s virtuales > el mayor
-    // retardo, 300 s) sin cambiar.
-    let last = -1; let stable = 0;
-    for (let i = 0; i < 300 && stable < 14; i++) {
+    // Origen de las lecturas (verificado con el servidor simulado del proveedor, plan-state-provider.test.tsx): la
+    // respuesta es VÁLIDA pero «el objetivo de hoy no existe» (server_row_missing) → handlePlanReadback REESCRIBE el
+    // objetivo (mutate → nuevo push → nueva lectura) hasta PLAN_RECONCILE_MAX_REPUSH veces, y además la relectura
+    // pendiente hace sus 5 reintentos (5/15/45/120/300 s). Total legítimo = (1 + MAX_REPUSH) lecturas tras escribir
+    // + 5 reintentos = 8. Las dos primeras clases ocurren en tiempo real (debounce de push); los reintentos se arman
+    // SOLO cuando llega la respuesta anterior, y cada respuesta tarda tiempo REAL aunque el reloj sea virtual.
+    //
+    // «Agotado» es un hecho observable, no un número de iteraciones: la capa de datos emite el estado de error
+    // (insignia «Error al sincronizar») justo cuando el 5.º reintento ha recibido su respuesta y no arma más. Se
+    // avanza el reloj hasta ese momento; ahí ya no queda ninguna lectura en vuelo ni temporizador de este ciclo.
+    // (El criterio anterior — N pasos de 30 s virtuales y comparar — medía antes de que llegase la última
+    // respuesta: 7 lecturas «al agotar» cuando faltaba la 8.ª legítima, no una lectura indebida.)
+    await expect.poll(async () => {
       await page.clock.runFor(30_000);
-      await page.waitForTimeout(250);
-      if (reads === last) stable++; else { stable = 0; last = reads; }
-    }
-    expect(stable).toBeGreaterThanOrEqual(14);
-    await expect(badge(page)).not.toHaveText("Guardado");
+      return ((await badge(page).textContent()) ?? "").trim();
+    }, { timeout: 120_000, intervals: [50], message: "el presupuesto de relectura no llegó a agotarse" }).toBe("Error al sincronizar");
     expect(await page.evaluate((k) => localStorage.getItem(k) !== null, markKey)).toBe(true);
     const readsAtExhaustion = reads;
+    const maxLegit = 1 + PLAN_RECONCILE_MAX_REPUSH + 5; // tras escribir + reescrituras acotadas + reintentos acotados
+    expect(readsAtExhaustion).toBeLessThanOrEqual(maxLegit);
+    // Un temporizador huérfano o un reintento indebido dispararía aquí (600 s virtuales = el doble del mayor retardo).
     for (let i = 0; i < 20; i++) await page.clock.runFor(30_000);
-    evidence.E = { lecturas: readsAtExhaustion, lecturasTrasAgotar: reads, estado: await badge(page).textContent(), marcaDurable: true };
-    expect(readsAtExhaustion).toBeLessThan(30);
-    expect(reads).toBe(readsAtExhaustion); // sin temporizadores huérfanos
+    await page.waitForLoadState("networkidle"); // ninguna petición en vuelo: lo que haya salido ya se ha contado
+    evidence.E = { lecturasAlAgotar: readsAtExhaustion, lecturasTrasAgotar: reads, maximoLegitimo: maxLegit, estado: await badge(page).textContent(), marcaDurable: true };
+    expect(reads).toBe(readsAtExhaustion); // sin más peticiones al agotarse el presupuesto
+    expect((await badge(page).textContent())?.trim()).toBe("Error al sincronizar");
+    expect(await page.evaluate((k) => localStorage.getItem(k) !== null, markKey)).toBe(true);
   } finally { await deleteQaUser(user); }
 });
 

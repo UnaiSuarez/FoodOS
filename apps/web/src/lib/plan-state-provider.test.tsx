@@ -12,6 +12,7 @@ import type { FoodOSState, PhysicalProfile } from "@foodos/types";
 import { FoodOSProvider, useFoodOS } from "./state";
 import { remote } from "./data-layer";
 import * as outbox from "./outbox";
+import { PLAN_RECONCILE_MAX_REPUSH } from "./plan-state";
 import { calcDailyTargets } from "./nutrition";
 import { todayPlus } from "./utils";
 
@@ -324,8 +325,11 @@ describe("FoodOSProvider real — reconciliación del estado de plan", () => {
     const readsAfter = server.readCount;
     expect(remote.hasPendingPlanRecheck()).toBe(true);
     expect(localStorage.getItem(`foodos-plan-recheck-v1-${A}`)).not.toBeNull();
-    expect(readsAfter).toBeLessThan(25); // acotado: no hay bucle de relectura
-    expect(goalUpserts(server).length).toBeLessThan(25);
+    // Presupuesto EXACTO (no solo «acotado»): tras escribir, cada lectura «el objetivo no existe» reescribe el objetivo
+    // hasta PLAN_RECONCILE_MAX_REPUSH veces (cada reescritura = un push = una lectura) y la relectura pendiente hace sus
+    // 5 reintentos: 1 + MAX_REPUSH + 5. Una lectura más sería un reintento indebido; una menos, un presupuesto sin gastar.
+    expect(readsAfter).toBe(1 + PLAN_RECONCILE_MAX_REPUSH + 5);
+    expect(goalUpserts(server).length).toBe(1 + PLAN_RECONCILE_MAX_REPUSH);
     await settle(60_000, 1_000);
     expect(server.readCount).toBe(readsAfter); // agotado: ni un intento más ni temporizadores huérfanos
     expect(vi.getTimerCount()).toBe(0);
