@@ -264,6 +264,9 @@ test("F: logout con la lectura de A en vuelo → nada de A se aplica después; u
     await bump(page);
     await expect.poll(() => held, { timeout: 60_000 }).toBeGreaterThan(0);
     await page.getByRole("button", { name: "Cerrar sesión" }).click();
+    // La mutación sigue «sin confirmar» (su confirmación espera a la lectura retenida): la app ofrece esperar, cancelar o salir.
+    // Se elige salir descartando la copia local; en el servidor la escritura ya estaba confirmada.
+    await page.getByRole("button", { name: "Salir y descartar esos cambios" }).click({ timeout: 15_000 });
     await expect(page.getByText("Sesión cerrada.")).toBeVisible({ timeout: 30_000 });
     release(); // la respuesta de A llega después del logout
     await page.waitForTimeout(3_000);
