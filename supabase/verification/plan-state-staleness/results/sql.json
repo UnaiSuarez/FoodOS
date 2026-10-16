@@ -1,0 +1,102 @@
+{
+  "note": "datos sintéticos; PGlite una conexión; migración real",
+  "results": {
+    "sealRemoval": {
+      "firstUpdateOk": true,
+      "afterNull": {
+        "kcal": 1939,
+        "basis": -100
+      },
+      "secondUpdateOk": true,
+      "final": {
+        "kcal": 1939,
+        "basis": -100,
+        "snapKept": true
+      },
+      "conflicts": [
+        "daily_goal_overwrite_prevented:goal:2026-10-14"
+      ]
+    },
+    "legitRecalc": {
+      "ok": true,
+      "kcal": 2100,
+      "basis": -100,
+      "snapshotAfter": null
+    },
+    "delete": {
+      "sealedKept": true
+    },
+    "legacyUpsert": {
+      "same": [
+        {
+          "kcal": 1939,
+          "basis": -100
+        }
+      ],
+      "diff": []
+    },
+    "legacyTelemetry": {
+      "rows": 1
+    },
+    "legacyReturnsAfterReject": {
+      "offset": -100,
+      "goalKcal": 1939,
+      "conflicts": [
+        "daily_goal_overwrite_prevented:goal:2026-10-13",
+        "daily_goal_overwrite_prevented:goal:2026-10-14",
+        "offset_overwrite_prevented:adaptiveKcalOffsetKcal"
+      ]
+    },
+    "invalidCalibration": {
+      "badOk": true,
+      "nextOk": true,
+      "stored": "2026-10-01",
+      "conflicts": [
+        "calibration_invalid_value_rejected:adaptiveCalibrationStartedAt"
+      ]
+    },
+    "snapshotHelper": {
+      "calorie_target ausente": false,
+      "calorie_target = {} (clave kcal ausente)": false,
+      "calorie_target = JSON null": false,
+      "calorie_target = texto": false,
+      "calorie_target = array": false,
+      "kcal = JSON null": false,
+      "kcal = texto": false,
+      "kcal = array": false,
+      "kcal = objeto": false,
+      "kcal discordante": false,
+      "kcal correcta": true
+    },
+    "snapshotAccept": {
+      "calorie_target ausente": "SNAPSHOT_INVALID",
+      "calorie_target = {} (clave kcal ausente)": "SNAPSHOT_INVALID",
+      "calorie_target = JSON null": "SNAPSHOT_INVALID",
+      "calorie_target = texto": "SNAPSHOT_INVALID",
+      "calorie_target = array": "SNAPSHOT_INVALID",
+      "kcal = JSON null": "SNAPSHOT_INVALID",
+      "kcal = texto": "SNAPSHOT_INVALID",
+      "kcal = array": "SNAPSHOT_INVALID",
+      "kcal = objeto": "SNAPSHOT_INVALID",
+      "kcal discordante": "SNAPSHOT_MISMATCH",
+      "kcal correcta": "aceptada"
+    },
+    "read": {
+      "goal": null,
+      "offset": 0,
+      "protocol": 1,
+      "conflicts": [
+        {
+          "id": "d94903f2-90db-4b27-9c2c-13662659ed34",
+          "kind": "calibration_invalid_value_rejected",
+          "subject": "adaptiveCalibrationStartedAt"
+        }
+      ],
+      "serverDate": "2026-10-16",
+      "engineVersion": null,
+      "clientProtocolLevel": 1,
+      "lastTargetChangedAt": "2026-10-02",
+      "calibrationStartedAt": null
+    }
+  }
+}
