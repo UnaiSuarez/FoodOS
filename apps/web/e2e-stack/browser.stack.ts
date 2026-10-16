@@ -1,0 +1,241 @@
+// Recorrido REAL de navegador: Chromium → app (supabase-js con la clave pública) → Auth/PostgREST → Postgres.
+// El «dispositivo B» es la aplicación en el navegador con una sesión real; el «dispositivo A» es otra sesión de
+// la MISMA cuenta (cliente supabase-js en Node) que acepta el ajuste. Fallos de red/respuesta se inyectan en el
+// NAVEGADOR con page.route (red real del navegador), no con dobles del cliente.
+//
+// Límites declarados: el cambio de cuenta A→B dentro de una misma pestaña no se maneja desde la interfaz (la
+// pantalla de acceso recarga la página); se cubre el logout con la lectura en vuelo y A→B en las pruebas del
+// proveedor (plan-state-provider.test.tsx).
+import { test, expect, type Page, type Request, type Route } from "@playwright/test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  acceptArgs, assertIsolated, createQaUser, deleteQaUser, propose, serverGoal, serverOffset, signedClient, todayUtc, type QaUser,
+} from "./helpers";
+import { PLAN_PROTOCOL_CLIENT_INFO } from "../src/lib/supabase";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+const evidence: Record<string, unknown> = {};
+test.describe.configure({ mode: "serial" });
+test.beforeAll(() => assertIsolated());
+test.afterAll(() => {
+  mkdirSync("stack-evidence", { recursive: true });
+  writeFileSync("stack-evidence/browser.json", JSON.stringify({ note: "datos sintéticos; stack local desechable; sin secretos", evidence }, null, 2));
+});
+
+const READBACK = "**/rest/v1/rpc/fn_plan_state_read";
+const isGoalReadback = (req: Request): boolean => {
+  try { return (req.postDataJSON() as { p_goal_date?: string | null } | null)?.p_goal_date != null; } catch { return false; }
+};
+const badge = (page: Page) => page.locator(".sync-status-badge");
+
+async function uiLogin(page: Page, u: QaUser) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("foodos-ob-done", "1");
+    window.localStorage.setItem("foodos-tour-done", "1");
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Iniciar sesión" }).first().click();
+  await page.getByLabel("Email").fill(u.email);
+  await page.getByLabel("Contraseña").fill(u.password);
+  await page.getByRole("button", { name: "Entrar" }).click();
+  await page.waitForURL(/\/dashboard/);
+}
+const localState = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("foodos-appweb-state-v1") ?? "{}") as Record<string, any>);
+const water = (s: Record<string, any>) => Object.values((s.waterLog ?? {}) as Record<string, number>).reduce((a, b) => a + b, 0);
+
+/** Cuenta QA + sesión en el navegador + datos demo sintéticos + espera a que el servidor tenga el objetivo de hoy. */
+async function bootDevice(page: Page, label: string) {
+  const user = await createQaUser(label);
+  await uiLogin(page, user);
+  await page.goto("/dashboard/settings");
+  await page.getByRole("button", { name: "Cargar datos demo" }).click();
+  const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
+  await expect.poll(async () => (await serverGoal(a, user.id)) !== null, { timeout: 60_000, message: "el servidor no recibió el objetivo de hoy" }).toBe(true);
+  await expect(badge(page)).toHaveText("Guardado", { timeout: 60_000 });
+  const goal = (await serverGoal(a, user.id))!;
+  return { user, a, goal };
+}
+async function acceptOnA(a: SupabaseClient, user: QaUser, fromKcal: number, delta = -100) {
+  const id = await propose(a, user.id, fromKcal, fromKcal + delta);
+  const r = await a.rpc("fn_accept_nutrition_adjustment", acceptArgs(id, { offset: delta, kcal: fromKcal + delta }));
+  expect(r.error, r.error?.message).toBeNull();
+}
+async function gotoDiary(page: Page) {
+  await page.goto("/dashboard/diary");
+  await expect(page.getByRole("button", { name: "+ Vaso (250 ml)" })).toBeVisible();
+}
+
+test("§3 navegador: X-Client-Info llega a PostgREST, CORS permite las peticiones y el servidor ve nivel 1", async ({ page }) => {
+  const user = await createQaUser("p");
+  try {
+    const seen: Array<{ info: string | undefined; status: number; acao: string | undefined; level: unknown }> = [];
+    const consoleErrors: string[] = [];
+    page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+    page.on("response", async (res) => {
+      if (!res.url().includes("/rest/v1/rpc/fn_plan_state_read")) return;
+      let level: unknown = null;
+      try { level = ((await res.json()) as { clientProtocolLevel?: number }).clientProtocolLevel; } catch { /* sin cuerpo */ }
+      seen.push({ info: res.request().headers()["x-client-info"], status: res.status(), acao: res.headers()["access-control-allow-origin"], level });
+    });
+    await uiLogin(page, user);
+    await gotoDiary(page);
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click();
+    await expect.poll(() => seen.length, { timeout: 60_000 }).toBeGreaterThan(0);
+    evidence.protocolo_navegador = { llamadas: seen.length, ejemplo: seen[0], erroresConsola: consoleErrors.filter((e) => /CORS|cross-origin/i.test(e)).length };
+    for (const s of seen) {
+      expect(s.info).toBe(PLAN_PROTOCOL_CLIENT_INFO);
+      expect(s.status).toBe(200);
+      expect(s.acao).toBeTruthy();
+      expect(s.level).toBe(1);
+    }
+    expect(consoleErrors.filter((e) => /CORS|cross-origin/i.test(e))).toEqual([]);
+  } finally { await deleteQaUser(user); }
+});
+
+test("A: dos dispositivos, B desconectado con el estado anterior → offset, calibración y objetivo protegido no retroceden; edición legítima y diario/inventario intactos", async ({ page, context }) => {
+  const { user, a, goal } = await bootDevice(page, "a1");
+  try {
+    await gotoDiary(page);
+    const before = await localState(page);
+    const invBefore = (before.inventory ?? []).length;
+    const waterBefore = water(before);
+    await context.setOffline(true);
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click(); // edición legítima de B, sin red
+    await expect.poll(async () => water(await localState(page))).toBe(waterBefore + 250);
+    await acceptOnA(a, user, goal.kcal_target); // A acepta el ajuste mientras B está desconectado
+    await context.setOffline(false);
+    await expect(badge(page)).toHaveText("Guardado", { timeout: 90_000 });
+    await expect.poll(async () => ((await localState(page)).profile?.adaptiveKcalOffsetKcal), { timeout: 60_000 }).toBe(-100);
+
+    const srvGoal = await serverGoal(a, user.id);
+    const off = await serverOffset(a, user.id);
+    const local = await localState(page);
+    evidence.A = {
+      antes: { offset: 0, objetivoKcal: goal.kcal_target },
+      despues: { offsetServidor: off, objetivoServidor: srvGoal, offsetLocalB: local.profile?.adaptiveKcalOffsetKcal, objetivoLocalB: local.nutritionGoalsHistory?.[todayUtc()]?.kcal, agua: water(local) - waterBefore, inventario: (local.inventory ?? []).length - invBefore },
+    };
+    expect(off).toBe(-100);
+    expect(srvGoal?.kcal_target).toBe(goal.kcal_target - 100);
+    expect(srvGoal?.basis_offset_kcal).toBe(-100);
+    expect(srvGoal?.source_snapshot_id).not.toBeNull();
+    expect(local.nutritionGoalsHistory?.[todayUtc()]?.kcal).toBe(goal.kcal_target - 100);
+    expect(water(local)).toBe(waterBefore + 250);
+    expect((local.inventory ?? []).length).toBe(invBefore);
+    await page.reload(); // tras recargar sigue igual (el servidor es la fuente)
+    await expect.poll(async () => ((await localState(page)).profile?.adaptiveKcalOffsetKcal), { timeout: 60_000 }).toBe(-100);
+    expect(water(await localState(page))).toBe(waterBefore + 250);
+  } finally { await deleteQaUser(user); }
+});
+
+test("B: edición legítima mientras la lectura de la sincronización está en vuelo → se conserva y solo cambia lo que corresponde", async ({ page }) => {
+  const { user, a, goal } = await bootDevice(page, "b1");
+  try {
+    await gotoDiary(page);
+    const waterBefore = water(await localState(page));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held = 0;
+    await page.route(READBACK, async (route: Route) => {
+      if (!isGoalReadback(route.request())) return route.continue();
+      held++; await gate; return route.continue();
+    });
+    await acceptOnA(a, user, goal.kcal_target); // el servidor ya tiene el ajuste; B aún no lo sabe
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click(); // 1.ª edición → push → lectura retenida
+    await expect.poll(() => held, { timeout: 60_000 }).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click(); // 2.ª edición con la lectura en vuelo
+    release();
+    await expect(badge(page)).toHaveText("Guardado", { timeout: 90_000 });
+    await expect.poll(async () => ((await localState(page)).profile?.adaptiveKcalOffsetKcal), { timeout: 60_000 }).toBe(-100);
+    const local = await localState(page);
+    evidence.B = { aguaEsperada: waterBefore + 500, aguaLocal: water(local), offsetLocal: local.profile?.adaptiveKcalOffsetKcal, objetivoServidor: await serverGoal(a, user.id) };
+    expect(water(local)).toBe(waterBefore + 500);
+    expect(await serverOffset(a, user.id)).toBe(-100);
+    expect((await serverGoal(a, user.id))?.kcal_target).toBe(goal.kcal_target - 100);
+  } finally { await deleteQaUser(user); }
+});
+
+test("D: falla la lectura posterior → la recuperación persiste, sobrevive a recargar y solo se retira al confirmar", async ({ page }) => {
+  const { user, a } = await bootDevice(page, "d1");
+  try {
+    await gotoDiary(page);
+    const markKey = `foodos-plan-recheck-v1-${user.id}`;
+    let failing = true; let aborted = 0;
+    await page.route(READBACK, (route) => {
+      if (failing && isGoalReadback(route.request())) { aborted++; return route.abort("failed"); }
+      return route.continue();
+    });
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click();
+    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k) !== null, markKey), { timeout: 60_000 }).toBe(true);
+    await expect(badge(page)).not.toHaveText("Guardado");
+    await page.reload(); // la marca durable sobrevive a recargar
+    expect(await page.evaluate((k) => localStorage.getItem(k) !== null, markKey)).toBe(true);
+    failing = false; // el servidor vuelve a responder
+    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), markKey), { timeout: 120_000 }).toBeNull();
+    await expect(badge(page)).toHaveText("Guardado", { timeout: 60_000 });
+    evidence.D = { lecturasAbortadas: aborted, marcaTrasRecarga: true, retiradaAlConfirmar: true, offsetServidor: await serverOffset(a, user.id) };
+  } finally { await deleteQaUser(user); }
+});
+
+test("E: respuesta VÁLIDA que no se puede reconciliar → no «guardado», presupuesto acotado, marca durable y sin más peticiones al agotarlo", async ({ page }) => {
+  await page.clock.install(); // reloj controlable: los reintentos de 5/15/45/120/300 s no se esperan en tiempo real
+  const { user } = await bootDevice(page, "e1");
+  try {
+    await gotoDiary(page);
+    const markKey = `foodos-plan-recheck-v1-${user.id}`;
+    let reads = 0;
+    await page.route(READBACK, async (route) => {
+      if (!isGoalReadback(route.request())) return route.continue();
+      reads++;
+      const res = await route.fetch();
+      const body = (await res.json()) as Record<string, unknown>;
+      return route.fulfill({ response: res, json: { ...body, goal: null } }); // válida, pero el objetivo de hoy «no existe»
+    });
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click();
+    for (let i = 0; i < 25; i++) await page.clock.runFor(30_000); // ~750 s virtuales > 5+15+45+120+300
+    await expect(badge(page)).not.toHaveText("Guardado");
+    expect(await page.evaluate((k) => localStorage.getItem(k) !== null, markKey)).toBe(true);
+    const readsAtExhaustion = reads;
+    for (let i = 0; i < 20; i++) await page.clock.runFor(30_000);
+    evidence.E = { lecturas: readsAtExhaustion, lecturasTrasAgotar: reads, estado: await badge(page).textContent(), marcaDurable: true };
+    expect(readsAtExhaustion).toBeLessThan(30);
+    expect(reads).toBe(readsAtExhaustion); // sin temporizadores huérfanos
+  } finally { await deleteQaUser(user); }
+});
+
+test("F: logout con la lectura de A en vuelo → nada de A se aplica después; una cuenta distinta no hereda estado ni recuperación", async ({ page, browser }) => {
+  const { user, a, goal } = await bootDevice(page, "f1");
+  const other = await createQaUser("f2");
+  try {
+    await gotoDiary(page);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let held = 0;
+    await page.route(READBACK, async (route) => {
+      if (!isGoalReadback(route.request())) return route.continue();
+      held++; await gate; return route.continue();
+    });
+    await acceptOnA(a, user, goal.kcal_target);
+    await page.getByRole("button", { name: "+ Vaso (250 ml)" }).click();
+    await expect.poll(() => held, { timeout: 60_000 }).toBeGreaterThan(0);
+    await page.getByRole("link", { name: /Ajustes/ }).first().click();
+    await page.getByRole("button", { name: "Cerrar sesión" }).click();
+    await expect(page.getByText("Sesión cerrada.")).toBeVisible({ timeout: 30_000 });
+    release(); // la respuesta de A llega después del logout
+    await page.waitForTimeout(3_000);
+    const after = await localState(page);
+    evidence.F_logout = { offsetLocalTrasLogout: after.profile?.adaptiveKcalOffsetKcal ?? null };
+    expect(after.profile?.adaptiveKcalOffsetKcal ?? 0).not.toBe(-100);
+    // Otra cuenta, en un contexto nuevo del mismo navegador: no ve nada de A
+    const ctx = await browser.newContext();
+    const p2 = await ctx.newPage();
+    await uiLogin(p2, other);
+    await p2.goto("/dashboard/diary");
+    await expect(p2.getByRole("button", { name: "+ Vaso (250 ml)" })).toBeVisible();
+    const s2 = await localState(p2);
+    expect(s2.profile?.adaptiveKcalOffsetKcal ?? 0).toBe(0);
+    expect(await p2.evaluate((k) => localStorage.getItem(k), `foodos-plan-recheck-v1-${user.id}`)).toBeNull();
+    const bClient = await signedClient(other);
+    expect(await serverGoal(bClient, other.id)).toBeNull(); // nada de A se escribió en B
+    await ctx.close();
+  } finally { await deleteQaUser(user); await deleteQaUser(other); }
+});

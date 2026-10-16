@@ -83,7 +83,12 @@ test.describe("§5 permisos y entradas inválidas", () => {
     const upd = await b.from("nutrition_goals").update({ kcal_target: 9999 }).eq("user_id", A.id).select();
     expect(upd.data ?? []).toEqual([]);
     const ins = await b.from("nutrition_goals").insert({ user_id: A.id, goal_date: "2026-01-02", kcal_target: 1, protein_target_g: 1, carbs_target_g: 1, fat_target_g: 1, mode: "fat_loss", calculation_version: "x" });
-    expect(ins.error).not.toBeNull();
+    // Con el trigger de C0 un INSERT sin base declarada se OMITE antes de evaluar RLS (sin error); lo que importa es
+    // que no se escriba nada en la cuenta de A. Con base declarada, la política RLS WITH CHECK lo rechaza o se omite.
+    const ins2 = await b.from("nutrition_goals").insert({ user_id: A.id, goal_date: "2026-01-02", kcal_target: 1, protein_target_g: 1, carbs_target_g: 1, fat_target_g: 1, mode: "fat_loss", calculation_version: "x", basis_offset_kcal: -100 });
+    const planted = await a.from("nutrition_goals").select("goal_date").eq("user_id", A.id).eq("goal_date", "2026-01-02");
+    expect(planted.data ?? []).toEqual([]);
+    evidence.insert_ajeno = { sinBase: ins.error?.message ?? "omitido sin error", conBase: ins2.error?.message ?? "omitido sin error", filasEnA: (planted.data ?? []).length };
     const del = await b.from("nutrition_goals").delete().eq("user_id", A.id).select();
     expect(del.data ?? []).toEqual([]);
     const read = await planRead(b);
