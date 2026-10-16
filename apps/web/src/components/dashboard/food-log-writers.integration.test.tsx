@@ -346,7 +346,7 @@ describe("PlannerView — 'plato rápido' registrado en el diario (logEntry)", (
       d.plannerQuickMeals.push({ id: "qm-2", name: "Ensalada rápida", kcal: 220, protein: 8, carbs: 18, fat: 12, cost: 0 });
       d.mealPlan[getToday(d)] = { lunch: "qm-2" };
     }, <PlannerView />);
-    click(container.querySelector(".planner-cell-log")!);
+    click(container.querySelector(".pl-log")!);
     const entry = entriesOf(holder).find((e) => e.name === "Ensalada rápida")!;
     expect(entry).toMatchObject({ kcal: 220, protein: 8, carbs: 18, fat: 12, source: "recipe", qty: null, unit: null });
     for (const key of MACROS) expect(entry.nutrientStatus?.[key]).toBe("legacy_unlabeled");
