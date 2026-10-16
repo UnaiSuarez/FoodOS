@@ -267,8 +267,11 @@ test("F: logout con la lectura de A en vuelo → nada de A se aplica después; u
     // La mutación sigue «sin confirmar» (su confirmación espera a la lectura retenida): la app ofrece esperar, cancelar o salir.
     // Se elige salir descartando la copia local; en el servidor la escritura ya estaba confirmada.
     await page.getByRole("button", { name: "Salir y descartar esos cambios" }).click({ timeout: 15_000 });
-    await expect(badge(page)).toHaveText("Guardado en este dispositivo", { timeout: 30_000 }); // modo local = sesión cerrada
-    release(); // la respuesta de A llega después del logout
+    // El cierre de sesión espera a que la operación en vuelo termine (la lectura retenida): sigue «sincronizando».
+    await page.waitForTimeout(2_000);
+    await expect(badge(page)).toHaveText("Sincronizando…");
+    release(); // la respuesta de A llega MIENTRAS se cierra la sesión
+    await expect(badge(page)).toHaveText("Guardado en este dispositivo", { timeout: 60_000 }); // modo local = sesión cerrada
     await page.waitForTimeout(3_000);
     const after = await localState(page);
     evidence.F_logout = { offsetLocalTrasLogout: after.profile?.adaptiveKcalOffsetKcal ?? null };
