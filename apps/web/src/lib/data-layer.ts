@@ -56,6 +56,15 @@ class AbortedPushError extends Error {
   }
 }
 
+/** C0 — no se pudo determinar si el servidor soporta la protección del estado de plan (red, permisos,
+    respuesta inválida). Hace fallar el push de forma visible en vez de degradar en silencio. */
+class PlanProtectionUnavailableError extends Error {
+  constructor(message: string, readonly detail?: unknown) {
+    super(message);
+    this.name = "PlanProtectionUnavailableError";
+  }
+}
+
 // "unsynced" NO es un estado que RemoteAdapter emita — vive un nivel por
 // encima (SyncStatus en state.tsx), derivado de si la ÚLTIMA escritura de
 // outbox falló (ver mutate()). Aquí solo lo que de verdad puede pasarle a
@@ -320,6 +329,15 @@ class RemoteAdapter {
       Se reinicia en resetSessionState(): es una propiedad del servidor que
       se vuelve a comprobar por sesión, nunca se asume. */
   private planProtection: "unknown" | "available" | "absent" = "unknown";
+  /** Orden de las lecturas autoritativas dentro de la sesión: cada petición toma un número al EMITIRSE; una
+      respuesta más antigua que otra ya aplicada se descarta (la época de sesión no distingue lecturas
+      obsoletas dentro de la misma cuenta). */
+  private planReadbackSeq = 0;
+  private planReadbackApplied = 0;
+  /** Relectura pendiente tras un fallo (o una lectura que no se pudo aplicar): bloquea el «guardado» y se
+      reintenta con espera creciente y tope; la marca persiste en disco para sobrevivir a una recarga. */
+  private planRecheck: { userId: string; epoch: number; goalDate: string | null; attempt: number; exhausted: boolean } | null = null;
+  private planRecheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** C0 — el proveedor de estado se engancha aquí para reconciliar el
       estado local con la lectura autoritativa del plan tras cada
@@ -396,7 +414,8 @@ class RemoteAdapter {
       Único sitio que decide si toca emitir "saved" (ver runPush/
       processWaterQueue). */
   private pushIsFullyIdle(): boolean {
-    return !this.pushTimer && !this.activePush && !this.pushQueued && !this.pushRetryTimer && !this.hasPendingWater();
+    // Una relectura del plan pendiente impide declarar «guardado»: lo escrito no se ha comprobado.
+    return !this.pushTimer && !this.activePush && !this.pushQueued && !this.pushRetryTimer && !this.hasPendingWater() && !this.planRecheck;
   }
 
   /** Cancela timers/retries, vacía cola y cachés, invalida cualquier
@@ -419,6 +438,10 @@ class RemoteAdapter {
     this.activePush?.controller.abort();
     this.activePush = null;
     this.planProtection = "unknown";
+    this.planReadbackSeq = 0;
+    this.planReadbackApplied = 0;
+    if (this.planRecheckTimer) { clearTimeout(this.planRecheckTimer); this.planRecheckTimer = null; }
+    this.planRecheck = null; // la MARCA durable del usuario anterior sigue en disco; se retoma al volver esa sesión
     this.almacenIdByName = {};
     this.shoppingListId = null;
     if (this.waterRetryTimer) { clearTimeout(this.waterRetryTimer); this.waterRetryTimer = null; }
@@ -1936,25 +1959,140 @@ class RemoteAdapter {
     this.onPushError(error);
   }
 
-  /** C0 — sonda de capacidad, una vez por sesión. Un servidor sin la migración responde "función no
-      encontrada" (PGRST202 / 42883 / 404): entonces el cliente se comporta como antes. Cualquier otro
-      error (red, permisos) NO se cachea: se reintenta en el siguiente push y este se hace sin base. */
+  /**
+   * C0 — sonda de capacidad, una vez por sesión. Distingue TRES cosas y no las mezcla:
+   *  - `true`  → el servidor soporta la protección (respuesta válida con protocol 1);
+   *  - `false` → servidor ANTERIOR a la migración, confirmado: la función no existe (PGRST202 / 42883 /
+   *              «could not find the function»). El cliente se comporta exactamente como antes;
+   *  - lanza   → red, permisos, respuesta inválida o cualquier otro error: NO se sabe. No se degrada en
+   *              silencio a «sin protección» (el cliente lleva la cabecera de protocolo 1 y el servidor
+   *              omitiría objetivos sin base): el push falla de forma visible y se reintenta con el
+   *              mecanismo normal, conservando el pendiente en la outbox.
+   */
   private async ensurePlanProtection(client: SupabaseClient): Promise<boolean> {
     if (this.planProtection === "available") return true;
     if (this.planProtection === "absent") return false;
     const rpc = (client as unknown as { rpc?: unknown }).rpc;
     if (typeof rpc !== "function") { this.planProtection = "absent"; return false; }
+    let result: { data: unknown; error: { code?: string; message?: string } | null };
     try {
-      const { error } = await client.rpc("fn_plan_state_read", { p_goal_date: null });
-      if (!error) { this.planProtection = "available"; return true; }
-      const e = error as { code?: string; message?: string };
-      if (e.code === "PGRST202" || e.code === "42883" || /could not find the function|does not exist/i.test(e.message ?? "")) {
-        this.planProtection = "absent";
-      }
-      return false;
-    } catch {
+      result = (await client.rpc("fn_plan_state_read", { p_goal_date: null })) as typeof result;
+    } catch (cause) {
+      throw new PlanProtectionUnavailableError("la sonda de protección del plan falló", cause);
+    }
+    if (!result.error) {
+      const data = result.data as { protocol?: unknown } | null;
+      if (data && typeof data === "object" && data.protocol === 1) { this.planProtection = "available"; return true; }
+      throw new PlanProtectionUnavailableError("respuesta inválida de fn_plan_state_read", result.data);
+    }
+    const e = result.error;
+    if (e.code === "PGRST202" || e.code === "42883" || /could not find the function/i.test(e.message ?? "")) {
+      this.planProtection = "absent";
       return false;
     }
+    throw new PlanProtectionUnavailableError(`la sonda de protección del plan devolvió un error (${e.code ?? "sin código"}): ${e.message ?? ""}`, e);
+  }
+
+  /**
+   * C0 — lee el estado de plan del servidor y lo entrega a `onPlanReadback` con la identidad de quien lo
+   * pidió. Orden: cada petición toma un número al emitirse y una respuesta más antigua que otra ya aplicada
+   * se descarta. Nunca lanza; devuelve qué ocurrió.
+   */
+  private async fetchPlanReadback(
+    client: SupabaseClient,
+    identity: { userId: string; epoch: number },
+    goalDate: string | null,
+    mutationId: string | null,
+  ): Promise<"delivered" | "stale" | "failed" | "aborted"> {
+    const seq = ++this.planReadbackSeq;
+    let result: { data: unknown; error: unknown };
+    try {
+      result = (await client.rpc("fn_plan_state_read", { p_goal_date: goalDate })) as typeof result;
+    } catch (error) {
+      console.warn("FoodOS: lectura del estado de plan fallida", error);
+      return this.user?.id === identity.userId && this.sessionEpoch === identity.epoch ? "failed" : "aborted";
+    }
+    if (this.user?.id !== identity.userId || this.sessionEpoch !== identity.epoch) return "aborted";
+    if (result.error) {
+      console.warn("FoodOS: no se pudo leer el estado de plan", (result.error as { message?: string }).message);
+      return "failed";
+    }
+    const parsed = parsePlanReadback(result.data, { fallbackDay: todayPlus(0), requestedGoalDate: goalDate, mutationId });
+    if (!parsed) return "failed";
+    if (seq < this.planReadbackApplied) return "stale"; // llegó después de una lectura más reciente ya aplicada
+    this.planReadbackApplied = seq;
+    this.onPlanReadback?.({ userId: identity.userId, epoch: identity.epoch, readback: parsed });
+    return "delivered";
+  }
+
+  // ── Relectura pendiente (durable) ────────────────────────────────────────────────────────────────
+  private static readonly PLAN_RECHECK_DELAYS_MS = [5_000, 15_000, 45_000, 120_000, 300_000];
+  private planRecheckKey(userId: string): string { return `foodos-plan-recheck-v1-${userId}`; }
+
+  private writePlanRecheckMark(userId: string, goalDate: string | null): void {
+    try { localStorage.setItem(this.planRecheckKey(userId), JSON.stringify({ goalDate })); } catch { /* sin almacenamiento: queda la marca en memoria */ }
+  }
+  private clearPlanRecheckMark(userId: string): void {
+    try { localStorage.removeItem(this.planRecheckKey(userId)); } catch { /* idem */ }
+  }
+
+  hasPendingPlanRecheck(): boolean { return this.planRecheck !== null; }
+
+  /** Programa (o reprograma) una relectura acotada del plan. Se llama cuando una lectura falla o cuando el
+      proveedor no pudo aplicar lo leído (mutaciones bloqueadas). Persiste una marca para sobrevivir a una
+      recarga: `resumePlanRecheckFor` la retoma. */
+  requestPlanRecheck(userId: string, epoch: number, goalDate: string | null): void {
+    if (this.user?.id !== userId || this.sessionEpoch !== epoch) return;
+    this.writePlanRecheckMark(userId, goalDate);
+    if (this.planRecheck && !this.planRecheck.exhausted) return; // ya hay una en marcha
+    this.planRecheck = { userId, epoch, goalDate, attempt: 0, exhausted: false };
+    this.notifyStatus("syncing");
+    this.armPlanRecheck();
+  }
+
+  /** Retoma, tras una recarga o un inicio de sesión, la relectura que quedó pendiente en este dispositivo. */
+  resumePlanRecheckFor(userId: string): void {
+    if (this.user?.id !== userId) return;
+    let mark: { goalDate?: unknown } | null = null;
+    try { const raw = localStorage.getItem(this.planRecheckKey(userId)); mark = raw ? JSON.parse(raw) : null; } catch { mark = null; }
+    if (!mark) return;
+    this.requestPlanRecheck(userId, this.sessionEpoch, typeof mark.goalDate === "string" ? mark.goalDate : null);
+  }
+
+  private armPlanRecheck(): void {
+    const rc = this.planRecheck;
+    if (!rc || rc.exhausted) return;
+    if (this.planRecheckTimer) clearTimeout(this.planRecheckTimer);
+    const delays = RemoteAdapter.PLAN_RECHECK_DELAYS_MS;
+    this.planRecheckTimer = setTimeout(() => { this.planRecheckTimer = null; void this.runPlanRecheck(); }, delays[Math.min(rc.attempt, delays.length - 1)]);
+  }
+
+  private async runPlanRecheck(): Promise<void> {
+    const rc = this.planRecheck;
+    if (!rc || rc.exhausted) return;
+    if (this.user?.id !== rc.userId || this.sessionEpoch !== rc.epoch || !this.client) { this.planRecheck = null; return; }
+    // Si hay una sincronización en curso o en cola, su propia lectura sustituye a esta.
+    if (this.activePush || this.pushTimer || this.pushQueued) { this.armPlanRecheck(); return; }
+    let outcome: "delivered" | "stale" | "failed" | "aborted" = "failed";
+    try {
+      if (await this.ensurePlanProtection(this.client)) outcome = await this.fetchPlanReadback(this.client, { userId: rc.userId, epoch: rc.epoch }, rc.goalDate, null);
+      else outcome = "delivered"; // servidor anterior: no hay nada que reconciliar
+    } catch { outcome = "failed"; }
+    if (this.planRecheck !== rc) return; // la sesión cambió o se sustituyó mientras tanto
+    if (outcome === "delivered" || outcome === "stale") {
+      this.planRecheck = null;
+      this.clearPlanRecheckMark(rc.userId);
+      if (this.pushIsFullyIdle()) this.notifyStatus("saved");
+      return;
+    }
+    if (outcome === "aborted") { this.planRecheck = null; return; }
+    rc.attempt += 1;
+    if (rc.attempt >= RemoteAdapter.PLAN_RECHECK_DELAYS_MS.length) {
+      rc.exhausted = true; // se deja de insistir en esta carga; la marca durable permanece y se retoma tras recargar
+      this.notifyStatus("error");
+      return;
+    }
+    this.armPlanRecheck();
   }
 
   /** C0 — marca como vistos conflictos ya mostrados al usuario. Informativo y de mejor esfuerzo: nunca
@@ -2178,18 +2316,16 @@ class RemoteAdapter {
     // almacenado (una guarda puede conservar el valor anterior, y un INSERT omitido no devuelve fila).
     // Un fallo aquí no es un fallo de sincronización: se reintentará con la siguiente.
     if (planProtected) {
-      try {
-        const { data: rb, error: rbError } = await client.rpc("fn_plan_state_read", { p_goal_date: goalDateKey });
-        checkAlive(); // si la sesión cambió mientras tanto, nada de esto llega al estado de otra cuenta
-        if (!rbError) {
-          const parsed = parsePlanReadback(rb, todayPlus(0));
-          if (parsed) this.onPlanReadback?.({ userId: ctx.userId, epoch: ctx.epoch, readback: parsed });
-        } else {
-          console.warn("FoodOS: no se pudo leer el estado de plan tras sincronizar", rbError.message);
-        }
-      } catch (error) {
-        if (error instanceof AbortedPushError) throw error;
-        console.warn("FoodOS: lectura del estado de plan fallida", error);
+      const outcome = await this.fetchPlanReadback(client, { userId: ctx.userId, epoch: ctx.epoch }, goalDateKey, ctx.mutationId);
+      checkAlive(); // si la sesión cambió mientras tanto, nada de esto llega al estado de otra cuenta
+      if (outcome === "failed") {
+        // Lo escrito NO está comprobado: la relectura queda pendiente (durable y acotada) y el estado no se
+        // presenta como «guardado» hasta que se complete. No es un fallo del push: el pendiente se confirma.
+        this.requestPlanRecheck(ctx.userId, ctx.epoch, goalDateKey);
+      } else if (this.planRecheck && this.planRecheck.userId === ctx.userId) {
+        this.planRecheck = null;
+        if (this.planRecheckTimer) { clearTimeout(this.planRecheckTimer); this.planRecheckTimer = null; }
+        this.clearPlanRecheckMark(ctx.userId);
       }
     }
 

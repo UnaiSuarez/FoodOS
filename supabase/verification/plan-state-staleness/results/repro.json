@@ -1,0 +1,191 @@
+{
+  "note": "datos sintéticos; PGlite una conexión; cliente real; PostgREST emulado",
+  "results": {
+    "R1/previo": {
+      "afterAccept": {
+        "offset": -100,
+        "kcal": 1939
+      },
+      "server": {
+        "offset": 0,
+        "calibration": null,
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 2039,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "bLocalOffset": 0,
+      "bOutcomes": [],
+      "freshDeviceOffset": 0
+    },
+    "R2/previo": {
+      "server": {
+        "offset": 0,
+        "calibration": null,
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 2039,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [],
+        "acceptedSnapshots": 0,
+        "openConflicts": []
+      },
+      "bCalibration": null
+    },
+    "R3/previo": {
+      "server": {
+        "offset": 0,
+        "calibration": "2026-10-14",
+        "activityLevel": "active",
+        "goal": {
+          "kcal": 2321,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "bLocalKcal": 2321,
+      "expectedKcal": 2221
+    },
+    "R4/previo": {
+      "clientSawOk": false,
+      "retryOk": false,
+      "retryError": "PROPOSAL_NOT_PENDING: la propuesta ya se",
+      "server": {
+        "offset": 0,
+        "calibration": null,
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 2039,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "deviceOffset": 0
+    },
+    "R5/previo": {
+      "pushUnderOtherSessionThrew": true,
+      "staleEpochAborted": true
+    },
+    "R1/migrado": {
+      "afterAccept": {
+        "offset": -100,
+        "kcal": 1939
+      },
+      "server": {
+        "offset": -100,
+        "calibration": null,
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 1939,
+          "basis": -100,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "bLocalOffset": -100,
+      "bOutcomes": [
+        "reconciled",
+        "in_sync",
+        "in_sync"
+      ],
+      "freshDeviceOffset": -100
+    },
+    "R2/migrado": {
+      "server": {
+        "offset": 0,
+        "calibration": "2026-10-14",
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 2039,
+          "basis": 0,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [],
+        "acceptedSnapshots": 0,
+        "openConflicts": []
+      },
+      "bCalibration": "2026-10-14"
+    },
+    "R3/migrado": {
+      "server": {
+        "offset": -100,
+        "calibration": "2026-10-14",
+        "activityLevel": "active",
+        "goal": {
+          "kcal": 2221,
+          "basis": -100,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "bLocalKcal": 2221,
+      "expectedKcal": 2221
+    },
+    "R4/migrado": {
+      "clientSawOk": false,
+      "retryOk": false,
+      "retryError": "PROPOSAL_NOT_PENDING: la propuesta ya se",
+      "server": {
+        "offset": -100,
+        "calibration": null,
+        "activityLevel": "moderate",
+        "goal": {
+          "kcal": 1939,
+          "basis": -100,
+          "ver": "nutrition-v3.1"
+        },
+        "proposals": [
+          "accepted"
+        ],
+        "acceptedSnapshots": 1,
+        "openConflicts": []
+      },
+      "deviceOffset": -100
+    },
+    "R5/migrado": {
+      "pushUnderOtherSessionThrew": true,
+      "staleEpochAborted": true
+    },
+    "antiguo/migrado": {
+      "offset": -100,
+      "calibration": null,
+      "activityLevel": "moderate",
+      "goal": {
+        "kcal": 1939,
+        "basis": -100,
+        "ver": "nutrition-v3.1"
+      },
+      "proposals": [
+        "accepted"
+      ],
+      "acceptedSnapshots": 1,
+      "openConflicts": [
+        "daily_goal_overwrite_prevented",
+        "offset_overwrite_prevented"
+      ]
+    }
+  }
+}

@@ -460,7 +460,7 @@ function DashboardInner() {
         return;
       }
       const backup = JSON.parse(raw) as { state: unknown };
-      mutate((draft) => Object.assign(draft, backup.state));
+      mutate((draft) => { Object.assign(draft, backup.state); });
       localStorage.removeItem(IMPORT_BACKUP_KEY);
       showToast("Estado anterior a la última importación restaurado.");
     } catch {

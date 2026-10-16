@@ -46,18 +46,44 @@
         "calibration_invalid_value_rejected:adaptiveCalibrationStartedAt"
       ]
     },
+    "snapshotHelper": {
+      "calorie_target ausente": false,
+      "calorie_target = {} (clave kcal ausente)": false,
+      "calorie_target = JSON null": false,
+      "calorie_target = texto": false,
+      "calorie_target = array": false,
+      "kcal = JSON null": false,
+      "kcal = texto": false,
+      "kcal = array": false,
+      "kcal = objeto": false,
+      "kcal discordante": false,
+      "kcal correcta": true
+    },
+    "snapshotAccept": {
+      "calorie_target ausente": "SNAPSHOT_INVALID",
+      "calorie_target = {} (clave kcal ausente)": "SNAPSHOT_INVALID",
+      "calorie_target = JSON null": "SNAPSHOT_INVALID",
+      "calorie_target = texto": "SNAPSHOT_INVALID",
+      "calorie_target = array": "SNAPSHOT_INVALID",
+      "kcal = JSON null": "SNAPSHOT_INVALID",
+      "kcal = texto": "SNAPSHOT_INVALID",
+      "kcal = array": "SNAPSHOT_INVALID",
+      "kcal = objeto": "SNAPSHOT_INVALID",
+      "kcal discordante": "SNAPSHOT_MISMATCH",
+      "kcal correcta": "aceptada"
+    },
     "read": {
       "goal": null,
       "offset": 0,
       "protocol": 1,
       "conflicts": [
         {
-          "id": "694a5284-7382-4e7b-b695-03d77831e6cd",
+          "id": "1c58847c-7912-4e4f-bc83-76c4a8cf8ee3",
           "kind": "calibration_invalid_value_rejected",
           "subject": "adaptiveCalibrationStartedAt"
         }
       ],
-      "serverDate": "2026-10-13",
+      "serverDate": "2026-10-16",
       "engineVersion": null,
       "lastTargetChangedAt": "2026-10-02",
       "calibrationStartedAt": null

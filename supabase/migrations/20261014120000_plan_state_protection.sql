@@ -318,22 +318,47 @@ create trigger trg_guard_plan_state_profile
   for each row execute function public.fn_guard_plan_state_profile();
 
 -- ── 4. nutrition_goals: sello, identidad y procedencia ───────────────────────────────────────────
--- Un snapshot acredita un objetivo solo si es del mismo usuario y sus cifras coinciden con la fila.
+-- Extrae la kcal de un `calorie_target` de snapshot SOLO si es un objeto con la clave `kcal` numérica.
+-- Cualquier otra forma (ausente, JSON null, texto, array, objeto sin la clave) devuelve NULL de forma
+-- explícita; los llamadores comparan con IS NULL, nunca con `<>` sobre un posible NULL (una condición
+-- NULL no entra en un IF y habría dejado pasar un snapshot incompleto).
+create or replace function public.fn_plan_snapshot_kcal(p_calorie_target jsonb)
+returns numeric language plpgsql immutable set search_path = public, pg_temp
+as $fn$
+begin
+  if p_calorie_target is null or jsonb_typeof(p_calorie_target) <> 'object' then
+    return null;
+  end if;
+  if not (p_calorie_target ? 'kcal') or jsonb_typeof(p_calorie_target -> 'kcal') <> 'number' then
+    return null;
+  end if;
+  return (p_calorie_target ->> 'kcal')::numeric;
+exception when others then
+  return null;
+end;
+$fn$;
+
+-- Un snapshot respalda un objetivo solo si es del mismo usuario y su kcal coincide con la de la fila.
+-- ALCANCE: únicamente se comprueba la kcal. NO se validan macros, versión de cálculo ni modo: que un
+-- snapshot figure como `source_snapshot_id` acredita la cifra de kcal, no el resto del objetivo.
 create or replace function public.fn_plan_valid_snapshot(p_user uuid, p_snapshot uuid, p_kcal numeric)
 returns uuid language plpgsql stable set search_path = public, pg_temp
 as $fn$
 declare
+  v_kcal numeric;
   v_target jsonb;
 begin
-  if p_snapshot is null then
+  if p_snapshot is null or p_kcal is null then
     return null;
   end if;
   select calorie_target into v_target
     from public.nutrition_calculation_snapshots
    where id = p_snapshot and user_id = p_user;
-  if not found
-     or jsonb_typeof(v_target -> 'kcal') <> 'number'
-     or (v_target ->> 'kcal')::numeric <> p_kcal then
+  if not found then
+    return null;
+  end if;
+  v_kcal := public.fn_plan_snapshot_kcal(v_target);
+  if v_kcal is null or v_kcal <> p_kcal then
     return null;
   end if;
   return p_snapshot;
@@ -517,7 +542,9 @@ grant execute on function public.fn_plan_state_read(date) to authenticated;
 --   (a) bloqueo en el orden global P → R (la vigente bloqueaba solo R, y el perfil sin bloquear);
 --   (b) el offset recibido debe ser EXACTAMENTE el vigente + delta de la propuesta (OFFSET_MISMATCH)
 --       en vez de escribir un absoluto calculado por un cliente posiblemente obsoleto;
---   (c) el snapshot debe describir el objetivo que se sella (SNAPSHOT_MISMATCH);
+--   (c) el snapshot debe ser un objeto con calorie_target.kcal numérico (SNAPSHOT_INVALID) y esa kcal debe
+--       coincidir con el objetivo que se sella (SNAPSHOT_MISMATCH). SOLO se valida la kcal: macros, versión
+--       de cálculo y modo del snapshot los aporta el cliente y NO se comprueban;
 --   (d) PROFILE_NOT_FOUND en vez de «aceptar» sin poder persistir el offset;
 --   (e) el objetivo se sella con basis_offset_kcal.
 -- La idempotencia ante respuesta perdida NO está aquí (es C2).
@@ -545,6 +572,7 @@ declare
   v_extra jsonb;
   v_current integer;
   v_profile_found boolean;
+  v_snapshot_kcal numeric;
 begin
   if v_uid is null then
     raise exception 'NOT_AUTHENTICATED';
@@ -588,9 +616,16 @@ begin
     raise exception 'OFFSET_MISMATCH: el ajuste vigente es % y la propuesta (% kcal) no produce %', v_current, v_proposal.delta_kcal, p_new_offset_kcal;
   end if;
 
-  if jsonb_typeof(p_snapshot -> 'calorie_target' -> 'kcal') <> 'number'
-     or (p_snapshot -> 'calorie_target' ->> 'kcal')::numeric <> p_kcal_target then
-    raise exception 'SNAPSHOT_MISMATCH: el snapshot no describe el objetivo que se va a aplicar';
+  -- Estructura, presencia y tipo explícitos (ver fn_plan_snapshot_kcal): solo se valida la kcal.
+  if jsonb_typeof(p_snapshot) is distinct from 'object' then
+    raise exception 'SNAPSHOT_INVALID: el snapshot debe ser un objeto JSON';
+  end if;
+  v_snapshot_kcal := public.fn_plan_snapshot_kcal(p_snapshot -> 'calorie_target');
+  if v_snapshot_kcal is null then
+    raise exception 'SNAPSHOT_INVALID: falta calorie_target.kcal numérico en el snapshot';
+  end if;
+  if v_snapshot_kcal <> p_kcal_target then
+    raise exception 'SNAPSHOT_MISMATCH: la kcal del snapshot (%) no coincide con el objetivo que se va a aplicar (%)', v_snapshot_kcal, p_kcal_target;
   end if;
 
   update public.nutrition_adjustment_proposals

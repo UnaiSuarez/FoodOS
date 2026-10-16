@@ -338,6 +338,81 @@ describe("función de aceptación", () => {
   });
 });
 
+describe("snapshot incompleto o mal formado (estructura, presencia y tipos explícitos)", () => {
+  // Solo se valida la kcal del snapshot (calorie_target.kcal): macros, versión y modo NO se comprueban.
+  const variants: Array<[string, unknown, boolean]> = [
+    ["calorie_target ausente", undefined, false],
+    ["calorie_target = {} (clave kcal ausente)", {}, false],
+    ["calorie_target = JSON null", null, false],
+    ["calorie_target = texto", "1939", false],
+    ["calorie_target = array", [1939], false],
+    ["kcal = JSON null", { kcal: null }, false],
+    ["kcal = texto", { kcal: "1939" }, false],
+    ["kcal = array", { kcal: [1939] }, false],
+    ["kcal = objeto", { kcal: { v: 1939 } }, false],
+    ["kcal discordante", { kcal: 1500 }, false],
+    ["kcal correcta", { kcal: 1939 }, true],
+  ];
+
+  const full = (calorieTarget: unknown) => {
+    const s: Record<string, unknown> = { calculation_version: "nutrition-v3.1", input_snapshot: {}, resting_energy: {}, tdee: {}, macros: {}, safety: {} };
+    if (calorieTarget !== undefined) s.calorie_target = calorieTarget;
+    return s;
+  };
+  async function propose(u: string) {
+    const s = await snapshot(u, 1900);
+    return (await admin(`insert into public.nutrition_adjustment_proposals (user_id, snapshot_id, current_target_kcal, proposed_target_kcal, delta_kcal, reason) values ($1,$2,2039,1939,-100,'t') returning id`, [u, s]))[0].id as string;
+  }
+  const callAccept = (u: string, id: string, snap: unknown) =>
+    tryQ(u, `select public.fn_accept_nutrition_adjustment($1, true, -100, $2::date, 1939, 160, 204, 54, 'fat_loss', $3::jsonb) as r`, [id, D, JSON.stringify(snap)]);
+
+  it("fn_plan_snapshot_kcal y fn_plan_valid_snapshot rechazan lo mismo", async () => {
+    const out: Record<string, unknown> = {};
+    for (const [label, ct, valid] of variants) {
+      const u = await newUser();
+      const row = await admin(
+        `insert into public.nutrition_calculation_snapshots (user_id, calculation_version, trigger_reason, input_snapshot, resting_energy, tdee, calorie_target, macros, safety)
+         values ($1,'nutrition-v3.1','adaptive_adjustment_accepted','{}','{}','{}',$2::jsonb,'{}','{}') returning id`, [u, JSON.stringify(ct === undefined ? null : ct)]);
+      const id = row[0].id as string;
+      const direct = (await admin(`select public.fn_plan_valid_snapshot($1, $2, 1939) as v`, [u, id]))[0].v;
+      out[label] = direct === id;
+      expect(direct === id, label).toBe(valid);
+    }
+    results.snapshotHelper = out;
+  });
+
+  it("la aceptación rechaza cada forma inválida y NO deja ningún efecto (rollback completo); acepta la válida", async () => {
+    const out: Record<string, unknown> = {};
+    for (const [label, ct, valid] of variants) {
+      const u = await newUser({ adaptiveKcalOffsetKcal: 0 });
+      const id = await propose(u);
+      const snapsBefore = (await admin(`select count(*)::int as n from public.nutrition_calculation_snapshots where user_id=$1`, [u]))[0].n;
+      const r = await callAccept(u, id, full(ct));
+      out[label] = r.ok ? "aceptada" : (r.error.split(":")[0]);
+      expect(r.ok, label).toBe(valid);
+      if (!valid) {
+        expect((await admin(`select status from public.nutrition_adjustment_proposals where id=$1`, [id]))[0].status, label).toBe("pending");
+        expect((await extra(u)).adaptiveKcalOffsetKcal, label).toBe(0);
+        expect(await goal(u), label).toBeNull();
+        expect((await admin(`select count(*)::int as n from public.nutrition_calculation_snapshots where user_id=$1`, [u]))[0].n, label).toBe(snapsBefore);
+        expect(await conflicts(u), label).toEqual([]);
+      }
+    }
+    results.snapshotAccept = out;
+  });
+
+  it("el snapshot completo como valor no-objeto (texto, array, JSON null) también se rechaza sin efectos", async () => {
+    for (const bad of ["texto", [1, 2], null, 5]) {
+      const u = await newUser({ adaptiveKcalOffsetKcal: 0 });
+      const id = await propose(u);
+      const r = await callAccept(u, id, bad);
+      expect(r.ok, JSON.stringify(bad)).toBe(false);
+      expect((await admin(`select status from public.nutrition_adjustment_proposals where id=$1`, [id]))[0].status).toBe("pending");
+      expect((await extra(u)).adaptiveKcalOffsetKcal).toBe(0);
+    }
+  });
+});
+
 describe("lectura autoritativa", () => {
   it("devuelve valores saneados (nunca basura) y los conflictos abiertos", async () => {
     const u = await newUser();

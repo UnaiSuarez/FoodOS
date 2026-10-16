@@ -1,4 +1,4 @@
-// Config de Vitest SOLO para esta verificaciÃ³n (no es la de apps/web). Ejecuta el cÃ³digo REAL de
+// Config de Vitest SOLO para esta verificación (no es la de apps/web). Ejecuta el código REAL de
 // apps/web/src/lib (data-layer, nutrition, state) contra un Postgres aislado; ver README.md.
 import { defineConfig } from "vitest/config";
 import path from "node:path";

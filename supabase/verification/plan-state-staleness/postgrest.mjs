@@ -1,20 +1,22 @@
 // Cliente "con forma de supabase-js/PostgREST" sobre PGlite. NO es PostgREST: traduce las llamadas que
 // hace apps/web/src/lib/data-layer.ts (from().select/insert/update/upsert/delete + filtros, rpc()) al SQL
-// que PostgREST genera para ellas (INSERT â€¦ SELECT FROM json_populate_recordset â€¦ ON CONFLICT DO UPDATE SET
+// que PostgREST genera para ellas (INSERT … SELECT FROM json_populate_recordset … ON CONFLICT DO UPDATE SET
 // solo las columnas del payload; ver supabase/verification/inventory-nutrition-provenance/README.md).
-// Cada operaciÃ³n se ejecuta como el rol `authenticated` con auth.uid() = el usuario de la sesiÃ³n, asÃ­ que
-// RLS, GRANT y triggers se aplican igual que con un JWT real.
-import { asUser } from "./schema.mjs";
+// Cada operación se ejecuta como el rol `authenticated` con auth.uid() = el usuario de la sesión, así que
+// RLS, GRANT y triggers se aplican igual que con un JWT real. `opts.clientInfo` simula la cabecera
+// X-Client-Info que PostgREST expone en request.headers (por defecto: el cliente nuevo; null = antiguo).
+import { asUser, NEW_CLIENT_INFO } from "./schema.mjs";
 
 function ident(name) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(name)) throw new Error(`identificador no permitido: ${name}`);
   return `"${name}"`;
 }
 
-/** @param db PGlite  @param session { userId: string } mutable: cambiarlo simula un cambio de sesiÃ³n */
+/** @param db PGlite  @param session { userId: string } mutable: cambiarlo simula un cambio de sesión */
 export function postgrestLikeClient(db, session, opts = {}) {
   const log = [];
-  const run = (fn) => asUser(db, session.userId, fn, { clientInfo: opts.clientInfo ?? null });
+  const clientInfo = "clientInfo" in opts ? opts.clientInfo : NEW_CLIENT_INFO;
+  const run = (fn) => asUser(db, session.userId, fn, { clientInfo });
 
   async function exec(spec) {
     const { table, op, payload, onConflict, ignoreDuplicates, filters, order, limitN, cols, returning } = spec;
@@ -112,7 +114,11 @@ export function postgrestLikeClient(db, session, opts = {}) {
         return { data: rows[0].r, error: null };
       } catch (e) {
         log.push({ user: session.userId, rpc: name, ok: false, error: e.message });
-        return { data: null, error: { message: e.message } };
+        // PostgREST responde PGRST202 («Could not find the function …») cuando la función no existe.
+        if (/function .* does not exist/i.test(e.message)) {
+          return { data: null, error: { code: "PGRST202", message: `Could not find the function public.${name} in the schema cache` } };
+        }
+        return { data: null, error: { message: e.message, code: e.code } };
       }
     },
   };

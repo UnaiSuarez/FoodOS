@@ -22,7 +22,7 @@ import { getMascot } from "./mascots";
 import { applyEngineVersionTransition, calcDailyTargets, classifyDayAdherence, getAdherenceStreakFromStatuses, isGymDay, monthlyAmountOf, NUTRITION_ENGINE_VERSION, sanitizeNutritionGoalsLedger, weeklyCycle } from "./nutrition";
 import { findExactFood } from "./food-db";
 import { hasAtMostTwoDecimals } from "./pg-numeric";
-import { handlePlanReadback, sanitizeProfilePlanFields } from "./plan-state";
+import { handlePlanReadback, newPlanReconcileBudget, sanitizeProfilePlanFields, type PlanReconcileBudget } from "./plan-state";
 import { addDaysToDateKey, convertQty, dateFromKey, dateOffset, daysUntil, eur, massUnitFromGrams, mealTypeFromTime, namesMatch, seededJitter, todayMinus, todayPlus, toGrams, uid } from "./utils";
 import { inventoryConsumptionProvenance, legacyTotalProvenance, qtyOverridesIgnored, reconcileStatusesWithValues, recipeTotalProvenance, SYNTHETIC_FOOD_LOG_FIELDS } from "./food-log-provenance";
 
@@ -804,7 +804,10 @@ interface FoodOSContextValue {
       como sustituto de comprobar canAcceptRemoteMutations()/hydrationScope
       por separado antes de llamar: es al revés, este es el único resultado
       fiable porque consulta el gate en el momento real de la llamada. */
-  mutate: (fn: (draft: FoodOSState) => void) => boolean;
+  /** `fn` puede devolver `false` para indicar «no hubo nada que cambiar»: entonces no se escribe la outbox
+      ni se programa ningún push (la mutación se descarta). Cualquier otro retorno (incluido `undefined`) es
+      una mutación normal. */
+  mutate: (fn: (draft: FoodOSState) => void | false) => boolean;
   /** Incrementa/decrementa el agua del día de forma atómica (sin conflictos entre tabs). */
   addWater: (ml: number) => void;
   /** Fija el agua de una fecha concreta a un valor absoluto — usar para
@@ -1389,6 +1392,7 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
           setState(resolveInitialStateForSession(newId, defaultState));
           outbox.restoreParkedWater(newId); // recupera agua aparcada (misma política de TTL que el envelope genérico — P1)
           remote.resumePendingWaterFor(newId); // agua persistida (aparcada o de una recarga) de este dispositivo (P0)
+          remote.resumePlanRecheckFor(newId); // C0: relectura del plan que quedó pendiente en este dispositivo
           // hasLocalBaseline (diseño v5): ¿este dispositivo YA tenía un
           // envelope propio de esta cuenta tras el restaurado de arriba?
           // Determina resolveHydrationUiMode() — con baseline, el dashboard
@@ -1581,11 +1585,11 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   //     haya renderizado el cambio (setState es asíncrono) ni que Supabase
   //     ya lo haya confirmado — solo que la mutación superó el gate y
   //     entró al pipeline normal de persistencia.
-  const mutate = useCallback((fn: (draft: FoodOSState) => void): boolean => {
+  const mutate = useCallback((fn: (draft: FoodOSState) => void | false): boolean => {
     if (mutationsBlocked()) return false; // ni fn(draft), ni setState, ni outbox/localStorage, ni schedulePush
     setState((current) => {
       const draft = structuredClone(current);
-      fn(draft);
+      if (fn(draft) === false) return current; // sin cambios: ni outbox ni push
       // Si hay perfil, los objetivos del dia siempre derivan de el.
       if (draft.profile) {
         const targets = calcDailyTargets(draft.profile, isGymDay(draft.profile, stateDate(draft)), draft.macroPreference);
@@ -1645,20 +1649,34 @@ export function FoodOSProvider({ children }: { children: ReactNode }) {
   // sobre el estado más reciente (nunca sobre el snapshot enviado).
   const planStateRef = useRef(state);
   useEffect(() => { planStateRef.current = state; });
+  const planBudgetRef = useRef<{ key: string; budget: PlanReconcileBudget }>({ key: "", budget: newPlanReconcileBudget() });
   useEffect(() => {
     remote.onPlanReadback = ({ userId, epoch, readback }) => {
+      // Presupuesto de recuperación acotada por cuenta y época: cambia la identidad → se reinicia.
+      const key = `${userId}:${epoch}`;
+      if (planBudgetRef.current.key !== key) planBudgetRef.current = { key, budget: newPlanReconcileBudget() };
       const outcome = handlePlanReadback({ userId, epoch }, readback, {
         currentIdentity: () => (remote.user ? { userId: remote.user.id, epoch: remote.sessionEpoch } : null),
         getState: () => planStateRef.current,
         mutate,
         todayKey: () => todayPlus(0),
+        isLatestMutation: (mutationId) => {
+          const pending = outbox.readEnvelope(userId)?.pending ?? null;
+          return pending === null || (mutationId !== null && pending.mutationId === mutationId);
+        },
+        requestRefresh: () => requestHydrationRef.current(userId, epoch),
         notify: showToast,
         acknowledgeConflicts: (u, e, ids) => { void remote.ackPlanConflicts(u, e, ids); },
-      });
-      // Si otro dispositivo cambió el offset, la propuesta pendiente / fecha de última decisión de este
-      // dispositivo también pueden estar obsoletas: se refresca por la vía de hidratación normal.
+      }, planBudgetRef.current.budget);
       if (outcome.kind === "reconciled" && outcome.delta.offset !== undefined) {
+        // Otro dispositivo cambió el offset: la propuesta pendiente y la fecha de la última decisión de este
+        // dispositivo también pueden estar obsoletas → se refrescan por la vía de hidratación normal.
         requestHydrationRef.current(userId, epoch);
+      }
+      // Lo leído no se pudo aplicar (mutaciones bloqueadas) o no se pudo confirmar tras los reintentos
+      // acotados: no se da por reconciliado; queda una relectura pendiente, durable y acotada.
+      if (outcome.kind === "blocked" || outcome.kind === "unresolved") {
+        remote.requestPlanRecheck(userId, epoch, readback.requestedGoalDate);
       }
     };
     return () => { remote.onPlanReadback = null; };
