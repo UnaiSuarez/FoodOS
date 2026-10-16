@@ -140,9 +140,10 @@ test("§3 navegador: X-Client-Info llega a PostgREST, CORS permite las peticione
   } finally { await deleteQaUser(user); }
 });
 
-test("A: dos dispositivos, B desconectado con el estado anterior → offset, calibración y objetivo protegido no retroceden; edición legítima y diario/inventario intactos", async ({ page, context }) => {
-  const { user, a, goal, weightRows } = await bootDevice(page, "a1");
-    const weightsBefore = await weightRows();
+for (const run of [1, 2, 3]) // tres repeticiones: una ejecución anterior mostró una lectura local transitoria que no se ha podido explicar
+test(`A${run}: dos dispositivos, B desconectado con el estado anterior → offset, calibración y objetivo protegido no retroceden; edición legítima y diario/inventario intactos`, async ({ page, context }) => {
+  const { user, a, goal, weightRows } = await bootDevice(page, `a${run}`);
+  const weightsBefore = await weightRows();
   try {
     await gotoSettings(page);
     const before = await localState(page);
@@ -152,13 +153,28 @@ test("A: dos dispositivos, B desconectado con el estado anterior → offset, cal
     await expect.poll(async () => setting(await localState(page))).toBe(edited);
     await acceptOnA(a, user, goal.kcal_target); // A acepta el ajuste mientras B está desconectado
     await context.setOffline(false);
+    // Serie temporal desde el instante de la reconexión: ¿se ve alguna vez la edición revertida, o el offset antiguo?
+    const timeline: string[] = [];
+    const sample = async () => {
+      const ls = await localState(page);
+      timeline.push(`local[ajuste=${setting(ls)} offset=${ls.profile?.adaptiveKcalOffsetKcal}] servidor[ajuste=${await serverSetting(a, user.id)} offset=${await serverOffset(a, user.id)}]`);
+    };
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90_000) {
+      await sample();
+      const last = timeline[timeline.length - 1];
+      if (last === `local[ajuste=${edited} offset=-100] servidor[ajuste=${edited} offset=-100]`) break;
+      await page.waitForTimeout(150);
+    }
+    const serie = Array.from(new Set(timeline));
+    evidence[`A${run}_serie`] = serie;
     await expect(badge(page)).toHaveText("Guardado", { timeout: 90_000 });
-    await expect.poll(async () => ((await localState(page)).profile?.adaptiveKcalOffsetKcal), { timeout: 60_000 }).toBe(-100);
+    expect(serie[serie.length - 1], `la edición sin red no convergió; serie: ${serie.join(" | ")}`).toBe(`local[ajuste=${edited} offset=-100] servidor[ajuste=${edited} offset=-100]`);
 
     const srvGoal = await serverGoal(a, user.id);
     const off = await serverOffset(a, user.id);
     const local = await localState(page);
-    evidence.A = {
+    evidence[`A${run}`] = {
       antes: { offset: 0, objetivoKcal: goal.kcal_target },
       despues: { offsetServidor: off, objetivoServidor: srvGoal, offsetLocalB: local.profile?.adaptiveKcalOffsetKcal, objetivoLocalB: local.nutritionGoalsHistory?.[todayUtc()]?.kcal, ajusteEditado: setting(local), inventario: (local.inventory ?? []).length - invBefore },
     };
@@ -167,14 +183,6 @@ test("A: dos dispositivos, B desconectado con el estado anterior → offset, cal
     expect(srvGoal?.basis_offset_kcal).toBe(-100);
     expect(srvGoal?.source_snapshot_id).not.toBeNull();
     expect(local.nutritionGoalsHistory?.[todayUtc()]?.kcal).toBe(goal.kcal_target - 100);
-    // La edición legítima hecha sin red debe llegar a ambos lados (con margen: la reconciliación reenvía en segundo plano).
-    const timeline: string[] = [];
-    try { await expect.poll(async () => {
-      const l = setting(await localState(page)); const s = await serverSetting(a, user.id);
-      timeline.push(`local=${l} servidor=${s}`);
-      return l === edited && s === edited;
-    }, { timeout: 60_000 }).toBe(true); } catch (e) { throw new Error(`la edición sin red (${edited}) no llegó a ambos lados; serie: ${Array.from(new Set(timeline)).join(" | ")}\n${(e as Error).message}`); }
-    evidence.A_edicion = { editada: edited, tiempoHastaConvergir: timeline.length, serie: Array.from(new Set(timeline)) };
     // efectos secundarios: el diario (pesajes) y las columnas del perfil no cambian por la reconciliación
     expect(await weightRows()).toEqual(weightsBefore);
     const prof = await a.from("user_profiles").select("weight_kg, goal, age").eq("user_id", user.id).single();
