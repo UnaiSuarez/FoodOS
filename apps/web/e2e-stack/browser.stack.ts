@@ -98,6 +98,10 @@ async function bootDevice(page: Page, label: string) {
   const goal = (await serverGoal(a, user.id))!;
   return { user, a, goal, weightRows: async () => ((await a.from("weight_log").select("log_date, kg").eq("user_id", user.id)).data ?? []) };
 }
+async function serverSetting(c: SupabaseClient, userId: string): Promise<unknown> {
+  const r = await c.from("user_profiles").select("extra_state").eq("user_id", userId).maybeSingle();
+  return ((r.data?.extra_state as Record<string, any> | null)?.settings as Record<string, unknown> | undefined)?.expiryWarnDays;
+}
 async function acceptOnA(a: SupabaseClient, user: QaUser, fromKcal: number, delta = -100) {
   const id = await propose(a, user.id, fromKcal, fromKcal + delta);
   const r = await a.rpc("fn_accept_nutrition_adjustment", acceptArgs(id, { offset: delta, kcal: fromKcal + delta }));
@@ -162,7 +166,14 @@ test("A: dos dispositivos, B desconectado con el estado anterior → offset, cal
     expect(srvGoal?.basis_offset_kcal).toBe(-100);
     expect(srvGoal?.source_snapshot_id).not.toBeNull();
     expect(local.nutritionGoalsHistory?.[todayUtc()]?.kcal).toBe(goal.kcal_target - 100);
-    expect(setting(local)).toBe(edited);
+    // La edición legítima hecha sin red debe llegar a ambos lados (con margen: la reconciliación reenvía en segundo plano).
+    const timeline: string[] = [];
+    try { await expect.poll(async () => {
+      const l = setting(await localState(page)); const s = await serverSetting(a, user.id);
+      timeline.push(`local=${l} servidor=${s}`);
+      return l === edited && s === edited;
+    }, { timeout: 60_000 }).toBe(true); } catch (e) { throw new Error(`la edición sin red (${edited}) no llegó a ambos lados; serie: ${Array.from(new Set(timeline)).join(" | ")}\n${(e as Error).message}`); }
+    evidence.A_edicion = { editada: edited, tiempoHastaConvergir: timeline.length, serie: Array.from(new Set(timeline)) };
     // efectos secundarios: el diario (pesajes) y las columnas del perfil no cambian por la reconciliación
     expect(await weightRows()).toEqual(weightsBefore);
     const prof = await a.from("user_profiles").select("weight_kg, goal, age").eq("user_id", user.id).single();
