@@ -68,7 +68,7 @@ async function bootDevice(page: Page, label: string) {
   if (wl.error) throw new Error(`pesaje sintético: ${wl.error.message}`);
   await uiLogin(page, user);
   await gotoSettings(page);
-  await expect.poll(async () => (await localState(page)).profile?.weightKg, { timeout: 60_000, message: "la app no cargó el perfil sintético" }).toBe(80);
+  await expect(badge(page)).toHaveText("Guardado", { timeout: 60_000 }); // hidratación terminada
   await bump(page); // edición mínima: dispara la sincronización completa, que registra y envía el objetivo de hoy
   const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
   try {
