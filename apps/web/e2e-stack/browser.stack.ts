@@ -40,7 +40,16 @@ async function uiLogin(page: Page, u: QaUser) {
   await page.getByRole("button", { name: "Entrar" }).click();
   await page.waitForURL(/\/dashboard/);
 }
-const localState = (page: Page) => page.evaluate(() => JSON.parse(localStorage.getItem("foodos-appweb-state-v1") ?? "{}") as Record<string, any>);
+/** Estado local de la sesión: con cuenta vive en el envelope por usuario (`foodos-user-state-v2-<id>`), sin cuenta en la clave local. */
+const localState = (page: Page) => page.evaluate(() => {
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i) ?? "";
+    if (k.startsWith("foodos-user-state-v2-")) {
+      try { return ((JSON.parse(localStorage.getItem(k) ?? "{}") as { state?: Record<string, any> }).state ?? {}) as Record<string, any>; } catch { /* envelope ilegible */ }
+    }
+  }
+  return JSON.parse(localStorage.getItem("foodos-appweb-state-v1") ?? "{}") as Record<string, any>;
+});
 const setting = (s: Record<string, any>) => s.settings?.expiryWarnDays as number | undefined;
 /** Edición legítima y mínima del usuario que dispara una sincronización completa (mutate → pushState). */
 let bumpN = 0;
