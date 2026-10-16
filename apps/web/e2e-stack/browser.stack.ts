@@ -55,10 +55,21 @@ async function bootDevice(page: Page, label: string) {
   const failedRest: string[] = [];
   page.on("response", (res) => { if (res.url().includes("/rest/v1/") && res.status() >= 400) failedRest.push(`${res.request().method()} ${res.url().split("/rest/v1/")[1]?.split("?")[0]} ${res.status()}`); });
   const user = await createQaUser(label);
+  // Estado de partida sintético sembrado con la sesión DEL USUARIO (clave pública): perfil físico completo y un
+  // pesaje del diario. Así la app arranca con perfil (sin pasar por el onboarding) y hay datos legítimos con los
+  // que detectar efectos secundarios.
+  const seed = await signedClient(user);
+  const p = await seed.from("user_profiles").upsert({
+    user_id: user.id, age: 32, sex: "male", height_cm: 178, weight_kg: 80, activity_level: "moderate", goal: "fat_loss",
+    gym_days: [1, 3, 5], onboarding_completed: true, extra_state: { adaptiveKcalOffsetKcal: 0 },
+  }, { onConflict: "user_id" });
+  if (p.error) throw new Error(`perfil sintético: ${p.error.message}`);
+  const wl = await seed.from("weight_log").upsert({ user_id: user.id, log_date: "2026-10-01", kg: 80.0 }, { onConflict: "user_id,log_date" });
+  if (wl.error) throw new Error(`pesaje sintético: ${wl.error.message}`);
   await uiLogin(page, user);
-  await page.goto("/dashboard/settings");
-  await page.getByRole("button", { name: "Cargar datos demo" }).click();
-  const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
+  await gotoSettings(page);
+  await expect.poll(async () => (await localState(page)).profile?.weightKg, { timeout: 60_000, message: "la app no cargó el perfil sintético" }).toBe(80);
+  await bump(page); // edición mínima: dispara la sincronización completa, que registra y envía el objetivo de hoy  const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
   try {
     await expect.poll(async () => (await serverGoal(a, user.id)) !== null, { timeout: 60_000, message: "el servidor no recibió el objetivo de hoy" }).toBe(true);
   } catch (e) {
@@ -75,7 +86,7 @@ async function bootDevice(page: Page, label: string) {
   }
   await expect(badge(page)).toHaveText("Guardado", { timeout: 60_000 });
   const goal = (await serverGoal(a, user.id))!;
-  return { user, a, goal };
+  return { user, a, goal, weightRows: async () => ((await a.from("weight_log").select("log_date, kg").eq("user_id", user.id)).data ?? []) };
 }
 async function acceptOnA(a: SupabaseClient, user: QaUser, fromKcal: number, delta = -100) {
   const id = await propose(a, user.id, fromKcal, fromKcal + delta);
@@ -115,7 +126,8 @@ test("§3 navegador: X-Client-Info llega a PostgREST, CORS permite las peticione
 });
 
 test("A: dos dispositivos, B desconectado con el estado anterior → offset, calibración y objetivo protegido no retroceden; edición legítima y diario/inventario intactos", async ({ page, context }) => {
-  const { user, a, goal } = await bootDevice(page, "a1");
+  const { user, a, goal, weightRows } = await bootDevice(page, "a1");
+    const weightsBefore = await weightRows();
   try {
     await gotoSettings(page);
     const before = await localState(page);
@@ -141,6 +153,10 @@ test("A: dos dispositivos, B desconectado con el estado anterior → offset, cal
     expect(srvGoal?.source_snapshot_id).not.toBeNull();
     expect(local.nutritionGoalsHistory?.[todayUtc()]?.kcal).toBe(goal.kcal_target - 100);
     expect(setting(local)).toBe(edited);
+    // efectos secundarios: el diario (pesajes) y las columnas del perfil no cambian por la reconciliación
+    expect(await weightRows()).toEqual(weightsBefore);
+    const prof = await a.from("user_profiles").select("weight_kg, goal, age").eq("user_id", user.id).single();
+    expect({ w: Number(prof.data?.weight_kg), g: prof.data?.goal, age: prof.data?.age }).toEqual({ w: 80, g: "fat_loss", age: 32 });
     expect((local.inventory ?? []).length).toBe(invBefore);
     await page.reload(); // tras recargar sigue igual (el servidor es la fuente)
     await expect.poll(async () => ((await localState(page)).profile?.adaptiveKcalOffsetKcal), { timeout: 60_000 }).toBe(-100);
