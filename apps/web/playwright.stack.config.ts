@@ -26,6 +26,9 @@ export default defineConfig({
     env: {
       NEXT_PUBLIC_SUPABASE_URL: process.env.STACK_API_URL ?? "",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.STACK_ANON_KEY ?? "",
+      // Las cuentas QA sintéticas (dominio .invalid, sin buzón) son «admin» SOLO en este servidor desechable: el botón
+      // «Cargar datos demo» de Ajustes solo existe para administradores y es la forma de sembrar un perfil sintético.
+      NEXT_PUBLIC_ADMIN_EMAILS: ["p", "a1", "b1", "d1", "e1", "f1", "f2"].map((l) => `qa-c0-${process.env.STACK_RUN_ID ?? ""}-${l}@example.invalid`).join(","),
     },
   },
 });
