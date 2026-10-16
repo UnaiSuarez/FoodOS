@@ -248,7 +248,16 @@ test("E: respuesta VÁLIDA que no se puede reconciliar → no «guardado», pres
       return route.fulfill({ response: res, json: { ...body, goal: null } }); // válida, pero el objetivo de hoy «no existe»
     });
     await bump(page);
-    for (let i = 0; i < 25; i++) await page.clock.runFor(30_000); // ~750 s virtuales > 5+15+45+120+300
+    // El tiempo es virtual pero cada lectura tarda tiempo REAL: el siguiente reintento solo se arma cuando llega la
+    // respuesta. Se avanza el reloj hasta que el número de lecturas lleve 14 pasos (420 s virtuales > el mayor
+    // retardo, 300 s) sin cambiar.
+    let last = -1; let stable = 0;
+    for (let i = 0; i < 300 && stable < 14; i++) {
+      await page.clock.runFor(30_000);
+      await page.waitForTimeout(250);
+      if (reads === last) stable++; else { stable = 0; last = reads; }
+    }
+    expect(stable).toBeGreaterThanOrEqual(14);
     await expect(badge(page)).not.toHaveText("Guardado");
     expect(await page.evaluate((k) => localStorage.getItem(k) !== null, markKey)).toBe(true);
     const readsAtExhaustion = reads;
