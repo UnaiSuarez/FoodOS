@@ -1,190 +1,154 @@
-# C0 — protección del estado de plan frente a sincronización obsoleta (diseño mínimo)
+# C0 — protección del estado de plan frente a una sincronización obsoleta
 
-Diseño y reproducción verificable. **No hay cambios de producto**, ni SQL aplicado a ningún entorno real. El candidato de SQL vive en `supabase/verification/plan-state-staleness/` y no es una migración. Fecha: 14/10/2026. Base: `origin/main` = `8d1b6a0` (#151) incorporada a la rama por *merge* (el commit `763ab75` se conserva).
+Estado: **implementado y revisable; migración SIN aplicar en ningún entorno remoto; V4 sin activar.** Este documento describe lo que hay en la rama `feature/plan-state-protection-c0` (base `origin/main` = `8d1b6a0`), no un candidato. Las decisiones de V4 (comparación, propuestas persistidas, activación) siguen fuera de esta entrega.
+
+> **C0 protege el offset adaptativo, la calibración y el objetivo diario de HOY. NO protege las columnas decisionales del perfil** (`goal`, `weight_kg`, `activity_level`, `age`…): siguen con «el último escritor gana». Eso es C0b/C1 y no debe presentarse como protección del perfil. La reproducción R2 lo muestra.
 
 ---
 
-## 1. Defecto y alcance
+## 1. Defecto
 
-### 1.1 Mecanismo (código vigente)
+Un dispositivo con el estado anterior reenvía su snapshot **completo** en cuanto hace cualquier mutación («gana el pendiente local», `state.tsx` / `SYNC_DECISIONES.md`). `pushState` escribe, sin comprobar vigencia frente al servidor:
 
-Un dispositivo que conserva el estado anterior reenvía **su snapshot completo** en cuanto hace cualquier mutación (la política documentada es «gana el pendiente local», `state.tsx:282-296`, `SYNC_DECISIONES.md:381-386`). `pushState` escribe, en este orden y sin ninguna comprobación de vigencia frente al servidor:
-
-| Escritura | Dónde | Qué arrastra del estado local |
-|---|---|---|
-| `user_profiles` (upsert) con `extra_state` **reemplazado entero** | `data-layer.ts:1982-2032` | `adaptiveKcalOffsetKcal`, `adaptiveCalibrationStartedAt`, `lastTargetChangedAt`, `lastCalculationEngineVersion` y, además, las columnas del perfil |
-| `nutrition_goals` (upsert por `(user_id, goal_date)`) | `data-layer.ts:2087-2114` | Los objetivos del día, **siempre que el ledger local coincida con `state.nutrition`**: una condición de coherencia *interna* que un dispositivo obsoleto cumple igual que uno vigente |
-
-La aceptación (`fn_accept_nutrition_adjustment`) escribe offset y objetivo del día en una transacción, pero nada impide que la siguiente sincronización de otro dispositivo —o del mismo, tras perder la respuesta— los reemplace.
-
-### 1.2 Reproducción (resumen; detalle en §6)
-
-Cliente real y esquema real, una conexión. A acepta −100 kcal/día; B (estado anterior) registra un peso y sincroniza:
-
-| Dato tras relectura | Vigente | Con la guarda candidata |
-|---|---|---|
-| Offset (`extra_state`) | **0** (el −100 aceptado desaparece) | −100 |
-| Objetivo del día | **2039** (el de antes del ajuste; sigue apuntando al snapshot de la aceptación) | 1939 |
-| Propuesta / snapshot de aceptación | `accepted` / 1 | igual |
-| `lastAdjustmentDecisionAt` | fecha de la aceptación (el cooldown sigue activo) | igual |
-| Conflicto señalado | ninguno | `offset_overwrite_prevented`, `daily_goal_overwrite_prevented` |
-
-El historial dice «ajuste aceptado» mientras el offset y el objetivo ya no lo reflejan, y V3.1 seguiría con cooldown activo sobre un ajuste que no existe.
-
-### 1.3 Qué cubre C0 y qué no
-
-| Cubierto por C0 | Fuera de C0 (declarado) |
+| Escritura | Qué arrastra del estado local |
 |---|---|
-| Offset adaptativo | Columnas decisionales del perfil (`goal`, `weight_kg`, `activity_level`…): siguen con «último escritor gana». La reproducción R2 muestra que un push obsoleto revierte un cambio legítimo de actividad. Es el mismo mecanismo que V4 necesita (revisión CAS del plan) → **C0b/C1** |
-| Calibración (`adaptiveCalibrationStartedAt`, `lastTargetChangedAt`) y `lastCalculationEngineVersion` | Cualquier otra clave de `extra_state` (rutinas, ajustes, planificador…) |
-| Objetivos diarios `nutrition_goals` | Peso, diario, inventario |
-| Señalización de conflictos y reconciliación del estado local y de las escrituras pendientes | Idempotencia del RPC y propuestas V4 (C2) |
+| `user_profiles` (upsert, `extra_state` **reemplazado entero**) | `adaptiveKcalOffsetKcal`, `adaptiveCalibrationStartedAt`, `lastTargetChangedAt`, `lastCalculationEngineVersion` |
+| `nutrition_goals` (upsert por `(user_id, goal_date)`) | Los objetivos de hoy, siempre que el ledger local coincida con `state.nutrition` — coherencia *interna* que un dispositivo obsoleto cumple igual que uno vigente |
 
----
+Resultado reproducido (cliente real + esquema real, `results/repro.json`, esquema «previo»): A acepta −100 kcal/día; B obsoleto registra un peso y sincroniza → offset **0**, objetivo de hoy **2039** (el de antes), mientras la propuesta y el snapshot siguen diciendo «aceptado». Con respuesta perdida, el propio dispositivo que aceptó se deshace en su siguiente push.
 
 ## 2. Modelo de propiedad
 
-El principio: cada dato del estado de plan tiene **un propietario**, y la regla de fusión depende de qué *es* ese dato.
-
-| Dato | Naturaleza | Propietario / regla | Cambio legítimo posible desde un push |
+| Dato | Naturaleza | Regla en servidor | Cambio legítimo posible desde un push |
 |---|---|---|---|
-| `adaptiveKcalOffsetKcal` | Resultado de una decisión explícita, nunca de una edición de perfil (`types/index.ts`: «nunca lo escribe nada salvo aceptar una `AdjustmentProposal`») | **Escritor único: `fn_accept_nutrition_adjustment`**. Un push no puede cambiar un valor numérico ya almacenado | Ninguno |
-| `adaptiveCalibrationStartedAt`, `lastTargetChangedAt` | Fecha de reinicio por un cambio de perfil relevante en *cualquier* dispositivo | **Fusión monótona**: gana la fecha mayor; nunca retrocede ni vuelve a `null` | Sí: un reinicio legítimo pone «hoy» ≥ la anterior |
-| `lastCalculationEngineVersion` | Sello de transición de motor | Un valor ya almacenado no vuelve a `null` | Sí: un sello nuevo |
-| `nutrition_goals` (fila del día) | **Caché derivada** de perfil + offset + preferencia + tipo de día | Solo se acepta si declara con qué offset se calculó (`basis_offset_kcal`) y coincide con el vigente. Sin base (cliente antiguo): una fila ya sellada con base no cambia | Sí: una edición legítima recalcula con el offset vigente |
-| Conflictos | Informativos | Los inserta la guarda (o el cliente); sin autoridad. El usuario solo puede marcarlos como vistos | — |
+| `adaptiveKcalOffsetKcal` | Resultado de una decisión explícita (el tipo ya decía «nunca lo escribe nada salvo aceptar una propuesta») | **Escritor único: `fn_accept_nutrition_adjustment`.** Un valor válido ya almacenado no cambia por un push. **Sin valor válido almacenado (ausente, NULL, inválido) la primera escritura válida lo inicializa** | Solo la inicialización |
+| `adaptiveCalibrationStartedAt`, `lastTargetChangedAt` | Fecha del último reinicio por un cambio de perfil relevante en *cualquier* dispositivo | Fusión monótona: la mayor fecha **válida y admitida**; nunca retrocede ni vuelve a null; el valor inválido se sanea a null sin abortar | Sí: un reinicio legítimo pone «hoy» ≥ la anterior |
+| `lastCalculationEngineVersion` | Sello de transición de motor | No vuelve a null/ausente | Sí: un sello nuevo |
+| `nutrition_goals` de una fecha | Caché derivada de perfil + offset + tipo de día | Solo se acepta con una **base declarada** (`basis_offset_kcal`) igual al offset del servidor; el sello no se quita; identidad y procedencia inmutables salvo recálculo legítimo | Sí: un recálculo con la base vigente |
+| `nutrition_sync_conflicts` | Informativo | Lo insertan las guardas (o el cliente); **no concede autoridad** | — |
 
-Cambios legítimos preservados: (a) una edición de perfil en B se conserva (columnas, calibración posterior, objetivo recalculado tras reconciliar); (b) el offset de A no se pierde; (c) un reinicio de calibración legítimo avanza.
+## 3. Servidor (`20261014120000_plan_state_protection.sql`)
 
----
+Principio: **nunca lanza, conserva, registra y devuelve lo almacenado.** Un push obsoleto no puede fallar en bucle (los clientes antiguos no saben tratar el error); el cliente nuevo detecta el conflicto releyendo con `fn_plan_state_read`.
 
-## 3. Diseño del servidor
+### 3.1 Sello y procedencia del objetivo (corrección de la revisión)
 
-Candidato ejecutable: `supabase/verification/plan-state-staleness/candidate-c0-guard.sql`.
+La reproducción de Codex —`UPDATE … SET basis_offset_kcal = NULL` sin cambiar cifras y luego `UPDATE kcal_target`— terminaba en 2039/base NULL. Ahora:
 
-### 3.1 Principio de la guarda: «nunca lanza, conserva, registra y devuelve lo almacenado»
+- Un cliente **sin protocolo** nunca *declara* una base. Sobre una fila sellada, la base entrante (NULL o igual a la almacenada) se descarta, el sello se restaura y **las cifras no pueden cambiar** (`sealed_row_legacy_write`).
+- **Dos caminos distintos, no confundir:** (a) el `UPDATE` SQL explícito de la columna a NULL, que Codex reprodujo y que ahora se neutraliza; (b) el upsert habitual del cliente antiguo, cuyo `DO UPDATE SET` solo nombra las columnas de su payload y por tanto **no menciona** `basis_offset_kcal`. **No se ha demostrado que un cliente antiguo quite el sello en su uso normal**; (b) se prueba aparte (`c0.sql.test.ts`: «el upsert habitual de un cliente antiguo…», y `c0.repro.test.ts`: «cliente antiguo»).
+- Un cliente **con protocolo** siempre declara: sin base → `missing_basis`; base ≠ offset del servidor → `basis_stale`. En ambos casos se conserva lo almacenado (UPDATE → `OLD`; INSERT de un upsert → fila omitida) y se registra un conflicto.
+- `source_snapshot_id`: si una escritura legítima cambia cifras o base, el snapshot anterior **deja de acreditar** el objetivo y pasa a NULL, salvo que se aporte uno nuevo del mismo usuario cuya **kcal** coincida. Si no se recalcula nada, snapshot y `created_at` son inmutables desde un cliente.
+- La identidad (`goal_date`, `user_id`) no puede cambiarse; un objetivo sellado o acreditado por un snapshot no se borra desde un cliente (impide «borrar y reinsertar sin sello»). El borrado en cascada de la cuenta corre como propietario y no se ve afectado.
+- **Alcance de la procedencia: solo se valida la kcal del snapshot.** Macros, versión de cálculo y modo del snapshot los aporta el cliente y no se comprueban; que un snapshot figure como `source_snapshot_id` acredita la cifra de kcal, no el resto.
 
-Un push obsoleto no debe *fallar* en bucle: los clientes antiguos no saben tratar el error, el reintento reenviaría el mismo snapshot indefinidamente y el estado de sincronización quedaría en «error». La guarda **conserva** el valor protegido, **registra** el conflicto y la escritura termina con éxito devolviendo lo realmente almacenado. El cliente nuevo detecta la diferencia **comparando lo almacenado con lo enviado** (§5).
+### 3.2 Snapshot estricto (corrección de la revisión)
 
-### 3.2 Piezas
+`fn_plan_snapshot_kcal(calorie_target)` devuelve la kcal **solo** si `calorie_target` es un objeto con la clave `kcal` numérica; en cualquier otro caso devuelve NULL de forma explícita (ausente, JSON null, texto, array, objeto sin la clave, kcal no numérica). Los llamadores comparan con `IS NULL` —nunca `<>` sobre un posible NULL, que no entra en un `IF` y dejó pasar `calorie_target: {}`—. La aceptación exige además que el snapshot sea un objeto (`SNAPSHOT_INVALID`) y que su kcal coincida con la que se sella (`SNAPSHOT_MISMATCH`). La función auxiliar de procedencia aplica el mismo criterio. Pruebas: 11 formas × (función auxiliar, aceptación con **rollback completo**: propuesta sigue `pending`, offset intacto, ni snapshot nuevo ni objetivo ni conflicto) y formas no-objeto del snapshot completo.
 
-| Pieza | Comportamiento |
+### 3.3 Fechas y valores inválidos (corrección de la revisión)
+
+El caso de Codex (`2026-99-99` aceptado y luego `date/time field value out of range` en la siguiente escritura) venía de un cast sin protección. Ahora toda interpretación pasa por funciones que **no abortan** (`fn_plan_safe_date`, `fn_plan_admissible_date`, `fn_plan_safe_offset`):
+
+- Política temporal ÚNICA: fecha de calendario existente ∧ ≥ 2000-01-01 ∧ ≤ referencia + 1 día. Servidor: referencia = `current_date` (UTC), el +1 absorbe el huso. Cliente: referencia = `serverDate` de la lectura (no el reloj del host); solo al cargar estado local, donde aún no hay lectura, la fecha local del dispositivo.
+- Valor entrante inválido → se sanea a null (calibración) o no se acepta (offset); valor **almacenado** inválido o «futuro» (p. ej. una fecha simulada) se trata como ausente y es corregible.
+- La reconciliación del cliente aplica el mismo criterio **a ambos lados** de `max(local, servidor)`, así que no puede reintroducir una fecha inválida o futura. Un valor legítimo de otro huso cerca de medianoche (local = UTC±1) se conserva sin eliminarse ni reintroducirse en bucle (prueba específica).
+
+### 3.4 Inicialización, importaciones y reinicios (revisados antes de imponer el escritor único)
+
+| Ruta existente | Comportamiento con C0 |
 |---|---|
-| Trigger `BEFORE UPDATE` en `user_profiles` (`SECURITY INVOKER`) | Si la escritura la hace `authenticated`/`anon`: restaura el offset almacenado si el recibido difiere o falta; aplica fusión monótona a la calibración; impide que `lastCalculationEngineVersion` vuelva a nulo. Un valor «futuro» (>1 día por delante del servidor, p. ej. fecha simulada) **no** se protege |
-| Trigger `BEFORE INSERT OR UPDATE` en `nutrition_goals` | Con `basis_offset_kcal` declarada: debe igualar el offset vigente del servidor, si no la fila se omite (INSERT) o se conserva (UPDATE). Sin base: no modifica una fila ya sellada con base |
-| Columna `nutrition_goals.basis_offset_kcal` | Nullable; `NULL` = fila anterior o de un cliente que no la conoce |
-| Tabla `nutrition_sync_conflicts` | `kind`, `subject`, `kept`, `attempted`, `acknowledged_at`; RLS «propias»; índice único parcial (mismo conflicto abierto no se duplica por reintentos) |
-| `fn_accept_nutrition_adjustment` (misma firma) | Bloquea la fila de perfil; exige `p_new_offset_kcal = offset vigente + delta de la propuesta` (`OFFSET_MISMATCH`); sella el objetivo con `basis_offset_kcal`. **No** añade idempotencia (es C2) |
+| Cuenta nueva / primer `pushState` | El offset llega como `0`: **inicialización** aceptada; a partir de ahí protegido |
+| Cuenta con offset ya persistido por `pushState` antes de la migración | Valor numérico válido: se conserva y queda protegido |
+| `ensureBaseRows` (fila de perfil sin `extra_state`) | Sin valor válido → la primera escritura lo inicializa |
+| Editar el perfil (`NutritionView`) | Ya conservaba el offset localmente; ahora además el servidor |
+| `resetAll` | Solo rehidrata desde la nube: no envía un estado por defecto |
+| `seedDemo` (admin) | Parte de `defaultState` (offset 0, calibración null): por análisis, el servidor conserva el offset y la calibración y registra un conflicto — efecto deseado (no cubierto por una prueba propia) |
+| **Importar datos** (`DashboardShell.importData`) y **Restaurar copia** | Hacen `Object.assign` del estado entero, offset y calibración incluidos. **Con C0 un archivo no puede cambiar el offset aceptado ni retroceder la calibración**: el servidor los conserva y el cliente reconcilia hacia el servidor (el aviso dice «otro dispositivo había ajustado tu plan»). No existe hoy una acción explícita de «restablecer ajuste»; si se quisiera, tendría que ser una función propia con confirmación (C2), no una escritura de estado |
+| Valores inválidos ya guardados | Se sanean al cargar (`normalizeState`) y al leer (pull); el servidor los trata como ausentes |
 
-### 3.3 Por qué la excepción no es falsificable
+### 3.5 Cambio en la función de aceptación (misma firma)
 
-La guarda se salta únicamente cuando `current_user` **no** es `authenticated`/`anon`. La aceptación es una función `SECURITY DEFINER` de propietario `postgres`: dentro de ella `current_user = postgres`. Un cliente solo controla qué rol selecciona su JWT (`authenticated`); no hay ningún parámetro, GUC ni cabecera que ponga `current_user` en otro rol. No existe «bandera de RPC» que el cliente pueda fijar. Límites honestos: lo reproducido en PGlite no puede demostrar que el cliente no suplante al propietario (su sesión es superusuario); es un argumento por semántica de PostgreSQL. Los registros de conflicto sí pueden ser insertados por el cliente: son informativos y no conceden nada.
+Bloquea en el orden global **perfil → propuesta**; exige `p_new_offset_kcal = offset vigente + delta` (`OFFSET_MISMATCH`) en vez de escribir un absoluto calculado por un cliente posiblemente obsoleto; valida el snapshot (§3.2); `PROFILE_NOT_FOUND` en vez de «aceptar» sin poder persistir; sella el objetivo con la base y — corrección de un defecto previo — **actualiza también `mode`** en el objetivo del día (antes solo lo escribía al insertar). **No** añade idempotencia ante respuesta perdida: el reintento sigue lanzando `PROPOSAL_NOT_PENDING` (es C2; reproducido en R4).
 
-### 3.4 Matriz de clientes
+## 4. Protocolo de bloqueo
 
-| Cliente | Offset | Calibración | Objetivo del día | Conflicto |
-|---|---|---|---|---|
-| Nuevo (envía base, compara lo almacenado, reconcilia) | Protegido | Protegida | Protegido y **autocorregido** (reescribe con la base correcta) | Visto y mostrado |
-| Antiguo, vigente | Sin diferencia → no hay conflicto | igual | Sin base: si la fila ya está sellada y no cambia, pasa | Ninguno |
-| Antiguo, obsoleto | Conservado | Conservada | **Fila sellada: conservada. Día sin fila o sin sellar: se escribe con el offset obsoleto** (residual §3.5) | Registrado; el cliente antiguo no lo muestra |
+Orden global: **perfil (P) → propuesta (R) → objetivo del día (G) → inserciones hoja (snapshot, conflictos, telemetría)**.
 
-### 3.5 Residual documentado: cliente antiguo, día todavía sin sellar
+| Ruta | Bloqueos que mantiene | Espera a… |
+|---|---|---|
+| `fn_accept_nutrition_adjustment` | P, R, G (en ese orden) | P, R, G, y la fila de objetivo de otro escritor |
+| Rechazo (misma función) | P, R | P, R |
+| Push de perfil (upsert) | P (una sentencia) | P |
+| Push de objetivo (upsert / update) | G (una sentencia) | G; **lee** P sin bloquearlo |
+| Guardas (triggers) | los de su sentencia | nada más |
+| Inserciones hoja (conflictos, telemetría) | índice único parcial | solo a otra transacción que inserte *la misma clave*, que ya posee P o G de esa misma fila |
 
-Un cliente antiguo y obsoleto puede insertar la fila de un día que aún no tiene fila (o no sellada) con objetivos calculados con el offset obsoleto (reproducción S1/R3). No se resuelve en servidor sin inventar una heurística. Acotación: el cliente nuevo no lo hace; el conflicto de offset del mismo push queda registrado; la fila de hoy se reescribe al hidratar (recordTodayNutritionGoal). Alternativa (pendiente, C0-D3): correlacionar con un conflicto de offset abierto reciente y conservar la fila, con el coste de falsos positivos para clientes antiguos vigentes.
+Solo la aceptación toma más de un bloqueo y siempre en el mismo orden; los demás escritores mantienen uno y solo leen lo demás → **no hay ciclos posibles**. No se añade `FOR UPDATE`/`FOR SHARE` sobre el perfil dentro del trigger de objetivos precisamente porque invertiría el orden (G→P frente a P→G) y crearía el interbloqueo que se quería evitar.
 
----
+La guarda de objetivos lee el offset sin coordinarse con la aceptación, y es correcto por estas razones, que las pruebas de concurrencia (§8) deben confirmar:
 
-## 4. Rutas de escritura y por qué la guarda las cubre
+1. Si el push obsoleto ya tiene bloqueada la fila del objetivo, la aceptación espera y la **sobrescribe al final** (resultado: el de la aceptación).
+2. Si la aceptación ya tiene la fila, el push espera; al reanudarse, el trigger `BEFORE UPDATE` se ejecuta tras el bloqueo y lee el offset ya confirmado (cada sentencia plpgsql toma instantánea propia en READ COMMITTED) → base obsoleta → se conserva.
+3. **Límite explícito:** un push con la base *vigente en ese instante* sobre una fecha **distinta** a la que sella la aceptación, o sobre una fila aún inexistente, puede confirmarse justo antes de la aceptación (linealización B→A). Esa fila queda con la base anterior; **no se afirma prevención**: es detectable (`fn_plan_state_read` devuelve `basisOffsetKcal` ≠ offset) y el cliente la reescribe (§6). Prueba K4.
 
-| Camino | Efecto con la guarda |
-|---|---|
-| `pushState` normal | Cubierto por los dos triggers |
-| `fn_accept_nutrition_adjustment` | Es el escritor legítimo; ahora verifica la aritmética del offset |
-| Realtime → `onRefresh` → `pullState` | Solo lectura; reconcilia hacia el servidor (ya existente) |
-| Reenvío de un pendiente tras recarga/aparcado (`restoreParked`, TTL 24 h) | Es el mismo `pushState`: cubierto; el cliente nuevo reconcilia al ver la diferencia |
-| `seedDemo` (herramienta admin) | Construye estado desde el defecto: ahora el offset/calibración se conservan y se registra conflicto (efecto deseado) |
-| Edición manual de `extra_state` en el panel de Supabase/rol de servicio | Fuera: `current_user` no es `authenticated` |
+## 5. El marcador de protocolo NO es una prueba de autoridad
 
----
+El cliente nuevo envía `X-Client-Info: foodos-web plan-protocol/1` (cabecera que supabase-js ya incluye y que CORS ya admite; comprobado en el código instalado que `global.headers` sustituye el valor por defecto). El servidor lo lee de `request.headers`. Es **un marcador de compatibilidad aportado por el cliente**: sirve para distinguir clientes que declaran base de los que no, y para la telemetría de transición. Cualquiera puede falsificarlo; la protección de datos **no** depende de él (la excepción a las guardas es el rol del escritor — `current_user` — y el cliente no puede cambiarlo). Verificación post-despliegue: `fn_plan_state_read` devuelve `clientProtocolLevel`, de modo que con una cuenta QA se comprueba que la cabecera llega a la base. **No verificado todavía contra el PostgREST/CORS reales.**
 
-## 5. Diseño del cliente (no implementado; a revisar antes de C0)
+## 6. Cliente
 
-### 5.1 Contrato cliente
+Todo en `apps/web/src/lib/` (`plan-state.ts` puro; cambios acotados en `data-layer.ts`, `state.tsx`, `supabase.ts`; una llave en `DashboardShell.tsx`).
 
-1. **Enviar la base**: `pushState` incluye `basis_offset_kcal = profile.adaptiveKcalOffsetKcal ?? 0` en la fila de objetivos.
-2. **No tratar el éxito de la escritura como confirmación del valor**: tras el upsert de `user_profiles` y de `nutrition_goals`, pedir `.select()` de las claves protegidas / de la fila y **comparar con lo enviado**. Cualquier diferencia ⇒ conflicto.
-3. **Conflicto ⇒ reconciliar**, no reintentar.
+- **Sonda de capacidad** (una vez por sesión) que distingue: servidor **anterior confirmado** (`PGRST202`/`42883`/«could not find the function») → el cliente se comporta como antes; **error de red, permisos, respuesta inválida o protocolo desconocido** → el push **falla de forma visible, no escribe nada, no cachea** y reintenta con el mecanismo normal (el pendiente sigue en la outbox). No se degrada en silencio a «sin protección».
+- **Base**: el upsert de objetivos incluye `basis_offset_kcal` (offset local saneado, o 0).
+- **Lectura autoritativa explícita** tras escribir: `fn_plan_state_read(fecha)`; no se supone nada del `RETURNING` (un INSERT omitido no devuelve fila). Cada lectura toma un número al emitirse y una respuesta más antigua que otra ya aplicada **se descarta** (la época de sesión no distingue lecturas dentro de la misma cuenta). La identidad (userId, época) viaja con la lectura y se comprueba al entregarla y de nuevo en el proveedor.
+- **Reconciliación** (`handlePlanReadback`): (1) offset del servidor manda; calibración por fusión monótona de valores admisibles de ambos lados; versión de motor solo si el local no tiene; (2) con el plan al día compara el **objetivo de HOY** (`classifyGoalReadback`; nunca otras fechas): sin fila o base distinta o versión distinta → re-envío (`mutate` sin cambios de datos) con tope de 2; mismas base y distintas cifras → refresco desde el servidor (tope de 2), **sin copiar cifras ni sobrescribir**; (3) los conflictos solo se reconocen cuando la lectura confirma que todo coincide (`in_sync`); (4) con una mutación local más nueva en cola, no se concluye nada sobre el objetivo. Aplica sobre el estado **más reciente**; si el cambio no puede aplicarse (mutaciones bloqueadas) o se agotan los reintentos, queda una **relectura pendiente** y no se presenta como reconciliado.
+- **Relectura pendiente, durable y acotada**: marca en `localStorage` por usuario; espera creciente 5/15/45/120/300 s; no emite «guardado» mientras exista; agotada, el estado es «error» y la marca permanece (se retoma tras recargar, sin esperar otra edición). No se retoma para otro usuario ni tras un cambio de época.
+- **No toca**: el resto del perfil, las ediciones pendientes del usuario, el ledger de fechas pasadas (el recalculado de HOY lo hace la función existente `recordTodayNutritionGoal`).
+- `mutate()` admite devolver `false` («nada que cambiar») sin escribir outbox ni programar push — evita bucles cuando el estado ya está reconciliado.
 
-### 5.2 Reconciliación (`reconcilePlanSlice`, función pura de estado)
+## 7. Transición de clientes antiguos
 
-Entrada: estado local `S` y trozo autoritativo del servidor `Σ = {offset, calibración, lastTargetChangedAt, engineVersion, objetivoDeHoy|null, conflictos abiertos}`.
+La migración se despliega con `legacy_goal_write_policy = allow_unsealed` (orden seguro: migración → bundle). En ese modo **queda un residual**: un cliente antiguo y obsoleto puede escribir la fila de un día **aún sin sellar** con el offset obsoleto (prueba S1/K4). Publicar el bundle nuevo **no** lo cierra por sí solo (pestañas abiertas, otros clientes). Se cierra con datos:
 
-1. `S.profile.adaptiveKcalOffsetKcal := Σ.offset` (el servidor manda; el local nunca es autoritativo para el offset).
-2. `adaptiveCalibrationStartedAt`, `lastTargetChangedAt := max(local, Σ)`; `lastCalculationEngineVersion` solo si el servidor tiene valor.
-3. **Nada más del perfil se toca**: las ediciones legítimas pendientes del usuario permanecen.
-4. Recalcular `state.nutrition` y la entrada de HOY del ledger con la función existente `recordTodayNutritionGoal` (solo hoy; los días pasados nunca se reescriben).
-5. Registrar un único aviso no bloqueante («otro dispositivo había ajustado tu plan; ya está al día») y marcar los conflictos vistos **después** de mostrarlo.
-6. Reenviar con base correcta.
+1. **Medir**: cada escritura de objetivos sin marcador deja como máximo una fila por usuario y día en `plan_legacy_writes`.
+   ```sql
+   select day, count(*) as usuarios_sin_protocolo
+   from public.plan_legacy_writes where day >= current_date - 14 group by day order by day;
+   ```
+2. **Criterio para pasar a `reject`** (propuesto, a aprobar): ningún usuario con escritura sin protocolo durante **14 días consecutivos posteriores a publicar el bundle**, y comprobación en una cuenta QA de que `clientProtocolLevel = 1`.
+3. **Fijarlo**: `select public.fn_plan_set_legacy_goal_write_policy('reject');` (solo rol de servicio). Efecto: un cliente sin marcador **no persiste objetivos** (ni inserta ni actualiza); sigue sincronizando el resto. Un cliente con marcador no se ve afectado. Cada intento queda como conflicto `daily_goal_overwrite_prevented` con `reason: legacy_policy_reject` (monitorizable).
+4. **Reversible**: `select public.fn_plan_set_legacy_goal_write_policy('allow_unsealed');`.
 
-### 5.3 Escrituras pendientes
+**Qué no cubre** (declarado): un cliente antiguo que reaparezca después de `reject` simplemente no persiste objetivos (su caché diaria no llega al servidor; los datos locales y el resto de tablas sí); la telemetría solo ve usuarios que escriben objetivos; **C0 no debe darse por completo para producción hasta que `reject` esté fijado y verificado**. El residual de columnas del perfil (§ cabecera) permanece para clientes antiguos y nuevos hasta C0b/C1.
 
-| Situación | Tratamiento |
-|---|---|
-| Push **en vuelo** | No se puede cancelar (`postgrest-js` sin `abortSignal`); la guarda del servidor lo cubre; su respuesta se compara (5.1.2) |
-| Snapshot **en cola o reintento** (outbox) | Tras reconciliar, el estado reconciliado **sustituye** al pendiente con una mutación nueva (`recordMutation`, mismo mecanismo atómico de un solo `setItem`); el `compare-and-delete` por `mutationId` existente impide que el resultado de la mutación vieja borre la nueva |
-| Pendiente **aparcado** (expulsión, TTL 24 h) | Al restaurarse recorre la hidratación normal: gana el pendiente, se envía, el servidor conserva, el cliente compara y reconcilia. No pierde el cambio legítimo del usuario |
-| **Cambio de cuenta A→B** | Las comprobaciones de época existentes (`checkAlive`, `sessionIdentityChanged`) descartan el resultado; la reconciliación solo se aplica si el `userId`/época coinciden (R5) |
-| **Respuesta perdida** de la aceptación | Hoy el cliente cree que falló y su siguiente push revierte lo confirmado (R4). Con C0 el servidor lo conserva y el cliente lo adopta al reconciliar; **el reintento sigue sin ser idempotente** (error `PROPOSAL_NOT_PENDING`) hasta C2 y la UI debe mostrar «puede que ya se haya aplicado; actualizando…» en vez de «no se pudo aplicar» |
+## 8. Evidencia y límites
 
-### 5.4 Cambios previstos en archivos (a declarar antes de implementar)
-
-`apps/web/src/lib/data-layer.ts` (`pushState`: base y comparación; `pullState`: conflictos abiertos), `apps/web/src/lib/state.tsx` (`reconcilePlanSlice` y su integración en la hidratación/push), nuevo `apps/web/src/lib/plan-state.ts` (puro), y como máximo un aviso en `NutritionView`. **No** `HomeView`, `DashboardShell` ni estilos.
-
----
-
-## 6. Reproducciones
-
-Procedimiento y límites: `supabase/verification/plan-state-staleness/README.md`. Resultados versionados en `results/`.
-
-| Caso | Escenario | Vigente | Con guarda |
+| Qué | Dónde | Resultado | Qué demuestra / NO demuestra |
 |---|---|---|---|
-| **R1** | A acepta; B obsoleto registra un peso y sincroniza | offset 0, objetivo del día 2039, nueva cuenta lee offset 0 | −100, 1939, −100; conflictos offset + objetivo |
-| **R2** | A reinicia calibración (cambio legítimo); B obsoleto sincroniza | calibración y `lastTargetChangedAt` → `null`; `activity_level` vuelve a `moderate` | calibración y fecha conservadas; **`activity_level` sigue revirtiéndose** (residual, §1.3) |
-| **R3** | Cambio **legítimo** en B (actividad, calibración posterior) tras la aceptación de A | offset 0; cambio de B conservado | offset −100; cambio de B conservado; objetivo de hoy conservado; fila de un día nuevo escrita sin base (residual §3.5) |
-| **R4** | Respuesta perdida tras confirmar; el mismo dispositivo sincroniza otra edición | cliente ve `ok:false`; reintento → `PROPOSAL_NOT_PENDING`; **su push revierte el offset ya confirmado** | offset conservado; reintento sigue sin ser idempotente |
-| **R5** | Cambio de cuenta durante el push (sesión B, contexto de A; y época obsoleta) | push rechazado (RLS) y abortado; A y B sin cambios | igual |
-| **S1** | Contrato de objetivos: base vigente / obsoleta / sin base sobre fila sellada / día nuevo con base obsoleta / día nuevo sin base | — | 1111 (vigente) · conservado · conservado · no se crea · **se crea (residual)** |
-| **S2** | Escritura directa del offset por el cliente; aceptación con offset ≠ vigente+delta | — | offset conservado; `OFFSET_MISMATCH`; propuesta sigue pendiente |
-| **S3** | Calibración «futura» no fijada para siempre | — | corregible |
+| Batería SQL (30) | `supabase/verification/plan-state-staleness/c0.sql.test.ts` | 30/30 | Migración real en PGlite, rol `authenticated`, **una conexión**: sello, procedencia, identidad, borrado, snapshot estricto, fechas inválidas, offset (init/escritor único/saneado), políticas, RLS, lectura. **No** concurrencia, **no** PostgREST, **no** Postgres 17 (PGlite es 18.x) |
+| Reproducción de extremo a extremo (11) | `c0.repro.test.ts` | 11/11 | Cliente **real** (`pushState`, `pullState`, aceptación, `plan-state.ts`) contra el esquema «previo» (defecto) y «migrado» (protección y reconciliación); R1–R5 y cliente antiguo. PostgREST **emulado**; el «dispositivo» aplica la reconciliación sobre un estado en memoria (sin outbox ni hidratación) |
+| Pruebas de plan-state (22) y de capa de datos con cliente falso (16) | `apps/web/src/lib/plan-state.test.ts`, `data-layer.plan-state.test.ts` | 38/38 | **Simulado**: política temporal (incl. otro huso), clasificación del objetivo, presupuestos, sonda (servidor antiguo / error / inválida), lecturas fuera de orden, A→B/época, relectura pendiente |
+| **FoodOSProvider real** (5) | `plan-state-provider.test.tsx` | 5/5 | react-dom + jsdom: pendiente tras recarga, edición durante sincronización en vuelo, lectura de mutación anterior con otra más nueva en cola, A→B con lectura en vuelo, lectura fallida + recarga. Servidor = **modelo en memoria** |
+| Suite completa web / engine | `apps/web`, `packages/engine` | 1279/1279 · 833/833 | `tsc` limpio en ambos; `next build` y comprobación de bundle correctos |
+| **Concurrencia real** | `supabase/verification/plan-state-staleness/concurrency/run.mjs` + `.github/workflows/plan-state-concurrency.yml` (PostgreSQL 17, varias conexiones) | **NO EJECUTADA** | Escrita (K1–K7: aceptación vs push de perfil, vs objetivo existente, vs objetivo nuevo, fecha distinta, aceptar/rechazar, dos aceptaciones, estrés 30×5 sin interbloqueos). No hay Postgres ni Docker local. Hasta que el job esté en verde, **no se declara validada la serialización** |
 
-### 6.1 Nivel de evidencia
+**Sin demostrar**: concurrencia real; PostgREST/Supabase reales (incl. que `request.headers` y CORS admitan el marcador); cliente en navegador real y cuentas QA; migración en una rama de base de Supabase; comportamiento de `request.headers` con el pooler.
 
-| Nivel | Estado |
-|---|---|
-| Simulado (cliente real + backend falso) | Cubierto por las pruebas existentes de `data-layer.test.ts`; esta entrega no añade pruebas simuladas |
-| **Una conexión**, esquema y función reales (PGlite) | **R1–R5, S1–S3 ejecutadas**, ambos modos |
-| Concurrencia real | **Sin demostrar** (no hay Docker, `psql` ni Postgres local; ver bloqueos) |
-| Cliente nuevo (§5) | **Sin demostrar** (no existe) |
-| Navegador / cuentas QA / despliegue | **Sin demostrar** |
+## 9. Despliegue y recuperación
 
----
+Orden: (1) revisión + CI verde incluido el job de concurrencia; (2) aplicar la migración en una **rama de base** y repetir `fn_plan_state_read` + la batería; (3) aplicar en producción (**requiere aprobación; aquí no se ha hecho**) — con `allow_unsealed`; (4) publicar el bundle; (5) verificar con QA `clientProtocolLevel`; (6) medir (§7); (7) fijar `reject`. Preflight al migrar (solo lectura): reconsultar `pg_get_functiondef('public.fn_accept_nutrition_adjustment'::regproc)` y confirmar que sigue siendo la de `20260819124430` (el 13/10/2026 coincidía; es una observación fechada), que `nutrition_goals` no tiene ya una columna `basis_offset_kcal` ajena, y que los privilegios de `authenticated` sobre `user_profiles`/`nutrition_goals` siguen siendo CRUD y sobre propuestas/snapshots `SELECT, INSERT` (las pruebas los asumen).
 
-## 7. Decisiones propias de C0 (pendientes)
+Rollback: la migración es aditiva (columna nullable, tablas nuevas, triggers y funciones). Para desactivar la protección sin perder datos: `drop trigger trg_guard_plan_state_profile on public.user_profiles; drop trigger trg_guard_plan_state_goals on public.nutrition_goals;` y restaurar la función de aceptación anterior. Los datos escritos (objetivos sellados, conflictos) se conservan; **revertir código no revierte datos**.
 
-| Id | Decisión | Alternativas | Recomendación y efecto |
-|---|---|---|---|
-| C0-D1 | Ante conflicto: ¿conservar-y-registrar o rechazar con error? | a) conservar y registrar; b) `RAISE` con código | **a)**: no deja a clientes antiguos en bucle de reintento. Efecto: el cliente antiguo ve «guardado» y no sabe que no se aplicó |
-| C0-D2 | Calibración | a) fusión monótona; b) servidor único escritor | **a)**: la fecha depende de ediciones de perfil que ocurren en cualquier dispositivo |
-| C0-D3 | Residual de cliente antiguo con fila sin sellar | a) aceptarlo y acotarlo; b) correlacionar con conflicto abierto | **a)** + retirar clientes antiguos con el despliegue; b) da falsos positivos |
-| C0-D4 | Conflictos informativos: ¿quién los inserta? | a) el propio trigger con permiso de inserción al cliente; b) función definer + sin permiso | **a)** por simplicidad (son informativos); b) si se quiere impedir ruido forjado |
-| C0-D5 | Retención de conflictos | a) hasta marcar visto + 90 d; b) indefinida | **a)** (no es historial de usuario) |
-| C0-D6 | Columnas decisionales del perfil | a) C0b: CAS por `plan_revision` solo con base enviada; b) dejarlo a C1 | **a)** en el mismo PR que C1 (necesita la misma revisión) |
+## 10. Decisiones de C0
 
----
-
-## 8. Bloqueos concretos
-
-1. **Sin concurrencia real**: no hay Docker ni Postgres con varias conexiones en este equipo. Para demostrar carreras (doble aceptación, aceptar/rechazar simultáneos, creación desde dos dispositivos) hace falta: (a) un Postgres local (contenedor o binarios) o (b) una **rama de base de datos** de Supabase. Ambas requieren autorización; no se ha instalado ni creado nada.
-2. **Cliente nuevo no implementado**: §5 es diseño; su corrección (reconciliación, reescritura de la cola, aviso) solo se demuestra implementándolo, con pruebas de componente sobre el `FoodOSProvider` real.
-3. **PostgREST real**: no se ha ejecutado; la emulación reproduce el SQL descrito en la documentación del propio repositorio. Una comprobación contra una rama de Supabase cerraría esto.
-4. **Aprobación**: el candidato no debe promoverse a migración sin revisión; la función de aceptación se sustituye con la misma firma.
+| Id | Decisión | Estado |
+|---|---|---|
+| C0-D1 | Conservar-y-registrar frente a rechazar con error | **Cerrada** (conservar y registrar), con reconciliación visible en el cliente nuevo |
+| C0-D2 | Calibración | **Cerrada**: avanza solo con fechas válidas y admitidas |
+| C0-D3 | Residual de clientes antiguos | **Abierta**: resuelta solo cuando `reject` esté fijado y verificado (§7) |
+| C0-D4 | Conflictos informativos insertables por el cliente | **Cerrada**: informativos, sin autoridad |
+| C0-D5 | Retención de conflictos | **Abierta** (propuesta: hasta ser vistos + 90 días); no hay limpieza automática |
+| C0-D6 | Columnas decisionales del perfil | **Fuera de C0** → C0b/C1 |

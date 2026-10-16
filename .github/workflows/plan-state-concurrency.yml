@@ -1,0 +1,50 @@
+# C0 — concurrencia REAL del estado de plan, sobre un PostgreSQL 17 aislado y desechable del propio runner.
+# No toca Supabase, producción ni secretos. Trabajo separado del job `ci` a propósito: si tarda o falla por
+# infraestructura no bloquea el type-check/vitest, pero DEBE estar en verde antes de dar por validada la
+# protección frente a carreras (ver docs/NUTRITION_V4_C0_PLAN_STATE_PROTECTION.md).
+name: Plan-state concurrency
+
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - "supabase/verification/plan-state-staleness/**"
+      - ".github/workflows/plan-state-concurrency.yml"
+  workflow_dispatch:
+
+jobs:
+  postgres17-multi-connection:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar dependencias de la verificación (versiones fijadas)
+        working-directory: supabase/verification/plan-state-staleness
+        run: npm install --no-audit --no-fund
+
+      - name: Versión de PostgreSQL (evidencia)
+        run: |
+          node -e "import('pg').then(async ({default: pg}) => { const c = new pg.Client({connectionString: process.env.DATABASE_URL}); await c.connect(); console.log((await c.query('select version() as v')).rows[0].v); await c.end(); })"
+        working-directory: supabase/verification/plan-state-staleness
+
+      - name: Carreras reales (varias conexiones)
+        working-directory: supabase/verification/plan-state-staleness
+        run: node concurrency/run.mjs

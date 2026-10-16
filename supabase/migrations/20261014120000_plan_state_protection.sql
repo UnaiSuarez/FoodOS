@@ -516,6 +516,9 @@ begin
   v_ltc := public.fn_plan_admissible_date(public.fn_plan_json_text(v_extra -> 'lastTargetChangedAt'));
   return jsonb_build_object(
     'protocol', 1,
+    -- Nivel de protocolo que el servidor ve en ESTA petición (0 = sin marcador). Permite comprobar tras el
+    -- despliegue, con una cuenta QA, que la cabecera X-Client-Info llega de verdad a la base de datos.
+    'clientProtocolLevel', public.fn_plan_protocol_level(),
     'serverDate', to_char(current_date, 'YYYY-MM-DD'),
     'offset', public.fn_plan_safe_offset(v_extra -> 'adaptiveKcalOffsetKcal'),
     'calibrationStartedAt', case when v_cal is not null then to_char(v_cal, 'YYYY-MM-DD') end,

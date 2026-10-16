@@ -429,6 +429,14 @@ describe("lectura autoritativa", () => {
     expect(out.protocol).toBe(1);
   });
 
+  it("informa del nivel de protocolo que el servidor ve en la petición (verificación post-despliegue de la cabecera)", async () => {
+    const u = await newUser();
+    const modern = await tryQ(u, `select public.fn_plan_state_read(null) as r`, [], false);
+    const legacy = await tryQ(u, `select public.fn_plan_state_read(null) as r`, [], true);
+    expect((modern.rows[0].r as Record<string, unknown>).clientProtocolLevel).toBe(1);
+    expect((legacy.rows[0].r as Record<string, unknown>).clientProtocolLevel).toBe(0);
+  });
+
   it("un usuario no ve filas de otro (RLS)", async () => {
     const { u } = await sealed();
     const other = await newUser();

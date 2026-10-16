@@ -2,12 +2,14 @@
   "name": "plan-state-staleness-verification",
   "private": true,
   "type": "module",
-  "description": "Reproduccion y verificacion en un Postgres aislado (PGlite) de la proteccion del estado de plan (offset, calibracion, objetivos diarios) frente a una sincronizacion obsoleta. No forma parte de la app ni del workspace.",
+  "description": "Reproduccion y verificacion de la proteccion del estado de plan (offset, calibracion, objetivos diarios) frente a una sincronizacion obsoleta: PGlite (una conexion) y, en CI, PostgreSQL 17 con varias conexiones. No forma parte de la app ni del workspace.",
   "scripts": {
-    "repro": "vitest run --config vitest.config.ts"
+    "repro": "vitest run --config vitest.config.ts",
+    "concurrency": "node concurrency/run.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
+    "pg": "8.13.1",
     "vitest": "4.1.11"
   }
 }

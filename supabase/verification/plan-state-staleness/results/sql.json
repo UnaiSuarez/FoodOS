@@ -78,13 +78,14 @@
       "protocol": 1,
       "conflicts": [
         {
-          "id": "1c58847c-7912-4e4f-bc83-76c4a8cf8ee3",
+          "id": "33bfcdc4-6b3b-4f1b-bb10-17684c4a8f1a",
           "kind": "calibration_invalid_value_rejected",
           "subject": "adaptiveCalibrationStartedAt"
         }
       ],
       "serverDate": "2026-10-16",
       "engineVersion": null,
+      "clientProtocolLevel": 1,
       "lastTargetChangedAt": "2026-10-02",
       "calibrationStartedAt": null
     }
