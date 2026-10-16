@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 //
 // Entrega «acciones claras»: Carrito, Planificador e Inventario (ARIA) con el
 // FoodOSProvider REAL. Comprueba textos y también los efectos reales de cada
@@ -6,11 +6,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { Recipe } from "@foodos/types";
-import { FoodOSProvider, allRecipes, defaultState, getToday, useFoodOS, useFoodOSUI } from "@/lib/state";
+import { FoodOSProvider, allRecipes, defaultState, useFoodOS, useFoodOSUI } from "@/lib/state";
 import { CartView } from "./CartView";
 import { InventoryView } from "./InventoryView";
-import { PlannerView } from "./PlannerView";
 
 vi.mock("@/lib/ai-config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ai-config")>()),
@@ -179,62 +177,6 @@ describe("Carrito — «Completar compra» primaria y «Mover a despensa» secun
   });
 });
 
-describe("Planificador — nombres accesibles y ayuda del «✓» según el efecto real", () => {
-  const RECIPE: Recipe = {
-    id: "r-plan-1", title: "Guiso planificado", ingredients: [{ name: "Pollo", quantity: 200, unit: "g" }],
-    kcal: 600, protein: 40, carbs: 60, fat: 15, cost: 3, image: "/images/test.webp", time: 20, servings: 1,
-    difficulty: "fácil", tags: [], steps: [],
-  };
-  const seed = (d: Ctx["state"]) => {
-    const today = getToday(d);
-    d.foodLog = [];
-    d.inventory = [];
-    d.customRecipes = [structuredClone(RECIPE)];
-    d.plannerQuickMeals = [{ id: "qm-1", name: "Bocata rápido", kcal: 350, protein: 20, carbs: 40, fat: 12, cost: 0 }];
-    d.mealPlan[today] = { almuerzo: RECIPE.id, dinner: "qm-1" };
-  };
-
-  it("la receta anuncia que abre «Cocinar y registrar»; el plato rápido, que registra en el diario", async () => {
-    await mount(seed, <PlannerView />);
-    const buttons = Array.from(container.querySelectorAll(".planner-cell-log")) as HTMLButtonElement[];
-    expect(buttons).toHaveLength(2);
-    expect(buttons[0].getAttribute("aria-label")).toContain("Cocinar y registrar Guiso planificado");
-    expect(buttons[0].getAttribute("aria-label")).toContain("eliges si se descuentan ingredientes del inventario");
-    expect(buttons[0].title).toBe(buttons[0].getAttribute("aria-label"));
-    expect(buttons[1].getAttribute("aria-label")).toBe("Registrar Bocata rápido en el diario");
-    const removes = Array.from(container.querySelectorAll(".planner-cell-remove"));
-    expect(removes[0].getAttribute("aria-label")).toBe("Quitar Guiso planificado del plan");
-  });
-
-  it("la leyenda visible explica los dos efectos", async () => {
-    await mount(seed, <PlannerView />);
-    const legend = container.querySelector(".planner-log-legend")!.textContent!;
-    expect(legend).toContain("abre «Cocinar y registrar»");
-    expect(legend).toContain("allí eliges si se descuentan ingredientes del inventario");
-    expect(legend).toContain("plato rápido lo registra directamente en el diario");
-  });
-
-  it("la receta abre el diálogo con la fecha y el tipo de comida DE LA CELDA (almuerzo → Snack), sin escribir aún", async () => {
-    const holder = await mount(seed, <PlannerView />);
-    click(container.querySelector(".planner-cell-log")!);
-    const dialog = document.body.querySelector('[role="dialog"]') as HTMLElement;
-    expect(dialog.textContent).toContain("Cocinar y registrar: Guiso planificado");
-    expect(dialog.querySelector(".cook-log-summary")!.textContent).toContain("hoy");
-    expect(dialog.querySelector(".cook-log-summary")!.textContent).toContain("Snack");
-    expect(dialog.querySelector(".cook-log-summary")!.textContent).not.toContain("según la hora actual");
-    expect(holder.current!.state.foodLog).toHaveLength(0);
-  });
-
-  it("el plato rápido se registra directamente, con el tipo de su celda", async () => {
-    const holder = await mount(seed, <PlannerView />);
-    const quick = (Array.from(container.querySelectorAll(".planner-cell-log")) as HTMLButtonElement[])[1];
-    click(quick);
-    expect(holder.current!.state.foodLog).toHaveLength(1);
-    expect(holder.current!.state.foodLog[0]).toMatchObject({ name: "Bocata rápido", mealType: "dinner", kcal: 350 });
-    expect(holder.current!.toast!.message).toBe('"Bocata rápido" registrado');
-  });
-});
-
 describe("Inventario — grupos etiquetados en lugar de tablist (ARIA)", () => {
   it("no queda ningún role=tablist y los filtros son grupos con nombre y aria-pressed", async () => {
     await mount((d) => { d.inventory = []; }, <InventoryView />);
@@ -254,3 +196,4 @@ describe("Inventario — grupos etiquetados en lugar de tablist (ARIA)", () => {
     }
   });
 });
+

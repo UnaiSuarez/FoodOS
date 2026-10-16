@@ -49,31 +49,21 @@ async function createCustomRecipe(page: Page) {
   }, RECIPE_TITLE);
 }
 
-/** Planifica la receta en la comida de HOY (columna marcada con la clase
-    "today" en la cabecera del planificador — así el test no depende de
-    calcular a mano qué día de la semana es hoy, ni de que "mañana" caiga
-    dentro de la semana visible si hoy es domingo) mediante la interfaz
-    real: buscarla en el panel lateral, seleccionarla, y tocar la celda de
-    "Comida" de la columna de hoy. */
+/** Planifica la receta en la comida de HOY con la interfaz real y sin depender de la
+    distribución (semana o día): buscarla en la biblioteca, «Colocar…», elegir franja
+    «Comida» (el día que propone el diálogo es el mostrado, hoy) y confirmar. */
 async function planRecipeForToday(page: Page) {
   await page.goto("/dashboard/planner");
 
   await page.getByLabel("Buscar recetas").fill(RECIPE_TITLE);
-  await page.locator(".planner-recipe-card", { hasText: RECIPE_TITLE }).click();
+  await page.getByRole("button", { name: new RegExp(`^Colocar ${RECIPE_TITLE}`) }).click();
 
-  const todayIndex = await page.locator(".planner-day-head").evaluateAll(
-    (heads) => heads.findIndex((h) => h.classList.contains("today"))
-  );
-  expect(todayIndex).toBeGreaterThanOrEqual(0);
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Franja").selectOption("lunch");
+  await dialog.getByRole("button", { name: "Colocar", exact: true }).click();
 
-  const lunchRow = page.locator(".planner-meal-row", { hasText: "Comida" });
-  const todayLunchCell = lunchRow.locator(".planner-cell").nth(todayIndex);
-  await todayLunchCell.locator("button").click();
-
-  // Confirma que la UI realmente colocó la receta antes de seguir — si el
-  // clic no hubiera registrado, mejor fallar aquí con un mensaje claro que
-  // seguir adelante sobre una premisa falsa.
-  await expect(todayLunchCell.locator(".planner-cell-name")).toHaveText(RECIPE_TITLE);
+  // Confirma que la UI realmente colocó la receta antes de seguir.
+  await expect(page.getByRole("button", { name: new RegExp(`^Cambiar ${RECIPE_TITLE} en Comida del`) })).toBeVisible();
 }
 
 test("crear, planificar hoy y eliminar una receta personalizada limpia el hueco del planificador tras recargar (E21-XX)", async ({ page }) => {
@@ -97,26 +87,10 @@ test("crear, planificar hoy y eliminar una receta personalizada limpia el hueco 
   await expect(page.locator(".recipe-card", { hasText: RECIPE_TITLE })).toHaveCount(0);
 
   await page.goto("/dashboard/planner");
-  // evaluateAll() no auto-espera como el resto de acciones de Playwright —
-  // a diferencia de planRecipeForToday() (donde ya se esperó a rellenar el
-  // buscador antes de leer las cabeceras, garantizando que la grilla ya
-  // había montado), aquí no hay ninguna otra acción previa que lo
-  // garantice tras un page.goto() recién hecho — sin esto, evaluateAll()
-  // podía ejecutarse contra una grilla todavía sin renderizar y devolver
-  // una lista vacía (índice -1) que parecía "columna no encontrada" sin
-  // serlo de verdad.
-  await expect(page.locator(".planner-day-head").first()).toBeVisible();
-  const todayIndexAfter = await page.locator(".planner-day-head").evaluateAll(
-    (heads) => heads.findIndex((h) => h.classList.contains("today"))
-  );
-  // Corrección de revisión: sin esto, un -1 (columna "today" no encontrada)
-  // pasaría desapercibido — Playwright interpreta .nth(-1) como "el último
-  // elemento", no como "ningún elemento", así que el test seguiría
-  // comprobando UNA celda cualquiera en vez de fallar con un mensaje claro.
-  expect(todayIndexAfter).toBeGreaterThanOrEqual(0);
-  const lunchRowAfter = page.locator(".planner-meal-row", { hasText: "Comida" });
-  const todayLunchCellAfter = lunchRowAfter.locator(".planner-cell").nth(todayIndexAfter);
-  await expect(todayLunchCellAfter.locator(".planner-cell-plus")).toBeVisible(); // vacío otra vez, no huérfano
+  // El hueco de hoy vuelve a estar vacío: ninguna entrada con esa receta (ni ID huérfano)
+  // y el «Añadir» de la franja Comida sigue disponible.
+  await expect(page.getByRole("button", { name: /^Añadir comida: Comida del/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^Cambiar ${RECIPE_TITLE}`) })).toHaveCount(0);
 });
 
 test("cancelar el diálogo nativo de borrado conserva la receta tras recargar (E21-XX)", async ({ page }) => {
