@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useMemo } from "react";
 import type { MacroTotals, MealPlanDay } from "@foodos/types";
-import { useFoodOS } from "@/lib/state";
+import { pruneOrphanedQuickMeals, useFoodOS } from "@/lib/state";
 import { searchOFFSuggestions } from "@/lib/food-lookup";
 import { eur, toGrams, uid } from "@/lib/utils";
 import { useComboboxKeyboard } from "@/lib/use-combobox-keyboard";
@@ -72,7 +72,6 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [deductInv, setDeductInv] = useState(true);
   const [saveAsRecipe, setSaveAsRecipe] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -167,7 +166,10 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
     if (ingredients.length === 0 && !dishName.trim()) return;
     const name = dishName.trim() || "Plato personalizado";
 
-    mutate(draft => {
+    // Planificar solo edita el plan: NO descuenta ni reserva inventario, no registra
+    // ingesta ni crea gasto (antes, «Descontar del inventario» venía marcado y confirm()
+    // restaba stock al planificar). El descuento corresponde a registrar/cocinar.
+    const applied = mutate(draft => {
       const qm = {
         id: uid(),
         name,
@@ -183,16 +185,8 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
       draft.mealPlan ||= {};
       draft.mealPlan[dateKey] ||= {};
       draft.mealPlan[dateKey][slot] = qm.id;
-
-      if (deductInv) {
-        for (const ing of ingredients) {
-          if (!ing.fromInventoryId) continue;
-          const item = draft.inventory.find(i => i.id === ing.fromInventoryId);
-          if (!item) continue;
-          item.qty = Math.max(0, Math.round((item.qty - ing.qty) * 100) / 100);
-        }
-        draft.inventory = draft.inventory.filter(i => i.qty > 0);
-      }
+      // Si el hueco tenía otro plato rápido, se poda solo si ya no lo referencia nadie.
+      pruneOrphanedQuickMeals(draft);
 
       if (saveAsRecipe) {
         draft.customRecipes.push({
@@ -215,6 +209,7 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
       }
     });
 
+    if (!applied) return; // la hidratación bloqueó la operación: ni aviso de éxito ni cierre
     showToast(`"${name}" añadido al planificador${saveAsRecipe ? " y guardado como receta" : ""}`);
     onClose();
   }
@@ -323,15 +318,10 @@ export function PlannerAddMealModal({ dateKey, slot, onClose }: Props) {
         )}
 
         {/* Opciones */}
+        <p className="lm-empty" role="note">
+          Planificar no descuenta ingredientes del inventario ni registra ingesta: eso ocurre al registrar o cocinar el plato.
+        </p>
         <div className="lm-dish-options">
-          <label className="lm-checkbox">
-            <input
-              type="checkbox"
-              checked={deductInv}
-              onChange={e => setDeductInv(e.target.checked)}
-            />
-            Descontar del inventario
-          </label>
           <label className="lm-checkbox">
             <input
               type="checkbox"

@@ -18,6 +18,20 @@ vi.mock("@/lib/food-lookup", async (importOriginal) => ({
   searchOFFSuggestions: vi.fn(async () => []),
 }));
 
+// Simula el gate de hidratación cerrado con el contrato real de mutate():
+// devuelve false y NO ejecuta el actualizador (ver state.tsx, mutationsBlocked).
+const gate = vi.hoisted(() => ({ closed: false }));
+vi.mock("@/lib/state", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/state")>();
+  return {
+    ...actual,
+    useFoodOS: () => {
+      const ctx = actual.useFoodOS();
+      return { ...ctx, mutate: (fn: Parameters<typeof ctx.mutate>[0]) => (gate.closed ? false : ctx.mutate(fn)) };
+    },
+  };
+});
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Ctx = ReturnType<typeof useFoodOS> & { toast: ReturnType<typeof useFoodOSUI>["toast"] };
@@ -109,6 +123,7 @@ function type(input: HTMLInputElement, value: string) {
 }
 
 beforeEach(() => {
+  gate.closed = false;
   localStorage.clear();
   width = 0;
   observers.length = 0;
@@ -417,5 +432,198 @@ describe("Cambio de distribución con un modal abierto", () => {
     expect(plan(h)[todayOf(h)].breakfast).toBe(RECIPE_A.id);
     expect(focusKey()).toBe(`${todayOf(h)}:breakfast:edit`);
     expect(document.activeElement!.isConnected).toBe(true);
+  });
+});
+
+// ─── P1: planificar con «Crear plato rápido» no consume inventario ──────────
+function pickSuggestion(name: string) {
+  const input = document.body.querySelector('input[aria-label="Añadir ingrediente"]') as HTMLInputElement;
+  type(input, name);
+  const option = document.body.querySelector('[role="option"]') as HTMLElement;
+  act(() => { option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+}
+const confirmQuick = () => all("button", dialog()!).find((b) => b.textContent!.includes("Añadir al planificador")) as HTMLButtonElement;
+const openQuick = (label: string) => { click(byLabel(label)); click(byLabel(label.startsWith("Cambiar") ? "Sustituir por un plato rápido…" : "Crear plato rápido…", dialog()!)); };
+
+describe("Crear plato rápido: edita el plan sin tocar inventario, diario ni gasto", () => {
+  it("con un ingrediente del inventario: stock, diario y gasto intactos; solo cambia el hueco elegido; ya no existe la opción de descontar", async () => {
+    const h = await mount();
+    const planBefore = structuredClone(plan(h)[todayOf(h)]);
+    openQuick("Añadir comida: Desayuno");
+    expect(dialog()!.textContent).not.toContain("Descontar del inventario");
+    expect(dialog()!.textContent).toContain("Planificar no descuenta ingredientes del inventario");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "Comida futura");
+    pickSuggestion("Pollo");
+    expect(dialog()!.textContent).toContain("150 kcal"); // 100 g de Pollo (150 kcal/100 g): macros conservados
+    click(confirmQuick());
+
+    expect(dialog()).toBeNull();
+    expect(h.current!.state.inventory[0].qty).toBe(1000);
+    expect(h.current!.state.foodLog).toHaveLength(0);
+    expect(h.current!.state.expenses).toHaveLength(0);
+    const day = plan(h)[todayOf(h)];
+    expect(Object.keys(day).sort()).toEqual([...Object.keys(planBefore), "breakfast"].sort());
+    const created = h.current!.state.plannerQuickMeals!.find((q) => q.id === day.breakfast)!;
+    expect(created).toMatchObject({ name: "Comida futura", kcal: 150, protein: 20 });
+    expect(day.almuerzo).toBe(planBefore.almuerzo);
+    expect(day.dinner).toBe(planBefore.dinner);
+  });
+
+  it("«Guardar como receta» sigue funcionando y tampoco descuenta", async () => {
+    const h = await mount();
+    openQuick("Añadir comida: Desayuno");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "Plato guardado");
+    pickSuggestion("Pollo");
+    click(dialog()!.querySelector('.lm-dish-options input[type="checkbox"]')!);
+    click(confirmQuick());
+    expect(h.current!.state.customRecipes.some((r) => r.title === "Plato guardado")).toBe(true);
+    expect(h.current!.state.inventory[0].qty).toBe(1000);
+    expect(h.current!.state.foodLog).toHaveLength(0);
+  });
+
+  it("sustituir un plato rápido y confirmar: cambia solo ese hueco y poda el huérfano", async () => {
+    const h = await mount();
+    openQuick("Cambiar Bocata rápido");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "Nuevo plato");
+    click(confirmQuick());
+    const day = plan(h)[todayOf(h)];
+    expect(day.almuerzo).toBe(RECIPE_A.id);
+    expect(day.dinner).not.toBe("qm-1");
+    const quicks = h.current!.state.plannerQuickMeals!;
+    expect(quicks.map((q) => q.name)).toEqual(["Nuevo plato"]); // qm-1 ya no lo referencia nadie → podado
+    expect(h.current!.state.inventory[0].qty).toBe(1000);
+  });
+
+  it("NO elimina un plato rápido que aún está referenciado en otro hueco", async () => {
+    const h = await mount((d) => {
+      seedBase(d);
+      const t = getToday(d);
+      d.mealPlan[t] = { almuerzo: RECIPE_A.id, dinner: "qm-1", merienda: "qm-1" }; // qm-1 en DOS huecos
+    });
+    openQuick("Cambiar Bocata rápido en Cena");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "Otro");
+    click(confirmQuick());
+    const day = plan(h)[todayOf(h)];
+    expect(day.merienda).toBe("qm-1");
+    expect(h.current!.state.plannerQuickMeals!.map((q) => q.id)).toContain("qm-1");
+    expect(h.current!.state.plannerQuickMeals!.some((q) => q.name === "Otro")).toBe(true);
+  });
+
+  it("cancelar el reemplazo (botón o Esc) conserva la entrada anterior y no crea el plato", async () => {
+    const h = await mount();
+    const quicksBefore = structuredClone(h.current!.state.plannerQuickMeals);
+    openQuick("Cambiar Bocata rápido");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "No debe guardarse");
+    click(byLabel("Cancelar", dialog()!));
+    expect(plan(h)[todayOf(h)].dinner).toBe("qm-1");
+    expect(h.current!.state.plannerQuickMeals).toEqual(quicksBefore);
+    openQuick("Cambiar Bocata rápido");
+    pressEsc();
+    expect(plan(h)[todayOf(h)].dinner).toBe("qm-1");
+    expect(h.current!.state.inventory[0].qty).toBe(1000);
+  });
+
+  it("mutación bloqueada: sin cambios, sin aviso de éxito y sin cerrar; el reintento válido funciona", async () => {
+    const h = await mount();
+    openQuick("Añadir comida: Desayuno");
+    type(dialog()!.querySelector('input[aria-label="Nombre del plato"]') as HTMLInputElement, "Plato bloqueado");
+    gate.closed = true;
+    click(confirmQuick());
+    expect(dialog()).not.toBeNull();
+    expect(plan(h)[todayOf(h)].breakfast).toBeUndefined();
+    expect(h.current!.state.plannerQuickMeals).toHaveLength(1);
+    expect(h.current!.toast?.message ?? "").not.toContain("añadido al planificador");
+    gate.closed = false;
+    click(confirmQuick());
+    expect(dialog()).toBeNull();
+    expect(plan(h)[todayOf(h)].breakfast).toBeDefined();
+    expect(h.current!.toast!.message).toContain("añadido al planificador");
+  });
+});
+
+// ─── P2: foco al cambiar de distribución desde un día distinto de hoy ───────
+const WIDE = WEEK_MIN_WIDTH + 200;
+const NARROW = 600;
+const addBtnFor = (slot: string, notDay: string) =>
+  all("button").find((b) => { const l = b.getAttribute("aria-label") ?? ""; return l.startsWith(`Añadir comida: ${slot}`) && !l.endsWith(` ${notDay}`); })!;
+const dayNum = (key: string) => String(Number(key.slice(8)));
+const selectedDayLabel = () => all(".pl-day-btn").find((b) => b.getAttribute("aria-pressed") === "true")?.getAttribute("aria-label") ?? "";
+const changedKey = (h: { current: Ctx | null }) => Object.keys(plan(h)).find((k) => plan(h)[k].breakfast);
+
+describe("Foco al cambiar de distribución desde un día distinto de hoy", () => {
+  it("semana → día: elegir coloca en la fecha correcta, muestra ESE día y deja el foco en «Cambiar» del hueco", async () => {
+    width = WIDE;
+    const h = await mount();
+    const btn = addBtnFor("Desayuno", dayNum(todayOf(h)));
+    const dk = (() => { const n = btn.getAttribute("aria-label")!.split(" ").pop()!; return Object.keys({ [todayOf(h)]: 1 })[0].slice(0, 8) + n.padStart(2, "0"); })();
+    click(btn);
+    resizeTo(NARROW);
+    click(byLabel("Elegir Ensalada", dialog()!)); // nombre largo
+    expect(changedKey(h)).toBeDefined();
+    const key = changedKey(h)!;
+    expect(key.endsWith(String(dk.slice(8)))).toBe(true);
+    expect(selectedDayLabel()).toContain(` ${dayNum(key)} de `); // el día destino pasa a ser visible
+    expect(focusKey()).toBe(`${key}:breakfast:edit`);
+    expect(document.activeElement!.getAttribute("aria-label")).toContain("Cambiar Ensalada");
+    expect(document.activeElement!.hasAttribute("data-focus-fallback")).toBe(false);
+  });
+
+  it("semana → día: cancelar y Escape devuelven el foco a «Añadir» de ese hueco (día visible)", async () => {
+    for (const how of ["cancelar", "esc"] as const) {
+      width = WIDE;
+      const h = await mount();
+      const btn = addBtnFor("Desayuno", dayNum(todayOf(h)));
+      const num = btn.getAttribute("aria-label")!.split(" ").pop()!;
+      click(btn);
+      resizeTo(NARROW);
+      if (how === "cancelar") click(byLabel("Cancelar", dialog()!)); else pressEsc();
+      expect(dialog()).toBeNull();
+      expect(selectedDayLabel()).toContain(` ${num} de `);
+      expect(document.activeElement!.getAttribute("aria-label")).toBe(btn.getAttribute("aria-label"));
+      act(() => { root!.unmount(); }); root = null; container.replaceChildren();
+    }
+  });
+
+  it("día → semana: el foco acaba en el hueco correcto de la semana", async () => {
+    width = NARROW;
+    const h = await mount();
+    const other = all(".pl-day-btn").find((b) => b.getAttribute("aria-pressed") === "false")!;
+    const num = other.getAttribute("aria-label")!.match(/ (\d+) de /)![1];
+    click(other);
+    click(all("button").find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Añadir comida: Desayuno"))!);
+    resizeTo(WIDE);
+    expect(container.querySelector(".pl-week")).not.toBeNull();
+    click(byLabel("Elegir Guiso", dialog()!));
+    const key = changedKey(h)!;
+    expect(dayNum(key)).toBe(num);
+    expect(focusKey()).toBe(`${key}:breakfast:edit`);
+    expect(document.activeElement!.isConnected).toBe(true);
+  });
+
+  it("Colocar desde la biblioteca: cancelar tras cambiar de distribución conserva el retorno al botón de origen", async () => {
+    width = WIDE;
+    const h = await mount();
+    const before = structuredClone(plan(h));
+    click(byLabel("Colocar Ensalada"));
+    resizeTo(NARROW);
+    click(byLabel("Cancelar", dialog()!));
+    expect(plan(h)).toEqual(before);
+    expect(focusKey()).toBe(`lib:${RECIPE_B.id}`);
+  });
+
+  it("Colocar a otro día en vista por día muestra ese día y enfoca su «Cambiar»", async () => {
+    width = NARROW;
+    const h = await mount();
+    click(byLabel("Colocar Ensalada"));
+    const daySel = dialog()!.querySelector("#pl-place-day") as HTMLSelectElement;
+    const target = Array.from(daySel.options).find((o) => o.value !== todayOf(h))!.value;
+    act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!.call(daySel, target);
+      daySel.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click(byLabel("Colocar", dialog()!));
+    expect(plan(h)[target].almuerzo ?? plan(h)[target].breakfast).toBe(RECIPE_B.id);
+    expect(selectedDayLabel()).toContain(` ${dayNum(target)} de `);
+    expect(focusKey()).toBe(`${target}:breakfast:edit`);
   });
 });

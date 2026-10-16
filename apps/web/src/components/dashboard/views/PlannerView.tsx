@@ -110,6 +110,13 @@ export function PlannerView() {
   // Devuelve el foco a un control visible del hueco correcto (o a la cabecera si ya no existe).
   useEffect(() => {
     if (!focusKey || dialog) return;
+    // En vista por día el hueco destino solo existe si su día es el mostrado: se muestra
+    // primero (p. ej. se añadió en otro día con la semana visible y luego se estrechó la vista).
+    const dateInKey = focusKey.match(/^(\d{4}-\d{2}-\d{2}):/)?.[1];
+    if (dateInKey && layout === "day") {
+      const idx = days.findIndex((d) => toKey(d) === dateInKey);
+      if (idx >= 0 && idx !== dayIdx) { setDayIdx(idx); return; } // el efecto vuelve a ejecutarse con el nuevo día
+    }
     const root = rootRef.current;
     const target = root?.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`) ?? root?.querySelector<HTMLElement>("[data-focus-fallback]");
     target?.focus();
