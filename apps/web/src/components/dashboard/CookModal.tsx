@@ -5,7 +5,7 @@ import type { MealType, Recipe } from "@foodos/types";
 import { actions, availableForIngredient, getPendingMacros, getToday, useFoodOS } from "@/lib/state";
 import { eur, toGrams, uid } from "@/lib/utils";
 import { intentGuard, runGuardedIntent } from "@/lib/intent-guard";
-import { describeLogTarget, inventoryOutcome, registeredWord, servingsLabel } from "./cook-log-copy";
+import { describeLogTarget, inventoryOutcome, registeredTotals, registeredWord, servingsLabel } from "./cook-log-copy";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -52,13 +52,10 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     };
   }, [recipe.ingredients, ratio, qtyOverrides]);
 
-  const scaled = {
-    kcal:    derivedMacros?.kcal    ?? Math.round(recipe.kcal * ratio),
-    protein: derivedMacros?.protein ?? Math.round(recipe.protein * ratio * 10) / 10,
-    carbs:   derivedMacros?.carbs   ?? Math.round(recipe.carbs * ratio * 10) / 10,
-    fat:     derivedMacros?.fat     ?? Math.round(recipe.fat * ratio * 10) / 10,
-    cost: scaledCost,
-  };
+  // Lo que cookRecipe PERSISTE: totales de la receta × ratio. El resumen, los
+  // avisos y el feedback usan exactamente estos valores. La derivación por
+  // ingredientes (derivedMacros) es solo una estimación aparte y no se registra.
+  const scaled = { ...registeredTotals(recipe, ratio), cost: scaledCost };
 
   // Ingredient status with aggregated qty from all matching inventory lots.
   // availableForIngredient suma los lotes convertibles EN LA UNIDAD DEL
@@ -121,9 +118,9 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
 
   function cook() {
     const overrides = Object.keys(qtyOverrides).length > 0 ? qtyOverrides : undefined;
-    // Lotes del inventario que cookRecipe realmente tocó (puede ser parcial si
-    // falta stock): se lee de la entrada escrita, no se supone.
-    let lotsTouched = 0;
+    // El updater de mutate() sigue siendo puro: no asigna variables externas ni
+    // notifica, y el aviso de abajo no afirma un resultado que React aún no ha
+    // calculado (mutate() solo garantiza que la operación quedó encolada).
     // Guard síncrono contra doble-ingesta por la misma intención (dos
     // clics/toques antes del primer repintado): claim() y la llamada a
     // mutate() ocurren en la misma tarea de JS, sin ningún await de por
@@ -140,14 +137,13 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
     const applied = runGuardedIntent(intentGuard, intentId, () =>
       mutate((draft) => {
         actions.cookRecipe(draft, recipe, ratio, { deductIngredients: deduct, qtyOverrides: overrides, date: logDate, mealType });
-        lotsTouched = draft.foodLog[draft.foodLog.length - 1]?.consumedIngredients?.length ?? 0;
       }),
     );
     if (!applied) return; // ya reclamado (doble clic) o mutate() no aceptó la operación — ningún toast, ningún cierre
     const lines: string[] = [];
     if (exceedKcal) lines.push("Atención: superas el objetivo de calorías de hoy.");
     if (coversProtein) lines.push("Proteína del día cubierta ✓");
-    const outcome = inventoryOutcome({ deduct, shortCount: missingCount, lotsTouched });
+    const outcome = inventoryOutcome({ deduct, shortCount: missingCount });
     setMascotMessage(
       `${recipe.title}: ${servingsLabel(servings)} ${registeredWord(servings)} en tu diario (${scaled.kcal} kcal y ${scaled.protein} g de proteína), ${outcome}. ${lines.join(" ")}`.trim()
     );
@@ -168,7 +164,7 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
         <span className="cook-hint">Base: {recipe.servings || 1} ración{(recipe.servings || 1) !== 1 ? "es" : ""}</span>
       </div>
 
-      {/* Macro impact */}
+      {/* Macro impact: totales que se registrarán (los de la receta × raciones) */}
       <div className="cook-macros">
         <div className={`cook-macro-item ${exceedKcal ? "warn" : ""}`}>
           <span>{scaled.kcal}</span>
@@ -207,6 +203,14 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
       {/* Ingredient status — with editable quantities */}
       <div className="cook-ingredients">
         <h4>Ingredientes</h4>
+        <p className="cook-hint cook-qty-note">
+          Cambiar una cantidad solo modifica lo que se descuenta del inventario; las kcal y macros registrados son los de la receta.
+        </p>
+        {derivedMacros && (
+          <p className="cook-hint cook-estimate">
+            Estimación por ingredientes (no es lo que se registra): {derivedMacros.kcal} kcal · {derivedMacros.protein} g de proteína.
+          </p>
+        )}
         <ul className="cook-ing-list">
           {ingStatus.map((ing) => {
             const isOverridden = ing.name in qtyOverrides;

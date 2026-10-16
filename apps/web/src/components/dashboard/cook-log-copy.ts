@@ -63,18 +63,34 @@ export function registeredWord(servings: number): string {
   return servings === 1 ? "registrada" : "registradas";
 }
 
-/** Cierre del aviso tras cocinar, según la opción elegida y lo que faltaba. */
+/**
+ * Totales que `actions.cookRecipe` persiste para `ratio` raciones: los de la
+ * receta × ratio, con el mismo redondeo que el escritor. NUNCA se derivan de
+ * los ingredientes ni de las cantidades editadas. Solo presentación: el
+ * escritor es la autoridad y una prueba compara ambos.
+ */
+export function registeredTotals(recipe: { kcal: number; protein: number; carbs: number; fat: number }, ratio: number) {
+  return {
+    kcal: Math.round(recipe.kcal * ratio),
+    protein: Math.round(recipe.protein * ratio * 10) / 10,
+    carbs: Math.round(recipe.carbs * ratio * 10) / 10,
+    fat: Math.round(recipe.fat * ratio * 10) / 10,
+  };
+}
+
+/**
+ * Cierre del aviso tras cocinar. Describe la acción pedida con el stock que se
+ * veía al confirmar; NO afirma un resultado que el actualizador de React aún no
+ * haya producido (el stock puede cambiar por mutaciones encoladas).
+ */
 export function inventoryOutcome(input: {
   deduct: boolean;
   /** Ingredientes cuyo stock no llegaba (parcial o inexistente) al confirmar. */
   shortCount: number;
-  /** Lotes del inventario que `cookRecipe` realmente tocó. */
-  lotsTouched: number;
 }): string {
   if (!input.deduct) return "inventario sin cambios";
   if (input.shortCount > 0) {
-    return `descontado solo lo disponible (${input.shortCount} ${input.shortCount === 1 ? "ingrediente sin stock suficiente" : "ingredientes sin stock suficiente"})`;
+    return `se descuenta solo lo disponible (${input.shortCount} ${input.shortCount === 1 ? "ingrediente sin stock suficiente" : "ingredientes sin stock suficiente"})`;
   }
-  if (input.lotsTouched === 0) return "no había ingredientes que descontar";
-  return "ingredientes descontados";
+  return "se descuentan los ingredientes del inventario";
 }

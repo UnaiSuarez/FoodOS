@@ -1,19 +1,34 @@
-// @vitest-environment jsdom
+﻿// @vitest-environment jsdom
 //
 // Entrega «acciones claras»: CookModal con el FoodOSProvider REAL. Comprueba
 // que el diálogo dice, antes de confirmar, qué se registrará (raciones, kcal,
 // fecha y tipo de comida reales), y que registro, inventario y avisos
 // coinciden con la opción y el camino elegidos — incluida la falta de stock.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { act } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { InventoryItem, Recipe } from "@foodos/types";
 import { FoodOSProvider, getToday, useFoodOS, useFoodOSUI } from "@/lib/state";
 import { CookModal } from "./CookModal";
 
+// Simula el gate de hidratación cerrado con el contrato real de mutate():
+// devuelve false y NO ejecuta el actualizador (ver state.tsx, mutationsBlocked).
+const gate = vi.hoisted(() => ({ closed: false }));
+vi.mock("@/lib/state", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/state")>();
+  return {
+    ...actual,
+    useFoodOS: () => {
+      const ctx = actual.useFoodOS();
+      return { ...ctx, mutate: (fn: Parameters<typeof ctx.mutate>[0]) => (gate.closed ? false : ctx.mutate(fn)) };
+    },
+  };
+});
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Ctx = ReturnType<typeof useFoodOS> & { toast: ReturnType<typeof useFoodOSUI>["toast"]; mascotMessage: ReturnType<typeof useFoodOSUI>["mascotMessage"] };
+const toastLog: string[] = [];
 let container: HTMLDivElement;
 let root: Root | null = null;
 
@@ -36,6 +51,8 @@ function makeCapture() {
   function Capture() {
     const ctx = useFoodOS();
     const ui = useFoodOSUI();
+    const message = ui.toast?.message;
+    useEffect(() => { if (message) toastLog.push(message); }, [message]);
     holder.current = { ...ctx, toast: ui.toast, mascotMessage: ui.mascotMessage };
     return null;
   }
@@ -86,6 +103,8 @@ function invQty(holder: { current: Ctx | null }, id: string): number | undefined
 }
 
 beforeEach(() => {
+  gate.closed = false;
+  toastLog.length = 0;
   localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -102,14 +121,22 @@ afterEach(() => {
 
 describe("CookModal — dice qué se registrará antes de confirmar", () => {
   it("muestra raciones, kcal, fecha y tipo de comida REALES recibidos del Planificador", async () => {
-    await mount((d) => { d.foodLog = []; d.inventory = []; }, { logDate: "2026-10-16", mealType: "dinner" });
+    // El «hoy» del estado se fija (debugDate): la prueba no depende del calendario.
+    await mount((d) => { d.foodLog = []; d.inventory = []; d.debugDate = "2026-10-20"; }, { logDate: "2026-10-16", mealType: "dinner" });
     const summary = text();
     expect(summary).toContain("se registrará en tu diario personal");
     expect(summary).toContain("1 ración · 600 kcal · 40 g de proteína");
     expect(summary).toMatch(/viernes.*16.*octubre/i);
+    expect(summary).not.toContain("hoy");
     expect(summary).toContain("Cena");
     expect(summary).not.toContain("según la hora actual");
     expect(summary).not.toMatch(/hoy · Comida/);
+  });
+
+  it("si la fecha recibida es la de hoy del estado, dice «hoy»", async () => {
+    await mount((d) => { d.foodLog = []; d.inventory = []; d.debugDate = "2026-10-16"; }, { logDate: "2026-10-16", mealType: "dinner" });
+    expect(text()).toContain("hoy");
+    expect(text()).not.toMatch(/viernes/i);
   });
 
   it("sin fecha ni tipo: hoy, y avisa de que el tipo sale de la hora", async () => {
@@ -147,7 +174,7 @@ describe("CookModal — varias raciones y descuento activado", () => {
     expect(invQty(holder, "l-arroz")).toBe(760); // 1000 − 80·3
     const toast = holder.current!.toast!.message;
     expect(toast).toContain("3 raciones registradas en tu diario");
-    expect(toast).toContain("ingredientes descontados");
+    expect(toast).toContain("se descuentan los ingredientes del inventario");
   });
 
   it("con fecha y tipo del Planificador, la entrada se escribe en ESA fecha y tipo", async () => {
@@ -177,7 +204,7 @@ describe("CookModal — descuento desactivado", () => {
     const toast = holder.current!.toast!.message;
     expect(toast).toContain("1 ración registrada en tu diario");
     expect(toast).toContain("inventario sin cambios");
-    expect(toast).not.toContain("descontados");
+    expect(toast).not.toContain("descuenta");
   });
 });
 
@@ -197,8 +224,8 @@ describe("CookModal — ingredientes faltantes: nunca afirma que se descontó to
     expect(invQty(holder, "l-pollo")).toBe(800);
     expect(invQty(holder, "l-arroz")).toBeUndefined(); // agotado: se retira del inventario
     const toast = holder.current!.toast!.message;
-    expect(toast).toContain("descontado solo lo disponible (1 ingrediente sin stock suficiente)");
-    expect(toast).not.toContain("ingredientes descontados");
+    expect(toast).toContain("se descuenta solo lo disponible (1 ingrediente sin stock suficiente)");
+    expect(toast).not.toContain("se descuentan los ingredientes");
   });
 
   it("con el descuento desactivado y faltantes, no menciona faltantes en el aviso: el inventario no se toca", async () => {
@@ -221,5 +248,125 @@ describe("CookModal — protecciones existentes", () => {
     click(button);
     expect(holder.current!.state.foodLog).toHaveLength(1);
     expect(invQty(holder, "l-pollo")).toBe(800); // descontado una sola vez
+  });
+});
+
+
+// ─── Lo anunciado = lo persistido ───────────────────────────────────────────
+// Receta de 600 kcal cuyos ingredientes (Pollo 200 g + Arroz 80 g, ambos
+// 100 kcal/100 g) sumarían 280 kcal por ingredientes. cookRecipe registra los
+// 600 de la receta: el resumen, el panel de macros y el aviso deben decir 600.
+const PER_ING: Recipe = {
+  ...RECIPE,
+  ingredients: [
+    { name: "Pollo", quantity: 200, unit: "g", kcalPer100: 100, proteinPer100: 10, carbsPer100: 0, fatPer100: 5 },
+    { name: "Arroz", quantity: 80, unit: "g", kcalPer100: 100, proteinPer100: 5, carbsPer100: 20, fatPer100: 1 },
+  ],
+};
+const seedBoth = (d: Ctx["state"]) => {
+  d.foodLog = [];
+  d.inventory = [lot("l-pollo", "Pollo", 1000), lot("l-arroz", "Arroz", 1000)];
+};
+const kcalCell = () => container.querySelector(".cook-macros .cook-macro-item span")!.textContent;
+
+describe("CookModal — el resumen anuncia exactamente lo que se registra", () => {
+  it("sin editar nada: resumen, panel, entrada creada y avisos usan 600 kcal; los 280 solo como estimación aparte", async () => {
+    const holder = await mount(seedBoth, { recipe: PER_ING });
+    expect(kcalCell()).toBe("600");
+    expect(text()).toContain("1 ración · 600 kcal · 40 g de proteína");
+    expect(text()).not.toContain("280");
+    const estimate = container.querySelector(".cook-estimate")!.textContent!;
+    expect(estimate).toContain("Estimación por ingredientes (no es lo que se registra)");
+    expect(estimate).toContain("280 kcal");
+
+    click(buttonStarting("Cocinar y registrar 1 ración"));
+
+    const entry = holder.current!.state.foodLog[0];
+    expect(entry).toMatchObject({ kcal: 600, protein: 40, carbs: 60, fat: 15 });
+    expect(holder.current!.mascotMessage!).toContain("600 kcal y 40 g de proteína");
+    expect(holder.current!.mascotMessage!).not.toContain("280");
+    expect(toastLog.join(" ")).not.toContain("280");
+  });
+
+  it("cantidades editadas: el total registrado NO cambia, el descuento SÍ, y la limitación se explica", async () => {
+    const holder = await mount(seedBoth, { recipe: PER_ING });
+    expect(container.querySelector(".cook-qty-note")!.textContent).toContain("solo modifica lo que se descuenta del inventario");
+
+    const pollo = container.querySelectorAll<HTMLInputElement>(".cook-ing-qty-input")[0];
+    act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(pollo, "400");
+      pollo.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // La estimación sí se mueve (400 g + 80 g → 480 kcal); el total registrado, no.
+    expect(container.querySelector(".cook-estimate")!.textContent).toContain("480 kcal");
+    expect(kcalCell()).toBe("600");
+    expect(text()).toContain("600 kcal");
+    expect(text()).not.toContain("480");
+
+    click(buttonStarting("Cocinar y registrar 1 ración"));
+
+    expect(holder.current!.state.foodLog[0]).toMatchObject({ kcal: 600, protein: 40, carbs: 60, fat: 15 });
+    expect(invQty(holder, "l-pollo")).toBe(600); // 1000 − 400 editados
+    expect(holder.current!.mascotMessage!).toContain("600 kcal");
+    expect(holder.current!.mascotMessage!).not.toContain("480");
+  });
+
+  it("con 1,5 raciones el resumen y la entrada coinciden (receta × ratio)", async () => {
+    const holder = await mount(seedBoth, { recipe: PER_ING });
+    setServings(1.5);
+    expect(text()).toContain("1,5 raciones · 900 kcal · 60 g de proteína");
+    click(buttonStarting("Cocinar y registrar 1,5 raciones"));
+    expect(holder.current!.state.foodLog[0]).toMatchObject({ kcal: 900, protein: 60, carbs: 90, fat: 22.5 });
+  });
+});
+
+// ─── Feedback sin leer resultados de un actualizador pendiente ──────────────
+describe("CookModal — el aviso no depende del resultado del actualizador", () => {
+  it("con otra mutación encolada en el mismo ciclo: descuento real, UNA entrada, UN aviso, sin «no había ingredientes»", async () => {
+    const holder = await mount((d) => { d.foodLog = []; d.inventory = [lot("l-pollo", "Pollo", 1000)]; }, { recipe: { ...RECIPE, ingredients: [RECIPE.ingredients[0]] } });
+    act(() => {
+      holder.current!.mutate((d) => { d.cart = []; }); // mutación pendiente del mismo ciclo
+      buttonStarting("Cocinar y registrar").click();
+    });
+
+    expect(holder.current!.state.foodLog).toHaveLength(1);
+    expect(invQty(holder, "l-pollo")).toBe(800);
+    const registered = toastLog.filter((m) => m.includes("registrada en tu diario"));
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toContain("se descuentan los ingredientes del inventario");
+    expect(toastLog.join(" ")).not.toContain("no había ingredientes");
+  });
+
+  it("dos clics en el mismo ciclo: una entrada, un descuento y un aviso (IntentGuard intacto)", async () => {
+    const holder = await mount((d) => { d.foodLog = []; d.inventory = [lot("l-pollo", "Pollo", 1000)]; }, { recipe: { ...RECIPE, ingredients: [RECIPE.ingredients[0]] } });
+    const button = buttonStarting("Cocinar y registrar");
+    act(() => { button.click(); button.click(); });
+    expect(holder.current!.state.foodLog).toHaveLength(1);
+    expect(invQty(holder, "l-pollo")).toBe(800);
+    expect(toastLog.filter((m) => m.includes("registrada en tu diario"))).toHaveLength(1);
+  });
+});
+
+// ─── Gate de hidratación cerrado ────────────────────────────────────────────
+describe("CookModal — mutación bloqueada (gate cerrado)", () => {
+  it("sin registro, descuento, aviso de éxito ni cierre; el reintento válido después sí funciona", async () => {
+    const onClose = vi.fn();
+    const holder = await mount(seedBoth, { onClose });
+
+    gate.closed = true;
+    click(buttonStarting("Cocinar y registrar"));
+    expect(holder.current!.state.foodLog).toHaveLength(0);
+    expect(invQty(holder, "l-pollo")).toBe(1000);
+    expect(invQty(holder, "l-arroz")).toBe(1000);
+    expect(toastLog.filter((m) => m.includes("registrada en tu diario"))).toHaveLength(0);
+    expect(holder.current!.mascotMessage ?? "").not.toContain("en tu diario");
+    expect(onClose).not.toHaveBeenCalled();
+
+    gate.closed = false;
+    click(buttonStarting("Cocinar y registrar"));
+    expect(holder.current!.state.foodLog).toHaveLength(1);
+    expect(invQty(holder, "l-pollo")).toBe(800);
+    expect(toastLog.filter((m) => m.includes("registrada en tu diario"))).toHaveLength(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

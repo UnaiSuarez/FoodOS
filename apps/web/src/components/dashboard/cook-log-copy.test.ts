@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { describeLogTarget, inventoryOutcome, registeredWord, servingsLabel } from "./cook-log-copy";
+﻿import { describe, expect, it } from "vitest";
+import { describeLogTarget, inventoryOutcome, registeredTotals, registeredWord, servingsLabel } from "./cook-log-copy";
 
 describe("describeLogTarget — dónde se registrará, sin asumir «hoy, Comida»", () => {
   it("sin fecha ni tipo: hoy, y el tipo sale de la hora", () => {
@@ -37,21 +37,24 @@ describe("servingsLabel / registeredWord", () => {
   });
 });
 
-describe("inventoryOutcome — nunca afirma que se descontó todo si faltaba stock", () => {
+describe("inventoryOutcome — describe la acción, no un resultado aún no observado", () => {
   it("sin descuento: inventario sin cambios, aunque faltara stock", () => {
-    expect(inventoryOutcome({ deduct: false, shortCount: 2, lotsTouched: 0 })).toBe("inventario sin cambios");
+    expect(inventoryOutcome({ deduct: false, shortCount: 2 })).toBe("inventario sin cambios");
   });
   it("con descuento y stock suficiente", () => {
-    expect(inventoryOutcome({ deduct: true, shortCount: 0, lotsTouched: 3 })).toBe("ingredientes descontados");
+    expect(inventoryOutcome({ deduct: true, shortCount: 0 })).toBe("se descuentan los ingredientes del inventario");
   });
   it("con descuento y faltantes: solo lo disponible, con el número", () => {
-    expect(inventoryOutcome({ deduct: true, shortCount: 1, lotsTouched: 1 })).toBe(
-      "descontado solo lo disponible (1 ingrediente sin stock suficiente)",
+    expect(inventoryOutcome({ deduct: true, shortCount: 1 })).toBe(
+      "se descuenta solo lo disponible (1 ingrediente sin stock suficiente)",
     );
-    expect(inventoryOutcome({ deduct: true, shortCount: 2, lotsTouched: 0 })).toContain("2 ingredientes sin stock suficiente");
-    expect(inventoryOutcome({ deduct: true, shortCount: 1, lotsTouched: 1 })).not.toContain("ingredientes descontados");
-  });
-  it("con descuento pero sin nada que tocar", () => {
-    expect(inventoryOutcome({ deduct: true, shortCount: 0, lotsTouched: 0 })).toBe("no había ingredientes que descontar");
+    expect(inventoryOutcome({ deduct: true, shortCount: 2 })).toContain("2 ingredientes sin stock suficiente");
   });
 });
+
+describe("registeredTotals — mismos totales y redondeo que cookRecipe", () => {
+  it("receta × ratio, sin derivar de ingredientes", () => {
+    expect(registeredTotals({ kcal: 600, protein: 40.3, carbs: 60, fat: 15 }, 1.5)).toEqual({ kcal: 900, protein: 60.5, carbs: 90, fat: 22.5 });
+  });
+});
+

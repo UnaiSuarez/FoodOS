@@ -287,7 +287,7 @@ export function CartView() {
                 onClick={() => {
                   let moved = 0;
                   mutate((draft) => { moved = actions.moveCheckedToInventory(draft); });
-                  showToast(`${moved} productos movidos a despensa (sin registrar gasto)`);
+                  showToast(`${moved} ${moved === 1 ? "producto movido" : "productos movidos"} a despensa (sin registrar gasto)`);
                 }}
               >
                 Mover a despensa

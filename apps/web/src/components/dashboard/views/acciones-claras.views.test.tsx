@@ -163,7 +163,7 @@ describe("Carrito — «Completar compra» primaria y «Mover a despensa» secun
     expect(holder.current!.state.inventory.map((i) => i.name)).toContain("Avena");
     expect(holder.current!.state.expenses).toHaveLength(0);
     expect(holder.current!.state.cart).toHaveLength(0);
-    expect(holder.current!.toast!.message).toBe("1 productos movidos a despensa (sin registrar gasto)");
+    expect(holder.current!.toast!.message).toBe("1 producto movido a despensa (sin registrar gasto)");
   });
 
   it("«Completar compra» (tras el repaso) registra el gasto y da de alta el producto", async () => {

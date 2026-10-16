@@ -40,7 +40,7 @@ test("cocinar una receta descuenta la cantidad correcta de cada ingrediente (E21
   await expect(modal.getByRole("checkbox", { name: "Descontar ingredientes del inventario al cocinar" })).toBeChecked();
   await modal.getByRole("button", { name: "Cocinar y registrar 1 ración" }).click();
 
-  await expect(page.locator(".toast")).toHaveText("Bowl proteico de pollo: 1 ración registrada en tu diario · ingredientes descontados");
+  await expect(page.locator(".toast")).toHaveText("Bowl proteico de pollo: 1 ración registrada en tu diario · se descuentan los ingredientes del inventario");
 
   await page.goto("/dashboard/inventory");
   await expect(page.locator(".card", { hasText: "Pechuga de pollo" }).locator("small")).toContainText("80g");
