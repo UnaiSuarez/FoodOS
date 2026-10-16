@@ -112,8 +112,10 @@ test.describe("§5 permisos y entradas inválidas", () => {
     const a = await signedClient(A);
     const before = await serverGoal(a, A.id);
     expect(before?.source_snapshot_id).not.toBeNull();
-    await a.from("nutrition_goals").update({ basis_offset_kcal: null }).eq("user_id", A.id).eq("goal_date", todayUtc());
-    await a.from("nutrition_goals").update({ source_snapshot_id: null, kcal_target: 2039 }).eq("user_id", A.id).eq("goal_date", todayUtc());
+    const day = todayUtc();
+    await a.from("nutrition_goals").update({ basis_offset_kcal: null }).eq("user_id", A.id).eq("goal_date", day);
+    await a.from("nutrition_goals").update({ source_snapshot_id: null }).eq("user_id", A.id).eq("goal_date", day); // sin cambiar cifras
+    await a.from("nutrition_goals").update({ kcal_target: 2039, basis_offset_kcal: 0 }).eq("user_id", A.id).eq("goal_date", day); // base obsoleta
     await a.from("nutrition_goals").delete().eq("user_id", A.id).eq("goal_date", todayUtc());
     await a.from("nutrition_goals").insert({ user_id: A.id, goal_date: todayUtc(), kcal_target: 2039, protein_target_g: 160, carbs_target_g: 204, fat_target_g: 54, mode: "fat_loss", calculation_version: "nutrition-v3.1", basis_offset_kcal: 0 });
     const after = await serverGoal(a, A.id);
