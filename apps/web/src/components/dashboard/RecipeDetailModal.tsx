@@ -8,10 +8,12 @@ import {
   getIngredientStatus,
   getPendingMacros,
   getRecipeMatch,
+  getToday,
   useFoodOS,
 } from "@/lib/state";
 import { scaleByCalories, scaleByRatio } from "@/lib/nutrition";
 import { eur } from "@/lib/utils";
+import { describeLogTarget } from "./cook-log-copy";
 import { Modal } from "./Modal";
 
 export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onClose: () => void }) {
@@ -34,6 +36,8 @@ export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onC
 
   const match = getRecipeMatch(state, recipe);
   const ingredients = getIngredientStatus(state, recipe);
+  // cookRecipe sin opciones: hoy y tipo de comida según la hora.
+  const logTarget = describeLogTarget({ today: getToday(state) });
 
   function applyKcalTarget(target: number) {
     if (!recipe || target <= 0) return;
@@ -179,6 +183,21 @@ export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onC
         </section>
       </div>
 
+      {/* Esta ruta registra la ingesta directamente: sin el diálogo de cocinar
+          y, por tanto, SIN descontar ingredientes del inventario. */}
+      <div className="cook-log-summary" role="note">
+        <p>
+          <strong>«Cocinar y registrar esta porción» anota en tu diario personal:</strong>{" "}
+          {scaled.servings} {scaled.servings === 1 ? "ración" : "raciones"} · {scaled.macros.kcal} kcal ·{" "}
+          {scaled.macros.protein} g de proteína — {logTarget.dateLabel} · {logTarget.mealLabel}
+          {logTarget.mealFromClock ? " (según la hora actual)" : ""}.
+        </p>
+        <p>
+          No descuenta ingredientes del inventario. Para descontarlos, usa «Cocinar y registrar» desde la
+          tarjeta de la receta.
+        </p>
+      </div>
+
       <div className="recipe-detail-actions">
         <span className="badge blue">Coste de esta porción: {eur(scaled.cost)}</span>
         <button
@@ -194,13 +213,18 @@ export function RecipeDetailModal({ recipeId, onClose }: { recipeId: string; onC
         <button
           className="primary-button"
           onClick={() => {
-            mutate((draft) => actions.cookRecipe(draft, recipe, ratio));
-            setMascotMessage("Receta cocinada. Objetivos actualizados.");
-            showToast(`Registrados ${scaled.macros.kcal} kcal en nutrición`);
+            // Solo se avisa y se cierra si la mutación se aplicó de verdad
+            // (el gate de hidratación puede rechazarla).
+            const applied = mutate((draft) => actions.cookRecipe(draft, recipe, ratio));
+            if (!applied) return;
+            setMascotMessage(
+              `${recipe.title}: ${scaled.macros.kcal} kcal y ${scaled.macros.protein} g de proteína registradas en tu diario, sin descontar inventario.`,
+            );
+            showToast(`${recipe.title}: porción registrada en tu diario · inventario sin cambios`);
             onClose();
           }}
         >
-          Cocinar esta porción
+          Cocinar y registrar esta porción
         </button>
       </div>
     </Modal>
