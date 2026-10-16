@@ -227,6 +227,7 @@ export function CookModal({ recipe, onClose, logDate, mealType }: Props) {
                     type="number"
                     min="0"
                     step="1"
+                    aria-label={`Cantidad de ${ing.name} a descontar, en ${ing.unit}`}
                     value={ing.needed}
                     className={`cook-ing-qty-input ${isOverridden ? "overridden" : ""}`}
                     onChange={(e) => updateIngQty(ing.name, Number(e.target.value))}

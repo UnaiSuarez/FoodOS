@@ -69,3 +69,7 @@
 .planner-log-legend strong {
   color: var(--green);
 }
+
+/* CookModal: el ámbar del aviso "te falta parte" daba 4,4:1 sobre el fondo claro. */
+[data-theme="light"] .cook-ing-item.partial .cook-ing-avail { color: #92400e; }
+.cook-estimate, .cook-qty-note { margin: 4px 0 8px; }
