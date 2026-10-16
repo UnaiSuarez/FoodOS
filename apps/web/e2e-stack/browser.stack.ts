@@ -52,12 +52,27 @@ async function bump(page: Page): Promise<number> {
 
 /** Cuenta QA + sesión en el navegador + datos demo sintéticos + espera a que el servidor tenga el objetivo de hoy. */
 async function bootDevice(page: Page, label: string) {
+  const failedRest: string[] = [];
+  page.on("response", (res) => { if (res.url().includes("/rest/v1/") && res.status() >= 400) failedRest.push(`${res.request().method()} ${res.url().split("/rest/v1/")[1]?.split("?")[0]} ${res.status()}`); });
   const user = await createQaUser(label);
   await uiLogin(page, user);
   await page.goto("/dashboard/settings");
   await page.getByRole("button", { name: "Cargar datos demo" }).click();
   const a = await signedClient(user); // sesión independiente de la misma cuenta = dispositivo A
-  await expect.poll(async () => (await serverGoal(a, user.id)) !== null, { timeout: 60_000, message: "el servidor no recibió el objetivo de hoy" }).toBe(true);
+  try {
+    await expect.poll(async () => (await serverGoal(a, user.id)) !== null, { timeout: 60_000, message: "el servidor no recibió el objetivo de hoy" }).toBe(true);
+  } catch (e) {
+    // Diagnóstico (sin secretos): qué hay en el servidor y en el cliente cuando el objetivo no llega.
+    const prof = await a.from("user_profiles").select("weight_kg, goal, extra_state").eq("user_id", user.id).maybeSingle();
+    const goals = await a.from("nutrition_goals").select("goal_date, kcal_target, basis_offset_kcal").eq("user_id", user.id);
+    const conf = await a.from("nutrition_sync_conflicts").select("kind, subject").eq("user_id", user.id);
+    const ls = await localState(page);
+    throw new Error(`${(e as Error).message}\nDIAGNÓSTICO ${JSON.stringify({
+      perfilServidor: prof.data ?? prof.error?.message, objetivosServidor: goals.data ?? goals.error?.message, conflictos: conf.data,
+      insignia: await badge(page).textContent(), perfilLocal: !!ls.profile, offsetLocal: ls.profile?.adaptiveKcalOffsetKcal,
+      libroLocal: Object.keys(ls.nutritionGoalsHistory ?? {}), nutricionLocal: ls.nutrition, respuestasNoOk: failedRest.slice(0, 12),
+    })}`);
+  }
   await expect(badge(page)).toHaveText("Guardado", { timeout: 60_000 });
   const goal = (await serverGoal(a, user.id))!;
   return { user, a, goal };
