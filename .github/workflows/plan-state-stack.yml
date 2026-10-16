@@ -1,0 +1,94 @@
+# C0 — validación contra un stack Supabase REAL pero DESECHABLE: Supabase CLI + Docker del runner
+# (GoTrue/Auth + PostgREST + Kong + Postgres 17, migraciones del repo). Navegador (Chromium) → supabase-js →
+# Auth/PostgREST → base → relectura/reconciliación. NO usa ningún proyecto alojado, ni producción, ni secretos:
+# las claves del stack las genera la CLI en el propio runner y se enmascaran en el log.
+# Lo que este job NO prueba (servicio alojado): CORS/cabeceras del borde de Supabase Cloud, pooler, plan/cuotas.
+name: Plan-state stack
+
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - "apps/web/src/lib/**"
+      - "apps/web/e2e-stack/**"
+      - "apps/web/playwright.stack.config.ts"
+      - ".github/workflows/plan-state-stack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plan-state-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        timeout-minutes: 6
+        run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Arrancar el stack local (migraciones del repo)
+        timeout-minutes: 10
+        run: |
+          supabase --version
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,mailpit,postgres-meta,supavisor
+
+      - name: Entorno aislado (evidencia, sin secretos)
+        timeout-minutes: 3
+        run: |
+          supabase status -o env > "$RUNNER_TEMP/stack.env"
+          get() { grep -E "^$1=" "$RUNNER_TEMP/stack.env" | head -1 | cut -d= -f2- | tr -d '"'; }
+          API_URL="$(get API_URL)"; ANON="$(get ANON_KEY)"; SERVICE="$(get SERVICE_ROLE_KEY)"
+          echo "::add-mask::$ANON"; echo "::add-mask::$SERVICE"
+          echo "STACK_API_URL=$API_URL" >> "$GITHUB_ENV"
+          echo "STACK_ANON_KEY=$ANON" >> "$GITHUB_ENV"
+          echo "STACK_SERVICE_KEY=$SERVICE" >> "$GITHUB_ENV"
+          echo "STACK_RUN_ID=${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          echo "commit: $GITHUB_SHA"
+          echo "api_url: $API_URL"
+          echo "project_id (config.toml): $(grep -E '^project_id' supabase/config.toml)"
+          DB="$(docker ps --format '{{.Names}}' | grep -E '^supabase_db_' | head -1)"
+          docker exec "$DB" psql -U postgres -Atc "select version()"
+          docker exec "$DB" psql -U postgres -Atc "select count(*) || ' migraciones aplicadas' from supabase_migrations.schema_migrations"
+          docker exec "$DB" psql -U postgres -Atc "select version from supabase_migrations.schema_migrations order by 1 desc limit 3"
+          docker ps --format '{{.Image}}' | sort
+
+      - name: Instalar Chromium
+        working-directory: apps/web
+        timeout-minutes: 5
+        run: npx playwright install --with-deps chromium
+
+      - name: Validación C0 (API + navegador)
+        working-directory: apps/web
+        timeout-minutes: 20
+        run: npx playwright test -c playwright.stack.config.ts
+
+      - name: Subir informe y evidencia (sin secretos)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-state-stack-evidence
+          path: |
+            apps/web/playwright-stack-report/
+            apps/web/stack-evidence/
+            apps/web/test-results/
+          retention-days: 14
+
+      - name: Limpiar el stack
+        if: ${{ always() }}
+        run: supabase stop --no-backup
