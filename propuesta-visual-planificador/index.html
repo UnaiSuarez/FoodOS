@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Propuesta visual del Planificador (datos ficticios)</title>
+<style>
+/* ───────── Tokens: los de la app (globals.css) + los propios del planificador ───────── */
+:root[data-theme="dark"] {
+  --bg:#070a05; --surface:#182013; --surface-2:#1e2a18; --text:#f0f4ee; --muted:#a9b5a3;
+  --green:#4ade80; --blue:#60a5fa; --amber:#fb923c; --red:#f87171;
+  --line:rgba(240,244,238,.12);
+  /* Propios del planificador */
+  --pl-ctl-border:#7f8f78;          /* bordes de controles/huecos vacíos ≥3:1 sobre la superficie */
+  --pl-empty-bg:#121a0e;
+  --pl-today-bg:#1f3a28; --pl-today-ink:#bff2cf;
+  --pl-sel-bg:#24402f;
+  --pl-primary:#4ade80; --pl-on-primary:#06140a;
+  --pl-quick-bg:#2a2a14; --pl-quick-ink:#f1dc8a;
+  --pl-recipe-bg:#162a3a; --pl-recipe-ink:#a9d1fb;
+  --focus:#8fbfff;
+  --pl-danger:#fca5a5;
+}
+:root[data-theme="light"] {
+  --bg:#f4f8f2; --surface:#ffffff; --surface-2:#eef1ea; --text:#0e180b; --muted:#3b5434;
+  --green:#15803d; --blue:#1d4ed8; --amber:#b45309; --red:#dc2626;
+  --line:rgba(14,24,11,.13);
+  --pl-ctl-border:#68795f;
+  --pl-empty-bg:#f7f9f4;
+  --pl-today-bg:#e2f0e3; --pl-today-ink:#14502f;
+  --pl-sel-bg:#d6ebdb;
+  --pl-primary:#1c6a4b; --pl-on-primary:#ffffff;
+  --pl-quick-bg:#fbefd2; --pl-quick-ink:#6b3f08;
+  --pl-recipe-bg:#e5edf8; --pl-recipe-ink:#244a82;
+  --focus:#1d4ed8;
+  --pl-danger:#a3271e;
+}
+* { box-sizing:border-box; }
+html,body { margin:0; }
+body { background:var(--bg); color:var(--text); font:15px/1.45 "Segoe UI",system-ui,sans-serif; }
+button,input,select { font:inherit; color:inherit; }
+:focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+/* Barra de la propuesta (NO es parte de la app) */
+.proto-bar { background:#222; color:#fff; padding:8px 16px; font-size:13px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+.proto-bar button { background:#444; border:1px solid #777; color:#fff; padding:6px 10px; border-radius:6px; cursor:pointer; min-height:32px; }
+.proto-bar button:focus-visible { outline-color:#9cf; }
+.proto-bar b { color:#ffd479; }
+
+.planner { max-width:1100px; margin:0 auto; padding:16px; }
+@media (max-width:400px) { .planner { padding:12px; } }
+.eyebrow { margin:0; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+h2 { margin:2px 0 12px; font-size:24px; line-height:1.2; }
+h3 { margin:0; font-size:16px; }
+
+/* Botones */
+.btn { min-height:44px; padding:8px 14px; border-radius:10px; border:1.5px solid var(--pl-ctl-border); background:var(--surface); cursor:pointer; font-weight:600; display:inline-flex; align-items:center; justify-content:center; gap:6px; text-align:center; }
+.btn:hover { background:var(--surface-2); }
+.btn.primary { background:var(--pl-primary); border-color:var(--pl-primary); color:var(--pl-on-primary); }
+.btn.danger { color:var(--pl-danger); }
+.btn[disabled] { opacity:.55; cursor:not-allowed; }
+
+/* Barras: semana ≠ día ≠ acciones */
+.bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+.week-nav { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.week-range { font-weight:700; min-width:150px; text-align:center; }
+.bar-actions { margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
+.chips { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
+.chip { padding:4px 10px; border-radius:999px; background:var(--surface-2); border:1px solid var(--line); font-size:13px; }
+.legend { margin:6px 0 14px; padding:10px 12px; border-left:4px solid var(--pl-primary); background:var(--surface); border-radius:6px; font-size:13.5px; }
+
+@media (max-width:899px) {
+  .week-nav { display:grid; grid-template-columns:1fr 1fr auto; width:100%; }
+  .week-range { grid-column:1 / -1; order:-1; text-align:left; }
+  .bar-actions { margin-left:0; width:100%; display:grid; grid-template-columns:1fr 1fr; }
+}
+/* ───────── Escritorio: semana completa ───────── */
+.week { display:none; }
+.day-view { display:block; }
+@media (min-width:900px) { .week { display:block; } .day-view { display:none; } }
+
+.week-grid { display:grid; grid-template-columns:84px repeat(7, minmax(0,1fr)); gap:6px; }
+.wk-head { text-align:center; padding:8px 4px; border-radius:10px; background:var(--surface); border:1px solid var(--line); }
+.wk-head .dn { display:block; font-weight:700; }
+.wk-head .dd { display:block; font-size:13px; color:var(--muted); }
+.wk-head.today { background:var(--pl-today-bg); color:var(--pl-today-ink); border-color:var(--pl-today-ink); }
+.wk-head.today .dd { color:inherit; }
+.wk-head .badge-today { display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+.slot-label { align-self:center; font-weight:700; font-size:13px; padding-right:4px; }
+.slot-label small { display:block; font-weight:400; color:var(--muted); }
+.cell { border:1.5px solid var(--line); background:var(--surface); border-radius:12px; padding:8px; display:flex; flex-direction:column; gap:6px; min-height:132px; }
+.cell.empty { background:var(--pl-empty-bg); border:1.5px dashed var(--pl-ctl-border); justify-content:center; }
+.cell.today-col { box-shadow:inset 0 0 0 1px var(--pl-today-ink); }
+.cell .nm { margin:0; font-weight:700; font-size:13.5px; line-height:1.3; overflow-wrap:anywhere; }   /* nombre completo, sin recortar */
+.cell .mt { margin:0; font-size:12.5px; color:var(--muted); }
+.tag { align-self:flex-start; font-size:11px; font-weight:700; padding:1px 7px; border-radius:999px; }
+.tag.recipe { background:var(--pl-recipe-bg); color:var(--pl-recipe-ink); }
+.tag.quick  { background:var(--pl-quick-bg);  color:var(--pl-quick-ink); }
+.cell-actions { margin-top:auto; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.cell-actions .btn { padding:4px 6px; font-size:13px; min-height:44px; }
+.cell-actions .btn.wide { grid-column:1 / -1; }
+.tot { text-align:center; font-size:12.5px; padding:6px 2px; border-radius:8px; background:var(--surface-2); }
+.tot b { font-size:14px; }
+
+/* Biblioteca de recetas (debajo de la semana en escritorio) */
+.library { margin-top:20px; padding:14px; background:var(--surface); border:1px solid var(--line); border-radius:14px; }
+.library-head { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+.search { min-height:44px; flex:1 1 220px; max-width:360px; padding:8px 12px; border-radius:10px; border:1.5px solid var(--pl-ctl-border); background:var(--bg); }
+.rec-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:8px; }
+.rec { display:flex; flex-direction:column; gap:6px; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg); }
+.rec p { margin:0; } .rec .nm { font-weight:700; overflow-wrap:anywhere; } .rec .mt { font-size:12.5px; color:var(--muted); }
+
+/* ───────── Móvil/tablet: selector de día + lista ───────── */
+.day-strip { display:grid; grid-template-columns:repeat(7,minmax(44px,1fr)); gap:3px; margin:6px 0 12px; }
+.day-btn { min-height:56px; border-radius:12px; border:1.5px solid var(--pl-ctl-border); background:var(--surface); cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2px; }
+.day-btn .dn { font-size:12px; font-weight:600; }
+.day-btn .dd { font-size:17px; font-weight:700; line-height:1.1; }
+.day-btn .dot { font-size:10px; font-weight:700; color:var(--pl-today-ink); height:12px; line-height:12px; }
+.day-btn[aria-pressed="true"] { background:var(--pl-primary); color:var(--pl-on-primary); border-color:var(--pl-primary); }
+.day-btn[aria-pressed="true"] .dot { color:inherit; }
+.day-btn.today:not([aria-pressed="true"]) { background:var(--pl-today-bg); color:var(--pl-today-ink); border-color:var(--pl-today-ink); }
+.day-heading { margin:4px 0 10px; font-size:18px; }
+.day-heading .hoy { font-size:12px; font-weight:700; padding:2px 8px; border-radius:999px; background:var(--pl-today-bg); color:var(--pl-today-ink); margin-left:6px; vertical-align:middle; }
+.slot-list { list-style:none; margin:0; padding:0; display:grid; gap:10px; max-width:680px; }
+.slot-card { border:1.5px solid var(--line); background:var(--surface); border-radius:14px; padding:12px; }
+.slot-card.empty { background:var(--pl-empty-bg); border:1.5px dashed var(--pl-ctl-border); }
+.slot-card h4 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+.slot-card .nm { margin:0; font-weight:700; font-size:16px; overflow-wrap:anywhere; }
+.slot-card .mt { margin:2px 0 8px; font-size:13.5px; color:var(--muted); }
+.slot-card .none { margin:0 0 8px; color:var(--muted); }
+.slot-card .acts { display:flex; flex-wrap:wrap; gap:8px; }
+.slot-card .acts .btn { flex:1 1 140px; }
+.day-total { margin-top:12px; padding:10px 12px; border-radius:12px; background:var(--surface-2); max-width:680px; }
+
+/* Aviso de vacío de semana */
+.empty-note { margin:8px 0 14px; padding:12px; border:1px dashed var(--pl-ctl-border); border-radius:12px; background:var(--surface); }
+
+/* ───────── Diálogo ───────── */
+.overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-end; justify-content:center; z-index:50; }
+@media (min-width:700px) { .overlay { align-items:center; } }
+.dialog { background:var(--surface); color:var(--text); width:min(560px,100%); max-height:92vh; display:flex; flex-direction:column; border-radius:18px 18px 0 0; }
+@media (min-width:700px) { .dialog { border-radius:18px; } }
+.dialog-head { display:flex; gap:10px; justify-content:space-between; align-items:flex-start; padding:16px 16px 8px; }
+.dialog-head h3 { font-size:18px; }
+.dialog-body { padding:8px 16px; overflow:auto; flex:1; }   /* el cuerpo hace scroll… */
+.dialog-foot { padding:12px 16px; border-top:1px solid var(--line); display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; background:var(--surface); }  /* …y las acciones quedan siempre visibles */
+.seg { display:flex; gap:6px; margin-bottom:10px; }
+.seg .btn[aria-pressed="true"] { background:var(--pl-primary); color:var(--pl-on-primary); border-color:var(--pl-primary); }
+.pick { display:grid; gap:6px; margin-top:8px; }
+.pick .row { display:flex; gap:8px; align-items:center; justify-content:space-between; border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+.pick .row .nm { font-weight:600; overflow-wrap:anywhere; }
+.pick .row .mt { font-size:12.5px; color:var(--muted); display:block; }
+.field { display:grid; gap:4px; margin:8px 0; } .field label { font-weight:600; font-size:13.5px; }
+.field input,.field select { min-height:44px; padding:8px 10px; border-radius:10px; border:1.5px solid var(--pl-ctl-border); background:var(--bg); }
+.note { padding:10px 12px; border-left:4px solid var(--pl-primary); background:var(--surface-2); border-radius:6px; font-size:13.5px; margin:8px 0; }
+.toast { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); background:var(--text); color:var(--bg); padding:10px 16px; border-radius:10px; max-width:92vw; z-index:60; }
+</style>
+</head>
+<body>
+
+<div class="proto-bar" role="region" aria-label="Controles de la propuesta (no forman parte de la aplicación)">
+  <span><b>PROPUESTA</b> · datos ficticios «(demo)» · hoy simulado: viernes 16 oct 2026</span>
+  <button type="button" id="p-theme">Tema: claro</button>
+  <button type="button" id="p-data">Semana: poblada</button>
+</div>
+
+<main class="planner" id="app">
+  <p class="eyebrow">Planificador semanal</p>
+  <h2>¿Qué vas a comer esta semana?</h2>
+
+  <!-- 1 · Navegación de SEMANA (separada de la de día y de las acciones) -->
+  <div class="bar">
+    <div class="week-nav" role="group" aria-label="Cambiar de semana">
+      <button type="button" class="btn" id="w-prev" aria-label="Semana anterior">← <span>Anterior</span></button>
+      <span class="week-range" id="w-range" aria-live="polite"></span>
+      <button type="button" class="btn" id="w-next" aria-label="Semana siguiente"><span>Siguiente</span> →</button>
+      <button type="button" class="btn" id="w-today">Hoy</button>
+    </div>
+    <div class="bar-actions" role="group" aria-label="Acciones de la semana">
+      <button type="button" class="btn" id="a-ai">✨ Plan IA</button>
+      <button type="button" class="btn" id="a-buy">🛒 Comprar semana</button>
+    </div>
+  </div>
+
+  <div class="chips" id="chips"></div>
+  <p class="legend"><strong>Cocinar y registrar</strong> (recetas) abre el diálogo donde eliges si se descuentan ingredientes del inventario.
+    <strong>Registrar</strong> (platos rápidos) lo anota directamente en el diario. Planificar no registra nada por sí solo.</p>
+
+  <div id="empty-note" class="empty-note" hidden>
+    <strong>Esta semana no tiene comidas planificadas.</strong> Pulsa «Añadir» en cualquier hueco, o usa «Plan IA».
+    Un hueco vacío no es una comida obligatoria.
+  </div>
+
+  <!-- 2a · ESCRITORIO ≥ 900 px: semana completa -->
+  <section class="week" aria-labelledby="wk-title">
+    <h3 id="wk-title" class="sr-only">Semana completa</h3>
+    <div class="week-grid" id="week-grid"></div>
+  </section>
+
+  <!-- 2b · MÓVIL/TABLET < 900 px: selector de día + lista de sus cinco franjas -->
+  <section class="day-view" aria-labelledby="dv-title">
+    <h3 id="dv-title" class="sr-only">Comidas por día</h3>
+    <div class="day-strip" id="day-strip" role="group" aria-label="Elegir día de la semana"></div>
+    <h3 class="day-heading" id="day-heading" tabindex="-1"></h3>
+    <p class="sr-only" id="day-live" aria-live="polite"></p>
+    <ul class="slot-list" id="slot-list"></ul>
+    <div class="day-total" id="day-total"></div>
+  </section>
+
+  <!-- 3 · Recetas: buscar y colocar sin arrastrar (arrastrar solo como atajo con ratón en escritorio) -->
+  <section class="library" aria-labelledby="lib-title">
+    <div class="library-head">
+      <h3 id="lib-title">Recetas</h3>
+      <input class="search" id="lib-search" type="search" placeholder="Buscar receta…" aria-label="Buscar recetas">
+    </div>
+    <div class="rec-list" id="rec-list"></div>
+  </section>
+</main>
+
+<div id="modal-root"></div>
+<div id="toast-root" role="status" aria-live="polite"></div>
+
+<script>
+/* ───────── Datos ficticios identificados ───────── */
+const SLOTS = [
+  { key:"breakfast", label:"Desayuno", meal:"Desayuno" },
+  { key:"almuerzo",  label:"Almuerzo", meal:"Snack" },
+  { key:"lunch",     label:"Comida",   meal:"Comida" },
+  { key:"merienda",  label:"Merienda", meal:"Snack" },
+  { key:"dinner",    label:"Cena",     meal:"Cena" },
+];
+const RECIPES = [
+  { id:"r1", name:"Bowl proteico de pollo (demo)", kcal:620, p:46, cost:3.4, time:25 },
+  { id:"r2", name:"Tortilla de espinacas (demo)", kcal:380, p:26, cost:1.4, time:15 },
+  { id:"r3", name:"Ensalada templada de garbanzos, calabaza asada, espinacas baby y vinagreta de mostaza antigua con semillas tostadas (demo)", kcal:540, p:21, cost:2.9, time:35 },
+  { id:"r4", name:"Salmón al horno con patata (demo)", kcal:690, p:44, cost:5.1, time:40 },
+  { id:"r5", name:"Avena con yogur y fruta (demo)", kcal:410, p:19, cost:1.1, time:5 },
+  { id:"r6", name:"Crema de calabaza (demo)", kcal:260, p:6, cost:1.0, time:30 },
+];
+let quickSeq = 3;
+const QUICK = { q1:{ name:"Tostada con aguacate (rápido, demo)", kcal:310, p:9 }, q2:{ name:"Yogur con nueces (rápido, demo)", kcal:220, p:11 } };
+const TODAY = new Date(2026, 9, 16);                        // viernes 16 oct 2026 (local, sin UTC)
+const TARGET_KCAL = 2200;
+const DAYN = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+const DAYF = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"];
+
+const pad = (n)=>String(n).padStart(2,"0");
+const keyOf = (d)=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;   // clave local
+const addDays = (d,n)=>new Date(d.getFullYear(), d.getMonth(), d.getDate()+n);          // sin UTC: seguro en cambio horario
+const mondayOf = (d)=>addDays(d, d.getDay()===0 ? -6 : 1-d.getDay());
+const fmt = (d,o)=>d.toLocaleDateString("es-ES",o);
+
+function demoPlan() {
+  const m = mondayOf(TODAY), k = (i)=>keyOf(addDays(m,i));
+  return {
+    [k(0)]:{ breakfast:"r5", lunch:"r1", dinner:"r2" },
+    [k(1)]:{ breakfast:"q1", lunch:"r4", merienda:"q2", dinner:"r6" },
+    [k(2)]:{ breakfast:"r5", almuerzo:"q2", lunch:"r3", dinner:"r2" },
+    [k(3)]:{ lunch:"r1", dinner:"r4" },
+    [k(4)]:{ breakfast:"q1", lunch:"r3", merienda:"q2", dinner:"r4" },       // hoy: incluye nombre largo y platos rápidos
+    [k(5)]:{ breakfast:"r5", lunch:"r4" },
+    [k(6)]:{ lunch:"r1" },
+  };
+}
+
+const S = {
+  theme:"light", populated:true, weekStart:mondayOf(TODAY), dayIdx:4,        // 4 = viernes (hoy)
+  plan:demoPlan(), q:"",
+};
+const entry = (id)=> RECIPES.find(r=>r.id===id) ? { ...RECIPES.find(r=>r.id===id), recipe:true }
+  : QUICK[id] ? { id, name:QUICK[id].name, kcal:QUICK[id].kcal, p:QUICK[id].p, recipe:false } : null;
+const days = ()=>Array.from({length:7},(_,i)=>addDays(S.weekStart,i));
+const isToday = (d)=>keyOf(d)===keyOf(TODAY);
+const esc = (s)=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const $ = (s)=>document.querySelector(s);
+
+/* ───────── Acciones (equivalen a las existentes) ───────── */
+function setMeal(dk, slot, id) {
+  S.plan[dk] ||= {};
+  if (id===null) delete S.plan[dk][slot]; else S.plan[dk][slot]=id;
+}
+function toast(msg){ const t=document.createElement("div"); t.className="toast"; t.textContent=msg; $("#toast-root").replaceChildren(t); setTimeout(()=>t.remove(),3500); }
+
+/* ───────── Render ───────── */
+function render(keepFocusId) {
+  document.documentElement.dataset.theme = S.theme;
+  $("#p-theme").textContent = `Tema: ${S.theme==="light"?"claro":"oscuro"}`;
+  $("#p-data").textContent  = `Semana: ${S.populated?"poblada":"vacía"}`;
+  const ds = days();
+  const r0 = ds[0], r6 = ds[6];
+  $("#w-range").textContent = `${fmt(r0,{day:"numeric",month:"short"})} – ${fmt(r6,{day:"numeric",month:"short",year:"numeric"})}`;
+
+  let kcal=0,prot=0,cost=0,count=0;
+  const totals = ds.map(d=>{ let k=0,p=0; SLOTS.forEach(s=>{ const e=entry((S.plan[keyOf(d)]||{})[s.key]); if(e){k+=e.kcal;p+=e.p;cost+=e.cost||0;count++;} }); kcal+=k;prot+=p; return {k,p}; });
+  $("#chips").innerHTML = `<span class="chip"><b>${kcal}</b> kcal</span><span class="chip"><b>${prot} g</b> proteína</span><span class="chip"><b>${cost.toFixed(2).replace(".",",")} €</b> coste (recetas)</span><span class="chip">${count} comidas planificadas</span>`;
+  $("#empty-note").hidden = count>0;
+
+  /* Escritorio */
+  let g = `<div></div>` + ds.map(d=>`<div class="wk-head ${isToday(d)?"today":""}" ${isToday(d)?'aria-current="date"':''}><span class="dn">${DAYN[(d.getDay()+6)%7]}</span><span class="dd">${d.getDate()} ${fmt(d,{month:"short"})}</span>${isToday(d)?'<span class="badge-today">Hoy</span>':''}</div>`).join("");
+  SLOTS.forEach(s=>{
+    g += `<div class="slot-label">${s.label}<small>${s.meal==="Snack"?"se registra como Snack":""}</small></div>`;
+    ds.forEach((d,di)=>{
+      const dk=keyOf(d), e=entry((S.plan[dk]||{})[s.key]), dn=DAYF[di], bid=`c-${dk}-${s.key}`;
+      if (e) g += `<div class="cell ${isToday(d)?"today-col":""}"><span class="tag ${e.recipe?"recipe":"quick"}">${e.recipe?"Receta":"Plato rápido"}</span><p class="nm">${esc(e.name)}</p><p class="mt">${e.kcal} kcal · ${e.p} g P</p>
+        <div class="cell-actions">
+          ${e.recipe
+            ? `<button type="button" class="btn primary wide" data-act="cook" data-dk="${dk}" data-slot="${s.key}" aria-label="Cocinar y registrar ${esc(e.name)}, ${s.label} del ${dn}: abre el diálogo donde eliges si se descuentan ingredientes del inventario">Cocinar y registrar</button>`
+            : `<button type="button" class="btn primary wide" data-act="log" data-dk="${dk}" data-slot="${s.key}" aria-label="Registrar ${esc(e.name)} en el diario, ${s.label} del ${dn}">Registrar</button>`}
+          <button type="button" class="btn" id="${bid}" data-act="change" data-dk="${dk}" data-slot="${s.key}" aria-label="Cambiar ${esc(e.name)} en ${s.label} del ${dn}">Cambiar</button>
+          <button type="button" class="btn danger" data-act="remove" data-dk="${dk}" data-slot="${s.key}" aria-label="Quitar ${esc(e.name)} del plan, ${s.label} del ${dn}">Quitar</button>
+        </div></div>`;
+      else g += `<div class="cell empty"><button type="button" class="btn" id="${bid}" data-act="add" data-dk="${dk}" data-slot="${s.key}" aria-label="Añadir comida: ${s.label} del ${dn} ${d.getDate()}">＋ Añadir</button></div>`;
+    });
+  });
+  g += `<div class="slot-label">Total</div>` + totals.map(t=>`<div class="tot">${t.k?`<b>${t.k}</b>/${TARGET_KCAL} kcal<br>${t.p} g P`:"—"}</div>`).join("");
+  $("#week-grid").innerHTML = g;
+
+  /* Móvil / tablet */
+  $("#day-strip").innerHTML = ds.map((d,i)=>`<button type="button" class="day-btn ${isToday(d)?"today":""}" id="d-${i}" data-day="${i}" aria-pressed="${i===S.dayIdx}" ${isToday(d)?'aria-current="date"':''} aria-label="${DAYF[i]} ${d.getDate()} de ${fmt(d,{month:"long"})}${isToday(d)?", hoy":""}"><span class="dn">${DAYN[i]}</span><span class="dd">${d.getDate()}</span><span class="dot">${isToday(d)?"HOY":""}</span></button>`).join("");
+  const sd = ds[S.dayIdx], sdk = keyOf(sd);
+  $("#day-heading").innerHTML = `${esc(fmt(sd,{weekday:"long",day:"numeric",month:"long"}))}${isToday(sd)?'<span class="hoy">Hoy</span>':''}`;
+  $("#slot-list").innerHTML = SLOTS.map(s=>{
+    const e=entry((S.plan[sdk]||{})[s.key]), bid=`m-${s.key}`, dn=DAYF[S.dayIdx];
+    return e ? `<li class="slot-card"><h4>${s.label}${s.meal==="Snack"?" · se registra como Snack":""}</h4><span class="tag ${e.recipe?"recipe":"quick"}">${e.recipe?"Receta":"Plato rápido"}</span><p class="nm">${esc(e.name)}</p><p class="mt">${e.kcal} kcal · ${e.p} g de proteína</p>
+        <div class="acts">
+          ${e.recipe
+            ? `<button type="button" class="btn primary" data-act="cook" data-dk="${sdk}" data-slot="${s.key}" aria-label="Cocinar y registrar ${esc(e.name)}, ${s.label} del ${dn}: abre el diálogo donde eliges si se descuentan ingredientes del inventario">Cocinar y registrar</button>`
+            : `<button type="button" class="btn primary" data-act="log" data-dk="${sdk}" data-slot="${s.key}" aria-label="Registrar ${esc(e.name)} en el diario, ${s.label} del ${dn}">Registrar</button>`}
+          <button type="button" class="btn" id="${bid}" data-act="change" data-dk="${sdk}" data-slot="${s.key}" aria-label="Cambiar ${esc(e.name)} en ${s.label} del ${dn}">Cambiar</button>
+          <button type="button" class="btn danger" data-act="remove" data-dk="${sdk}" data-slot="${s.key}" aria-label="Quitar ${esc(e.name)} del plan, ${s.label} del ${dn}">Quitar</button>
+        </div></li>`
+      : `<li class="slot-card empty"><h4>${s.label}${s.meal==="Snack"?" · se registra como Snack":""}</h4><p class="none">Sin planificar. Puedes dejarlo vacío.</p><div class="acts"><button type="button" class="btn" id="${bid}" data-act="add" data-dk="${sdk}" data-slot="${s.key}" aria-label="Añadir comida: ${s.label} del ${dn} ${sd.getDate()}">＋ Añadir</button></div></li>`;
+  }).join("");
+  const dt = totals[S.dayIdx];
+  $("#day-total").innerHTML = dt.k ? `<strong>Total del día:</strong> ${dt.k} / ${TARGET_KCAL} kcal · ${dt.p} g de proteína` : `<strong>Total del día:</strong> sin comidas planificadas`;
+  const n = SLOTS.filter(s=>(S.plan[sdk]||{})[s.key]).length;
+  $("#day-live").textContent = `${esc(fmt(sd,{weekday:"long",day:"numeric",month:"long"}))}: ${n} de 5 franjas con comida planificada`;
+
+  /* Biblioteca */
+  const list = RECIPES.filter(r=>r.name.toLowerCase().includes(S.q.toLowerCase()));
+  $("#rec-list").innerHTML = list.length ? list.map(r=>`<div class="rec" draggable="true"><p class="nm">${esc(r.name)}</p><p class="mt">${r.kcal} kcal · ${String(r.cost.toFixed(2)).replace(".",",")} € · ${r.time} min</p><button type="button" class="btn" data-act="place" data-id="${r.id}" aria-label="Colocar ${esc(r.name)} en el plan: eliges día y franja">Colocar…</button></div>`).join("") : `<p>Sin resultados.</p>`;
+
+  if (keepFocusId) { const el=document.getElementById(keepFocusId); if(el) el.focus(); }
+}
+
+/* ───────── Diálogos: foco al abrir, trampa de Tab, Esc, devolución del foco ───────── */
+let lastOpener = null;
+function openDialog({ title, body, foot, focusSel }) {
+  lastOpener = document.activeElement;
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="overlay"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+    <div class="dialog-head"><h3 id="dlg-title">${title}</h3><button type="button" class="btn" id="dlg-x" aria-label="Cerrar">✕</button></div>
+    <div class="dialog-body">${body}</div><div class="dialog-foot">${foot}</div></div></div>`;
+  document.querySelector("main").setAttribute("inert",""); document.querySelector(".proto-bar").setAttribute("inert","");
+  const dlg = root.querySelector(".dialog");
+  (root.querySelector(focusSel||"input,select,button") || dlg).focus();
+  root.querySelector("#dlg-x").onclick = closeDialog;
+  root.querySelector(".overlay").addEventListener("keydown", (e)=>{
+    if (e.key==="Escape") { e.preventDefault(); closeDialog(); }
+    if (e.key==="Tab") {
+      const f=[...dlg.querySelectorAll("button,input,select,[href]")].filter(x=>!x.disabled);
+      const first=f[0], last=f[f.length-1];
+      if (e.shiftKey && document.activeElement===first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement===last) { e.preventDefault(); first.focus(); }
+    }
+  });
+  return dlg;
+}
+function closeDialog(focusId) {
+  $("#modal-root").innerHTML="";
+  document.querySelector("main").removeAttribute("inert"); document.querySelector(".proto-bar").removeAttribute("inert");
+  const target = (focusId && document.getElementById(focusId)) || (lastOpener && document.body.contains(lastOpener) ? lastOpener : null) || $("#day-heading");
+  target.focus();
+}
+const cellId = (dk,slot)=>`${matchMedia("(min-width:900px)").matches?"c":"m"}${matchMedia("(min-width:900px)").matches?"-"+dk+"-":"-"}${slot}`;
+const slotInfo = (dk,slot)=>{ const d=days().find(x=>keyOf(x)===dk); const s=SLOTS.find(x=>x.key===slot); return { d, s, txt:`${s.label} · ${fmt(d,{weekday:"long",day:"numeric",month:"long"})}` }; };
+
+/* Añadir / cambiar: receta (con búsqueda) o plato rápido */
+function openPicker(dk, slot, replacing) {
+  const { txt, s } = slotInfo(dk, slot);
+  const cur = entry((S.plan[dk]||{})[slot]);
+  let tab = "recipe", q = "";
+  const dlg = openDialog({
+    title: `${replacing?"Cambiar":"Añadir"}: ${esc(txt)}`,
+    body: `<div id="pk"></div>`,
+    foot: `<button type="button" class="btn" id="pk-cancel">Cancelar</button>`,
+    focusSel: "#pk-q",
+  });
+  const draw = ()=>{
+    dlg.querySelector("#pk").innerHTML = `
+      ${replacing?`<p class="note">Sustituirá solo <strong>${esc(cur.name)}</strong> de esta franja.</p>`:""}
+      <div class="seg" role="group" aria-label="Tipo de comida"><button type="button" class="btn" data-tab="recipe" aria-pressed="${tab==="recipe"}">Receta</button><button type="button" class="btn" data-tab="quick" aria-pressed="${tab==="quick"}">Plato rápido</button></div>
+      ${tab==="recipe" ? `<input id="pk-q" class="search" style="max-width:none;width:100%" type="search" placeholder="Buscar receta…" aria-label="Buscar receta" value="${esc(q)}">
+        <div class="pick">${RECIPES.filter(r=>r.name.toLowerCase().includes(q.toLowerCase())).map(r=>`<div class="row"><span><span class="nm">${esc(r.name)}</span><span class="mt">${r.kcal} kcal · ${r.p} g P</span></span><button type="button" class="btn primary" data-pick="${r.id}" aria-label="${replacing?"Cambiar por":"Elegir"} ${esc(r.name)}">${replacing?"Cambiar":"Elegir"}</button></div>`).join("")||"<p>Sin resultados.</p>"}</div>`
+      : `<div class="field"><label for="qk-n">Nombre del plato</label><input id="qk-n" placeholder="Ej. Tortilla de atún (demo)"></div>
+         <div class="field"><label for="qk-k">Calorías</label><input id="qk-k" type="number" inputmode="numeric" min="0" placeholder="kcal"></div>
+         <button type="button" class="btn primary" id="qk-ok">${replacing?"Cambiar por este plato":"Añadir plato rápido"}</button>`}`;
+  };
+  draw();
+  dlg.querySelector("#pk-q").focus();
+  const done = (id)=>{ setMeal(dk, slot, id); render(); closeDialog(cellId(dk,slot)); toast(`${slotInfo(dk,slot).s.label} actualizado`); };
+  dlg.addEventListener("click",(e)=>{
+    const t=e.target.closest("button"); if(!t) return;
+    if (t.id==="pk-cancel") return closeDialog();
+    if (t.dataset.tab) { tab=t.dataset.tab; draw(); dlg.querySelector(tab==="recipe"?"#pk-q":"#qk-n").focus(); }
+    if (t.dataset.pick) done(t.dataset.pick);
+    if (t.id==="qk-ok") { const n=dlg.querySelector("#qk-n").value.trim(), k=Number(dlg.querySelector("#qk-k").value)||0; if(!n) return dlg.querySelector("#qk-n").focus(); const id="q"+(++quickSeq); QUICK[id]={name:n,kcal:k,p:0}; done(id); }
+  });
+  dlg.addEventListener("input",(e)=>{ if(e.target.id==="pk-q"){ q=e.target.value; const pos=e.target.selectionStart; draw(); const i=dlg.querySelector("#pk-q"); i.focus(); i.setSelectionRange(pos,pos); } });
+}
+
+/* Colocar desde la biblioteca: elige día y franja (alternativa completa a arrastrar) */
+function openPlace(id) {
+  const r = RECIPES.find(x=>x.id===id), ds=days();
+  const dlg = openDialog({
+    title:`Colocar «${esc(r.name)}»`,
+    body:`<div class="field"><label for="pl-d">Día</label><select id="pl-d">${ds.map((d,i)=>`<option value="${i}" ${i===S.dayIdx?"selected":""}>${DAYF[i]} ${d.getDate()} ${fmt(d,{month:"short"})}</option>`).join("")}</select></div>
+          <div class="field"><label for="pl-s">Franja</label><select id="pl-s">${SLOTS.map(s=>`<option value="${s.key}">${s.label}</option>`).join("")}</select></div>
+          <p class="note" id="pl-note"></p>`,
+    foot:`<button type="button" class="btn" id="pl-cancel">Cancelar</button><button type="button" class="btn primary" id="pl-ok">Colocar</button>`,
+  });
+  const upd=()=>{ const dk=keyOf(ds[dlg.querySelector("#pl-d").value]), cur=entry((S.plan[dk]||{})[dlg.querySelector("#pl-s").value]); dlg.querySelector("#pl-note").textContent = cur?`Reemplazará solo «${cur.name}» en esa franja.`:"La franja está libre."; };
+  upd(); dlg.addEventListener("change",upd);
+  dlg.addEventListener("click",(e)=>{ const t=e.target.closest("button"); if(!t) return;
+    if(t.id==="pl-cancel") closeDialog();
+    if(t.id==="pl-ok"){ const dk=keyOf(ds[dlg.querySelector("#pl-d").value]), sl=dlg.querySelector("#pl-s").value; setMeal(dk,sl,id); S.dayIdx=Number(dlg.querySelector("#pl-d").value); render(); closeDialog(cellId(dk,sl)); toast(`Colocada en ${slotInfo(dk,sl).txt}`); } });
+}
+
+/* Cocinar y registrar: el diálogo de #152 (resumen real, descuento opcional) */
+function openCook(dk, slot) {
+  const e = entry(S.plan[dk][slot]), { txt, s } = slotInfo(dk, slot);
+  const dlg = openDialog({
+    title:`Cocinar y registrar: ${esc(e.name)}`,
+    body:`<p class="note" role="note"><strong>Al confirmar se registrará en tu diario personal:</strong> 1 ración · ${e.kcal} kcal · ${e.p} g de proteína.<br>Fecha y comida: <strong>${esc(txt.split(" · ")[1])}</strong> · <strong>${s.meal}</strong>.</p>
+          <label style="display:flex;gap:10px;align-items:center;min-height:44px"><input type="checkbox" id="ck-d" checked style="width:22px;height:22px"> Descontar ingredientes del inventario al cocinar</label>
+          <p class="note" id="ck-inv">Inventario: se descontarán los ingredientes.</p>`,
+    foot:`<button type="button" class="btn" id="ck-cancel">Cancelar</button><button type="button" class="btn primary" id="ck-ok">Cocinar y registrar 1 ración</button>`,
+    focusSel:"#ck-d",
+  });
+  dlg.addEventListener("change",()=>{ dlg.querySelector("#ck-inv").textContent = dlg.querySelector("#ck-d").checked?"Inventario: se descontarán los ingredientes.":"Inventario: no se modificará."; });
+  dlg.addEventListener("click",(ev)=>{ const t=ev.target.closest("button"); if(!t) return;
+    if(t.id==="ck-cancel") closeDialog();
+    if(t.id==="ck-ok"){ const dd=dlg.querySelector("#ck-d").checked; closeDialog(); toast(`${e.name}: 1 ración registrada en tu diario · ${dd?"se descuentan los ingredientes del inventario":"inventario sin cambios"}`); } });
+}
+
+/* ───────── Eventos ───────── */
+document.addEventListener("click",(ev)=>{
+  const b = ev.target.closest("button"); if(!b) return;
+  const { act, dk, slot } = b.dataset;
+  if (b.id==="p-theme") { S.theme = S.theme==="light"?"dark":"light"; render(); return; }
+  if (b.id==="p-data")  { S.populated=!S.populated; S.plan = S.populated?demoPlan():{}; render(); return; }
+  if (b.id==="w-prev")  { S.weekStart=addDays(S.weekStart,-7); render(b.id); return; }      // el día elegido (posición) se conserva
+  if (b.id==="w-next")  { S.weekStart=addDays(S.weekStart,7);  render(b.id); return; }
+  if (b.id==="w-today") { S.weekStart=mondayOf(TODAY); S.dayIdx=(TODAY.getDay()+6)%7; render(b.id); return; }
+  if (b.id==="a-ai")    { toast("Plan IA: (demo) esta propuesta no genera planes"); return; }
+  if (b.id==="a-buy")   { const ds=days().map(keyOf); toast(`Comprar semana: usaría las fechas ${ds[0]} → ${ds[6]} (demo)`); return; }
+  if (b.dataset.day!==undefined) { S.dayIdx=Number(b.dataset.day); render(b.id); return; }  // el foco se queda en el botón de día
+  if (act==="add") openPicker(dk,slot,false);
+  if (act==="change") openPicker(dk,slot,true);
+  if (act==="remove") { const {s}=slotInfo(dk,slot); setMeal(dk,slot,null); render(); const nid=cellId(dk,slot); const el=document.getElementById(nid); if(el) el.focus(); toast(`Quitado de ${s.label}`); }   // foco → «Añadir» del mismo hueco
+  if (act==="log") { const e=entry(S.plan[dk][slot]); toast(`"${e.name}" registrado`); }
+  if (act==="cook") openCook(dk,slot);
+  if (act==="place") openPlace(b.dataset.id);
+});
+document.addEventListener("input",(e)=>{ if(e.target.id==="lib-search"){ S.q=e.target.value; const p=e.target.selectionStart; render(); } });
+
+/* Parámetros para capturas: ?theme=dark&data=empty&week=1&day=2&open=picker|cook|place */
+const P = new URLSearchParams(location.search);
+if (P.get("theme")) S.theme=P.get("theme");
+if (P.get("data")==="empty") { S.populated=false; S.plan={}; }
+if (P.get("week")) S.weekStart=addDays(S.weekStart,7*Number(P.get("week")));
+if (P.get("day")) S.dayIdx=Number(P.get("day"));
+render();
+const fromBtn = (sel)=>document.querySelector(sel);
+const wide = matchMedia("(min-width:900px)").matches;
+const dkT = keyOf(TODAY);
+if (P.get("open")==="picker") { fromBtn(wide?`#c-${dkT}-almuerzo`:"#m-almuerzo")?.focus(); openPicker(dkT,"almuerzo",false); }
+if (P.get("open")==="cook")   { openCook(dkT,"dinner"); }
+if (P.get("open")==="place")  { openPlace("r3"); }
+</script>
+</body>
+</html>
