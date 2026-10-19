@@ -108,28 +108,6 @@
   color: var(--muted);
 }
 
-@media (max-width: 1080px) {
-  .planner-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .planner-sidebar {
-    position: static;
-    max-height: none;
-  }
-
-  .planner-recipe-list {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .planner-recipe-list {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* ── Import Recipe Modal ─────────────────────────────────── */
 .import-recipe-body {
   padding: 8px 0 4px;

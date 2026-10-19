@@ -59,16 +59,6 @@
 }
 
 /* Planificador: qué hace el «✓» según el tipo de comida */
-.planner-log-legend {
-  margin: 8px 0 12px;
-  color: var(--muted);
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.planner-log-legend strong {
-  color: var(--green);
-}
 
 /* CookModal: el ámbar del aviso "te falta parte" daba 4,4:1 sobre el fondo claro. */
 [data-theme="light"] .cook-ing-item.partial .cook-ing-avail { color: #92400e; }
