@@ -78,7 +78,7 @@ jobs:
       - name: Validación C0 (API + navegador)
         working-directory: apps/web
         timeout-minutes: 20
-        run: npx playwright test -c playwright.stack.config.ts --repeat-each=3
+        run: npx playwright test -c playwright.stack.config.ts
 
       - name: Evidencia como anotaciones (visibles sin descargar artefactos; sin secretos)
         if: ${{ !cancelled() }}
