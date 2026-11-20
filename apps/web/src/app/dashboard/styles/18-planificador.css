@@ -14,6 +14,7 @@
   --pl-recipe-bg: #162a3a;
   --pl-recipe-ink: #a9d1fb;
   --pl-focus: #8fbfff;
+  --pl-modal-bg: #0d120a; /* = fondo de .modal en oscuro (02-paneles-y-tarjetas.css) */
   --pl-danger: #fca5a5;
 }
 [data-theme="light"] .pl-root, [data-theme="light"] .pl-modal {
@@ -28,6 +29,7 @@
   --pl-recipe-bg: #e5edf8;
   --pl-recipe-ink: #244a82;
   --pl-focus: #1d4ed8;
+  --pl-modal-bg: #f4f8f2; /* = fondo de .modal en claro */
   --pl-danger: #a3271e;
 }
 
@@ -138,7 +140,7 @@
 .pl-pick-text { display: grid; min-width: 0; }
 .pl-pick-name { font-weight: 600; overflow-wrap: anywhere; }
 .pl-pick-meta { font-size: 12.5px; color: var(--muted); }
-.pl-modal-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; position: sticky; bottom: 0; background: var(--surface); padding-top: 8px; }
+.pl-modal-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; position: sticky; bottom: 0; background: var(--pl-modal-bg); padding-top: 8px; }
 .pl-field { display: grid; gap: 4px; }
 .pl-field label { font-weight: 600; font-size: 13.5px; }
 .pl-field select { min-height: 44px; padding: 8px 10px; border-radius: 10px; border: 1.5px solid var(--pl-ctl-border); background: var(--bg); color: var(--text); font: inherit; }

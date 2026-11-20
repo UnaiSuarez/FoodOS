@@ -66,3 +66,29 @@ test("el interruptor de tema cambia data-theme y persiste tras recargar (E21-10)
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
+
+// El mensaje de la sugerencia del Panel depende de la hora: de tarde-noche aparece «Cena para cerrar macros»
+// (eyebrow en índigo). Con el reloj REAL este fallo solo se veía a ciertas horas. Se fija el reloj a las 21:00 y se
+// sigue midiendo el contraste real con axe (no se relaja ninguna regla).
+test("tema claro, de noche (reloj 21:00): la sugerencia de cena del Panel cumple el contraste (E21-10)", async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem("foodos-theme", "light"));
+  await page.clock.install({ time: new Date(2026, 10, 20, 21, 0, 0) });
+  await seedDemo(page);
+  await page.goto("/dashboard");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.locator(".eyebrow", { hasText: "Cena para cerrar macros" })).toBeVisible();
+  await expectNoContrastViolations(page, "light");
+});
+
+for (const theme of ["dark", "light"] as const) {
+  test(`tema ${theme}: el pie del selector de recetas del Planificador usa el fondo del modal`, async ({ page }) => {
+    await page.addInitScript((t) => window.localStorage.setItem("foodos-theme", t), theme);
+    await page.goto("/dashboard/planner");
+    await page.locator('button[aria-label^="Añadir comida"]').first().click();
+    const colors = await page.evaluate(() => ({
+      modal: getComputedStyle(document.querySelector(".modal")!).backgroundColor,
+      foot: getComputedStyle(document.querySelector(".pl-modal-foot")!).backgroundColor,
+    }));
+    expect(colors.foot).toBe(colors.modal);
+  });
+}

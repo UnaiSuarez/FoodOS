@@ -702,6 +702,12 @@
   color: #818cf8;
 }
 
+/* Tema claro: el indigo claro (#818cf8, pensado para fondo oscuro) daba 2,92:1 sobre el fondo claro de la
+   tarjeta; solo aparece de tarde-noche, cuando la sugerencia es la cena. #4338ca da > 7:1. */
+[data-theme="light"] .bento-suggest.dinner .eyebrow {
+  color: #4338ca;
+}
+
 /* ── Nutrición: campo bloqueado por validación (ej. procedencia del %
    graso) — antes solo se avisaba con un toast que desaparecía en 2.6s sin
    marcar el campo culpable; ahora queda visible junto a él hasta corregirlo. */
