@@ -1,0 +1,1928 @@
+[
+ {
+  "tag": "panel-escritorio-claro",
+  "h1": [
+   {
+    "t": "Panel diario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "otro": {
+    "n": 20,
+    "h": [
+     20,
+     32,
+     40,
+     42,
+     46
+    ],
+    "r": [
+     "13px",
+     "999px",
+     "0px"
+    ],
+    "fs": [
+     14,
+     13,
+     16,
+     12
+    ]
+   },
+   "small-action": {
+    "n": 2,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 22,
+  "bajo44": 16,
+  "bajo24": 1,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1918,
+  "axe": []
+ },
+ {
+  "tag": "registro-escritorio-claro",
+  "h1": [
+   {
+    "t": "Registro diario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "💧 0,00 L de 2,5 L",
+    "px": 38,
+    "font": "DM Mono"
+   }
+  ],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 2,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 11,
+    "h": [
+     18,
+     21,
+     42
+    ],
+    "r": [
+     "9px",
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     16,
+     14,
+     10
+    ]
+   },
+   "small-action": {
+    "n": 10,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 24,
+  "bajo44": 24,
+  "bajo24": 10,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1593,
+  "axe": []
+ },
+ {
+  "tag": "inventario-escritorio-claro",
+  "h1": [
+   {
+    "t": "Inventario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir alimento",
+    "px": 42,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Inventario",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 5,
+  "eyebrows": 0,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12
+    ]
+   },
+   "small-action": {
+    "n": 20,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 31,
+  "bajo24": 0,
+  "panels": {
+   "n": 2,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1184,
+  "axe": []
+ },
+ {
+  "tag": "recetas-escritorio-claro",
+  "h1": [
+   {
+    "t": "Recetas",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Recetas que encajan con tu inventario",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 4,
+  "eyebrows": 1,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42,
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 15,
+    "h": [
+     30,
+     34,
+     337,
+     365
+    ],
+    "r": [
+     "999px",
+     "9px",
+     "0px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "small-action": {
+    "n": 12,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 25,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1398,
+  "axe": []
+ },
+ {
+  "tag": "planificador-escritorio-claro",
+  "h1": [
+   {
+    "t": "Planificador semanal",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "¿Qué vas a comer esta semana?",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 1,
+  "buttons": {
+   "pl-btn": {
+    "n": 44,
+    "h": [
+     44
+    ],
+    "r": [
+     "10px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 44,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1514,
+  "axe": []
+ },
+ {
+  "tag": "carrito-escritorio-claro",
+  "h1": [
+   {
+    "t": "Carrito de compra",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir manualmente",
+    "px": 42,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Carrito",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 0,
+  "buttons": {
+   "otro": {
+    "n": 6,
+    "h": [
+     14,
+     24,
+     34
+    ],
+    "r": [
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     15,
+     13,
+     14
+    ]
+   },
+   "small-action": {
+    "n": 5,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 2,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 16,
+  "bajo44": 16,
+  "bajo24": 2,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1031,
+  "axe": []
+ },
+ {
+  "tag": "panel-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Panel diario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "otro": {
+    "n": 20,
+    "h": [
+     20,
+     32,
+     40,
+     42,
+     46
+    ],
+    "r": [
+     "13px",
+     "999px",
+     "0px"
+    ],
+    "fs": [
+     14,
+     13,
+     16,
+     12
+    ]
+   },
+   "small-action": {
+    "n": 2,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 22,
+  "bajo44": 16,
+  "bajo24": 1,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1882,
+  "axe": []
+ },
+ {
+  "tag": "registro-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Registro diario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "💧 0,00 L de 2,5 L",
+    "px": 38,
+    "font": "DM Mono"
+   }
+  ],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 2,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 11,
+    "h": [
+     18,
+     21,
+     42
+    ],
+    "r": [
+     "9px",
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     16,
+     14,
+     10
+    ]
+   },
+   "small-action": {
+    "n": 10,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 24,
+  "bajo44": 24,
+  "bajo24": 10,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1593,
+  "axe": []
+ },
+ {
+  "tag": "inventario-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Inventario",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir alimento",
+    "px": 42,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Inventario",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 5,
+  "eyebrows": 0,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12
+    ]
+   },
+   "small-action": {
+    "n": 20,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 31,
+  "bajo24": 0,
+  "panels": {
+   "n": 2,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1184,
+  "axe": []
+ },
+ {
+  "tag": "recetas-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Recetas",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Recetas que encajan con tu inventario",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 4,
+  "eyebrows": 1,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42,
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 15,
+    "h": [
+     30,
+     34,
+     337,
+     365
+    ],
+    "r": [
+     "999px",
+     "9px",
+     "0px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "small-action": {
+    "n": 12,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 25,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1398,
+  "axe": []
+ },
+ {
+  "tag": "planificador-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Planificador semanal",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "¿Qué vas a comer esta semana?",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 1,
+  "buttons": {
+   "pl-btn": {
+    "n": 44,
+    "h": [
+     44
+    ],
+    "r": [
+     "10px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 44,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1514,
+  "axe": []
+ },
+ {
+  "tag": "carrito-escritorio-oscuro",
+  "h1": [
+   {
+    "t": "Carrito de compra",
+    "px": 72,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir manualmente",
+    "px": 42,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Carrito",
+    "px": 42,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 0,
+  "buttons": {
+   "otro": {
+    "n": 6,
+    "h": [
+     14,
+     24,
+     34
+    ],
+    "r": [
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     15,
+     13,
+     14
+    ]
+   },
+   "small-action": {
+    "n": 5,
+    "h": [
+     34
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 2,
+    "h": [
+     42
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 16,
+  "bajo44": 16,
+  "bajo24": 2,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1031,
+  "axe": []
+ },
+ {
+  "tag": "panel-movil-claro",
+  "h1": [
+   {
+    "t": "Panel diario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "otro": {
+    "n": 20,
+    "h": [
+     20,
+     32,
+     40,
+     42,
+     44
+    ],
+    "r": [
+     "13px",
+     "999px",
+     "16px"
+    ],
+    "fs": [
+     14,
+     13,
+     12
+    ]
+   },
+   "small-action": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 22,
+  "bajo44": 13,
+  "bajo24": 1,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2518,
+  "axe": []
+ },
+ {
+  "tag": "registro-movil-claro",
+  "h1": [
+   {
+    "t": "Registro diario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "💧 0,00 L de 2,5 L",
+    "px": 26,
+    "font": "DM Mono"
+   }
+  ],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 11,
+    "h": [
+     18,
+     21,
+     42,
+     44
+    ],
+    "r": [
+     "9px",
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     16,
+     14,
+     10
+    ]
+   },
+   "small-action": {
+    "n": 10,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 24,
+  "bajo44": 15,
+  "bajo24": 9,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2145,
+  "axe": []
+ },
+ {
+  "tag": "inventario-movil-claro",
+  "h1": [
+   {
+    "t": "Inventario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir alimento",
+    "px": 28,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Inventario",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 5,
+  "eyebrows": 0,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12
+    ]
+   },
+   "small-action": {
+    "n": 20,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 2,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2297,
+  "axe": []
+ },
+ {
+  "tag": "recetas-movil-claro",
+  "h1": [
+   {
+    "t": "Recetas",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Recetas que encajan con tu inventario",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 4,
+  "eyebrows": 1,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 15,
+    "h": [
+     44,
+     337,
+     365
+    ],
+    "r": [
+     "999px",
+     "9px",
+     "0px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "small-action": {
+    "n": 12,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2649,
+  "axe": []
+ },
+ {
+  "tag": "planificador-movil-claro",
+  "h1": [
+   {
+    "t": "Planificador semanal",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "¿Qué vas a comer esta semana?",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 2,
+  "eyebrows": 1,
+  "buttons": {
+   "pl-btn": {
+    "n": 14,
+    "h": [
+     44
+    ],
+    "r": [
+     "10px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     56
+    ],
+    "r": [
+     "12px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 21,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2088,
+  "axe": []
+ },
+ {
+  "tag": "carrito-movil-claro",
+  "h1": [
+   {
+    "t": "Carrito de compra",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir manualmente",
+    "px": 28,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Carrito",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 0,
+  "buttons": {
+   "otro": {
+    "n": 6,
+    "h": [
+     14,
+     44,
+     45
+    ],
+    "r": [
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     15,
+     13,
+     14
+    ]
+   },
+   "small-action": {
+    "n": 5,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44,
+     48
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 16,
+  "bajo44": 2,
+  "bajo24": 2,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1973,
+  "axe": []
+ },
+ {
+  "tag": "panel-movil-oscuro",
+  "h1": [
+   {
+    "t": "Panel diario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "otro": {
+    "n": 20,
+    "h": [
+     20,
+     32,
+     40,
+     42,
+     44
+    ],
+    "r": [
+     "13px",
+     "999px",
+     "16px"
+    ],
+    "fs": [
+     14,
+     13,
+     12
+    ]
+   },
+   "small-action": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 22,
+  "bajo44": 13,
+  "bajo24": 1,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2458,
+  "axe": []
+ },
+ {
+  "tag": "registro-movil-oscuro",
+  "h1": [
+   {
+    "t": "Registro diario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "💧 0,00 L de 2,5 L",
+    "px": 26,
+    "font": "DM Mono"
+   }
+  ],
+  "h3count": 3,
+  "eyebrows": 1,
+  "buttons": {
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 11,
+    "h": [
+     18,
+     21,
+     42,
+     44
+    ],
+    "r": [
+     "9px",
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     16,
+     14,
+     10
+    ]
+   },
+   "small-action": {
+    "n": 10,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 24,
+  "bajo44": 15,
+  "bajo24": 9,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2145,
+  "axe": []
+ },
+ {
+  "tag": "inventario-movil-oscuro",
+  "h1": [
+   {
+    "t": "Inventario",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir alimento",
+    "px": 28,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Inventario",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 5,
+  "eyebrows": 0,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12
+    ]
+   },
+   "small-action": {
+    "n": 20,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 2,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2297,
+  "axe": []
+ },
+ {
+  "tag": "recetas-movil-oscuro",
+  "h1": [
+   {
+    "t": "Recetas",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Recetas que encajan con tu inventario",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 4,
+  "eyebrows": 1,
+  "buttons": {
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 1,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 15,
+    "h": [
+     44,
+     337,
+     365
+    ],
+    "r": [
+     "999px",
+     "9px",
+     "0px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "small-action": {
+    "n": 12,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 31,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2649,
+  "axe": []
+ },
+ {
+  "tag": "planificador-movil-oscuro",
+  "h1": [
+   {
+    "t": "Planificador semanal",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "¿Qué vas a comer esta semana?",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 2,
+  "eyebrows": 1,
+  "buttons": {
+   "pl-btn": {
+    "n": 14,
+    "h": [
+     44
+    ],
+    "r": [
+     "10px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "otro": {
+    "n": 7,
+    "h": [
+     56
+    ],
+    "r": [
+     "12px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 21,
+  "bajo44": 0,
+  "bajo24": 0,
+  "panels": {
+   "n": 1,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 2088,
+  "axe": []
+ },
+ {
+  "tag": "carrito-movil-oscuro",
+  "h1": [
+   {
+    "t": "Carrito de compra",
+    "px": 23,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h2": [
+   {
+    "t": "Añadir manualmente",
+    "px": 28,
+    "font": "DM Serif Display"
+   },
+   {
+    "t": "Carrito",
+    "px": 28,
+    "font": "DM Serif Display"
+   }
+  ],
+  "h3count": 1,
+  "eyebrows": 0,
+  "buttons": {
+   "otro": {
+    "n": 6,
+    "h": [
+     14,
+     44,
+     45
+    ],
+    "r": [
+     "0px",
+     "20px"
+    ],
+    "fs": [
+     15,
+     13,
+     14
+    ]
+   },
+   "small-action": {
+    "n": 5,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     12,
+     16
+    ]
+   },
+   "secondary-button": {
+    "n": 3,
+    "h": [
+     44,
+     48
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   },
+   "primary-button": {
+    "n": 2,
+    "h": [
+     44
+    ],
+    "r": [
+     "9px"
+    ],
+    "fs": [
+     16
+    ]
+   }
+  },
+  "controles": 16,
+  "bajo44": 2,
+  "bajo24": 2,
+  "panels": {
+   "n": 4,
+   "radios": [
+    "19px"
+   ],
+   "pad": [
+    "20px"
+   ]
+  },
+  "overflowX": false,
+  "alturaPagina": 1973,
+  "axe": []
+ }
+]
